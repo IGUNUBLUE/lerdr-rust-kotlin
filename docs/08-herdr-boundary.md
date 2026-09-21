@@ -205,3 +205,42 @@ app/
 Created in `.devin/skills/` (see commit): `herdr-api` (boundary rules),
 `protocol-parity` (fixture/vector workflow), `rust-relay` (actor
 topology + error taxonomy), `android-app` (module + Compose rules).
+
+## Authoritative findings from the upstream repo (herdrdev/herdr)
+
+Read `docs/next/website/src/content/docs/{socket-api,plugins}.mdx` +
+`api/herdr-api.schema.json` (131 methods). Corrections/upgrades over the
+reverse-engineered notes above:
+
+- **Runtime schema introspection**: `herdr api schema --json` dumps the
+  installed API's full JSON Schema. `lerdr-herdr` gains a `SchemaRegistry`:
+  enumerate methods + event types at connect, build the exact capability
+  table, degrade features deterministically. Replaces probe-by-failure.
+- **`events_lost` recovery is specified, not implied**: on `events_lost`
+  Herdr closes the subscription connection. Recovery = resubscribe, wait
+  `subscription_started`, pull `session.snapshot`, treat subsequent events
+  as *invalidation signals* (serialize refreshes; re-read if events arrive
+  mid-read). Snapshots and events share **no sequence boundary** — never
+  replay buffered events onto a snapshot. Encode this loop verbatim in the
+  events supervisor.
+- **Waits are first-class**: `agent.wait{until:[blocked|done|...]}`,
+  `events.wait{match_event}`, `pane.wait_for_output{match:{substring|
+  regex}}`. Question/attention detection goes event-driven; polling becomes
+  fallback, not primary.
+- **`agent.view.set`**: transient declarative filter+sort projection
+  (`plugin:<id>` source) that drives the sidebar **and Herdr's own mobile
+  Agents list**. Install lerdr's canonical attention-sorted view so phone
+  and terminal share ordering. Reapply from the `[[startup]]` hook.
+- **`client_shell.surface.set` + `command.invoke`**: Herdr's designed
+  remote-UI surface (endpoint generation negotiation, `surface_interest`,
+  `health_check` capabilities). Phase-2 investigation: the Kotlin app may
+  consume client-shell projections directly.
+- **`notification.show`**: desktop toasts for phone-originated actions.
+- **`plugin.pane.open` placements**: `overlay|popup|split|tab|zoomed`;
+  popup supports `width`/`height` — setup pickers become modals.
+- **Socket paths**: `~/.config/herdr/herdr.sock` or
+  `~/.config/herdr/sessions/<name>/herdr.sock`; env resolution order
+  `--session` > `HERDR_SOCKET_PATH` > `HERDR_SESSION` > default.
+- **`server.live_handoff`**: upgrades the server without dropping
+  sessions; plugin `[[startup]]` hooks re-run on handoff — ours must
+  re-assert socket/event/view state.

@@ -53,6 +53,10 @@ largest single component; don't block the feed on it.
 - Details mode: workspace tree/file/git, tabs, worktrees.
 - Activity journal + detail; speech controls; update/app-deploy flows;
   device management; push policy UI.
+- `client_shell` investigation: evaluate whether the app should consume
+  Herdr's client-shell surface projections (`client_shell.surface.set`,
+  `command.invoke`) instead of only pane text — richer semantics designed
+  for remote UI. Prototype-read only; no commitment.
 - WebRTC direct path (evaluate `webrtc` AAR size cost vs benefit — the
   gateway path already works; likely worth it only for bandwidth-heavy
   sessions).
@@ -73,7 +77,10 @@ shell is retired — Android is the only client going forward.
 
 **Exit**: Rust relay serves the production Kotlin app for a week with
 no behavioral divergence vs the shadow-diff harness; CPU/RSS ≤ Go
-baseline on identical load.
+baseline on identical load; **installs as the same `lerdr.events`
+plugin** — `plugin install`/`link`/`build`, all actions, panes, the
+`event-hook` subcommand, and the `[[startup]]` hook work end-to-end
+(see doc 09).
 
 ## Phase 4 — Rust completes
 
@@ -81,8 +88,11 @@ baseline on identical load.
   uploads, speech, update, appdeploy, portmap, audit, localize.
 - `lerdr-gateway` binary in Rust; gatewaywire parity.
 - WebRTC server side (`webrtc` crate) for `herdr-dc-v1`.
+- `[[startup]]` hook + `agent.view.set` canonical view + `[[link_handlers]]`
+  deep links wired into the plugin manifest (doc 09).
 - CI matrix: interop tests both directions; release pipeline producing
-  static binaries + the same tarballs/APK.
+  static musl binaries + the same tarballs/APK + `herdr-plugin.toml`
+  version sync (bump in the release PR, never at build time).
 
 **Exit**: `lerdr` Go binary superseded; tag as the reference
 implementation. Repo decision (mono vs split) deferred to this point —

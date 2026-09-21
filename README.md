@@ -41,6 +41,7 @@ stable contract. That allows:
 | [06 — Risks](docs/06-risks.md) | Technical risks and mitigations |
 | [07 — Execution prompt](docs/07-execution-prompt.md) | Copy-paste master prompt + per-phase loops |
 | [08 — Herdr boundary](docs/08-herdr-boundary.md) | Deep API contract + improved actor topology |
+| [09 — Plugin distribution](docs/09-plugin-distribution.md) | Shipping the Rust relay as a `lerdr.events` Herdr plugin |
 
 Repo-level agent skills live in [`.devin/skills/`](.devin/skills/) —
 see [AGENTS.md](AGENTS.md).

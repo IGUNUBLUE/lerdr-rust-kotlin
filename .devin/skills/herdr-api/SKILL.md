@@ -25,7 +25,10 @@ to the Herdr socket/CLI.
 - All outbound requests bounded by a semaphore (default 32 in flight) — each request is an fd.
 - Singleflight identical read-only requests (same method+canonical params) — fan out one result.
 - Event stream: request id `lerdr-events`; canonicalize legacy names via the 26-alias map; on drop → re-subscribe + re-bootstrap before resuming emission.
-- Capability flags (`pane.read`, `workspace.move_block`, `tab.move`, `workspace.reordered`, `client_shell.endpoint`, `direct_terminal`, `ordinary_json`) are probed with TTL cache, refreshed on reconnect.
+- `events_lost` recovery (upstream-specified): connection closes → resubscribe, wait `subscription_started`, pull `session.snapshot`, treat later events as invalidation signals only (serialize refreshes; snapshots/events share no sequence boundary — never replay buffered events).
+- Prefer wait primitives over polling: `agent.wait{until:[...]}`, `events.wait{match_event}`, `pane.wait_for_output{match}`.
+- `agent.view.set` with `source:"plugin:lerdr.events"` installs the canonical attention-sorted projection (drives Herdr's mobile Agents list too); reapply after `[[startup]]`/live handoff.
+- Capabilities come from `herdr api schema --json` (SchemaRegistry) first, TTL-probe fallback for `pane.read`, `workspace.move_block`, `tab.move`, `workspace.reordered`, `client_shell.endpoint`, `direct_terminal`, `ordinary_json`; refreshed on reconnect.
 
 ## Decision Gates
 

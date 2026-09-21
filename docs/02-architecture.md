@@ -56,6 +56,9 @@ relay/
 │   ├── lerdr-herdr/           # Unix socket API, event stream, CLI fallback
 │   │                          #   singleflight + dial semaphore +
 │   │                          #   DispatchError taxonomy (see doc 08)
+│   │                          #   SchemaRegistry (`herdr api schema --json`)
+│   │                          #   events supervisor w/ events_lost
+│   │                          #   reconcile + wait primitives
 │   ├── lerdr-watch/           # pane fingerprints, delta engine, probe loop
 │   ├── lerdr-coord/           # per-pane scheduler, receipts, ledger
 │   ├── lerdr-store/           # device credentials, config, stable state
