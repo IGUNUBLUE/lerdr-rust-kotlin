@@ -1,0 +1,225 @@
+{
+  "format_version": 1,
+  "suite": "conversation.page.opencode",
+  "source": {
+    "repo": "IGUNUBLUE/lerdr",
+    "commit": "d01ec329d2b0e87c536972ae0e49e19ea41c76fc",
+    "package": "internal/conversation",
+    "generator": "page_export_test.go"
+  },
+  "notes": [
+    "entry.id is sha256(raw jsonl line)[:24] for JSONL readers, the message id for opencode, the sqlite rowid for hermes; duplicate identical lines gain a '-N' suffix",
+    "claude continuation-segment entries carry namespaced:true with the raw suffix; the wire id is sha256(sessionID+\"\\x00\"+fileRevision)[:12]+\"-\"+id, and fileRevision is inode-dependent",
+    "next_cursor is the first entry id of the page (the 'before' argument that returns the next-older page); namespaced cursors are flagged",
+    "steps with append_jsonl_lines/append_sql_statements model live tail: content is appended before the step's read",
+    "total is the full visible entry count; truncated marks clamped payloads; source_corrupt marks skipped corrupt rows"
+  ],
+  "vectors": [
+    {
+      "name": "basic-conversation",
+      "comment": "message rows join part rows; text parts merge, tool parts carry state.output/error; step-start and corrupt parts are dropped",
+      "agent": "opencode",
+      "cwd": "/work/project",
+      "session_id": "ses_fixture1",
+      "sqlite": {
+        "database": "opencode.db",
+        "statements": [
+          "BEGIN;",
+          "CREATE TABLE session(id TEXT PRIMARY KEY,directory TEXT,title TEXT,time_updated INTEGER,agent TEXT);\nCREATE TABLE message(id TEXT PRIMARY KEY,session_id TEXT,time_created INTEGER,data TEXT);\nCREATE TABLE part(id TEXT PRIMARY KEY,message_id TEXT,data TEXT);",
+          "INSERT INTO session VALUES('ses_fixture1','/work/project','Fixture session',1,'opencode');",
+          "INSERT INTO message VALUES('m1','ses_fixture1',1691800000000,'{\"role\":\"user\"}');",
+          "INSERT INTO part VALUES('p1','m1','{\"type\":\"text\",\"text\":\"check the build\"}');",
+          "INSERT INTO message VALUES('m2','ses_fixture1',1691800001000,'{\"role\":\"assistant\"}');",
+          "INSERT INTO part VALUES('p2','m2','{\"type\":\"text\",\"text\":\"Looking.\"}');",
+          "INSERT INTO part VALUES('p3','m2','{\"type\":\"tool\",\"tool\":\"bash\",\"callID\":\"call_1\",\"state\":{\"status\":\"completed\",\"input\":{\"command\":\"go build\"},\"output\":\"ok\"}}');",
+          "INSERT INTO part VALUES('p4','m2','{\"type\":\"step-start\"}');",
+          "INSERT INTO part VALUES('p5','m2','{\"type\":\"tool\",\"tool\":\"edit\",\"callID\":\"call_2\",\"state\":{\"status\":\"error\",\"input\":{\"file\":\"x.go\"},\"error\":\"permission denied\"}}');",
+          "INSERT INTO part VALUES('p6','m2','not-json');",
+          "INSERT INTO message VALUES('m3','ses_fixture1',1691800002000,'{\"role\":\"system\"}');",
+          "INSERT INTO part VALUES('p7','m3','{\"type\":\"text\",\"text\":\"skipped role\"}');",
+          "INSERT INTO message VALUES('m4','ses_fixture1',1691800003000,'{\"role\":\"assistant\"}');",
+          "INSERT INTO part VALUES('p8','m4','{\"type\":\"text\",\"text\":\"Done.\"}');",
+          "COMMIT;"
+        ]
+      },
+      "steps": [
+        {
+          "label": "all",
+          "before": "",
+          "limit": 80,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "m1",
+              "timestamp": "2023-08-12T00:26:40Z",
+              "role": "user",
+              "text": "check the build"
+            },
+            {
+              "id": "m2",
+              "timestamp": "2023-08-12T00:26:41Z",
+              "role": "assistant",
+              "text": "Looking.",
+              "tools": [
+                {
+                  "id": "call_1",
+                  "name": "bash",
+                  "input": "{\"command\":\"go build\"}",
+                  "output": "ok"
+                },
+                {
+                  "id": "call_2",
+                  "name": "edit",
+                  "input": "{\"file\":\"x.go\"}",
+                  "error": true
+                }
+              ]
+            },
+            {
+              "id": "m4",
+              "timestamp": "2023-08-12T00:26:43Z",
+              "role": "assistant",
+              "text": "Done."
+            }
+          ],
+          "has_more": false,
+          "total": 4,
+          "source_corrupt": true
+        }
+      ]
+    },
+    {
+      "name": "pagination",
+      "comment": "five messages paged two at a time; before is a message id",
+      "agent": "opencode",
+      "cwd": "/work/project",
+      "session_id": "ses_fixture1",
+      "sqlite": {
+        "database": "opencode.db",
+        "statements": [
+          "BEGIN;",
+          "CREATE TABLE session(id TEXT PRIMARY KEY,directory TEXT,title TEXT,time_updated INTEGER,agent TEXT);\nCREATE TABLE message(id TEXT PRIMARY KEY,session_id TEXT,time_created INTEGER,data TEXT);\nCREATE TABLE part(id TEXT PRIMARY KEY,message_id TEXT,data TEXT);",
+          "INSERT INTO session VALUES('ses_fixture1','/work/project','Fixture session',1,'opencode');",
+          "INSERT INTO message VALUES('m0','ses_fixture1',1691800000000,'{\"role\":\"user\"}');",
+          "INSERT INTO part VALUES('p0','m0','{\"type\":\"text\",\"text\":\"turn 0\"}');",
+          "INSERT INTO message VALUES('m1','ses_fixture1',1691800001000,'{\"role\":\"assistant\"}');",
+          "INSERT INTO part VALUES('p1','m1','{\"type\":\"text\",\"text\":\"turn 1\"}');",
+          "INSERT INTO message VALUES('m2','ses_fixture1',1691800002000,'{\"role\":\"user\"}');",
+          "INSERT INTO part VALUES('p2','m2','{\"type\":\"text\",\"text\":\"turn 2\"}');",
+          "INSERT INTO message VALUES('m3','ses_fixture1',1691800003000,'{\"role\":\"assistant\"}');",
+          "INSERT INTO part VALUES('p3','m3','{\"type\":\"text\",\"text\":\"turn 3\"}');",
+          "INSERT INTO message VALUES('m4','ses_fixture1',1691800004000,'{\"role\":\"user\"}');",
+          "INSERT INTO part VALUES('p4','m4','{\"type\":\"text\",\"text\":\"turn 4\"}');",
+          "COMMIT;"
+        ]
+      },
+      "steps": [
+        {
+          "label": "first-page",
+          "before": "",
+          "limit": 2,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "m3",
+              "timestamp": "2023-08-12T00:26:43Z",
+              "role": "assistant",
+              "text": "turn 3"
+            },
+            {
+              "id": "m4",
+              "timestamp": "2023-08-12T00:26:44Z",
+              "role": "user",
+              "text": "turn 4"
+            }
+          ],
+          "has_more": true,
+          "total": 5,
+          "next_cursor": "m3"
+        },
+        {
+          "label": "second-page",
+          "before": "",
+          "before_step": 0,
+          "limit": 2,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "m1",
+              "timestamp": "2023-08-12T00:26:41Z",
+              "role": "assistant",
+              "text": "turn 1"
+            },
+            {
+              "id": "m2",
+              "timestamp": "2023-08-12T00:26:42Z",
+              "role": "user",
+              "text": "turn 2"
+            }
+          ],
+          "has_more": true,
+          "total": 5,
+          "next_cursor": "m1"
+        },
+        {
+          "label": "after-append",
+          "append_sql_statements": [
+            "INSERT INTO message VALUES('m5','ses_fixture1',1691800005000,'{\"role\":\"assistant\"}');",
+            "INSERT INTO part VALUES('p5x','m5','{\"type\":\"text\",\"text\":\"appended\"}');"
+          ],
+          "before": "",
+          "limit": 2,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "m4",
+              "timestamp": "2023-08-12T00:26:44Z",
+              "role": "user",
+              "text": "turn 4"
+            },
+            {
+              "id": "m5",
+              "timestamp": "2023-08-12T00:26:45Z",
+              "role": "assistant",
+              "text": "appended"
+            }
+          ],
+          "has_more": true,
+          "total": 6,
+          "next_cursor": "m4"
+        }
+      ]
+    },
+    {
+      "name": "wrong-workspace",
+      "comment": "a session bound to another directory reports invalid_session",
+      "agent": "opencode",
+      "cwd": "/work/other",
+      "workspace": "/work/project",
+      "session_id": "ses_fixture1",
+      "sqlite": {
+        "database": "opencode.db",
+        "statements": [
+          "BEGIN;",
+          "CREATE TABLE session(id TEXT PRIMARY KEY,directory TEXT,title TEXT,time_updated INTEGER,agent TEXT);\nCREATE TABLE message(id TEXT PRIMARY KEY,session_id TEXT,time_created INTEGER,data TEXT);\nCREATE TABLE part(id TEXT PRIMARY KEY,message_id TEXT,data TEXT);",
+          "INSERT INTO session VALUES('ses_fixture1','/work/project','Fixture session',1,'opencode');",
+          "INSERT INTO message VALUES('m1','ses_fixture1',1691800000000,'{\"role\":\"user\"}');",
+          "INSERT INTO part VALUES('p1','m1','{\"type\":\"text\",\"text\":\"hello\"}');",
+          "COMMIT;"
+        ]
+      },
+      "steps": [
+        {
+          "label": "all",
+          "before": "",
+          "limit": 80,
+          "available": false,
+          "reason_code": "invalid_session",
+          "expected_entries": [],
+          "has_more": false,
+          "total": 0
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,165 @@
+{
+  "format_version": 1,
+  "suite": "conversation.page.omp",
+  "source": {
+    "repo": "IGUNUBLUE/lerdr",
+    "commit": "d01ec329d2b0e87c536972ae0e49e19ea41c76fc",
+    "package": "internal/conversation",
+    "generator": "page_export_test.go"
+  },
+  "notes": [
+    "entry.id is sha256(raw jsonl line)[:24] for JSONL readers, the message id for opencode, the sqlite rowid for hermes; duplicate identical lines gain a '-N' suffix",
+    "claude continuation-segment entries carry namespaced:true with the raw suffix; the wire id is sha256(sessionID+\"\\x00\"+fileRevision)[:12]+\"-\"+id, and fileRevision is inode-dependent",
+    "next_cursor is the first entry id of the page (the 'before' argument that returns the next-older page); namespaced cursors are flagged",
+    "steps with append_jsonl_lines/append_sql_statements model live tail: content is appended before the step's read",
+    "total is the full visible entry count; truncated marks clamped payloads; source_corrupt marks skipped corrupt rows"
+  ],
+  "vectors": [
+    {
+      "name": "basic-conversation",
+      "comment": "omp shares the pi record grammar; tool result via toolCallId on a toolResult message",
+      "agent": "omp",
+      "cwd": "/work",
+      "session_id": "523e4567-e89b-12d3-a456-426614174000",
+      "files": [
+        {
+          "path": ".omp/agent/sessions/--work--/session_523e4567-e89b-12d3-a456-426614174000.jsonl",
+          "jsonl_lines": [
+            "{\"message\":{\"content\":[{\"text\":\"summarize the repo\",\"type\":\"text\"}],\"role\":\"user\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"message\"}",
+            "{\"message\":{\"content\":[{\"arguments\":{\"path\":\"README.md\"},\"id\":\"call_o1\",\"name\":\"read\",\"type\":\"toolCall\"},{\"text\":\"Reading the README.\",\"type\":\"text\"}],\"role\":\"assistant\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"message\"}",
+            "{\"message\":{\"content\":\"# lerdr\",\"role\":\"toolResult\",\"toolCallId\":\"call_o1\"},\"timestamp\":\"2026-08-12T10:00:01Z\",\"type\":\"message\"}"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "label": "all",
+          "before": "",
+          "limit": 80,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "305088711219d07b915787e8",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "user",
+              "text": "summarize the repo"
+            },
+            {
+              "id": "d6b62796572cb4f1f9eded10",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "assistant",
+              "text": "Reading the README.",
+              "tools": [
+                {
+                  "id": "call_o1",
+                  "name": "read",
+                  "input": "{\"path\":\"README.md\"}",
+                  "output": "# lerdr"
+                }
+              ]
+            }
+          ],
+          "has_more": false,
+          "total": 2
+        }
+      ]
+    },
+    {
+      "name": "pagination-and-tail",
+      "agent": "omp",
+      "cwd": "/work",
+      "session_id": "523e4567-e89b-12d3-a456-426614174000",
+      "files": [
+        {
+          "path": ".omp/agent/sessions/--work--/session_523e4567-e89b-12d3-a456-426614174000.jsonl",
+          "jsonl_lines": [
+            "{\"message\":{\"content\":[{\"text\":\"turn 0\",\"type\":\"text\"}],\"role\":\"user\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"message\"}",
+            "{\"message\":{\"content\":[{\"text\":\"turn 1\",\"type\":\"text\"}],\"role\":\"assistant\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"message\"}",
+            "{\"message\":{\"content\":[{\"text\":\"turn 2\",\"type\":\"text\"}],\"role\":\"user\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"message\"}",
+            "{\"message\":{\"content\":[{\"text\":\"turn 3\",\"type\":\"text\"}],\"role\":\"assistant\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"message\"}"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "label": "first-page",
+          "before": "",
+          "limit": 3,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "294ae2953368d3cf4b089683",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "assistant",
+              "text": "turn 1"
+            },
+            {
+              "id": "b5be8ee9f11b7db3f301ff17",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "user",
+              "text": "turn 2"
+            },
+            {
+              "id": "d376b1b009385ed8267c5a4b",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "assistant",
+              "text": "turn 3"
+            }
+          ],
+          "has_more": true,
+          "total": 4,
+          "next_cursor": "294ae2953368d3cf4b089683"
+        },
+        {
+          "label": "second-page",
+          "before": "",
+          "before_step": 0,
+          "limit": 3,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "b0424d6e788b68188c583838",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "user",
+              "text": "turn 0"
+            }
+          ],
+          "has_more": false,
+          "total": 4
+        },
+        {
+          "label": "after-append",
+          "append_jsonl_lines": [
+            "{\"message\":{\"content\":[{\"text\":\"appended\",\"type\":\"text\"}],\"role\":\"assistant\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"message\"}"
+          ],
+          "before": "",
+          "limit": 3,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "b5be8ee9f11b7db3f301ff17",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "user",
+              "text": "turn 2"
+            },
+            {
+              "id": "d376b1b009385ed8267c5a4b",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "assistant",
+              "text": "turn 3"
+            },
+            {
+              "id": "05e55184a8d454c72ae8ddae",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "assistant",
+              "text": "appended"
+            }
+          ],
+          "has_more": true,
+          "total": 5,
+          "next_cursor": "b5be8ee9f11b7db3f301ff17"
+        }
+      ]
+    }
+  ]
+}

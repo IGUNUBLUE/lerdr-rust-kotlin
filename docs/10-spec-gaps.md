@@ -4,6 +4,17 @@ Honest accounting of what the plan does **not** yet specify. Ordered by
 severity. Each item names the oracle in the Go repo to extract from —
 Phase 0 should burn this list down before any production code.
 
+**Status after the Phase-0 fixture+spec pass**: P0 items 1–4 now have
+specs in `docs/specs/` AND executable vectors in `fixtures/` (delta codec,
+sendbuffer, questions, lease). P0-5 resolved by decision (fresh store —
+spec written). Corrections surfaced by the pass: `pane_delta` carries
+`segments[]` (3-line anchors), not `ops[]`; sendbuffer overflow *rejects
+the incoming push* — "eviction" is client disconnect, never dropped
+queue entries; the replaceable set is exactly 8 types; `Interaction.Kind`
+has only two values (`single_select`, `multi_select`) — approval/chat
+live in the `Classify` layer; conversation pagination is tail-first;
+Claude continuation IDs are inode-dependent.
+
 ## P0 — blocks implementation if missing
 
 ### 1. `pane_delta` segment codec — byte-exact

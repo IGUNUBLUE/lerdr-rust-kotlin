@@ -1,0 +1,1143 @@
+{
+  "format_version": 1,
+  "suite": "pane.sendbuffer",
+  "source": {
+    "repo": "IGUNUBLUE/lerdr",
+    "commit": "d01ec329d2b0e87c536972ae0e49e19ea41c76fc",
+    "package": "internal/transport",
+    "generator": "sendbuffer_export_test.go"
+  },
+  "vectors": [
+    {
+      "name": "byte-cap-evicts-overflow",
+      "comment": "Push rejection at the byte ceiling: exact-fit still queues, the next byte does not.",
+      "capacity_bytes": 1024,
+      "capacity_items": 64,
+      "ops": [
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 300
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 300
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 300
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 300
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 124
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 40
+        }
+      ],
+      "expected": {
+        "evicted": [
+          {
+            "op_index": 3,
+            "msg_type": "pane_delta",
+            "reason": "byte_limit"
+          },
+          {
+            "op_index": 5,
+            "msg_type": "pane_delta",
+            "reason": "byte_limit"
+          }
+        ],
+        "pending_types": [
+          "pane_delta",
+          "pane_delta",
+          "pane_delta",
+          "pane_delta"
+        ],
+        "bytes": 1024
+      },
+      "op_results": [
+        "queued",
+        "queued",
+        "queued",
+        "rejected",
+        "queued",
+        "rejected"
+      ]
+    },
+    {
+      "name": "item-cap-evicts-65th",
+      "comment": "Production limits (64 messages / 4 MiB): the 65th small message is rejected even with bytes to spare.",
+      "capacity_bytes": 4194304,
+      "capacity_items": 64,
+      "ops": [
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        }
+      ],
+      "expected": {
+        "evicted": [
+          {
+            "op_index": 64,
+            "msg_type": "command_result",
+            "reason": "item_limit"
+          }
+        ],
+        "pending_types": [
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result",
+          "command_result"
+        ],
+        "bytes": 6144
+      },
+      "op_results": [
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "rejected"
+      ]
+    },
+    {
+      "name": "oversize-single-message",
+      "comment": "A single message larger than the 4 MiB budget is rejected outright; the buffer stays empty.",
+      "capacity_bytes": 4194304,
+      "capacity_items": 64,
+      "ops": [
+        {
+          "op": "push",
+          "msg_type": "pane_content",
+          "size": 4194305
+        }
+      ],
+      "expected": {
+        "evicted": [
+          {
+            "op_index": 0,
+            "msg_type": "pane_content",
+            "reason": "byte_limit"
+          }
+        ],
+        "pending_types": [],
+        "bytes": 0
+      },
+      "op_results": [
+        "rejected"
+      ]
+    },
+    {
+      "name": "coalesce-tail-only",
+      "comment": "Replaceable types merge only with an identical-type tail: a pane_delta between two pane_contents blocks coalescing.",
+      "capacity_bytes": 4096,
+      "capacity_items": 64,
+      "ops": [
+        {
+          "op": "push",
+          "msg_type": "pane_content",
+          "size": 200
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_content",
+          "size": 240
+        }
+      ],
+      "expected": {
+        "evicted": [],
+        "pending_types": [
+          "pane_content",
+          "pane_delta",
+          "pane_content"
+        ],
+        "bytes": 536
+      },
+      "op_results": [
+        "queued",
+        "queued",
+        "queued"
+      ]
+    },
+    {
+      "name": "coalesce-replaceable-family",
+      "comment": "pane_content/pane_unchanged/pane_resync coalesce against a same-type tail; bytes track the newest payload.",
+      "capacity_bytes": 4096,
+      "capacity_items": 64,
+      "ops": [
+        {
+          "op": "push",
+          "msg_type": "pane_content",
+          "size": 200
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_content",
+          "size": 320
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_unchanged",
+          "size": 128
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_unchanged",
+          "size": 160
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_resync",
+          "size": 144
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_resync",
+          "size": 152
+        }
+      ],
+      "expected": {
+        "evicted": [],
+        "pending_types": [
+          "pane_content",
+          "pane_unchanged",
+          "pane_resync"
+        ],
+        "bytes": 632
+      },
+      "op_results": [
+        "queued",
+        "coalesced",
+        "queued",
+        "coalesced",
+        "queued",
+        "coalesced"
+      ]
+    },
+    {
+      "name": "coalesce-respects-byte-cap",
+      "comment": "A coalescing push whose merged size exceeds the byte cap is rejected rather than queued.",
+      "capacity_bytes": 500,
+      "capacity_items": 64,
+      "ops": [
+        {
+          "op": "push",
+          "msg_type": "pane_content",
+          "size": 300
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_content",
+          "size": 600
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_content",
+          "size": 400
+        }
+      ],
+      "expected": {
+        "evicted": [
+          {
+            "op_index": 1,
+            "msg_type": "pane_content",
+            "reason": "coalesce_byte_limit"
+          }
+        ],
+        "pending_types": [
+          "pane_content"
+        ],
+        "bytes": 400
+      },
+      "op_results": [
+        "queued",
+        "rejected",
+        "coalesced"
+      ]
+    },
+    {
+      "name": "non-replaceable-never-merge",
+      "comment": "pane_delta, receipts, results, and agent_update always enqueue separately.",
+      "capacity_bytes": 8192,
+      "capacity_items": 64,
+      "ops": [
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 128
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 128
+        },
+        {
+          "op": "push",
+          "msg_type": "action_receipt",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "agent_update",
+          "size": 128
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 128
+        }
+      ],
+      "expected": {
+        "evicted": [],
+        "pending_types": [
+          "pane_delta",
+          "pane_delta",
+          "action_receipt",
+          "command_result",
+          "agent_update",
+          "pane_delta"
+        ],
+        "bytes": 704
+      },
+      "op_results": [
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued"
+      ]
+    },
+    {
+      "name": "drain-fifo-then-empty",
+      "comment": "FIFO drain order is preserved; draining past the end and popping an empty buffer are no-ops.",
+      "capacity_bytes": 8192,
+      "capacity_items": 64,
+      "ops": [
+        {
+          "op": "push",
+          "msg_type": "pane_content",
+          "size": 160
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "error",
+          "size": 64
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_content",
+          "size": 224
+        },
+        {
+          "op": "push",
+          "msg_type": "command_result",
+          "size": 96
+        },
+        {
+          "op": "drain",
+          "count": 2
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_resync",
+          "size": 192
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 96
+        },
+        {
+          "op": "drain",
+          "count": 10
+        },
+        {
+          "op": "pop"
+        }
+      ],
+      "expected": {
+        "evicted": [],
+        "pending_types": [],
+        "bytes": 0
+      },
+      "op_results": [
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        [
+          "pane_content",
+          "pane_delta"
+        ],
+        "queued",
+        "queued",
+        [
+          "error",
+          "pane_content",
+          "command_result",
+          "pane_resync",
+          "pane_delta"
+        ],
+        null
+      ]
+    },
+    {
+      "name": "drain-frees-byte-budget",
+      "comment": "A rejected push becomes admissible once a drain releases bytes.",
+      "capacity_bytes": 600,
+      "capacity_items": 64,
+      "ops": [
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 300
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 300
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 100
+        },
+        {
+          "op": "drain",
+          "count": 1
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 250
+        }
+      ],
+      "expected": {
+        "evicted": [
+          {
+            "op_index": 2,
+            "msg_type": "pane_delta",
+            "reason": "byte_limit"
+          }
+        ],
+        "pending_types": [
+          "pane_delta",
+          "pane_delta"
+        ],
+        "bytes": 550
+      },
+      "op_results": [
+        "queued",
+        "queued",
+        "rejected",
+        [
+          "pane_delta"
+        ],
+        "queued"
+      ]
+    },
+    {
+      "name": "replaceable-set-membership",
+      "comment": "agents/inventory_status/update_status/app_deploy_status/herdr_status share the replaceable set; agent_update does not.",
+      "capacity_bytes": 8192,
+      "capacity_items": 64,
+      "ops": [
+        {
+          "op": "push",
+          "msg_type": "agents",
+          "size": 200
+        },
+        {
+          "op": "push",
+          "msg_type": "agents",
+          "size": 240
+        },
+        {
+          "op": "push",
+          "msg_type": "agent_update",
+          "size": 128
+        },
+        {
+          "op": "push",
+          "msg_type": "agent_update",
+          "size": 144
+        },
+        {
+          "op": "push",
+          "msg_type": "inventory_status",
+          "size": 112
+        },
+        {
+          "op": "push",
+          "msg_type": "inventory_status",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "update_status",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "app_deploy_status",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "herdr_status",
+          "size": 96
+        },
+        {
+          "op": "push",
+          "msg_type": "update_status",
+          "size": 104
+        }
+      ],
+      "expected": {
+        "evicted": [],
+        "pending_types": [
+          "agents",
+          "agent_update",
+          "agent_update",
+          "inventory_status",
+          "update_status",
+          "app_deploy_status",
+          "herdr_status",
+          "update_status"
+        ],
+        "bytes": 1000
+      },
+      "op_results": [
+        "queued",
+        "coalesced",
+        "queued",
+        "queued",
+        "queued",
+        "coalesced",
+        "queued",
+        "queued",
+        "queued",
+        "queued"
+      ]
+    },
+    {
+      "name": "production-cap-fill",
+      "comment": "Real ceiling: sixteen 256 KiB pane_deltas exactly fill 4 MiB; the next push evicts.",
+      "capacity_bytes": 4194304,
+      "capacity_items": 64,
+      "ops": [
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 262144
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 262144
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 262144
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 262144
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 262144
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 262144
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 262144
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 262144
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 262144
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 262144
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 262144
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 262144
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 262144
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 262144
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 262144
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 262144
+        },
+        {
+          "op": "push",
+          "msg_type": "pane_delta",
+          "size": 262144
+        },
+        {
+          "op": "push",
+          "msg_type": "error",
+          "size": 64
+        }
+      ],
+      "expected": {
+        "evicted": [
+          {
+            "op_index": 16,
+            "msg_type": "pane_delta",
+            "reason": "byte_limit"
+          },
+          {
+            "op_index": 17,
+            "msg_type": "error",
+            "reason": "byte_limit"
+          }
+        ],
+        "pending_types": [
+          "pane_delta",
+          "pane_delta",
+          "pane_delta",
+          "pane_delta",
+          "pane_delta",
+          "pane_delta",
+          "pane_delta",
+          "pane_delta",
+          "pane_delta",
+          "pane_delta",
+          "pane_delta",
+          "pane_delta",
+          "pane_delta",
+          "pane_delta",
+          "pane_delta",
+          "pane_delta"
+        ],
+        "bytes": 4194304
+      },
+      "op_results": [
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "queued",
+        "rejected",
+        "rejected"
+      ]
+    }
+  ]
+}

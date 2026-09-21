@@ -1,0 +1,419 @@
+{
+  "format_version": 1,
+  "suite": "conversation.page.claude",
+  "source": {
+    "repo": "IGUNUBLUE/lerdr",
+    "commit": "d01ec329d2b0e87c536972ae0e49e19ea41c76fc",
+    "package": "internal/conversation",
+    "generator": "page_export_test.go"
+  },
+  "notes": [
+    "entry.id is sha256(raw jsonl line)[:24] for JSONL readers, the message id for opencode, the sqlite rowid for hermes; duplicate identical lines gain a '-N' suffix",
+    "claude continuation-segment entries carry namespaced:true with the raw suffix; the wire id is sha256(sessionID+\"\\x00\"+fileRevision)[:12]+\"-\"+id, and fileRevision is inode-dependent",
+    "next_cursor is the first entry id of the page (the 'before' argument that returns the next-older page); namespaced cursors are flagged",
+    "steps with append_jsonl_lines/append_sql_statements model live tail: content is appended before the step's read",
+    "total is the full visible entry count; truncated marks clamped payloads; source_corrupt marks skipped corrupt rows"
+  ],
+  "vectors": [
+    {
+      "name": "basic-conversation",
+      "comment": "user text, assistant text+tool_use, user-side tool_result, and every filtered record kind",
+      "agent": "claude",
+      "cwd": "/work",
+      "session_id": "123e4567-e89b-12d3-a456-426614174000",
+      "files": [
+        {
+          "path": ".claude/projects/-work/123e4567-e89b-12d3-a456-426614174000.jsonl",
+          "jsonl_lines": [
+            "{\"message\":{\"content\":\"check the relay build\",\"role\":\"user\"},\"timestamp\":\"2026-08-12T10:00:01Z\",\"type\":\"user\",\"uuid\":\"u1\"}",
+            "{\"isMeta\":true,\"message\":{\"content\":\"meta row\"},\"type\":\"user\",\"uuid\":\"u2\"}",
+            "{\"message\":{\"content\":\"\\u003csystem-reminder\\u003ehidden state\\u003c/system-reminder\\u003e\"},\"type\":\"user\",\"uuid\":\"u3\"}",
+            "{\"message\":{\"content\":[{\"text\":\"Running the build now.\",\"type\":\"text\"},{\"id\":\"toolu_01\",\"input\":{\"command\":\"go build ./...\"},\"name\":\"Bash\",\"type\":\"tool_use\"}],\"role\":\"assistant\"},\"timestamp\":\"2026-08-12T10:00:01Z\",\"type\":\"assistant\",\"uuid\":\"a1\"}",
+            "{\"message\":{\"content\":[{\"content\":\"build ok\",\"tool_use_id\":\"toolu_01\",\"type\":\"tool_result\"}]},\"type\":\"user\",\"uuid\":\"u4\"}",
+            "{\"isSidechain\":true,\"message\":{\"content\":[{\"text\":\"subagent reply\",\"type\":\"text\"}]},\"type\":\"assistant\",\"uuid\":\"a2\"}",
+            "{\"message\":{\"content\":[{\"text\":\"Build passed.\",\"type\":\"text\"}],\"role\":\"assistant\"},\"timestamp\":\"2026-08-12T10:00:03Z\",\"type\":\"assistant\",\"uuid\":\"a3\"}",
+            "{\"operation\":\"enqueue\",\"type\":\"queue-operation\"}",
+            "{\"snapshot\":{},\"type\":\"file-history-snapshot\"}",
+            "{\"data\":\"working\",\"type\":\"progress\"}",
+            "{\"isError\":true,\"message\":{\"content\":\"error row\"},\"type\":\"user\",\"uuid\":\"u5\"}",
+            "{\"message\":{\"content\":\"\\u003ccommand-name\\u003e/clear\\u003c/command-name\\u003e\\u003ccommand-args\\u003e\\u003c/command-args\\u003e\"},\"type\":\"user\",\"uuid\":\"u6\"}",
+            "this line is not json",
+            ""
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "label": "all",
+          "before": "",
+          "limit": 80,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "6f1edafc932d396d8cf61fe5",
+              "timestamp": "2026-08-12T10:00:01Z",
+              "role": "user",
+              "text": "check the relay build"
+            },
+            {
+              "id": "0dc41284bb6e44eb9ad78b98",
+              "role": "user",
+              "text": "meta row"
+            },
+            {
+              "id": "9cd7269ea7f81860e719724a",
+              "timestamp": "2026-08-12T10:00:01Z",
+              "role": "assistant",
+              "text": "Running the build now.",
+              "tools": [
+                {
+                  "id": "toolu_01",
+                  "name": "Bash",
+                  "input": "{\"command\":\"go build ./...\"}",
+                  "output": "build ok"
+                }
+              ]
+            },
+            {
+              "id": "decb96ed44f9c050e41abae2",
+              "timestamp": "2026-08-12T10:00:03Z",
+              "role": "assistant",
+              "text": "Build passed."
+            },
+            {
+              "id": "ba3f7b323d1250a8e12b9de7",
+              "role": "user",
+              "text": "error row"
+            },
+            {
+              "id": "f0f4454979ebd9dca0e55fb8",
+              "role": "user",
+              "text": "/clear"
+            }
+          ],
+          "has_more": false,
+          "total": 6
+        }
+      ]
+    },
+    {
+      "name": "pagination",
+      "comment": "nine turns paged three at a time; before is an entry id",
+      "agent": "claude",
+      "cwd": "/work",
+      "session_id": "123e4567-e89b-12d3-a456-426614174000",
+      "files": [
+        {
+          "path": ".claude/projects/-work/123e4567-e89b-12d3-a456-426614174000.jsonl",
+          "jsonl_lines": [
+            "{\"message\":{\"content\":\"turn 0\",\"role\":\"user\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"user\",\"uuid\":\"r0\"}",
+            "{\"message\":{\"content\":\"turn 1\",\"role\":\"assistant\"},\"timestamp\":\"2026-08-12T10:00:01Z\",\"type\":\"assistant\",\"uuid\":\"r1\"}",
+            "{\"message\":{\"content\":\"turn 2\",\"role\":\"user\"},\"timestamp\":\"2026-08-12T10:00:02Z\",\"type\":\"user\",\"uuid\":\"r2\"}",
+            "{\"message\":{\"content\":\"turn 3\",\"role\":\"assistant\"},\"timestamp\":\"2026-08-12T10:00:03Z\",\"type\":\"assistant\",\"uuid\":\"r3\"}",
+            "{\"message\":{\"content\":\"turn 4\",\"role\":\"user\"},\"timestamp\":\"2026-08-12T10:00:04Z\",\"type\":\"user\",\"uuid\":\"r4\"}",
+            "{\"message\":{\"content\":\"turn 5\",\"role\":\"assistant\"},\"timestamp\":\"2026-08-12T10:00:05Z\",\"type\":\"assistant\",\"uuid\":\"r5\"}",
+            "{\"message\":{\"content\":\"turn 6\",\"role\":\"user\"},\"timestamp\":\"2026-08-12T10:00:06Z\",\"type\":\"user\",\"uuid\":\"r6\"}",
+            "{\"message\":{\"content\":\"turn 7\",\"role\":\"assistant\"},\"timestamp\":\"2026-08-12T10:00:07Z\",\"type\":\"assistant\",\"uuid\":\"r7\"}",
+            "{\"message\":{\"content\":\"turn 8\",\"role\":\"user\"},\"timestamp\":\"2026-08-12T10:00:08Z\",\"type\":\"user\",\"uuid\":\"r8\"}"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "label": "first-page",
+          "before": "",
+          "limit": 3,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "ac85a8918fff80b791095918",
+              "timestamp": "2026-08-12T10:00:06Z",
+              "role": "user",
+              "text": "turn 6"
+            },
+            {
+              "id": "fcabe96c92a7ea5a1763e293",
+              "timestamp": "2026-08-12T10:00:07Z",
+              "role": "assistant",
+              "text": "turn 7"
+            },
+            {
+              "id": "2730c5ff5f0d95cb4f5d56c1",
+              "timestamp": "2026-08-12T10:00:08Z",
+              "role": "user",
+              "text": "turn 8"
+            }
+          ],
+          "has_more": true,
+          "total": 9,
+          "next_cursor": "ac85a8918fff80b791095918"
+        },
+        {
+          "label": "second-page",
+          "before": "",
+          "before_step": 0,
+          "limit": 3,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "8c64ab4d80cf5a1d598c2c34",
+              "timestamp": "2026-08-12T10:00:03Z",
+              "role": "assistant",
+              "text": "turn 3"
+            },
+            {
+              "id": "a663bb531b8b475a76531882",
+              "timestamp": "2026-08-12T10:00:04Z",
+              "role": "user",
+              "text": "turn 4"
+            },
+            {
+              "id": "65426edda182b38d4757ede5",
+              "timestamp": "2026-08-12T10:00:05Z",
+              "role": "assistant",
+              "text": "turn 5"
+            }
+          ],
+          "has_more": true,
+          "total": 9,
+          "next_cursor": "8c64ab4d80cf5a1d598c2c34"
+        },
+        {
+          "label": "last-page",
+          "before": "",
+          "before_step": 1,
+          "limit": 3,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "d286636eb17f160567cd80b7",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "user",
+              "text": "turn 0"
+            },
+            {
+              "id": "15d0227968b0b103ba716f3d",
+              "timestamp": "2026-08-12T10:00:01Z",
+              "role": "assistant",
+              "text": "turn 1"
+            },
+            {
+              "id": "975720687d43ca6b01f26842",
+              "timestamp": "2026-08-12T10:00:02Z",
+              "role": "user",
+              "text": "turn 2"
+            }
+          ],
+          "has_more": false,
+          "total": 9
+        }
+      ]
+    },
+    {
+      "name": "live-tail-append",
+      "comment": "appending lines after the first read grows the latest page; existing ids are stable",
+      "agent": "claude",
+      "cwd": "/work",
+      "session_id": "123e4567-e89b-12d3-a456-426614174000",
+      "files": [
+        {
+          "path": ".claude/projects/-work/123e4567-e89b-12d3-a456-426614174000.jsonl",
+          "jsonl_lines": [
+            "{\"message\":{\"content\":\"first question\",\"role\":\"user\"},\"timestamp\":\"2026-08-12T10:00:01Z\",\"type\":\"user\",\"uuid\":\"u1\"}",
+            "{\"message\":{\"content\":\"first answer\",\"role\":\"assistant\"},\"timestamp\":\"2026-08-12T10:00:01Z\",\"type\":\"assistant\",\"uuid\":\"a1\"}"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "label": "initial",
+          "before": "",
+          "limit": 4,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "d1b87d7538ad1c5f3a604bff",
+              "timestamp": "2026-08-12T10:00:01Z",
+              "role": "user",
+              "text": "first question"
+            },
+            {
+              "id": "f30b3a858e804bd2f205a74f",
+              "timestamp": "2026-08-12T10:00:01Z",
+              "role": "assistant",
+              "text": "first answer"
+            }
+          ],
+          "has_more": false,
+          "total": 2
+        },
+        {
+          "label": "after-append",
+          "append_jsonl_lines": [
+            "{\"message\":{\"content\":\"follow up\",\"role\":\"user\"},\"timestamp\":\"2026-08-12T10:00:02Z\",\"type\":\"user\",\"uuid\":\"u2\"}",
+            "{\"message\":{\"content\":\"second answer\",\"role\":\"assistant\"},\"timestamp\":\"2026-08-12T10:00:02Z\",\"type\":\"assistant\",\"uuid\":\"a2\"}"
+          ],
+          "before": "",
+          "limit": 4,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "d1b87d7538ad1c5f3a604bff",
+              "timestamp": "2026-08-12T10:00:01Z",
+              "role": "user",
+              "text": "first question"
+            },
+            {
+              "id": "f30b3a858e804bd2f205a74f",
+              "timestamp": "2026-08-12T10:00:01Z",
+              "role": "assistant",
+              "text": "first answer"
+            },
+            {
+              "id": "839870dc240d9f2939042576",
+              "timestamp": "2026-08-12T10:00:02Z",
+              "role": "user",
+              "text": "follow up"
+            },
+            {
+              "id": "33eb33a64e1e3139de4d786a",
+              "timestamp": "2026-08-12T10:00:02Z",
+              "role": "assistant",
+              "text": "second answer"
+            }
+          ],
+          "has_more": false,
+          "total": 4
+        }
+      ]
+    },
+    {
+      "name": "continued-in-chain",
+      "comment": "anchor file ends with a continued-in link; child-segment entries are namespaced (inode-derived prefix)",
+      "agent": "claude",
+      "cwd": "/work",
+      "session_id": "123e4567-e89b-12d3-a456-426614174000",
+      "files": [
+        {
+          "path": ".claude/projects/-work/123e4567-e89b-12d3-a456-426614174000.jsonl",
+          "jsonl_lines": [
+            "{\"message\":{\"content\":\"older question\",\"role\":\"user\"},\"timestamp\":\"2026-08-12T10:00:01Z\",\"type\":\"user\",\"uuid\":\"u1\"}",
+            "{\"message\":{\"content\":\"older answer\",\"role\":\"assistant\"},\"timestamp\":\"2026-08-12T10:00:01Z\",\"type\":\"assistant\",\"uuid\":\"a1\"}",
+            "{\"continuedInSessionId\":\"123e4567-e89b-12d3-a456-426614174001\",\"sessionId\":\"123e4567-e89b-12d3-a456-426614174000\",\"type\":\"continued-in\"}"
+          ]
+        },
+        {
+          "path": ".claude/projects/-work/123e4567-e89b-12d3-a456-426614174001.jsonl",
+          "jsonl_lines": [
+            "{\"message\":{\"content\":\"continued question\",\"role\":\"user\"},\"timestamp\":\"2026-08-12T10:00:01Z\",\"type\":\"user\",\"uuid\":\"u1\"}",
+            "{\"message\":{\"content\":\"continued answer\",\"role\":\"assistant\"},\"timestamp\":\"2026-08-12T10:00:01Z\",\"type\":\"assistant\",\"uuid\":\"a1\"}"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "label": "all",
+          "before": "",
+          "limit": 80,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "3ea49f483a0b79e2fbb383e0",
+              "timestamp": "2026-08-12T10:00:01Z",
+              "role": "user",
+              "text": "older question"
+            },
+            {
+              "id": "ee75a3ec68fcc70a53845a5d",
+              "timestamp": "2026-08-12T10:00:01Z",
+              "role": "assistant",
+              "text": "older answer"
+            },
+            {
+              "id": "dd04494bc407cf0831bd75a6",
+              "namespaced": true,
+              "timestamp": "2026-08-12T10:00:01Z",
+              "role": "user",
+              "text": "continued question"
+            },
+            {
+              "id": "550583e712e5d1616cc22ba5",
+              "namespaced": true,
+              "timestamp": "2026-08-12T10:00:01Z",
+              "role": "assistant",
+              "text": "continued answer"
+            }
+          ],
+          "has_more": false,
+          "total": 4
+        }
+      ]
+    },
+    {
+      "name": "duplicate-lines",
+      "comment": "byte-identical records get '-N' id suffixes",
+      "agent": "claude",
+      "cwd": "/work",
+      "session_id": "123e4567-e89b-12d3-a456-426614174000",
+      "files": [
+        {
+          "path": ".claude/projects/-work/123e4567-e89b-12d3-a456-426614174000.jsonl",
+          "jsonl_lines": [
+            "{\"message\":{\"content\":\"identical output\",\"role\":\"assistant\"},\"timestamp\":\"2026-08-12T10:00:01Z\",\"type\":\"assistant\",\"uuid\":\"a1\"}",
+            "{\"message\":{\"content\":\"identical output\",\"role\":\"assistant\"},\"timestamp\":\"2026-08-12T10:00:01Z\",\"type\":\"assistant\",\"uuid\":\"a1\"}"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "label": "all",
+          "before": "",
+          "limit": 80,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "80a9b2347e3cd7b70de1a405",
+              "timestamp": "2026-08-12T10:00:01Z",
+              "role": "assistant",
+              "text": "identical output"
+            },
+            {
+              "id": "80a9b2347e3cd7b70de1a405-1",
+              "timestamp": "2026-08-12T10:00:01Z",
+              "role": "assistant",
+              "text": "identical output"
+            }
+          ],
+          "has_more": false,
+          "total": 2
+        }
+      ]
+    },
+    {
+      "name": "empty-transcript",
+      "comment": "a file with no visible records still reports an available empty page",
+      "agent": "claude",
+      "cwd": "/work",
+      "session_id": "123e4567-e89b-12d3-a456-426614174000",
+      "files": [
+        {
+          "path": ".claude/projects/-work/123e4567-e89b-12d3-a456-426614174000.jsonl",
+          "jsonl_lines": [
+            "{\"data\":\"boot\",\"type\":\"progress\"}"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "label": "all",
+          "before": "",
+          "limit": 80,
+          "available": true,
+          "expected_entries": [],
+          "has_more": false,
+          "total": 0
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,244 @@
+{
+  "format_version": 1,
+  "suite": "conversation.page.omo",
+  "source": {
+    "repo": "IGUNUBLUE/lerdr",
+    "commit": "d01ec329d2b0e87c536972ae0e49e19ea41c76fc",
+    "package": "internal/conversation",
+    "generator": "page_export_test.go"
+  },
+  "notes": [
+    "entry.id is sha256(raw jsonl line)[:24] for JSONL readers, the message id for opencode, the sqlite rowid for hermes; duplicate identical lines gain a '-N' suffix",
+    "claude continuation-segment entries carry namespaced:true with the raw suffix; the wire id is sha256(sessionID+\"\\x00\"+fileRevision)[:12]+\"-\"+id, and fileRevision is inode-dependent",
+    "next_cursor is the first entry id of the page (the 'before' argument that returns the next-older page); namespaced cursors are flagged",
+    "steps with append_jsonl_lines/append_sql_statements model live tail: content is appended before the step's read",
+    "total is the full visible entry count; truncated marks clamped payloads; source_corrupt marks skipped corrupt rows"
+  ],
+  "vectors": [
+    {
+      "name": "basic-conversation",
+      "comment": "session identity record plus pi-grammar messages and a senpi.todo-state plan",
+      "agent": "omo",
+      "cwd": "/work",
+      "session_id": "623e4567e89b12d3a456426614174000",
+      "files": [
+        {
+          "path": ".omo/agent/sessions/--work--/2026-08-12T10-00-00-000Z_623e4567e89b12d3a456426614174000.jsonl",
+          "jsonl_lines": [
+            "{\"cwd\":\"/work\",\"id\":\"623e4567e89b12d3a456426614174000\",\"type\":\"session\"}",
+            "{\"message\":{\"content\":[{\"text\":\"plan the rollout\",\"type\":\"text\"}],\"role\":\"user\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"message\"}",
+            "{\"message\":{\"content\":[{\"text\":\"Drafting phases.\",\"type\":\"text\"}],\"role\":\"assistant\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"message\"}",
+            "{\"customType\":\"senpi.todo-state\",\"data\":{\"phases\":[{\"name\":\"Phase 1\",\"tasks\":[{\"content\":\"write tests\",\"id\":\"t1\",\"status\":\"completed\"},{\"content\":\"wire relay\",\"id\":\"t2\",\"status\":\"in_progress\"}]}],\"schema\":\"v2\"},\"timestamp\":\"2026-08-12T10:00:02Z\",\"type\":\"custom\"}",
+            "{\"message\":{\"content\":[{\"text\":\"Two tasks tracked.\",\"type\":\"text\"}],\"role\":\"assistant\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"message\"}",
+            ""
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "label": "all",
+          "before": "",
+          "limit": 80,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "2981a215419c8bc8de4d3c04",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "user",
+              "text": "plan the rollout"
+            },
+            {
+              "id": "a739376e2c7737bee0fbdecb",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "assistant",
+              "text": "Drafting phases."
+            },
+            {
+              "id": "92a00fa12394554225fd2bc1",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "assistant",
+              "text": "Two tasks tracked."
+            }
+          ],
+          "has_more": false,
+          "total": 3,
+          "omo_plan": {
+            "available": true,
+            "session_id": "623e4567e89b12d3a456426614174000",
+            "version": 2,
+            "updated_at": "2026-08-12T10:00:02Z",
+            "phases": [
+              {
+                "name": "Phase 1",
+                "tasks": [
+                  {
+                    "id": "t1",
+                    "content": "write tests",
+                    "status": "completed"
+                  },
+                  {
+                    "id": "t2",
+                    "content": "wire relay",
+                    "status": "in_progress"
+                  }
+                ]
+              }
+            ],
+            "truncated": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "pagination",
+      "agent": "omo",
+      "cwd": "/work",
+      "session_id": "623e4567e89b12d3a456426614174000",
+      "files": [
+        {
+          "path": ".omo/agent/sessions/--work--/2026-08-12T10-00-00-000Z_623e4567e89b12d3a456426614174000.jsonl",
+          "jsonl_lines": [
+            "{\"cwd\":\"/work\",\"id\":\"623e4567e89b12d3a456426614174000\",\"type\":\"session\"}",
+            "{\"message\":{\"content\":[{\"text\":\"turn 0\",\"type\":\"text\"}],\"role\":\"user\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"message\"}",
+            "{\"message\":{\"content\":[{\"text\":\"turn 1\",\"type\":\"text\"}],\"role\":\"assistant\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"message\"}",
+            "{\"message\":{\"content\":[{\"text\":\"turn 2\",\"type\":\"text\"}],\"role\":\"user\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"message\"}",
+            "{\"message\":{\"content\":[{\"text\":\"turn 3\",\"type\":\"text\"}],\"role\":\"assistant\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"message\"}",
+            "{\"message\":{\"content\":[{\"text\":\"turn 4\",\"type\":\"text\"}],\"role\":\"user\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"message\"}"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "label": "first-page",
+          "before": "",
+          "limit": 2,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "d376b1b009385ed8267c5a4b",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "assistant",
+              "text": "turn 3"
+            },
+            {
+              "id": "d7ec69efa106d66269bdd506",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "user",
+              "text": "turn 4"
+            }
+          ],
+          "has_more": true,
+          "total": 5,
+          "next_cursor": "d376b1b009385ed8267c5a4b",
+          "omo_plan": {
+            "available": true,
+            "session_id": "623e4567e89b12d3a456426614174000",
+            "phases": [],
+            "truncated": false
+          }
+        },
+        {
+          "label": "second-page",
+          "before": "",
+          "before_step": 0,
+          "limit": 2,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "294ae2953368d3cf4b089683",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "assistant",
+              "text": "turn 1"
+            },
+            {
+              "id": "b5be8ee9f11b7db3f301ff17",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "user",
+              "text": "turn 2"
+            }
+          ],
+          "has_more": true,
+          "total": 5,
+          "next_cursor": "294ae2953368d3cf4b089683",
+          "omo_plan": {
+            "available": true,
+            "session_id": "623e4567e89b12d3a456426614174000",
+            "phases": [],
+            "truncated": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "corrupt-todo-state",
+      "comment": "an invalid senpi.todo-state row flips source_corrupt but entries still read",
+      "agent": "omo",
+      "cwd": "/work",
+      "session_id": "623e4567e89b12d3a456426614174000",
+      "files": [
+        {
+          "path": ".omo/agent/sessions/--work--/2026-08-12T10-00-00-000Z_623e4567e89b12d3a456426614174000.jsonl",
+          "jsonl_lines": [
+            "{\"cwd\":\"/work\",\"id\":\"623e4567e89b12d3a456426614174000\",\"type\":\"session\"}",
+            "{\"message\":{\"content\":[{\"text\":\"hello\",\"type\":\"text\"}],\"role\":\"user\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"message\"}",
+            "{\"customType\":\"senpi.todo-state\",\"data\":{\"schema\":\"v1\"},\"timestamp\":\"2026-08-12T10:00:02Z\",\"type\":\"custom\"}"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "label": "all",
+          "before": "",
+          "limit": 80,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "b37911a89d172b2a059fd3f4",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "user",
+              "text": "hello"
+            }
+          ],
+          "has_more": false,
+          "total": 1,
+          "source_corrupt": true,
+          "omo_plan": {
+            "available": true,
+            "reason_code": "source_corrupt",
+            "session_id": "623e4567e89b12d3a456426614174000",
+            "phases": [],
+            "truncated": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "identity-mismatch",
+      "comment": "file name matches but the embedded session id does not: invalid_session",
+      "agent": "omo",
+      "cwd": "/work",
+      "session_id": "623e4567e89b12d3a456426614174000",
+      "files": [
+        {
+          "path": ".omo/agent/sessions/--work--/2026-08-12T10-00-00-000Z_623e4567e89b12d3a456426614174000.jsonl",
+          "jsonl_lines": [
+            "{\"cwd\":\"/work\",\"id\":\"999e4567e89b12d3a456426614174999\",\"type\":\"session\"}",
+            "{\"message\":{\"content\":[{\"text\":\"hello\",\"type\":\"text\"}],\"role\":\"user\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"message\"}"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "label": "all",
+          "before": "",
+          "limit": 80,
+          "available": false,
+          "reason_code": "invalid_session",
+          "expected_entries": [],
+          "has_more": false,
+          "total": 0
+        }
+      ]
+    }
+  ]
+}

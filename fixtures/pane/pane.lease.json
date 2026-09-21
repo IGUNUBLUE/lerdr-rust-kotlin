@@ -1,0 +1,714 @@
+{
+  "format_version": 1,
+  "suite": "pane.lease",
+  "source": {
+    "repo": "IGUNUBLUE/lerdr",
+    "commit": "d01ec329d2b0e87c536972ae0e49e19ea41c76fc",
+    "package": "internal/panesize",
+    "generator": "manager_export_test.go"
+  },
+  "vectors": [
+    {
+      "name": "width-only-lease",
+      "comment": "rows=0 leases width only: the pane keeps its baseline height and stty is never sent a rows argument",
+      "initial_size": {
+        "cols": 120,
+        "rows": 40
+      },
+      "ops": [
+        {
+          "op": "lease",
+          "client": "client-a",
+          "cols": 80,
+          "rows": 0
+        }
+      ],
+      "expected_effective": {
+        "cols": 80,
+        "rows": 40
+      },
+      "expected_holders": [
+        "client-a"
+      ]
+    },
+    {
+      "name": "full-lease",
+      "comment": "a rows>0 lease constrains both dimensions",
+      "initial_size": {
+        "cols": 120,
+        "rows": 40
+      },
+      "ops": [
+        {
+          "op": "lease",
+          "client": "client-a",
+          "cols": 100,
+          "rows": 30
+        }
+      ],
+      "expected_effective": {
+        "cols": 100,
+        "rows": 30
+      },
+      "expected_holders": [
+        "client-a"
+      ]
+    },
+    {
+      "name": "two-clients-minimum",
+      "comment": "effective width is the minimum across live leases",
+      "initial_size": {
+        "cols": 160,
+        "rows": 42
+      },
+      "ops": [
+        {
+          "op": "lease",
+          "client": "client-a",
+          "cols": 110,
+          "rows": 0
+        },
+        {
+          "op": "lease",
+          "client": "client-b",
+          "cols": 76,
+          "rows": 0
+        }
+      ],
+      "expected_effective": {
+        "cols": 76,
+        "rows": 42
+      },
+      "expected_holders": [
+        "client-a",
+        "client-b"
+      ]
+    },
+    {
+      "name": "release-keeps-width-in-grace",
+      "comment": "Release lapses the lease at now+ReleaseGrace instead of deleting it: still held, still applied",
+      "initial_size": {
+        "cols": 160,
+        "rows": 42
+      },
+      "ops": [
+        {
+          "op": "lease",
+          "client": "client-a",
+          "cols": 110,
+          "rows": 0
+        },
+        {
+          "op": "lease",
+          "client": "client-b",
+          "cols": 76,
+          "rows": 0
+        },
+        {
+          "op": "release",
+          "client": "client-b"
+        }
+      ],
+      "expected_effective": {
+        "cols": 76,
+        "rows": 42
+      },
+      "expected_holders": [
+        "client-a",
+        "client-b"
+      ]
+    },
+    {
+      "name": "release-grace-boundary-inside",
+      "comment": "one second short of the grace window the released lease is still live",
+      "initial_size": {
+        "cols": 160,
+        "rows": 42
+      },
+      "ops": [
+        {
+          "op": "lease",
+          "client": "client-a",
+          "cols": 110,
+          "rows": 0
+        },
+        {
+          "op": "lease",
+          "client": "client-b",
+          "cols": 76,
+          "rows": 0
+        },
+        {
+          "op": "release",
+          "client": "client-b"
+        },
+        {
+          "op": "advance_seconds",
+          "n": 9
+        }
+      ],
+      "expected_effective": {
+        "cols": 76,
+        "rows": 42
+      },
+      "expected_holders": [
+        "client-a",
+        "client-b"
+      ]
+    },
+    {
+      "name": "release-grace-elapsed",
+      "comment": "at exactly ReleaseGrace the lapsed lease expires and the survivor's width is applied",
+      "initial_size": {
+        "cols": 160,
+        "rows": 42
+      },
+      "ops": [
+        {
+          "op": "lease",
+          "client": "client-a",
+          "cols": 110,
+          "rows": 0
+        },
+        {
+          "op": "lease",
+          "client": "client-b",
+          "cols": 76,
+          "rows": 0
+        },
+        {
+          "op": "release",
+          "client": "client-b"
+        },
+        {
+          "op": "advance_seconds",
+          "n": 10
+        }
+      ],
+      "expected_effective": {
+        "cols": 110,
+        "rows": 42
+      },
+      "expected_holders": [
+        "client-a"
+      ]
+    },
+    {
+      "name": "release-grace-reacquire",
+      "comment": "re-leasing the same width inside the grace window resizes nothing",
+      "initial_size": {
+        "cols": 180,
+        "rows": 44
+      },
+      "ops": [
+        {
+          "op": "lease",
+          "client": "client-a",
+          "cols": 84,
+          "rows": 0
+        },
+        {
+          "op": "release",
+          "client": "client-a"
+        },
+        {
+          "op": "advance_seconds",
+          "n": 5
+        },
+        {
+          "op": "lease",
+          "client": "client-a",
+          "cols": 84,
+          "rows": 0
+        }
+      ],
+      "expected_effective": {
+        "cols": 84,
+        "rows": 44
+      },
+      "expected_holders": [
+        "client-a"
+      ]
+    },
+    {
+      "name": "release-expire-restores-baseline",
+      "comment": "last lease gone: pane restores to baseline and the manager drops all state",
+      "initial_size": {
+        "cols": 190,
+        "rows": 48
+      },
+      "ops": [
+        {
+          "op": "lease",
+          "client": "client-a",
+          "cols": 90,
+          "rows": 0
+        },
+        {
+          "op": "release",
+          "client": "client-a"
+        },
+        {
+          "op": "advance_seconds",
+          "n": 10
+        }
+      ],
+      "expected_effective": {
+        "cols": 190,
+        "rows": 48
+      },
+      "expected_holders": []
+    },
+    {
+      "name": "reacquire-after-restore",
+      "comment": "after a full restore a new lease re-resolves the pane from scratch",
+      "initial_size": {
+        "cols": 120,
+        "rows": 40
+      },
+      "ops": [
+        {
+          "op": "lease",
+          "client": "client-a",
+          "cols": 80,
+          "rows": 0
+        },
+        {
+          "op": "release",
+          "client": "client-a"
+        },
+        {
+          "op": "advance_seconds",
+          "n": 10
+        },
+        {
+          "op": "lease",
+          "client": "client-b",
+          "cols": 90,
+          "rows": 0
+        }
+      ],
+      "expected_effective": {
+        "cols": 90,
+        "rows": 40
+      },
+      "expected_holders": [
+        "client-b"
+      ]
+    },
+    {
+      "name": "ttl-boundary-live",
+      "comment": "at ttl-1s the lease is still live",
+      "initial_size": {
+        "cols": 144,
+        "rows": 34
+      },
+      "ops": [
+        {
+          "op": "lease",
+          "client": "client-a",
+          "cols": 72,
+          "rows": 0
+        },
+        {
+          "op": "advance_seconds",
+          "n": 119
+        }
+      ],
+      "expected_effective": {
+        "cols": 72,
+        "rows": 34
+      },
+      "expected_holders": [
+        "client-a"
+      ]
+    },
+    {
+      "name": "ttl-expiry-restores",
+      "comment": "ExpiresAt is not After(now) at exactly LeaseTTL=120s: expiry and restore happen on the boundary",
+      "initial_size": {
+        "cols": 144,
+        "rows": 34
+      },
+      "ops": [
+        {
+          "op": "lease",
+          "client": "client-a",
+          "cols": 72,
+          "rows": 0
+        },
+        {
+          "op": "advance_seconds",
+          "n": 120
+        }
+      ],
+      "expected_effective": {
+        "cols": 144,
+        "rows": 34
+      },
+      "expected_holders": []
+    },
+    {
+      "name": "local-resize-while-leased-becomes-baseline",
+      "comment": "a local terminal resize observed on the next Acquire replaces the restore point per dimension",
+      "initial_size": {
+        "cols": 120,
+        "rows": 45
+      },
+      "ops": [
+        {
+          "op": "lease",
+          "client": "client-a",
+          "cols": 80,
+          "rows": 0
+        },
+        {
+          "op": "local_resize",
+          "cols": 150,
+          "rows": 51
+        },
+        {
+          "op": "lease",
+          "client": "client-a",
+          "cols": 80,
+          "rows": 0
+        },
+        {
+          "op": "release",
+          "client": "client-a"
+        },
+        {
+          "op": "advance_seconds",
+          "n": 10
+        }
+      ],
+      "expected_effective": {
+        "cols": 150,
+        "rows": 51
+      },
+      "expected_holders": []
+    },
+    {
+      "name": "local-resize-unleased",
+      "comment": "resizing an unleased pane just changes the tty; the manager has no state",
+      "initial_size": {
+        "cols": 120,
+        "rows": 40
+      },
+      "ops": [
+        {
+          "op": "local_resize",
+          "cols": 140,
+          "rows": 50
+        }
+      ],
+      "expected_effective": {
+        "cols": 140,
+        "rows": 50
+      },
+      "expected_holders": []
+    },
+    {
+      "name": "owner-gone-no-state",
+      "comment": "Acquire on a dead owner context fails with ErrLeaseOwnerGone before pane state is created",
+      "initial_size": {
+        "cols": 120,
+        "rows": 40
+      },
+      "ops": [
+        {
+          "op": "lease",
+          "client": "client-a",
+          "cols": 80,
+          "rows": 0,
+          "owner_gone": true,
+          "expect_error": "lease_owner_gone"
+        }
+      ],
+      "expected_effective": {
+        "cols": 120,
+        "rows": 40
+      },
+      "expected_holders": []
+    },
+    {
+      "name": "owner-gone-existing-pane",
+      "comment": "the owner-gone check fires before any pane work; the surviving lease is untouched",
+      "initial_size": {
+        "cols": 120,
+        "rows": 40
+      },
+      "ops": [
+        {
+          "op": "lease",
+          "client": "client-a",
+          "cols": 80,
+          "rows": 0
+        },
+        {
+          "op": "lease",
+          "client": "client-b",
+          "cols": 90,
+          "rows": 0,
+          "owner_gone": true,
+          "expect_error": "lease_owner_gone"
+        }
+      ],
+      "expected_effective": {
+        "cols": 80,
+        "rows": 40
+      },
+      "expected_holders": [
+        "client-a"
+      ]
+    },
+    {
+      "name": "owner-disconnect-releases-all",
+      "comment": "ReleaseClient is the disconnect path: immediate restore, no ReleaseGrace",
+      "initial_size": {
+        "cols": 120,
+        "rows": 40
+      },
+      "ops": [
+        {
+          "op": "lease",
+          "client": "client-a",
+          "cols": 80,
+          "rows": 0
+        },
+        {
+          "op": "release_client",
+          "client": "client-a"
+        }
+      ],
+      "expected_effective": {
+        "cols": 120,
+        "rows": 40
+      },
+      "expected_holders": []
+    },
+    {
+      "name": "invalid-columns-low",
+      "comment": "columns below MinColumns=40 is rejected before any pane work",
+      "initial_size": {
+        "cols": 120,
+        "rows": 40
+      },
+      "ops": [
+        {
+          "op": "lease",
+          "client": "client-a",
+          "cols": 30,
+          "rows": 0,
+          "expect_error": "invalid_columns"
+        }
+      ],
+      "expected_effective": {
+        "cols": 120,
+        "rows": 40
+      },
+      "expected_holders": []
+    },
+    {
+      "name": "invalid-columns-high",
+      "comment": "columns above MaxColumns=240 is rejected",
+      "initial_size": {
+        "cols": 120,
+        "rows": 40
+      },
+      "ops": [
+        {
+          "op": "lease",
+          "client": "client-a",
+          "cols": 241,
+          "rows": 0,
+          "expect_error": "invalid_columns"
+        }
+      ],
+      "expected_effective": {
+        "cols": 120,
+        "rows": 40
+      },
+      "expected_holders": []
+    },
+    {
+      "name": "invalid-rows",
+      "comment": "a nonzero rows below MinRows=10 is rejected; rows=0 stays legal",
+      "initial_size": {
+        "cols": 120,
+        "rows": 40
+      },
+      "ops": [
+        {
+          "op": "lease",
+          "client": "client-a",
+          "cols": 80,
+          "rows": 5,
+          "expect_error": "invalid_rows"
+        },
+        {
+          "op": "lease",
+          "client": "client-a",
+          "cols": 80,
+          "rows": 0
+        }
+      ],
+      "expected_effective": {
+        "cols": 80,
+        "rows": 40
+      },
+      "expected_holders": [
+        "client-a"
+      ]
+    },
+    {
+      "name": "invalid-empty-client",
+      "comment": "empty client id is ErrInvalidLease",
+      "initial_size": {
+        "cols": 120,
+        "rows": 40
+      },
+      "ops": [
+        {
+          "op": "lease",
+          "cols": 80,
+          "rows": 0,
+          "expect_error": "invalid_lease"
+        }
+      ],
+      "expected_effective": {
+        "cols": 120,
+        "rows": 40
+      },
+      "expected_holders": []
+    },
+    {
+      "name": "row-leases-minimum",
+      "comment": "smallest row constraint wins; a width-only client constrains columns but never rows",
+      "initial_size": {
+        "cols": 180,
+        "rows": 64
+      },
+      "ops": [
+        {
+          "op": "lease",
+          "client": "phone-a",
+          "cols": 84,
+          "rows": 30
+        },
+        {
+          "op": "lease",
+          "client": "phone-b",
+          "cols": 100,
+          "rows": 44
+        },
+        {
+          "op": "lease",
+          "client": "desk-c",
+          "cols": 90,
+          "rows": 0
+        }
+      ],
+      "expected_effective": {
+        "cols": 84,
+        "rows": 30
+      },
+      "expected_holders": [
+        "desk-c",
+        "phone-a",
+        "phone-b"
+      ]
+    },
+    {
+      "name": "row-minimum-after-narrow-leaves",
+      "comment": "the 30-row lease lapses; effective becomes min(cols)=90 over survivors and min(rows)=44",
+      "initial_size": {
+        "cols": 180,
+        "rows": 64
+      },
+      "ops": [
+        {
+          "op": "lease",
+          "client": "phone-a",
+          "cols": 84,
+          "rows": 30
+        },
+        {
+          "op": "lease",
+          "client": "phone-b",
+          "cols": 100,
+          "rows": 44
+        },
+        {
+          "op": "lease",
+          "client": "desk-c",
+          "cols": 90,
+          "rows": 0
+        },
+        {
+          "op": "release",
+          "client": "phone-a"
+        },
+        {
+          "op": "advance_seconds",
+          "n": 10
+        }
+      ],
+      "expected_effective": {
+        "cols": 90,
+        "rows": 44
+      },
+      "expected_holders": [
+        "desk-c",
+        "phone-b"
+      ]
+    },
+    {
+      "name": "rows-restore-with-width-survivor",
+      "comment": "both row-leasing phones lapse: the width-only survivor keeps 90 cols while the pane gets its own height back",
+      "initial_size": {
+        "cols": 180,
+        "rows": 64
+      },
+      "ops": [
+        {
+          "op": "lease",
+          "client": "phone-a",
+          "cols": 84,
+          "rows": 30
+        },
+        {
+          "op": "lease",
+          "client": "phone-b",
+          "cols": 100,
+          "rows": 44
+        },
+        {
+          "op": "lease",
+          "client": "desk-c",
+          "cols": 90,
+          "rows": 0
+        },
+        {
+          "op": "release",
+          "client": "phone-a"
+        },
+        {
+          "op": "release",
+          "client": "phone-b"
+        },
+        {
+          "op": "advance_seconds",
+          "n": 10
+        }
+      ],
+      "expected_effective": {
+        "cols": 90,
+        "rows": 64
+      },
+      "expected_holders": [
+        "desk-c"
+      ]
+    }
+  ]
+}

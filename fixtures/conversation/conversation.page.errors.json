@@ -1,0 +1,181 @@
+{
+  "format_version": 1,
+  "suite": "conversation.page.errors",
+  "source": {
+    "repo": "IGUNUBLUE/lerdr",
+    "commit": "d01ec329d2b0e87c536972ae0e49e19ea41c76fc",
+    "package": "internal/conversation",
+    "generator": "page_export_test.go"
+  },
+  "notes": [
+    "entry.id is sha256(raw jsonl line)[:24] for JSONL readers, the message id for opencode, the sqlite rowid for hermes; duplicate identical lines gain a '-N' suffix",
+    "claude continuation-segment entries carry namespaced:true with the raw suffix; the wire id is sha256(sessionID+\"\\x00\"+fileRevision)[:12]+\"-\"+id, and fileRevision is inode-dependent",
+    "next_cursor is the first entry id of the page (the 'before' argument that returns the next-older page); namespaced cursors are flagged",
+    "steps with append_jsonl_lines/append_sql_statements model live tail: content is appended before the step's read",
+    "total is the full visible entry count; truncated marks clamped payloads; source_corrupt marks skipped corrupt rows"
+  ],
+  "vectors": [
+    {
+      "name": "unknown-provider",
+      "comment": "gemini is not a registered provider: invalid_provider",
+      "agent": "gemini",
+      "session_id": "123e4567-e89b-12d3-a456-426614174000",
+      "steps": [
+        {
+          "label": "read",
+          "before": "",
+          "limit": 80,
+          "available": false,
+          "reason_code": "invalid_provider",
+          "expected_entries": [],
+          "has_more": false,
+          "total": 0
+        }
+      ]
+    },
+    {
+      "name": "missing-session-file",
+      "comment": "no transcript under the project dir: invalid_session",
+      "agent": "claude",
+      "cwd": "/work",
+      "session_id": "123e4567-e89b-12d3-a456-426614174000",
+      "steps": [
+        {
+          "label": "read",
+          "before": "",
+          "limit": 80,
+          "available": false,
+          "reason_code": "invalid_session",
+          "expected_entries": [],
+          "has_more": false,
+          "total": 0
+        }
+      ]
+    },
+    {
+      "name": "empty-session-id",
+      "comment": "blank session id: invalid_session",
+      "agent": "claude",
+      "cwd": "/work",
+      "session_id": "",
+      "steps": [
+        {
+          "label": "read",
+          "before": "",
+          "limit": 80,
+          "available": false,
+          "reason_code": "invalid_session",
+          "expected_entries": [],
+          "has_more": false,
+          "total": 0
+        }
+      ]
+    },
+    {
+      "name": "claude-stale-cursor",
+      "comment": "a before id that is not in the chain yields source_changed (claude) — unlike flat readers which treat an unknown before as end-of-file",
+      "agent": "claude",
+      "cwd": "/work",
+      "session_id": "123e4567-e89b-12d3-a456-426614174000",
+      "files": [
+        {
+          "path": ".claude/projects/-work/123e4567-e89b-12d3-a456-426614174000.jsonl",
+          "jsonl_lines": [
+            "{\"message\":{\"content\":\"question\",\"role\":\"user\"},\"timestamp\":\"2026-08-12T10:00:01Z\",\"type\":\"user\",\"uuid\":\"u1\"}",
+            "{\"message\":{\"content\":\"answer\",\"role\":\"assistant\"},\"timestamp\":\"2026-08-12T10:00:01Z\",\"type\":\"assistant\",\"uuid\":\"a1\"}"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "label": "read",
+          "before": "deadbeefdeadbeefdeadbeef",
+          "limit": 80,
+          "available": true,
+          "reason_code": "source_changed",
+          "expected_entries": [],
+          "has_more": false,
+          "total": 0
+        }
+      ]
+    },
+    {
+      "name": "codex-unknown-cursor",
+      "comment": "flat JSONL readers treat an unknown before as end-of-file: the whole transcript returns",
+      "agent": "codex",
+      "cwd": "/work",
+      "session_id": "223e4567-e89b-12d3-a456-426614174000",
+      "files": [
+        {
+          "path": ".codex/sessions/2026/08/12/rollout-2026-08-12T10-00-00-223e4567-e89b-12d3-a456-426614174000.jsonl",
+          "jsonl_lines": [
+            "{\"payload\":{\"content\":[{\"text\":\"question\",\"type\":\"input_text\"}],\"role\":\"user\",\"type\":\"message\"},\"timestamp\":\"2026-08-12T10:00:01Z\",\"type\":\"response_item\"}",
+            "{\"payload\":{\"content\":[{\"text\":\"answer\",\"type\":\"output_text\"}],\"role\":\"assistant\",\"type\":\"message\"},\"timestamp\":\"2026-08-12T10:00:02Z\",\"type\":\"response_item\"}"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "label": "read",
+          "before": "deadbeefdeadbeefdeadbeef",
+          "limit": 80,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "e2f0e6b3ed49ed3bdb89a1d5",
+              "timestamp": "2026-08-12T10:00:01Z",
+              "role": "user",
+              "text": "question"
+            },
+            {
+              "id": "036a3c60855bbe09b60be916",
+              "timestamp": "2026-08-12T10:00:02Z",
+              "role": "assistant",
+              "text": "answer"
+            }
+          ],
+          "has_more": false,
+          "total": 2
+        }
+      ]
+    },
+    {
+      "name": "opencode-bad-session-id",
+      "comment": "session ids must be ses_ followed by alphanumerics: invalid_session",
+      "agent": "opencode",
+      "cwd": "/work",
+      "session_id": "not-a-session",
+      "steps": [
+        {
+          "label": "read",
+          "before": "",
+          "limit": 80,
+          "available": false,
+          "reason_code": "invalid_session",
+          "expected_entries": [],
+          "has_more": false,
+          "total": 0
+        }
+      ]
+    },
+    {
+      "name": "hermes-bad-cursor",
+      "comment": "hermes cursors are sqlite rowids: a non-numeric before is invalid_cursor",
+      "agent": "hermes",
+      "cwd": "/work",
+      "session_id": "20260812_100000_fixture",
+      "steps": [
+        {
+          "label": "read",
+          "before": "abc",
+          "limit": 80,
+          "available": false,
+          "reason_code": "invalid_cursor",
+          "expected_entries": [],
+          "has_more": false,
+          "total": 0
+        }
+      ]
+    }
+  ]
+}

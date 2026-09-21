@@ -1,0 +1,854 @@
+{
+  "format_version": 1,
+  "suite": "ansi.spans",
+  "source": {
+    "repo": "IGUNUBLUE/lerdr",
+    "commit": "d01ec329d2b0e87c536972ae0e49e19ea41c76fc",
+    "package": "frontend/src/lib/terminal.ts",
+    "generator": "export-ansi-fixtures.mjs"
+  },
+  "notes": [
+    "expected_html is the verbatim ansiToHtml output; expected_spans flattens it into leaf segments (ancestor span attributes merge down)",
+    "scheme defaults to dark; vectors with scheme:\"light\" run under TERMINAL_SCHEMES.light",
+    "options map to ansiToHtml flags: normalizeNearWhiteBackground, normalizeNearBlackForeground, preserveTerminalCells",
+    "ansiToHtml splits only on SGR (ESC[...m); every other CSI/OSC sequence stays in the text verbatim (see non-sgr-csi-literal, osc8-link-literal)",
+    "SGR 9 (strikethrough) and 7 (reverse) are unsupported and ignored",
+    "bold+italic without an explicit color gains the scheme headingAccent color"
+  ],
+  "vectors": [
+    {
+      "name": "plain-text",
+      "input": "plain output line",
+      "expected_html": "plain output line",
+      "expected_spans": [
+        {
+          "text": "plain output line"
+        }
+      ]
+    },
+    {
+      "name": "html-escaped",
+      "input": "<b>bold?</b> & \"quoted\" 'single' <tag attr=\"v\">",
+      "expected_html": "&lt;b&gt;bold?&lt;/b&gt; &amp; &quot;quoted&quot; &#39;single&#39; &lt;tag attr=&quot;v&quot;&gt;",
+      "expected_spans": [
+        {
+          "text": "<b>bold?</b> & \"quoted\" 'single' <tag attr=\"v\">"
+        }
+      ]
+    },
+    {
+      "name": "sgr-8-colors",
+      "input": "\u001b[30mblk\u001b[31mred\u001b[32mgrn\u001b[33mylw\u001b[34mblu\u001b[35mmag\u001b[36mcyn\u001b[37mwht\u001b[0m",
+      "expected_html": "<span style=\"color:#555\">blk</span><span style=\"color:#ff5f5f\">red</span><span style=\"color:#5fd75f\">grn</span><span style=\"color:#ffd75f\">ylw</span><span style=\"color:#5fafff\">blu</span><span style=\"color:#d75fff\">mag</span><span style=\"color:#1abc9c\">cyn</span><span style=\"color:#e5e5e5\">wht</span>",
+      "expected_spans": [
+        {
+          "text": "blk",
+          "fg": "#555"
+        },
+        {
+          "text": "red",
+          "fg": "#ff5f5f"
+        },
+        {
+          "text": "grn",
+          "fg": "#5fd75f"
+        },
+        {
+          "text": "ylw",
+          "fg": "#ffd75f"
+        },
+        {
+          "text": "blu",
+          "fg": "#5fafff"
+        },
+        {
+          "text": "mag",
+          "fg": "#d75fff"
+        },
+        {
+          "text": "cyn",
+          "fg": "#1abc9c"
+        },
+        {
+          "text": "wht",
+          "fg": "#e5e5e5"
+        }
+      ]
+    },
+    {
+      "name": "sgr-8-backgrounds",
+      "input": "\u001b[40mblk\u001b[41mred\u001b[42mgrn\u001b[43mylw\u001b[44mblu\u001b[45mmag\u001b[46mcyn\u001b[47mwht\u001b[0m",
+      "expected_html": "<span style=\"background-color:#555\">blk</span><span style=\"background-color:#ff5f5f\">red</span><span style=\"background-color:#5fd75f\">grn</span><span style=\"background-color:#ffd75f\">ylw</span><span style=\"background-color:#5fafff\">blu</span><span style=\"background-color:#d75fff\">mag</span><span style=\"background-color:#1abc9c\">cyn</span><span style=\"background-color:#e5e5e5\">wht</span>",
+      "expected_spans": [
+        {
+          "text": "blk",
+          "bg": "#555"
+        },
+        {
+          "text": "red",
+          "bg": "#ff5f5f"
+        },
+        {
+          "text": "grn",
+          "bg": "#5fd75f"
+        },
+        {
+          "text": "ylw",
+          "bg": "#ffd75f"
+        },
+        {
+          "text": "blu",
+          "bg": "#5fafff"
+        },
+        {
+          "text": "mag",
+          "bg": "#d75fff"
+        },
+        {
+          "text": "cyn",
+          "bg": "#1abc9c"
+        },
+        {
+          "text": "wht",
+          "bg": "#e5e5e5"
+        }
+      ]
+    },
+    {
+      "name": "sgr-bright-foregrounds",
+      "input": "\u001b[90mblk\u001b[91mred\u001b[92mgrn\u001b[93mylw\u001b[94mblu\u001b[95mmag\u001b[96mcyn\u001b[97mwht\u001b[0m",
+      "expected_html": "<span style=\"color:#777\">blk</span><span style=\"color:#ff8080\">red</span><span style=\"color:#80ff80\">grn</span><span style=\"color:#ffff80\">ylw</span><span style=\"color:#80bfff\">blu</span><span style=\"color:#ff80ff\">mag</span><span style=\"color:#80ffff\">cyn</span><span style=\"color:#fff\">wht</span>",
+      "expected_spans": [
+        {
+          "text": "blk",
+          "fg": "#777"
+        },
+        {
+          "text": "red",
+          "fg": "#ff8080"
+        },
+        {
+          "text": "grn",
+          "fg": "#80ff80"
+        },
+        {
+          "text": "ylw",
+          "fg": "#ffff80"
+        },
+        {
+          "text": "blu",
+          "fg": "#80bfff"
+        },
+        {
+          "text": "mag",
+          "fg": "#ff80ff"
+        },
+        {
+          "text": "cyn",
+          "fg": "#80ffff"
+        },
+        {
+          "text": "wht",
+          "fg": "#fff"
+        }
+      ]
+    },
+    {
+      "name": "sgr-bright-backgrounds",
+      "input": "\u001b[100mblk\u001b[101mred\u001b[107mwht\u001b[0m",
+      "expected_html": "<span style=\"background-color:#777\">blk</span><span style=\"background-color:#ff8080\">red</span><span style=\"background-color:#fff\">wht</span>",
+      "expected_spans": [
+        {
+          "text": "blk",
+          "bg": "#777"
+        },
+        {
+          "text": "red",
+          "bg": "#ff8080"
+        },
+        {
+          "text": "wht",
+          "bg": "#fff"
+        }
+      ]
+    },
+    {
+      "name": "sgr-256-palette-index",
+      "comment": "index <16 maps through the scheme palette, not the cube",
+      "input": "\u001b[38;5;6mteal\u001b[0m",
+      "expected_html": "<span style=\"color:#1abc9c\">teal</span>",
+      "expected_spans": [
+        {
+          "text": "teal",
+          "fg": "#1abc9c"
+        }
+      ]
+    },
+    {
+      "name": "sgr-256-color-cube",
+      "input": "\u001b[38;5;196mred\u001b[0m\u001b[38;5;46mgreen\u001b[0m",
+      "expected_html": "<span style=\"color:rgb(255,0,0)\">red</span><span style=\"color:rgb(0,255,0)\">green</span>",
+      "expected_spans": [
+        {
+          "text": "red",
+          "fg": "rgb(255,0,0)"
+        },
+        {
+          "text": "green",
+          "fg": "rgb(0,255,0)"
+        }
+      ]
+    },
+    {
+      "name": "sgr-256-grayscale",
+      "input": "\u001b[38;5;240mgray\u001b[0m",
+      "expected_html": "<span style=\"color:rgb(88,88,88)\">gray</span>",
+      "expected_spans": [
+        {
+          "text": "gray",
+          "fg": "rgb(88,88,88)"
+        }
+      ]
+    },
+    {
+      "name": "sgr-256-background",
+      "input": "\u001b[48;5;27mblue-bg\u001b[0m",
+      "expected_html": "<span style=\"background-color:rgb(0,95,255)\">blue-bg</span>",
+      "expected_spans": [
+        {
+          "text": "blue-bg",
+          "bg": "rgb(0,95,255)"
+        }
+      ]
+    },
+    {
+      "name": "sgr-truecolor-foreground",
+      "input": "\u001b[38;2;18;52;86mnavy\u001b[0m",
+      "expected_html": "<span style=\"color:rgb(18,52,86)\">navy</span>",
+      "expected_spans": [
+        {
+          "text": "navy",
+          "fg": "rgb(18,52,86)"
+        }
+      ]
+    },
+    {
+      "name": "sgr-truecolor-background",
+      "input": "\u001b[48;2;200;100;50mbg\u001b[0m",
+      "expected_html": "<span style=\"background-color:rgb(200,100,50)\">bg</span>",
+      "expected_spans": [
+        {
+          "text": "bg",
+          "bg": "rgb(200,100,50)"
+        }
+      ]
+    },
+    {
+      "name": "sgr-256-truncated",
+      "comment": "38;5 with no index consumes nothing; the bare 5 is not a style",
+      "input": "\u001b[38;5malone\u001b[0m",
+      "expected_html": "alone",
+      "expected_spans": [
+        {
+          "text": "alone"
+        }
+      ]
+    },
+    {
+      "name": "sgr-truecolor-truncated",
+      "comment": "38;2 needs three channels; 2 and 10 fall through as unknown codes",
+      "input": "\u001b[38;2;10mshort\u001b[0m",
+      "expected_html": "<span style=\"opacity:0.7\">short</span>",
+      "expected_spans": [
+        {
+          "text": "short",
+          "dim": true
+        }
+      ]
+    },
+    {
+      "name": "attr-bold",
+      "input": "\u001b[1mbold\u001b[0m",
+      "expected_html": "<span style=\"font-weight:700\">bold</span>",
+      "expected_spans": [
+        {
+          "text": "bold",
+          "bold": true
+        }
+      ]
+    },
+    {
+      "name": "attr-dim",
+      "input": "\u001b[2mdim\u001b[0m",
+      "expected_html": "<span style=\"opacity:0.7\">dim</span>",
+      "expected_spans": [
+        {
+          "text": "dim",
+          "dim": true
+        }
+      ]
+    },
+    {
+      "name": "attr-italic",
+      "input": "\u001b[3mital\u001b[0m",
+      "expected_html": "<span style=\"font-style:italic\">ital</span>",
+      "expected_spans": [
+        {
+          "text": "ital",
+          "italic": true
+        }
+      ]
+    },
+    {
+      "name": "attr-underline",
+      "input": "\u001b[4mundr\u001b[0m",
+      "expected_html": "<span style=\"text-decoration:underline\">undr</span>",
+      "expected_spans": [
+        {
+          "text": "undr",
+          "underline": true
+        }
+      ]
+    },
+    {
+      "name": "attr-bold-italic-heading",
+      "comment": "bold+italic without a color gets the scheme heading accent",
+      "input": "\u001b[1;3mheading\u001b[0m",
+      "expected_html": "<span style=\"font-weight:700;font-style:italic;color:#3daee9\">heading</span>",
+      "expected_spans": [
+        {
+          "text": "heading",
+          "fg": "#3daee9",
+          "bold": true,
+          "italic": true
+        }
+      ]
+    },
+    {
+      "name": "attr-bold-italic-with-color",
+      "comment": "an explicit color suppresses the heading accent",
+      "input": "\u001b[1;3;31mcolored\u001b[0m",
+      "expected_html": "<span style=\"font-weight:700;font-style:italic;color:#ff5f5f\">colored</span>",
+      "expected_spans": [
+        {
+          "text": "colored",
+          "fg": "#ff5f5f",
+          "bold": true,
+          "italic": true
+        }
+      ]
+    },
+    {
+      "name": "attr-strikethrough-unsupported",
+      "comment": "SGR 9 is not handled; the text renders unstyled",
+      "input": "\u001b[9mstruck\u001b[0m",
+      "expected_html": "struck",
+      "expected_spans": [
+        {
+          "text": "struck"
+        }
+      ]
+    },
+    {
+      "name": "attr-reverse-unsupported",
+      "comment": "SGR 7 is not handled either",
+      "input": "\u001b[7mreverse\u001b[0m",
+      "expected_html": "reverse",
+      "expected_spans": [
+        {
+          "text": "reverse"
+        }
+      ]
+    },
+    {
+      "name": "attr-combined",
+      "input": "\u001b[1;4;31mall\u001b[0m",
+      "expected_html": "<span style=\"font-weight:700;text-decoration:underline;color:#ff5f5f\">all</span>",
+      "expected_spans": [
+        {
+          "text": "all",
+          "fg": "#ff5f5f",
+          "bold": true,
+          "underline": true
+        }
+      ]
+    },
+    {
+      "name": "reset-zero",
+      "input": "\u001b[31mred\u001b[0mplain",
+      "expected_html": "<span style=\"color:#ff5f5f\">red</span>plain",
+      "expected_spans": [
+        {
+          "text": "red",
+          "fg": "#ff5f5f"
+        },
+        {
+          "text": "plain"
+        }
+      ]
+    },
+    {
+      "name": "reset-empty-params",
+      "comment": "ESC[m parses as [0]",
+      "input": "\u001b[31mred\u001b[mplain",
+      "expected_html": "<span style=\"color:#ff5f5f\">red</span>plain",
+      "expected_spans": [
+        {
+          "text": "red",
+          "fg": "#ff5f5f"
+        },
+        {
+          "text": "plain"
+        }
+      ]
+    },
+    {
+      "name": "reset-mid-sequence",
+      "comment": "a 0 anywhere in the code list clears styles set earlier in the same SGR",
+      "input": "\u001b[1;0;31mtext\u001b[0m",
+      "expected_html": "<span style=\"font-weight:700;color:#ff5f5f\">text</span>",
+      "expected_spans": [
+        {
+          "text": "text",
+          "fg": "#ff5f5f",
+          "bold": true
+        }
+      ]
+    },
+    {
+      "name": "selective-reset-22",
+      "comment": "22 clears font-weight and opacity, keeps text-decoration",
+      "input": "\u001b[1;2;4mbold-dim-under\u001b[22munder-only\u001b[0m",
+      "expected_html": "<span style=\"font-weight:700;opacity:0.7;text-decoration:underline\">bold-dim-under</span><span style=\"text-decoration:underline\">under-only</span>",
+      "expected_spans": [
+        {
+          "text": "bold-dim-under",
+          "bold": true,
+          "underline": true,
+          "dim": true
+        },
+        {
+          "text": "under-only",
+          "underline": true
+        }
+      ]
+    },
+    {
+      "name": "selective-reset-23",
+      "input": "\u001b[3;31mital\u001b[23mred\u001b[0m",
+      "expected_html": "<span style=\"font-style:italic;color:#ff5f5f\">ital</span><span style=\"color:#ff5f5f\">red</span>",
+      "expected_spans": [
+        {
+          "text": "ital",
+          "fg": "#ff5f5f",
+          "italic": true
+        },
+        {
+          "text": "red",
+          "fg": "#ff5f5f"
+        }
+      ]
+    },
+    {
+      "name": "selective-reset-24",
+      "input": "\u001b[4;31mundr\u001b[24mred\u001b[0m",
+      "expected_html": "<span style=\"text-decoration:underline;color:#ff5f5f\">undr</span><span style=\"color:#ff5f5f\">red</span>",
+      "expected_spans": [
+        {
+          "text": "undr",
+          "fg": "#ff5f5f",
+          "underline": true
+        },
+        {
+          "text": "red",
+          "fg": "#ff5f5f"
+        }
+      ]
+    },
+    {
+      "name": "selective-reset-39",
+      "input": "\u001b[31;1mred-bold\u001b[39mbold\u001b[0m",
+      "expected_html": "<span style=\"color:#ff5f5f;font-weight:700\">red-bold</span><span style=\"font-weight:700\">bold</span>",
+      "expected_spans": [
+        {
+          "text": "red-bold",
+          "fg": "#ff5f5f",
+          "bold": true
+        },
+        {
+          "text": "bold",
+          "bold": true
+        }
+      ]
+    },
+    {
+      "name": "selective-reset-49",
+      "input": "\u001b[41;1mbg-bold\u001b[49mbold\u001b[0m",
+      "expected_html": "<span style=\"background-color:#ff5f5f;font-weight:700\">bg-bold</span><span style=\"font-weight:700\">bold</span>",
+      "expected_spans": [
+        {
+          "text": "bg-bold",
+          "bg": "#ff5f5f",
+          "bold": true
+        },
+        {
+          "text": "bold",
+          "bold": true
+        }
+      ]
+    },
+    {
+      "name": "state-persists-across-newline",
+      "comment": "span state carries through \\n; the span is not reopened",
+      "input": "\u001b[31mfirst\nsecond\u001b[0m",
+      "expected_html": "<span style=\"color:#ff5f5f\">first\nsecond</span>",
+      "expected_spans": [
+        {
+          "text": "first\nsecond",
+          "fg": "#ff5f5f"
+        }
+      ]
+    },
+    {
+      "name": "span-close-reopen",
+      "comment": "a new SGR closes the open span before applying",
+      "input": "\u001b[31mred\u001b[34mblue\u001b[0m",
+      "expected_html": "<span style=\"color:#ff5f5f\">red</span><span style=\"color:#5fafff\">blue</span>",
+      "expected_spans": [
+        {
+          "text": "red",
+          "fg": "#ff5f5f"
+        },
+        {
+          "text": "blue",
+          "fg": "#5fafff"
+        }
+      ]
+    },
+    {
+      "name": "non-sgr-csi-literal",
+      "comment": "only SGR is parsed; erase/cursor CSI stays in the text verbatim",
+      "input": "a\u001b[2Kb\u001b[1Ac",
+      "expected_html": "a\u001b[2Kb\u001b[1Ac",
+      "expected_spans": [
+        {
+          "text": "a\u001b[2Kb\u001b[1Ac"
+        }
+      ]
+    },
+    {
+      "name": "osc8-link-literal",
+      "comment": "OSC hyperlinks are not parsed; the embedded URL is still linkified",
+      "input": "\u001b]8;;https://example.com/x\u001b\\label\u001b]8;;\u001b\\",
+      "expected_html": "\u001b]8;;<a class=\"terminal-link\" href=\"https://example.com/x%1B/label%1B]8;;%1B/\" target=\"_blank\" rel=\"noopener noreferrer\" referrerpolicy=\"no-referrer\">https://example.com/x\u001b\\label\u001b]8;;\u001b\\</a>",
+      "expected_spans": [
+        {
+          "text": "\u001b]8;;"
+        },
+        {
+          "text": "https://example.com/x\u001b\\label\u001b]8;;\u001b\\",
+          "class": "terminal-link",
+          "href": "https://example.com/x%1B/label%1B]8;;%1B/"
+        }
+      ]
+    },
+    {
+      "name": "bare-url-linkified",
+      "input": "see https://example.com/path?a=1 for details",
+      "expected_html": "see <a class=\"terminal-link\" href=\"https://example.com/path?a=1\" target=\"_blank\" rel=\"noopener noreferrer\" referrerpolicy=\"no-referrer\">https://example.com/path?a=1</a> for details",
+      "expected_spans": [
+        {
+          "text": "see "
+        },
+        {
+          "text": "https://example.com/path?a=1",
+          "class": "terminal-link",
+          "href": "https://example.com/path?a=1"
+        },
+        {
+          "text": " for details"
+        }
+      ]
+    },
+    {
+      "name": "url-trailing-punctuation",
+      "input": "see https://example.com/x. done",
+      "expected_html": "see <a class=\"terminal-link\" href=\"https://example.com/x\" target=\"_blank\" rel=\"noopener noreferrer\" referrerpolicy=\"no-referrer\">https://example.com/x</a>. done",
+      "expected_spans": [
+        {
+          "text": "see "
+        },
+        {
+          "text": "https://example.com/x",
+          "class": "terminal-link",
+          "href": "https://example.com/x"
+        },
+        {
+          "text": ". done"
+        }
+      ]
+    },
+    {
+      "name": "url-unbalanced-close-paren",
+      "input": "(https://example.com/a(b))",
+      "expected_html": "(<a class=\"terminal-link\" href=\"https://example.com/a(b)\" target=\"_blank\" rel=\"noopener noreferrer\" referrerpolicy=\"no-referrer\">https://example.com/a(b)</a>)",
+      "expected_spans": [
+        {
+          "text": "("
+        },
+        {
+          "text": "https://example.com/a(b)",
+          "class": "terminal-link",
+          "href": "https://example.com/a(b)"
+        },
+        {
+          "text": ")"
+        }
+      ]
+    },
+    {
+      "name": "url-bad-scheme-not-linked",
+      "comment": "non http(s) URLs stay plain text",
+      "input": "open javascript:alert(1) now",
+      "expected_html": "open javascript:alert(1) now",
+      "expected_spans": [
+        {
+          "text": "open javascript:alert(1) now"
+        }
+      ]
+    },
+    {
+      "name": "normalize-near-white-background",
+      "comment": "dark scheme: near-white bg collapses to rowFallback rgb(61,64,64)",
+      "input": "\u001b[48;5;255mtext\u001b[0m",
+      "options": {
+        "normalizeNearWhiteBackground": true
+      },
+      "expected_html": "<span style=\"background-color:rgb(61,64,64)\">text</span>",
+      "expected_spans": [
+        {
+          "text": "text",
+          "bg": "rgb(61,64,64)"
+        }
+      ]
+    },
+    {
+      "name": "normalize-vanishing-foreground",
+      "comment": "dark scheme: near-black text becomes var(--terminal-text)",
+      "input": "\u001b[30mblack\u001b[0m",
+      "options": {
+        "normalizeNearBlackForeground": true
+      },
+      "expected_html": "<span style=\"color:var(--terminal-text)\">black</span>",
+      "expected_spans": [
+        {
+          "text": "black",
+          "fg": "var(--terminal-text)"
+        }
+      ]
+    },
+    {
+      "name": "normalize-faint-foreground",
+      "comment": "low luminance but hue spread >30: mixed toward var(--terminal-text) instead of replaced",
+      "input": "\u001b[38;2;80;40;100mtinted\u001b[0m",
+      "options": {
+        "normalizeNearBlackForeground": true
+      },
+      "expected_html": "<span style=\"color:color-mix(in srgb, rgb(80,40,100) 35%, var(--terminal-text))\">tinted</span>",
+      "expected_spans": [
+        {
+          "text": "tinted",
+          "fg": "color-mix(in srgb, rgb(80,40,100) 35%, var(--terminal-text))"
+        }
+      ]
+    },
+    {
+      "name": "light-scheme-colors",
+      "comment": "Catppuccin Latte palette: same SGR codes, different hex values",
+      "input": "\u001b[31mred\u001b[0m\u001b[91mbright\u001b[0m",
+      "scheme": "light",
+      "expected_html": "<span style=\"color:#d20f39\">red</span><span style=\"color:#de293e\">bright</span>",
+      "expected_spans": [
+        {
+          "text": "red",
+          "fg": "#d20f39"
+        },
+        {
+          "text": "bright",
+          "fg": "#de293e"
+        }
+      ]
+    },
+    {
+      "name": "light-scheme-opposing-background",
+      "comment": "light scheme: near-black bg collapses to rowFallback rgb(204,208,218)",
+      "input": "\u001b[48;5;232mtext\u001b[0m",
+      "scheme": "light",
+      "options": {
+        "normalizeNearWhiteBackground": true
+      },
+      "expected_html": "<span style=\"background-color:rgb(204,208,218)\">text</span>",
+      "expected_spans": [
+        {
+          "text": "text",
+          "bg": "rgb(204,208,218)"
+        }
+      ]
+    },
+    {
+      "name": "cells-plain-run",
+      "input": "ab cd",
+      "options": {
+        "preserveTerminalCells": true
+      },
+      "expected_html": "<span class=\"terminal-cell-run\" style=\"width:calc(5 * var(--terminal-cell-width, 1ch))\">ab cd</span>",
+      "expected_spans": [
+        {
+          "text": "ab cd",
+          "width_cells": 5,
+          "class": "terminal-cell-run"
+        }
+      ]
+    },
+    {
+      "name": "cells-wide-cjk",
+      "input": "a世界b",
+      "options": {
+        "preserveTerminalCells": true
+      },
+      "expected_html": "<span class=\"terminal-cell-run\" style=\"width:calc(1 * var(--terminal-cell-width, 1ch))\">a</span><span class=\"terminal-cell terminal-cell-wide\">世</span><span class=\"terminal-cell terminal-cell-wide\">界</span><span class=\"terminal-cell-run\" style=\"width:calc(1 * var(--terminal-cell-width, 1ch))\">b</span>",
+      "expected_spans": [
+        {
+          "text": "a",
+          "width_cells": 1,
+          "class": "terminal-cell-run"
+        },
+        {
+          "text": "世",
+          "class": "terminal-cell terminal-cell-wide"
+        },
+        {
+          "text": "界",
+          "class": "terminal-cell terminal-cell-wide"
+        },
+        {
+          "text": "b",
+          "width_cells": 1,
+          "class": "terminal-cell-run"
+        }
+      ]
+    },
+    {
+      "name": "cells-emoji-presentation",
+      "input": "x🎉y",
+      "options": {
+        "preserveTerminalCells": true
+      },
+      "expected_html": "<span class=\"terminal-cell-run\" style=\"width:calc(1 * var(--terminal-cell-width, 1ch))\">x</span><span class=\"terminal-cell terminal-cell-wide\">🎉</span><span class=\"terminal-cell-run\" style=\"width:calc(1 * var(--terminal-cell-width, 1ch))\">y</span>",
+      "expected_spans": [
+        {
+          "text": "x",
+          "width_cells": 1,
+          "class": "terminal-cell-run"
+        },
+        {
+          "text": "🎉",
+          "class": "terminal-cell terminal-cell-wide"
+        },
+        {
+          "text": "y",
+          "width_cells": 1,
+          "class": "terminal-cell-run"
+        }
+      ]
+    },
+    {
+      "name": "cells-combining-mark",
+      "comment": "combining mark joins its base grapheme; the cluster is width 1",
+      "input": "éx",
+      "options": {
+        "preserveTerminalCells": true
+      },
+      "expected_html": "<span class=\"terminal-cell\">é</span><span class=\"terminal-cell-run\" style=\"width:calc(1 * var(--terminal-cell-width, 1ch))\">x</span>",
+      "expected_spans": [
+        {
+          "text": "é",
+          "class": "terminal-cell"
+        },
+        {
+          "text": "x",
+          "width_cells": 1,
+          "class": "terminal-cell-run"
+        }
+      ]
+    },
+    {
+      "name": "cells-tab-advance",
+      "comment": "tab expands to the next 8-column stop: 7 cells after a",
+      "input": "a\tb",
+      "options": {
+        "preserveTerminalCells": true
+      },
+      "expected_html": "<span class=\"terminal-cell-run\" style=\"width:calc(9 * var(--terminal-cell-width, 1ch))\">a       b</span>",
+      "expected_spans": [
+        {
+          "text": "a       b",
+          "width_cells": 9,
+          "class": "terminal-cell-run"
+        }
+      ]
+    },
+    {
+      "name": "cells-box-drawing",
+      "comment": "box corners get terminal-cell classes; the ─ run is one horizontal span",
+      "input": "┌─┐",
+      "options": {
+        "preserveTerminalCells": true
+      },
+      "expected_html": "<span class=\"terminal-cell terminal-cell-box\" style=\"background:linear-gradient(currentColor,currentColor) 50% bottom/.75px 50% no-repeat,linear-gradient(currentColor,currentColor) right 50%/50% 1px no-repeat\">┌</span><span class=\"terminal-cell-horizontal terminal-cell-horizontal-single\" style=\"width:calc(1 * var(--terminal-cell-width, 1ch))\">─</span><span class=\"terminal-cell terminal-cell-box\" style=\"background:linear-gradient(currentColor,currentColor) 50% bottom/.75px 50% no-repeat,linear-gradient(currentColor,currentColor) left 50%/50% 1px no-repeat\">┐</span>",
+      "expected_spans": [
+        {
+          "text": "┌",
+          "class": "terminal-cell terminal-cell-box",
+          "styles": {
+            "background": "linear-gradient(currentColor,currentColor) 50% bottom/.75px 50% no-repeat,linear-gradient(currentColor,currentColor) right 50%/50% 1px no-repeat"
+          }
+        },
+        {
+          "text": "─",
+          "width_cells": 1,
+          "class": "terminal-cell-horizontal terminal-cell-horizontal-single"
+        },
+        {
+          "text": "┐",
+          "class": "terminal-cell terminal-cell-box",
+          "styles": {
+            "background": "linear-gradient(currentColor,currentColor) 50% bottom/.75px 50% no-repeat,linear-gradient(currentColor,currentColor) left 50%/50% 1px no-repeat"
+          }
+        }
+      ]
+    },
+    {
+      "name": "cells-styled-run",
+      "comment": "SGR span wraps the cell runs the text produces",
+      "input": "\u001b[31mred\u001b[0m plain",
+      "options": {
+        "preserveTerminalCells": true
+      },
+      "expected_html": "<span style=\"color:#ff5f5f\"><span class=\"terminal-cell-run\" style=\"width:calc(3 * var(--terminal-cell-width, 1ch))\">red</span></span><span class=\"terminal-cell-run\" style=\"width:calc(6 * var(--terminal-cell-width, 1ch))\"> plain</span>",
+      "expected_spans": [
+        {
+          "text": "red",
+          "fg": "#ff5f5f",
+          "width_cells": 3,
+          "class": "terminal-cell-run"
+        },
+        {
+          "text": " plain",
+          "width_cells": 6,
+          "class": "terminal-cell-run"
+        }
+      ]
+    }
+  ]
+}

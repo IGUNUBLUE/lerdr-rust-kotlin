@@ -1,0 +1,271 @@
+{
+  "format_version": 1,
+  "suite": "conversation.page.codex",
+  "source": {
+    "repo": "IGUNUBLUE/lerdr",
+    "commit": "d01ec329d2b0e87c536972ae0e49e19ea41c76fc",
+    "package": "internal/conversation",
+    "generator": "page_export_test.go"
+  },
+  "notes": [
+    "entry.id is sha256(raw jsonl line)[:24] for JSONL readers, the message id for opencode, the sqlite rowid for hermes; duplicate identical lines gain a '-N' suffix",
+    "claude continuation-segment entries carry namespaced:true with the raw suffix; the wire id is sha256(sessionID+\"\\x00\"+fileRevision)[:12]+\"-\"+id, and fileRevision is inode-dependent",
+    "next_cursor is the first entry id of the page (the 'before' argument that returns the next-older page); namespaced cursors are flagged",
+    "steps with append_jsonl_lines/append_sql_statements model live tail: content is appended before the step's read",
+    "total is the full visible entry count; truncated marks clamped payloads; source_corrupt marks skipped corrupt rows"
+  ],
+  "vectors": [
+    {
+      "name": "basic-conversation",
+      "comment": "response_item messages plus skipped reasoning/event/instructions records and tool call+output association",
+      "agent": "codex",
+      "cwd": "/work",
+      "session_id": "223e4567-e89b-12d3-a456-426614174000",
+      "files": [
+        {
+          "path": ".codex/sessions/2026/08/12/rollout-2026-08-12T10-00-00-223e4567-e89b-12d3-a456-426614174000.jsonl",
+          "jsonl_lines": [
+            "{\"payload\":{\"cwd\":\"/work\"},\"type\":\"turn_context\"}",
+            "{\"payload\":{\"content\":[{\"text\":\"\\u003cenvironment_context\\u003e\\n  \\u003ccwd\\u003e/work\\u003c/cwd\\u003e\\n\\u003c/environment_context\\u003e\",\"type\":\"input_text\"}],\"role\":\"user\",\"type\":\"message\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"response_item\"}",
+            "{\"payload\":{\"content\":[{\"text\":\"build the relay\",\"type\":\"input_text\"}],\"role\":\"user\",\"type\":\"message\"},\"timestamp\":\"2026-08-12T10:00:01Z\",\"type\":\"response_item\"}",
+            "{\"payload\":{\"summary\":[{\"text\":\"thinking\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"},\"timestamp\":\"2026-08-12T10:00:01Z\",\"type\":\"response_item\"}",
+            "{\"payload\":{\"content\":[{\"text\":\"Starting the build.\",\"type\":\"output_text\"}],\"role\":\"assistant\",\"type\":\"message\"},\"timestamp\":\"2026-08-12T10:00:02Z\",\"type\":\"response_item\"}",
+            "{\"payload\":{\"arguments\":\"{\\\"command\\\":\\\"go build ./...\\\"}\",\"call_id\":\"call_1\",\"name\":\"shell\",\"type\":\"function_call\"},\"timestamp\":\"2026-08-12T10:00:02Z\",\"type\":\"response_item\"}",
+            "{\"payload\":{\"call_id\":\"call_1\",\"output\":\"ok\",\"type\":\"function_call_output\"},\"timestamp\":\"2026-08-12T10:00:03Z\",\"type\":\"response_item\"}",
+            "{\"payload\":{\"call_id\":\"call_2\",\"input\":\"*** patch\",\"name\":\"apply_patch\",\"type\":\"custom_tool_call\"},\"timestamp\":\"2026-08-12T10:00:04Z\",\"type\":\"response_item\"}",
+            "{\"payload\":{\"call_id\":\"call_2\",\"is_error\":true,\"output\":\"applied\",\"type\":\"custom_tool_call_output\"},\"timestamp\":\"2026-08-12T10:00:05Z\",\"type\":\"response_item\"}",
+            "{\"payload\":{\"message\":\"duplicate of assistant text\",\"type\":\"agent_message\"},\"type\":\"event_msg\"}",
+            "{\"payload\":{\"content\":[{\"text\":\"Done.\",\"type\":\"output_text\"}],\"role\":\"assistant\",\"type\":\"message\"},\"timestamp\":\"2026-08-12T10:00:06Z\",\"type\":\"response_item\"}",
+            "{\"payload\":{\"content\":[{\"text\":\"instructions\",\"type\":\"input_text\"}],\"role\":\"developer\",\"type\":\"message\"},\"type\":\"response_item\"}"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "label": "all",
+          "before": "",
+          "limit": 80,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "6aca92966cdf3249b022e8eb",
+              "timestamp": "2026-08-12T10:00:01Z",
+              "role": "user",
+              "text": "build the relay"
+            },
+            {
+              "id": "7df558e638d88e31700f8d9e",
+              "timestamp": "2026-08-12T10:00:02Z",
+              "role": "assistant",
+              "text": "Starting the build."
+            },
+            {
+              "id": "e02e28b19b2b8ef02c0ddb47",
+              "timestamp": "2026-08-12T10:00:02Z",
+              "role": "assistant",
+              "tools": [
+                {
+                  "id": "call_1",
+                  "name": "shell",
+                  "input": "{\"command\":\"go build ./...\"}",
+                  "output": "ok"
+                }
+              ]
+            },
+            {
+              "id": "4689c29fed2534a900e64102",
+              "timestamp": "2026-08-12T10:00:04Z",
+              "role": "assistant",
+              "tools": [
+                {
+                  "id": "call_2",
+                  "name": "apply_patch",
+                  "input": "*** patch",
+                  "output": "applied",
+                  "error": true
+                }
+              ]
+            },
+            {
+              "id": "09d0f45d0195d9bf4725d698",
+              "timestamp": "2026-08-12T10:00:06Z",
+              "role": "assistant",
+              "text": "Done."
+            }
+          ],
+          "has_more": false,
+          "total": 5
+        }
+      ]
+    },
+    {
+      "name": "pagination",
+      "comment": "six messages paged two at a time",
+      "agent": "codex",
+      "cwd": "/work",
+      "session_id": "223e4567-e89b-12d3-a456-426614174000",
+      "files": [
+        {
+          "path": ".codex/sessions/2026/08/12/rollout-2026-08-12T10-00-00-223e4567-e89b-12d3-a456-426614174000.jsonl",
+          "jsonl_lines": [
+            "{\"payload\":{\"content\":[{\"text\":\"turn 0\",\"type\":\"input_text\"}],\"role\":\"user\",\"type\":\"message\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"response_item\"}",
+            "{\"payload\":{\"content\":[{\"text\":\"turn 1\",\"type\":\"output_text\"}],\"role\":\"assistant\",\"type\":\"message\"},\"timestamp\":\"2026-08-12T10:00:01Z\",\"type\":\"response_item\"}",
+            "{\"payload\":{\"content\":[{\"text\":\"turn 2\",\"type\":\"input_text\"}],\"role\":\"user\",\"type\":\"message\"},\"timestamp\":\"2026-08-12T10:00:02Z\",\"type\":\"response_item\"}",
+            "{\"payload\":{\"content\":[{\"text\":\"turn 3\",\"type\":\"output_text\"}],\"role\":\"assistant\",\"type\":\"message\"},\"timestamp\":\"2026-08-12T10:00:03Z\",\"type\":\"response_item\"}",
+            "{\"payload\":{\"content\":[{\"text\":\"turn 4\",\"type\":\"input_text\"}],\"role\":\"user\",\"type\":\"message\"},\"timestamp\":\"2026-08-12T10:00:04Z\",\"type\":\"response_item\"}",
+            "{\"payload\":{\"content\":[{\"text\":\"turn 5\",\"type\":\"output_text\"}],\"role\":\"assistant\",\"type\":\"message\"},\"timestamp\":\"2026-08-12T10:00:05Z\",\"type\":\"response_item\"}"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "label": "first-page",
+          "before": "",
+          "limit": 2,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "5b121bc9767e32f72e1f1173",
+              "timestamp": "2026-08-12T10:00:04Z",
+              "role": "user",
+              "text": "turn 4"
+            },
+            {
+              "id": "cc2859329bcc57fab890b651",
+              "timestamp": "2026-08-12T10:00:05Z",
+              "role": "assistant",
+              "text": "turn 5"
+            }
+          ],
+          "has_more": true,
+          "total": 6,
+          "next_cursor": "5b121bc9767e32f72e1f1173"
+        },
+        {
+          "label": "second-page",
+          "before": "",
+          "before_step": 0,
+          "limit": 2,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "9e3569adde708d6cb0117f50",
+              "timestamp": "2026-08-12T10:00:02Z",
+              "role": "user",
+              "text": "turn 2"
+            },
+            {
+              "id": "43088087f446141496cdd94b",
+              "timestamp": "2026-08-12T10:00:03Z",
+              "role": "assistant",
+              "text": "turn 3"
+            }
+          ],
+          "has_more": true,
+          "total": 6,
+          "next_cursor": "9e3569adde708d6cb0117f50"
+        },
+        {
+          "label": "last-page",
+          "before": "",
+          "before_step": 1,
+          "limit": 2,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "b84a3467a32e2d87dd6668e5",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "user",
+              "text": "turn 0"
+            },
+            {
+              "id": "3dfa2e89d739f761cfe1a351",
+              "timestamp": "2026-08-12T10:00:01Z",
+              "role": "assistant",
+              "text": "turn 1"
+            }
+          ],
+          "has_more": false,
+          "total": 6
+        }
+      ]
+    },
+    {
+      "name": "live-tail-append",
+      "agent": "codex",
+      "cwd": "/work",
+      "session_id": "223e4567-e89b-12d3-a456-426614174000",
+      "files": [
+        {
+          "path": ".codex/sessions/2026/08/12/rollout-2026-08-12T10-00-00-223e4567-e89b-12d3-a456-426614174000.jsonl",
+          "jsonl_lines": [
+            "{\"payload\":{\"content\":[{\"text\":\"first\",\"type\":\"input_text\"}],\"role\":\"user\",\"type\":\"message\"},\"timestamp\":\"2026-08-12T10:00:01Z\",\"type\":\"response_item\"}",
+            "{\"payload\":{\"content\":[{\"text\":\"answer one\",\"type\":\"output_text\"}],\"role\":\"assistant\",\"type\":\"message\"},\"timestamp\":\"2026-08-12T10:00:02Z\",\"type\":\"response_item\"}"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "label": "initial",
+          "before": "",
+          "limit": 4,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "1a8e39f024454a8a30486302",
+              "timestamp": "2026-08-12T10:00:01Z",
+              "role": "user",
+              "text": "first"
+            },
+            {
+              "id": "044876655d9c1079c6b45d9d",
+              "timestamp": "2026-08-12T10:00:02Z",
+              "role": "assistant",
+              "text": "answer one"
+            }
+          ],
+          "has_more": false,
+          "total": 2
+        },
+        {
+          "label": "after-append",
+          "append_jsonl_lines": [
+            "{\"payload\":{\"content\":[{\"text\":\"second\",\"type\":\"input_text\"}],\"role\":\"user\",\"type\":\"message\"},\"timestamp\":\"2026-08-12T10:00:03Z\",\"type\":\"response_item\"}",
+            "{\"payload\":{\"content\":[{\"text\":\"answer two\",\"type\":\"output_text\"}],\"role\":\"assistant\",\"type\":\"message\"},\"timestamp\":\"2026-08-12T10:00:04Z\",\"type\":\"response_item\"}"
+          ],
+          "before": "",
+          "limit": 4,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "1a8e39f024454a8a30486302",
+              "timestamp": "2026-08-12T10:00:01Z",
+              "role": "user",
+              "text": "first"
+            },
+            {
+              "id": "044876655d9c1079c6b45d9d",
+              "timestamp": "2026-08-12T10:00:02Z",
+              "role": "assistant",
+              "text": "answer one"
+            },
+            {
+              "id": "e26d0293f1cf848c9621effb",
+              "timestamp": "2026-08-12T10:00:03Z",
+              "role": "user",
+              "text": "second"
+            },
+            {
+              "id": "978785b8879bc47edaa0a136",
+              "timestamp": "2026-08-12T10:00:04Z",
+              "role": "assistant",
+              "text": "answer two"
+            }
+          ],
+          "has_more": false,
+          "total": 4
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,241 @@
+{
+  "format_version": 1,
+  "suite": "conversation.page.hermes",
+  "source": {
+    "repo": "IGUNUBLUE/lerdr",
+    "commit": "d01ec329d2b0e87c536972ae0e49e19ea41c76fc",
+    "package": "internal/conversation",
+    "generator": "page_export_test.go"
+  },
+  "notes": [
+    "entry.id is sha256(raw jsonl line)[:24] for JSONL readers, the message id for opencode, the sqlite rowid for hermes; duplicate identical lines gain a '-N' suffix",
+    "claude continuation-segment entries carry namespaced:true with the raw suffix; the wire id is sha256(sessionID+\"\\x00\"+fileRevision)[:12]+\"-\"+id, and fileRevision is inode-dependent",
+    "next_cursor is the first entry id of the page (the 'before' argument that returns the next-older page); namespaced cursors are flagged",
+    "steps with append_jsonl_lines/append_sql_statements model live tail: content is appended before the step's read",
+    "total is the full visible entry count; truncated marks clamped payloads; source_corrupt marks skipped corrupt rows"
+  ],
+  "vectors": [
+    {
+      "name": "basic-conversation",
+      "comment": "user/assistant rows plus an assistant tool_calls row whose output arrives via a later role=tool row; hidden rows are excluded",
+      "agent": "hermes",
+      "cwd": "/work",
+      "session_id": "20260812_100000_fixture",
+      "sqlite": {
+        "database": "state.db",
+        "statements": [
+          "BEGIN;",
+          "CREATE TABLE sessions(id TEXT PRIMARY KEY,cwd TEXT,title TEXT);\nCREATE TABLE messages(\n id INTEGER PRIMARY KEY AUTOINCREMENT,\n session_id TEXT NOT NULL,\n role TEXT NOT NULL,\n content TEXT,\n tool_call_id TEXT,\n tool_calls TEXT,\n tool_name TEXT,\n timestamp REAL NOT NULL,\n active INTEGER NOT NULL DEFAULT 1,\n compacted INTEGER NOT NULL DEFAULT 0,\n display_kind TEXT\n);",
+          "INSERT INTO sessions VALUES('20260812_100000_fixture','/work','Fixture hermes');",
+          "INSERT INTO messages(session_id,role,content,timestamp,active,compacted) VALUES('20260812_100000_fixture','user','question',100,1,0);",
+          "INSERT INTO messages(session_id,role,content,tool_calls,timestamp,active,compacted) VALUES('20260812_100000_fixture','assistant',char(0)||'json:'||'[{\"type\":\"text\",\"text\":\"answer\"}]','[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"terminal\",\"arguments\":\"{\\\"command\\\":\\\"pwd\\\"}\"}}]',101,1,0);",
+          "INSERT INTO messages(session_id,role,content,tool_call_id,tool_name,timestamp,active,compacted) VALUES('20260812_100000_fixture','tool','command output','call_1','terminal',102,1,0);",
+          "INSERT INTO messages(session_id,role,content,timestamp,active,compacted,display_kind) VALUES('20260812_100000_fixture','user','internal handoff',103,0,1,'hidden');",
+          "COMMIT;"
+        ]
+      },
+      "steps": [
+        {
+          "label": "all",
+          "before": "",
+          "limit": 80,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "1",
+              "timestamp": "1970-01-01T00:01:40Z",
+              "role": "user",
+              "text": "question"
+            },
+            {
+              "id": "2",
+              "timestamp": "1970-01-01T00:01:41Z",
+              "role": "assistant",
+              "text": "answer",
+              "tools": [
+                {
+                  "id": "call_1",
+                  "name": "terminal",
+                  "input": "{\"command\":\"pwd\"}",
+                  "output": "command output"
+                }
+              ]
+            }
+          ],
+          "has_more": false,
+          "total": 2
+        }
+      ]
+    },
+    {
+      "name": "compacted-order",
+      "comment": "compacted rows dedupe against their active copies; logical order is preserved",
+      "agent": "hermes",
+      "cwd": "/work",
+      "session_id": "20260812_100000_fixture",
+      "sqlite": {
+        "database": "state.db",
+        "statements": [
+          "BEGIN;",
+          "CREATE TABLE sessions(id TEXT PRIMARY KEY,cwd TEXT,title TEXT);\nCREATE TABLE messages(\n id INTEGER PRIMARY KEY AUTOINCREMENT,\n session_id TEXT NOT NULL,\n role TEXT NOT NULL,\n content TEXT,\n tool_call_id TEXT,\n tool_calls TEXT,\n tool_name TEXT,\n timestamp REAL NOT NULL,\n active INTEGER NOT NULL DEFAULT 1,\n compacted INTEGER NOT NULL DEFAULT 0,\n display_kind TEXT\n);",
+          "INSERT INTO sessions VALUES('20260812_100000_fixture','/work','Compacted');",
+          "INSERT INTO messages(session_id,role,content,timestamp,active,compacted) VALUES\n\t\t\t ('20260812_100000_fixture','assistant','A',100,0,1),\n\t\t\t ('20260812_100000_fixture','assistant','B',100,0,1),\n\t\t\t ('20260812_100000_fixture','assistant','C',100,1,0),\n\t\t\t ('20260812_100000_fixture','assistant','A',100,1,0),\n\t\t\t ('20260812_100000_fixture','assistant','B',100,1,0);",
+          "COMMIT;"
+        ]
+      },
+      "steps": [
+        {
+          "label": "all",
+          "before": "",
+          "limit": 80,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "1",
+              "timestamp": "1970-01-01T00:01:40Z",
+              "role": "assistant",
+              "text": "A"
+            },
+            {
+              "id": "2",
+              "timestamp": "1970-01-01T00:01:40Z",
+              "role": "assistant",
+              "text": "B"
+            },
+            {
+              "id": "3",
+              "timestamp": "1970-01-01T00:01:40Z",
+              "role": "assistant",
+              "text": "C"
+            }
+          ],
+          "has_more": false,
+          "total": 3
+        },
+        {
+          "label": "paged-latest",
+          "before": "",
+          "limit": 1,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "3",
+              "timestamp": "1970-01-01T00:01:40Z",
+              "role": "assistant",
+              "text": "C"
+            }
+          ],
+          "has_more": true,
+          "total": 3,
+          "next_cursor": "3"
+        },
+        {
+          "label": "paged-older",
+          "before": "",
+          "before_step": 1,
+          "limit": 1,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "2",
+              "timestamp": "1970-01-01T00:01:40Z",
+              "role": "assistant",
+              "text": "B"
+            }
+          ],
+          "has_more": true,
+          "total": 3,
+          "next_cursor": "2"
+        }
+      ]
+    },
+    {
+      "name": "live-tail-append",
+      "agent": "hermes",
+      "cwd": "/work",
+      "session_id": "20260812_100000_fixture",
+      "sqlite": {
+        "database": "state.db",
+        "statements": [
+          "BEGIN;",
+          "CREATE TABLE sessions(id TEXT PRIMARY KEY,cwd TEXT,title TEXT);\nCREATE TABLE messages(\n id INTEGER PRIMARY KEY AUTOINCREMENT,\n session_id TEXT NOT NULL,\n role TEXT NOT NULL,\n content TEXT,\n tool_call_id TEXT,\n tool_calls TEXT,\n tool_name TEXT,\n timestamp REAL NOT NULL,\n active INTEGER NOT NULL DEFAULT 1,\n compacted INTEGER NOT NULL DEFAULT 0,\n display_kind TEXT\n);",
+          "INSERT INTO sessions VALUES('20260812_100000_fixture','/work','Tail');",
+          "INSERT INTO messages(session_id,role,content,timestamp,active,compacted) VALUES('20260812_100000_fixture','user','first',100,1,0);",
+          "COMMIT;"
+        ]
+      },
+      "steps": [
+        {
+          "label": "initial",
+          "before": "",
+          "limit": 4,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "1",
+              "timestamp": "1970-01-01T00:01:40Z",
+              "role": "user",
+              "text": "first"
+            }
+          ],
+          "has_more": false,
+          "total": 1
+        },
+        {
+          "label": "after-append",
+          "append_sql_statements": [
+            "INSERT INTO messages(session_id,role,content,timestamp,active,compacted) VALUES('20260812_100000_fixture','assistant','appended',101,1,0);"
+          ],
+          "before": "",
+          "limit": 4,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "1",
+              "timestamp": "1970-01-01T00:01:40Z",
+              "role": "user",
+              "text": "first"
+            },
+            {
+              "id": "2",
+              "timestamp": "1970-01-01T00:01:41Z",
+              "role": "assistant",
+              "text": "appended"
+            }
+          ],
+          "has_more": false,
+          "total": 2
+        }
+      ]
+    },
+    {
+      "name": "corrupt-rows",
+      "comment": "a malformed tool_calls payload flips source_corrupt and leaves no entries",
+      "agent": "hermes",
+      "cwd": "/work",
+      "session_id": "20260812_100000_fixture",
+      "sqlite": {
+        "database": "state.db",
+        "statements": [
+          "BEGIN;",
+          "CREATE TABLE sessions(id TEXT PRIMARY KEY,cwd TEXT,title TEXT);\nCREATE TABLE messages(\n id INTEGER PRIMARY KEY AUTOINCREMENT,\n session_id TEXT NOT NULL,\n role TEXT NOT NULL,\n content TEXT,\n tool_call_id TEXT,\n tool_calls TEXT,\n tool_name TEXT,\n timestamp REAL NOT NULL,\n active INTEGER NOT NULL DEFAULT 1,\n compacted INTEGER NOT NULL DEFAULT 0,\n display_kind TEXT\n);",
+          "INSERT INTO sessions VALUES('20260812_100000_fixture','/work','Corrupt');",
+          "INSERT INTO messages(session_id,role,content,tool_calls,timestamp,active,compacted) VALUES('20260812_100000_fixture','assistant','', 'not-json',100,1,0);",
+          "COMMIT;"
+        ]
+      },
+      "steps": [
+        {
+          "label": "all",
+          "before": "",
+          "limit": 80,
+          "available": true,
+          "expected_entries": [],
+          "has_more": false,
+          "total": 1,
+          "source_corrupt": true
+        }
+      ]
+    }
+  ]
+}

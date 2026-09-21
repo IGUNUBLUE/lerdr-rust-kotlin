@@ -1,0 +1,170 @@
+{
+  "format_version": 1,
+  "suite": "conversation.page.qoder",
+  "source": {
+    "repo": "IGUNUBLUE/lerdr",
+    "commit": "d01ec329d2b0e87c536972ae0e49e19ea41c76fc",
+    "package": "internal/conversation",
+    "generator": "page_export_test.go"
+  },
+  "notes": [
+    "entry.id is sha256(raw jsonl line)[:24] for JSONL readers, the message id for opencode, the sqlite rowid for hermes; duplicate identical lines gain a '-N' suffix",
+    "claude continuation-segment entries carry namespaced:true with the raw suffix; the wire id is sha256(sessionID+\"\\x00\"+fileRevision)[:12]+\"-\"+id, and fileRevision is inode-dependent",
+    "next_cursor is the first entry id of the page (the 'before' argument that returns the next-older page); namespaced cursors are flagged",
+    "steps with append_jsonl_lines/append_sql_statements model live tail: content is appended before the step's read",
+    "total is the full visible entry count; truncated marks clamped payloads; source_corrupt marks skipped corrupt rows"
+  ],
+  "vectors": [
+    {
+      "name": "basic-conversation",
+      "comment": "qoder uses the claude record grammar; includes a tool_use/tool_result pair and filtered system text",
+      "agent": "qodercli",
+      "cwd": "/work",
+      "session_id": "323e4567-e89b-12d3-a456-426614174000",
+      "files": [
+        {
+          "path": ".qoder/projects/-work/323e4567-e89b-12d3-a456-426614174000.jsonl",
+          "jsonl_lines": [
+            "{\"message\":{\"content\":\"add a flag\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"user\",\"uuid\":\"u1\"}",
+            "{\"message\":{\"content\":[{\"text\":\"Editing the flag parser.\",\"type\":\"text\"},{\"id\":\"toolu_q1\",\"input\":{\"file\":\"flags.go\"},\"name\":\"Edit\",\"type\":\"tool_use\"}]},\"timestamp\":\"2026-08-12T10:00:01Z\",\"type\":\"assistant\",\"uuid\":\"a1\"}",
+            "{\"message\":{\"content\":[{\"content\":\"edited\",\"tool_use_id\":\"toolu_q1\",\"type\":\"tool_result\"}]},\"type\":\"user\",\"uuid\":\"u2\"}",
+            "{\"message\":{\"content\":\"\\u003csystem-reminder\\u003einternal\\u003c/system-reminder\\u003e\"},\"type\":\"user\",\"uuid\":\"u3\"}",
+            "{\"message\":{\"content\":[{\"text\":\"Done.\",\"type\":\"text\"}]},\"timestamp\":\"2026-08-12T10:00:02Z\",\"type\":\"assistant\",\"uuid\":\"a2\"}"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "label": "all",
+          "before": "",
+          "limit": 80,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "3a91057808623a916936c74a",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "user",
+              "text": "add a flag"
+            },
+            {
+              "id": "9439a7b2f61d1c3c1d108d2e",
+              "timestamp": "2026-08-12T10:00:01Z",
+              "role": "assistant",
+              "text": "Editing the flag parser.",
+              "tools": [
+                {
+                  "id": "toolu_q1",
+                  "name": "Edit",
+                  "input": "{\"file\":\"flags.go\"}",
+                  "output": "edited"
+                }
+              ]
+            },
+            {
+              "id": "f24d9da2d85d70f28994f2e5",
+              "timestamp": "2026-08-12T10:00:02Z",
+              "role": "assistant",
+              "text": "Done."
+            }
+          ],
+          "has_more": false,
+          "total": 3
+        }
+      ]
+    },
+    {
+      "name": "pagination-and-tail",
+      "comment": "five turns; second page uses the first page's leading id as before",
+      "agent": "qodercli",
+      "cwd": "/work",
+      "session_id": "323e4567-e89b-12d3-a456-426614174000",
+      "files": [
+        {
+          "path": ".qoder/projects/-work/323e4567-e89b-12d3-a456-426614174000.jsonl",
+          "jsonl_lines": [
+            "{\"message\":{\"content\":\"turn 0\"},\"timestamp\":\"2026-08-12T10:01:00Z\",\"type\":\"user\",\"uuid\":\"r0\"}",
+            "{\"message\":{\"content\":\"turn 1\"},\"timestamp\":\"2026-08-12T10:01:01Z\",\"type\":\"assistant\",\"uuid\":\"r1\"}",
+            "{\"message\":{\"content\":\"turn 2\"},\"timestamp\":\"2026-08-12T10:01:02Z\",\"type\":\"user\",\"uuid\":\"r2\"}",
+            "{\"message\":{\"content\":\"turn 3\"},\"timestamp\":\"2026-08-12T10:01:03Z\",\"type\":\"assistant\",\"uuid\":\"r3\"}",
+            "{\"message\":{\"content\":\"turn 4\"},\"timestamp\":\"2026-08-12T10:01:04Z\",\"type\":\"user\",\"uuid\":\"r4\"}"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "label": "first-page",
+          "before": "",
+          "limit": 2,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "4771eedc095b3e942817fa4d",
+              "timestamp": "2026-08-12T10:01:03Z",
+              "role": "assistant",
+              "text": "turn 3"
+            },
+            {
+              "id": "1e834b90b798c6bab4c8b46b",
+              "timestamp": "2026-08-12T10:01:04Z",
+              "role": "user",
+              "text": "turn 4"
+            }
+          ],
+          "has_more": true,
+          "total": 5,
+          "next_cursor": "4771eedc095b3e942817fa4d"
+        },
+        {
+          "label": "second-page",
+          "before": "",
+          "before_step": 0,
+          "limit": 2,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "caefb844e68a78fc95ee577d",
+              "timestamp": "2026-08-12T10:01:01Z",
+              "role": "assistant",
+              "text": "turn 1"
+            },
+            {
+              "id": "807b519a5adb4f3241ef2a94",
+              "timestamp": "2026-08-12T10:01:02Z",
+              "role": "user",
+              "text": "turn 2"
+            }
+          ],
+          "has_more": true,
+          "total": 5,
+          "next_cursor": "caefb844e68a78fc95ee577d"
+        },
+        {
+          "label": "after-append",
+          "append_jsonl_lines": [
+            "{\"message\":{\"content\":\"appended answer\"},\"timestamp\":\"2026-08-12T10:02:00Z\",\"type\":\"assistant\",\"uuid\":\"a9\"}"
+          ],
+          "before": "",
+          "limit": 2,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "1e834b90b798c6bab4c8b46b",
+              "timestamp": "2026-08-12T10:01:04Z",
+              "role": "user",
+              "text": "turn 4"
+            },
+            {
+              "id": "bdc6de66fb1e779ce47eaa9b",
+              "timestamp": "2026-08-12T10:02:00Z",
+              "role": "assistant",
+              "text": "appended answer"
+            }
+          ],
+          "has_more": true,
+          "total": 6,
+          "next_cursor": "1e834b90b798c6bab4c8b46b"
+        }
+      ]
+    }
+  ]
+}

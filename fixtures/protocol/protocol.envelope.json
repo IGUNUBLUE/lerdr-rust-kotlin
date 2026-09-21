@@ -1,0 +1,928 @@
+{
+  "format_version": 1,
+  "suite": "protocol.envelope",
+  "source": {
+    "repo": "IGUNUBLUE/lerdr",
+    "commit": "d01ec329d2b0e87c536972ae0e49e19ea41c76fc",
+    "package": "internal/protocol",
+    "generator": "envelope_export_test.go"
+  },
+  "vectors": [
+    {
+      "name": "acknowledge_pane",
+      "comment": "wire form from contracts/fixtures/inbound/acknowledge_pane.json",
+      "type": "acknowledge_pane",
+      "direction": "c2s",
+      "json": "{\"action\":\"acknowledge_pane\",\"pane_id\":\"pane-1\",\"protocol\":3,\"request_id\":\"req-006\",\"type\":\"command\"}",
+      "decoded_json": "{\"type\":\"acknowledge_pane\",\"protocol\":3,\"request_id\":\"req-006\",\"pane_id\":\"pane-1\"}"
+    },
+    {
+      "name": "agent_clear",
+      "comment": "wire form from contracts/fixtures/inbound/agent_clear.json",
+      "type": "agent_clear",
+      "direction": "c2s",
+      "json": "{\"action\":\"agent_clear\",\"pane_id\":\"pane-1\",\"protocol\":3,\"request_id\":\"req-005\",\"type\":\"command\"}",
+      "decoded_json": "{\"type\":\"agent_clear\",\"protocol\":3,\"request_id\":\"req-005\",\"pane_id\":\"pane-1\"}"
+    },
+    {
+      "name": "agent_rename",
+      "comment": "wire form from contracts/fixtures/inbound/agent_rename.json",
+      "type": "agent_rename",
+      "direction": "c2s",
+      "json": "{\"name\":\"123\",\"pane_id\":\"pane-1\",\"protocol\":3,\"request_id\":\"req-rename\",\"type\":\"agent_rename\"}",
+      "decoded_json": "{\"type\":\"agent_rename\",\"protocol\":3,\"request_id\":\"req-rename\",\"pane_id\":\"pane-1\",\"name\":\"123\"}"
+    },
+    {
+      "name": "agent_restart",
+      "comment": "wire form from contracts/fixtures/inbound/agent_restart.json",
+      "type": "agent_restart",
+      "direction": "c2s",
+      "json": "{\"pane_id\":\"pane-1\",\"protocol\":3,\"request_id\":\"req-restart\",\"type\":\"agent_restart\"}",
+      "decoded_json": "{\"type\":\"agent_restart\",\"protocol\":3,\"request_id\":\"req-restart\",\"pane_id\":\"pane-1\"}"
+    },
+    {
+      "name": "agent_start",
+      "comment": "wire form from contracts/fixtures/inbound/agent_start.json",
+      "type": "agent_start",
+      "direction": "c2s",
+      "json": "{\"action\":\"agent_start\",\"cwd\":\"/home/user/project\",\"name\":\"fix-bug\",\"profile_id\":\"claude\",\"prompt\":\"Fix the failing test\",\"protocol\":3,\"request_id\":\"req-004\",\"type\":\"command\",\"workspace_id\":\"w1\"}",
+      "decoded_json": "{\"type\":\"agent_start\",\"protocol\":3,\"request_id\":\"req-004\",\"name\":\"fix-bug\",\"profile_id\":\"claude\",\"workspace_id\":\"w1\",\"cwd\":\"/home/user/project\",\"prompt\":\"Fix the failing test\"}"
+    },
+    {
+      "name": "agent_stop",
+      "comment": "wire form from contracts/fixtures/inbound/agent_stop.json",
+      "type": "agent_stop",
+      "direction": "c2s",
+      "json": "{\"pane_id\":\"pane-1\",\"protocol\":3,\"request_id\":\"req-stop\",\"type\":\"agent_stop\"}",
+      "decoded_json": "{\"type\":\"agent_stop\",\"protocol\":3,\"request_id\":\"req-stop\",\"pane_id\":\"pane-1\"}"
+    },
+    {
+      "name": "answer_question",
+      "comment": "wire form from contracts/fixtures/inbound/answer_question.json",
+      "type": "answer_question",
+      "direction": "c2s",
+      "json": "{\"interaction_id\":\"interaction-1\",\"other_selected\":false,\"other_text\":\"\",\"pane_id\":\"pane-1\",\"protocol\":3,\"request_id\":\"req-question-answer\",\"selected_indices\":[0],\"type\":\"answer_question\"}",
+      "decoded_json": "{\"type\":\"answer_question\",\"protocol\":3,\"request_id\":\"req-question-answer\",\"pane_id\":\"pane-1\",\"interaction_id\":\"interaction-1\",\"selected_indices\":[0]}"
+    },
+    {
+      "name": "cancel_speech",
+      "comment": "wire form from contracts/fixtures/inbound/cancel_speech.json",
+      "type": "cancel_speech",
+      "direction": "c2s",
+      "json": "{\"pane_id\":\"pane-1\",\"protocol\":3,\"speech_request_id\":\"speech-1\",\"target\":{\"agent_session_id\":\"agent-session-1\",\"generation\":4,\"pane_id\":\"pane-1\",\"server_session_id\":\"primary\",\"terminal_id\":\"terminal-1\"},\"type\":\"cancel_speech\"}",
+      "decoded_json": "{\"type\":\"cancel_speech\",\"protocol\":3,\"target\":{\"server_session_id\":\"primary\",\"pane_id\":\"pane-1\",\"terminal_id\":\"terminal-1\",\"generation\":4,\"agent_session_id\":\"agent-session-1\"},\"pane_id\":\"pane-1\"}"
+    },
+    {
+      "name": "check_update",
+      "comment": "wire form from contracts/fixtures/inbound/check_update.json",
+      "type": "check_update",
+      "direction": "c2s",
+      "json": "{\"request_id\":\"req-check-update\",\"type\":\"check_update\"}",
+      "decoded_json": "{\"type\":\"check_update\",\"protocol\":0,\"request_id\":\"req-check-update\"}"
+    },
+    {
+      "name": "clarify_question",
+      "comment": "wire form from contracts/fixtures/inbound/clarify_question.json",
+      "type": "clarify_question",
+      "direction": "c2s",
+      "json": "{\"interaction_id\":\"interaction-3\",\"pane_id\":\"pane-1\",\"protocol\":3,\"request_id\":\"req-question-chat\",\"type\":\"clarify_question\"}",
+      "decoded_json": "{\"type\":\"clarify_question\",\"protocol\":3,\"request_id\":\"req-question-chat\",\"pane_id\":\"pane-1\",\"interaction_id\":\"interaction-3\"}"
+    },
+    {
+      "name": "clear_activities",
+      "comment": "wire form from contracts/fixtures/inbound/clear_activities.json",
+      "type": "clear_activities",
+      "direction": "c2s",
+      "json": "{\"protocol\":3,\"request_id\":\"req-clear-activities\",\"type\":\"clear_activities\"}",
+      "decoded_json": "{\"type\":\"clear_activities\",\"protocol\":3,\"request_id\":\"req-clear-activities\"}"
+    },
+    {
+      "name": "copy_agent_response",
+      "comment": "synthesized canonical envelope",
+      "type": "copy_agent_response",
+      "direction": "c2s",
+      "json": "{\"pane_id\":\"pane-1\",\"protocol\":3,\"request_id\":\"req-copy\",\"type\":\"copy_agent_response\"}",
+      "decoded_json": "{\"type\":\"copy_agent_response\",\"protocol\":3,\"request_id\":\"req-copy\",\"pane_id\":\"pane-1\"}"
+    },
+    {
+      "name": "create_device_invitation",
+      "comment": "synthesized canonical envelope",
+      "type": "create_device_invitation",
+      "direction": "c2s",
+      "json": "{\"name\":\"Kitchen tablet\",\"protocol\":3,\"request_id\":\"req-invite\",\"role\":\"reader\",\"type\":\"create_device_invitation\"}",
+      "decoded_json": "{\"type\":\"create_device_invitation\",\"protocol\":3,\"request_id\":\"req-invite\",\"name\":\"Kitchen tablet\",\"role\":\"reader\"}"
+    },
+    {
+      "name": "deploy_app_update",
+      "comment": "wire form from contracts/fixtures/inbound/deploy_app_update.json",
+      "type": "deploy_app_update",
+      "direction": "c2s",
+      "json": "{\"expected_origin\":\"https://app.example.test\",\"expected_revision\":\"0123456789abcdef0123456789abcdef01234567\",\"expected_version\":\"0.9.0\",\"protocol\":3,\"request_id\":\"req-deploy\",\"type\":\"deploy_app_update\"}",
+      "decoded_json": "{\"type\":\"deploy_app_update\",\"protocol\":3,\"request_id\":\"req-deploy\",\"expected_origin\":\"https://app.example.test\",\"expected_version\":\"0.9.0\",\"expected_revision\":\"0123456789abcdef0123456789abcdef01234567\"}"
+    },
+    {
+      "name": "device_list",
+      "comment": "synthesized canonical envelope",
+      "type": "device_list",
+      "direction": "c2s",
+      "json": "{\"protocol\":3,\"request_id\":\"req-devices\",\"type\":\"device_list\"}",
+      "decoded_json": "{\"type\":\"device_list\",\"protocol\":3,\"request_id\":\"req-devices\"}"
+    },
+    {
+      "name": "get_activity",
+      "comment": "wire form from contracts/fixtures/inbound/get_activity.json",
+      "type": "get_activity",
+      "direction": "c2s",
+      "json": "{\"limit\":500,\"type\":\"get_activity\"}",
+      "decoded_json": "{\"type\":\"get_activity\",\"protocol\":0,\"limit\":500}"
+    },
+    {
+      "name": "get_conversation_history",
+      "comment": "synthesized canonical envelope",
+      "type": "get_conversation_history",
+      "direction": "c2s",
+      "json": "{\"cursor\":\"cursor-abc\",\"limit\":50,\"pane_id\":\"pane-1\",\"protocol\":3,\"request_id\":\"req-conv\",\"type\":\"get_conversation_history\"}",
+      "decoded_json": "{\"type\":\"get_conversation_history\",\"protocol\":3,\"request_id\":\"req-conv\",\"pane_id\":\"pane-1\",\"cursor\":\"cursor-abc\",\"limit\":50}"
+    },
+    {
+      "name": "install_update",
+      "comment": "wire form from contracts/fixtures/inbound/install_update.json",
+      "type": "install_update",
+      "direction": "c2s",
+      "json": "{\"expected_origin\":\"https://app.example.test\",\"expected_revision\":\"0123456789abcdef0123456789abcdef01234567\",\"expected_version\":\"0.9.0\",\"request_id\":\"req-install-update\",\"type\":\"install_update\"}",
+      "decoded_json": "{\"type\":\"install_update\",\"protocol\":0,\"request_id\":\"req-install-update\",\"expected_origin\":\"https://app.example.test\",\"expected_version\":\"0.9.0\",\"expected_revision\":\"0123456789abcdef0123456789abcdef01234567\"}"
+    },
+    {
+      "name": "lease_pane_size",
+      "comment": "wire form from contracts/fixtures/inbound/lease_pane_size.json",
+      "type": "lease_pane_size",
+      "direction": "c2s",
+      "json": "{\"columns\":84,\"pane_id\":\"pane-1\",\"protocol\":3,\"request_id\":\"req-lease-size\",\"rows\":48,\"type\":\"lease_pane_size\"}",
+      "decoded_json": "{\"type\":\"lease_pane_size\",\"protocol\":3,\"request_id\":\"req-lease-size\",\"pane_id\":\"pane-1\",\"columns\":84,\"rows\":48}"
+    },
+    {
+      "name": "list_directories",
+      "comment": "wire form from contracts/fixtures/inbound/list_directories.json",
+      "type": "list_directories",
+      "direction": "c2s",
+      "json": "{\"path\":\"/home/user/project\",\"request_id\":\"req-directories\",\"type\":\"list_directories\"}",
+      "decoded_json": "{\"type\":\"list_directories\",\"protocol\":0,\"request_id\":\"req-directories\",\"path\":\"/home/user/project\"}"
+    },
+    {
+      "name": "list_slash_commands",
+      "comment": "wire form from contracts/fixtures/inbound/list_slash_commands.json",
+      "type": "list_slash_commands",
+      "direction": "c2s",
+      "json": "{\"pane_id\":\"pane-1\",\"request_id\":\"req-commands\",\"type\":\"list_slash_commands\"}",
+      "decoded_json": "{\"type\":\"list_slash_commands\",\"protocol\":0,\"request_id\":\"req-commands\",\"pane_id\":\"pane-1\"}"
+    },
+    {
+      "name": "navigate_question",
+      "comment": "wire form from contracts/fixtures/inbound/navigate_question.json",
+      "type": "navigate_question",
+      "direction": "c2s",
+      "json": "{\"direction\":\"previous\",\"interaction_id\":\"interaction-2\",\"pane_id\":\"pane-1\",\"protocol\":3,\"request_id\":\"req-question-navigate\",\"type\":\"navigate_question\"}",
+      "decoded_json": "{\"type\":\"navigate_question\",\"protocol\":3,\"request_id\":\"req-question-navigate\",\"pane_id\":\"pane-1\",\"interaction_id\":\"interaction-2\",\"direction\":\"previous\"}"
+    },
+    {
+      "name": "pane_applied",
+      "comment": "synthesized canonical envelope",
+      "type": "pane_applied",
+      "direction": "c2s",
+      "json": "{\"content_fingerprint\":\"0123456789abcdef\",\"pane_id\":\"pane-1\",\"protocol\":3,\"request_id\":\"req-applied\",\"type\":\"pane_applied\"}",
+      "decoded_json": "{\"type\":\"pane_applied\",\"protocol\":3,\"request_id\":\"req-applied\",\"pane_id\":\"pane-1\"}"
+    },
+    {
+      "name": "push_open_ref",
+      "comment": "synthesized canonical envelope",
+      "type": "push_open_ref",
+      "direction": "c2s",
+      "json": "{\"event_ref\":\"v1.abcdef0123456789.signature\",\"protocol\":3,\"request_id\":\"req-open-ref\",\"type\":\"push_open_ref\"}",
+      "decoded_json": "{\"type\":\"push_open_ref\",\"protocol\":3,\"request_id\":\"req-open-ref\",\"event_ref\":\"v1.abcdef0123456789.signature\"}"
+    },
+    {
+      "name": "push_policy_get",
+      "comment": "synthesized canonical envelope",
+      "type": "push_policy_get",
+      "direction": "c2s",
+      "json": "{\"protocol\":3,\"request_id\":\"req-policy-get\",\"type\":\"push_policy_get\"}",
+      "decoded_json": "{\"type\":\"push_policy_get\",\"protocol\":3,\"request_id\":\"req-policy-get\"}"
+    },
+    {
+      "name": "push_policy_set",
+      "comment": "synthesized canonical envelope",
+      "type": "push_policy_set",
+      "direction": "c2s",
+      "json": "{\"policy\":{\"categories\":{\"attention\":true,\"question\":true,\"test\":false},\"cooldown_ms\":60000,\"settle_ms\":1500,\"snoozed\":false,\"update_once\":false},\"protocol\":3,\"request_id\":\"req-policy-set\",\"type\":\"push_policy_set\"}",
+      "decoded_json": "{\"type\":\"push_policy_set\",\"protocol\":3,\"request_id\":\"req-policy-set\",\"policy\":{\"categories\":{\"attention\":true,\"question\":true,\"test\":false},\"cooldown_ms\":60000,\"settle_ms\":1500,\"snoozed\":false,\"update_once\":false}}"
+    },
+    {
+      "name": "push_snooze",
+      "comment": "synthesized canonical envelope",
+      "type": "push_snooze",
+      "direction": "c2s",
+      "json": "{\"protocol\":3,\"request_id\":\"req-snooze\",\"snooze_until\":\"2026-01-02T03:04:05Z\",\"snoozed\":true,\"type\":\"push_snooze\"}",
+      "decoded_json": "{\"type\":\"push_snooze\",\"protocol\":3,\"request_id\":\"req-snooze\",\"snooze_until\":\"2026-01-02T03:04:05Z\",\"snoozed\":true}"
+    },
+    {
+      "name": "push_subscribe",
+      "comment": "wire form from contracts/fixtures/inbound/push_subscribe.json",
+      "type": "push_subscribe",
+      "direction": "c2s",
+      "json": "{\"client_id\":\"device-1:relay-1\",\"notify_finished\":true,\"protocol\":3,\"replace_endpoints\":[],\"subscription\":{\"endpoint\":\"https://push.example.test/subscription\",\"keys\":{\"auth\":\"test-auth\",\"p256dh\":\"test-p256dh\"}},\"type\":\"push_subscribe\"}",
+      "decoded_json": "{\"type\":\"push_subscribe\",\"protocol\":3,\"client_id\":\"device-1:relay-1\",\"notify_finished\":true,\"subscription\":{\"endpoint\":\"https://push.example.test/subscription\",\"keys\":{\"auth\":\"test-auth\",\"p256dh\":\"test-p256dh\"}}}"
+    },
+    {
+      "name": "push_test_device",
+      "comment": "synthesized canonical envelope",
+      "type": "push_test_device",
+      "direction": "c2s",
+      "json": "{\"protocol\":3,\"request_id\":\"req-push-test\",\"type\":\"push_test_device\"}",
+      "decoded_json": "{\"type\":\"push_test_device\",\"protocol\":3,\"request_id\":\"req-push-test\"}"
+    },
+    {
+      "name": "push_unsubscribe",
+      "comment": "wire form from contracts/fixtures/inbound/push_unsubscribe.json",
+      "type": "push_unsubscribe",
+      "direction": "c2s",
+      "json": "{\"client_id\":\"device-1:relay-1\",\"endpoints\":[\"https://push.example.test/subscription\"],\"protocol\":3,\"type\":\"push_unsubscribe\"}",
+      "decoded_json": "{\"type\":\"push_unsubscribe\",\"protocol\":3,\"client_id\":\"device-1:relay-1\",\"endpoints\":[\"https://push.example.test/subscription\"]}"
+    },
+    {
+      "name": "push_viewed_pane",
+      "comment": "synthesized canonical envelope",
+      "type": "push_viewed_pane",
+      "direction": "c2s",
+      "json": "{\"protocol\":3,\"request_id\":\"req-viewed\",\"target\":{\"agent_session_id\":\"agent-session-1\",\"generation\":2,\"pane_id\":\"pane-1\",\"server_session_id\":\"primary\",\"terminal_id\":\"terminal-1\"},\"type\":\"push_viewed_pane\",\"unlocked\":true,\"visible\":true}",
+      "decoded_json": "{\"type\":\"push_viewed_pane\",\"protocol\":3,\"request_id\":\"req-viewed\",\"target\":{\"server_session_id\":\"primary\",\"pane_id\":\"pane-1\",\"terminal_id\":\"terminal-1\",\"generation\":2,\"agent_session_id\":\"agent-session-1\"},\"visible\":true,\"unlocked\":true}"
+    },
+    {
+      "name": "qr_code",
+      "comment": "synthesized canonical envelope",
+      "type": "qr_code",
+      "direction": "c2s",
+      "json": "{\"protocol\":3,\"request_id\":\"req-qr\",\"text\":\"lerdr://pair#secret\",\"type\":\"qr_code\"}",
+      "decoded_json": "{\"type\":\"qr_code\",\"protocol\":3,\"request_id\":\"req-qr\",\"text\":\"lerdr://pair#secret\"}"
+    },
+    {
+      "name": "read_pane",
+      "comment": "wire form from contracts/fixtures/inbound/read_pane.json",
+      "type": "read_pane",
+      "direction": "c2s",
+      "json": "{\"format\":\"ansi\",\"lines\":80,\"pane_id\":\"pane-1\",\"request_id\":\"req-read\",\"type\":\"read_pane\"}",
+      "decoded_json": "{\"type\":\"read_pane\",\"protocol\":0,\"request_id\":\"req-read\",\"pane_id\":\"pane-1\",\"lines\":80,\"format\":\"ansi\"}"
+    },
+    {
+      "name": "refresh_agents",
+      "comment": "wire form from contracts/fixtures/inbound/refresh_agents.json",
+      "type": "refresh_agents",
+      "direction": "c2s",
+      "json": "{\"type\":\"refresh_agents\"}",
+      "decoded_json": "{\"type\":\"refresh_agents\",\"protocol\":0}"
+    },
+    {
+      "name": "register_app_origin",
+      "comment": "wire form from contracts/fixtures/inbound/register_app_origin.json",
+      "type": "register_app_origin",
+      "direction": "c2s",
+      "json": "{\"origin\":\"https://app.example.test\",\"protocol\":3,\"type\":\"register_app_origin\"}",
+      "decoded_json": "{\"type\":\"register_app_origin\",\"protocol\":3,\"origin\":\"https://app.example.test\"}"
+    },
+    {
+      "name": "release_pane_size",
+      "comment": "wire form from contracts/fixtures/inbound/release_pane_size.json",
+      "type": "release_pane_size",
+      "direction": "c2s",
+      "json": "{\"pane_id\":\"pane-1\",\"protocol\":3,\"request_id\":\"req-release-size\",\"type\":\"release_pane_size\"}",
+      "decoded_json": "{\"type\":\"release_pane_size\",\"protocol\":3,\"request_id\":\"req-release-size\",\"pane_id\":\"pane-1\"}"
+    },
+    {
+      "name": "rename_device",
+      "comment": "synthesized canonical envelope",
+      "type": "rename_device",
+      "direction": "c2s",
+      "json": "{\"device_id\":\"device-1\",\"name\":\"Work phone\",\"protocol\":3,\"request_id\":\"req-rename\",\"type\":\"rename_device\"}",
+      "decoded_json": "{\"type\":\"rename_device\",\"protocol\":3,\"request_id\":\"req-rename\",\"name\":\"Work phone\",\"device_id\":\"device-1\"}"
+    },
+    {
+      "name": "reset_devices",
+      "comment": "synthesized canonical envelope",
+      "type": "reset_devices",
+      "direction": "c2s",
+      "json": "{\"protocol\":3,\"request_id\":\"req-reset\",\"type\":\"reset_devices\"}",
+      "decoded_json": "{\"type\":\"reset_devices\",\"protocol\":3,\"request_id\":\"req-reset\"}"
+    },
+    {
+      "name": "respond",
+      "comment": "wire form from contracts/fixtures/inbound/approval.json",
+      "type": "respond",
+      "direction": "c2s",
+      "json": "{\"action\":\"respond\",\"approval_fingerprint\":\"5105fbe5b6e54a57b38dbf8bd73848409bbcfacbb4c055879bdb8e30c7cc46f8\",\"choice\":\"Approve once\",\"event_id\":\"evt-abc123\",\"index\":0,\"pane_id\":\"pane-1\",\"protocol\":3,\"request_id\":\"req-003\",\"total\":2,\"type\":\"command\"}",
+      "decoded_json": "{\"type\":\"respond\",\"protocol\":3,\"request_id\":\"req-003\",\"pane_id\":\"pane-1\",\"event_id\":\"evt-abc123\",\"approval_fingerprint\":\"5105fbe5b6e54a57b38dbf8bd73848409bbcfacbb4c055879bdb8e30c7cc46f8\",\"choice\":\"Approve once\",\"index\":0,\"total\":2}"
+    },
+    {
+      "name": "revoke_device",
+      "comment": "synthesized canonical envelope",
+      "type": "revoke_device",
+      "direction": "c2s",
+      "json": "{\"device_id\":\"device-1\",\"protocol\":3,\"request_id\":\"req-revoke\",\"type\":\"revoke_device\"}",
+      "decoded_json": "{\"type\":\"revoke_device\",\"protocol\":3,\"request_id\":\"req-revoke\",\"device_id\":\"device-1\"}"
+    },
+    {
+      "name": "send_input",
+      "comment": "synthesized canonical envelope",
+      "type": "send_input",
+      "direction": "c2s",
+      "json": "{\"keys\":[\"Enter\"],\"pane_id\":\"pane-1\",\"protocol\":3,\"request_id\":\"req-input\",\"text\":\"y\",\"type\":\"send_input\"}",
+      "decoded_json": "{\"type\":\"send_input\",\"protocol\":3,\"request_id\":\"req-input\",\"pane_id\":\"pane-1\",\"text\":\"y\",\"keys\":[\"Enter\"]}"
+    },
+    {
+      "name": "send_keys",
+      "comment": "wire form from contracts/fixtures/inbound/keys.json",
+      "type": "send_keys",
+      "direction": "c2s",
+      "json": "{\"action\":\"send_keys\",\"keys\":[\"Enter\"],\"pane_id\":\"pane-1\",\"protocol\":3,\"request_id\":\"req-002\",\"type\":\"command\"}",
+      "decoded_json": "{\"type\":\"send_keys\",\"protocol\":3,\"request_id\":\"req-002\",\"pane_id\":\"pane-1\",\"keys\":[\"Enter\"]}"
+    },
+    {
+      "name": "send_secret",
+      "comment": "wire form from contracts/fixtures/inbound/send_secret.json",
+      "type": "send_secret",
+      "direction": "c2s",
+      "json": "{\"pane_id\":\"pane-1\",\"protocol\":3,\"request_id\":\"req-secret\",\"text\":\"correct horse\",\"type\":\"send_secret\"}",
+      "decoded_json": "{\"type\":\"send_secret\",\"protocol\":3,\"request_id\":\"req-secret\",\"pane_id\":\"pane-1\",\"text\":\"correct horse\"}"
+    },
+    {
+      "name": "send_text",
+      "comment": "wire form from contracts/fixtures/inbound/send_text.json",
+      "type": "send_text",
+      "direction": "c2s",
+      "json": "{\"pane_id\":\"pane-1\",\"protocol\":3,\"request_id\":\"req-text\",\"text\":\"terminal text\",\"type\":\"send_text\"}",
+      "decoded_json": "{\"type\":\"send_text\",\"protocol\":3,\"request_id\":\"req-text\",\"pane_id\":\"pane-1\",\"text\":\"terminal text\"}"
+    },
+    {
+      "name": "speak_text",
+      "comment": "synthesized canonical envelope",
+      "type": "speak_text",
+      "direction": "c2s",
+      "json": "{\"language\":\"en\",\"protocol\":3,\"request_id\":\"req-speak\",\"speech_request_id\":\"speech-1\",\"text\":\"Build finished\",\"type\":\"speak_text\"}",
+      "decoded_json": "{\"type\":\"speak_text\",\"protocol\":3,\"request_id\":\"req-speak\",\"text\":\"Build finished\"}"
+    },
+    {
+      "name": "speech_voice_install",
+      "comment": "synthesized canonical envelope",
+      "type": "speech_voice_install",
+      "direction": "c2s",
+      "json": "{\"language\":\"en\",\"protocol\":3,\"request_id\":\"req-voice-install\",\"type\":\"speech_voice_install\"}",
+      "decoded_json": "{\"type\":\"speech_voice_install\",\"protocol\":3,\"request_id\":\"req-voice-install\"}"
+    },
+    {
+      "name": "speech_voice_remove",
+      "comment": "synthesized canonical envelope",
+      "type": "speech_voice_remove",
+      "direction": "c2s",
+      "json": "{\"language\":\"en\",\"protocol\":3,\"request_id\":\"req-voice-remove\",\"type\":\"speech_voice_remove\"}",
+      "decoded_json": "{\"type\":\"speech_voice_remove\",\"protocol\":3,\"request_id\":\"req-voice-remove\"}"
+    },
+    {
+      "name": "speech_voices_list",
+      "comment": "synthesized canonical envelope",
+      "type": "speech_voices_list",
+      "direction": "c2s",
+      "json": "{\"protocol\":3,\"request_id\":\"req-voices\",\"type\":\"speech_voices_list\"}",
+      "decoded_json": "{\"type\":\"speech_voices_list\",\"protocol\":3,\"request_id\":\"req-voices\"}"
+    },
+    {
+      "name": "submit_prompt",
+      "comment": "wire form from contracts/fixtures/inbound/prompt.json",
+      "type": "submit_prompt",
+      "direction": "c2s",
+      "json": "{\"action\":\"submit_prompt\",\"pane_id\":\"pane-1\",\"protocol\":3,\"request_id\":\"req-001\",\"text\":\"Hello, fix the bug in main.go\",\"type\":\"command\"}",
+      "decoded_json": "{\"type\":\"submit_prompt\",\"protocol\":3,\"request_id\":\"req-001\",\"pane_id\":\"pane-1\",\"text\":\"Hello, fix the bug in main.go\"}"
+    },
+    {
+      "name": "tab_reorder",
+      "comment": "wire form from contracts/fixtures/inbound/tab_reorder.json",
+      "type": "tab_reorder",
+      "direction": "c2s",
+      "json": "{\"insert_index\":2,\"pane_id\":\"pane-1\",\"protocol\":3,\"request_id\":\"req-tab-reorder\",\"type\":\"tab_reorder\"}",
+      "decoded_json": "{\"type\":\"tab_reorder\",\"protocol\":3,\"request_id\":\"req-tab-reorder\",\"pane_id\":\"pane-1\",\"insert_index\":2}"
+    },
+    {
+      "name": "unwatch_pane",
+      "comment": "synthesized canonical envelope",
+      "type": "unwatch_pane",
+      "direction": "c2s",
+      "json": "{\"pane_id\":\"pane-1\",\"protocol\":3,\"request_id\":\"req-unwatch\",\"type\":\"unwatch_pane\"}",
+      "decoded_json": "{\"type\":\"unwatch_pane\",\"protocol\":3,\"request_id\":\"req-unwatch\",\"pane_id\":\"pane-1\"}"
+    },
+    {
+      "name": "upload_begin",
+      "comment": "wire form from contracts/fixtures/inbound/upload_begin.json",
+      "type": "upload_begin",
+      "direction": "c2s",
+      "json": "{\"files\":[{\"bytes\":8,\"media_type\":\"image/png\",\"name\":\"screen.png\"}],\"protocol\":3,\"request_id\":\"req-upload-begin\",\"target\":{\"generation\":1,\"pane_id\":\"pane-1\",\"server_session_id\":\"primary\",\"terminal_id\":\"terminal-1\"},\"type\":\"upload_begin\"}",
+      "decoded_json": "{\"type\":\"upload_begin\",\"protocol\":3,\"request_id\":\"req-upload-begin\",\"target\":{\"server_session_id\":\"primary\",\"pane_id\":\"pane-1\",\"terminal_id\":\"terminal-1\",\"generation\":1,\"agent_session_id\":\"\"}}"
+    },
+    {
+      "name": "upload_cancel",
+      "comment": "wire form from contracts/fixtures/inbound/upload_cancel.json",
+      "type": "upload_cancel",
+      "direction": "c2s",
+      "json": "{\"protocol\":3,\"request_id\":\"req-upload-cancel\",\"target\":{\"generation\":1,\"pane_id\":\"pane-1\",\"server_session_id\":\"primary\",\"terminal_id\":\"terminal-1\"},\"type\":\"upload_cancel\",\"upload_id\":\"upload-opaque\"}",
+      "decoded_json": "{\"type\":\"upload_cancel\",\"protocol\":3,\"request_id\":\"req-upload-cancel\",\"target\":{\"server_session_id\":\"primary\",\"pane_id\":\"pane-1\",\"terminal_id\":\"terminal-1\",\"generation\":1,\"agent_session_id\":\"\"}}"
+    },
+    {
+      "name": "upload_chunk",
+      "comment": "wire form from contracts/fixtures/inbound/upload_chunk.json",
+      "type": "upload_chunk",
+      "direction": "c2s",
+      "json": "{\"data\":\"iVBORw0KGgo=\",\"file_index\":0,\"protocol\":3,\"request_id\":\"req-upload-chunk\",\"sequence\":0,\"sha256\":\"4c4b6a3be1314ab86138bef4314dde022e600960e6e5f0f7133fa7a22c6400c9\",\"target\":{\"generation\":1,\"pane_id\":\"pane-1\",\"server_session_id\":\"primary\",\"terminal_id\":\"terminal-1\"},\"type\":\"upload_chunk\",\"upload_id\":\"upload-opaque\"}",
+      "decoded_json": "{\"type\":\"upload_chunk\",\"protocol\":3,\"request_id\":\"req-upload-chunk\",\"target\":{\"server_session_id\":\"primary\",\"pane_id\":\"pane-1\",\"terminal_id\":\"terminal-1\",\"generation\":1,\"agent_session_id\":\"\"},\"data\":\"iVBORw0KGgo=\"}"
+    },
+    {
+      "name": "upload_finish",
+      "comment": "wire form from contracts/fixtures/inbound/upload_finish.json",
+      "type": "upload_finish",
+      "direction": "c2s",
+      "json": "{\"files\":[{\"file_index\":0,\"sha256\":\"4c4b6a3be1314ab86138bef4314dde022e600960e6e5f0f7133fa7a22c6400c9\"}],\"protocol\":3,\"request_id\":\"req-upload-finish\",\"target\":{\"generation\":1,\"pane_id\":\"pane-1\",\"server_session_id\":\"primary\",\"terminal_id\":\"terminal-1\"},\"type\":\"upload_finish\",\"upload_id\":\"upload-opaque\"}",
+      "decoded_json": "{\"type\":\"upload_finish\",\"protocol\":3,\"request_id\":\"req-upload-finish\",\"target\":{\"server_session_id\":\"primary\",\"pane_id\":\"pane-1\",\"terminal_id\":\"terminal-1\",\"generation\":1,\"agent_session_id\":\"\"}}"
+    },
+    {
+      "name": "watch_pane",
+      "comment": "synthesized canonical envelope",
+      "type": "watch_pane",
+      "direction": "c2s",
+      "json": "{\"content_fingerprint\":\"0123456789abcdef\",\"format\":\"ansi\",\"interval_ms\":250,\"lines\":80,\"pane_id\":\"pane-1\",\"protocol\":3,\"request_id\":\"req-watch\",\"target\":{\"agent_session_id\":\"agent-session-1\",\"generation\":2,\"pane_id\":\"pane-1\",\"server_session_id\":\"primary\",\"terminal_id\":\"terminal-1\"},\"type\":\"watch_pane\"}",
+      "decoded_json": "{\"type\":\"watch_pane\",\"protocol\":3,\"request_id\":\"req-watch\",\"target\":{\"server_session_id\":\"primary\",\"pane_id\":\"pane-1\",\"terminal_id\":\"terminal-1\",\"generation\":2,\"agent_session_id\":\"agent-session-1\"},\"pane_id\":\"pane-1\",\"lines\":80,\"format\":\"ansi\"}"
+    },
+    {
+      "name": "webrtc_close",
+      "comment": "synthesized canonical envelope",
+      "type": "webrtc_close",
+      "direction": "c2s",
+      "json": "{\"protocol\":3,\"request_id\":\"req-webrtc-close\",\"type\":\"webrtc_close\"}",
+      "decoded_json": "{\"type\":\"webrtc_close\",\"protocol\":3,\"request_id\":\"req-webrtc-close\"}"
+    },
+    {
+      "name": "webrtc_ice",
+      "comment": "synthesized canonical envelope",
+      "type": "webrtc_ice",
+      "direction": "c2s",
+      "json": "{\"candidate\":\"candidate:1 1 udp 2130706431 192.0.2.1 12345 typ host\",\"protocol\":3,\"request_id\":\"req-webrtc-ice\",\"sdp_mid\":\"0\",\"sdp_mline_index\":0,\"type\":\"webrtc_ice\"}",
+      "decoded_json": "{\"type\":\"webrtc_ice\",\"protocol\":3,\"request_id\":\"req-webrtc-ice\"}"
+    },
+    {
+      "name": "webrtc_offer",
+      "comment": "synthesized canonical envelope",
+      "type": "webrtc_offer",
+      "direction": "c2s",
+      "json": "{\"protocol\":3,\"request_id\":\"req-webrtc-offer\",\"sdp\":\"v=0\\r\\no=- 1 1 IN IP4 127.0.0.1\\r\\ns=-\\r\\n\",\"type\":\"webrtc_offer\"}",
+      "decoded_json": "{\"type\":\"webrtc_offer\",\"protocol\":3,\"request_id\":\"req-webrtc-offer\"}"
+    },
+    {
+      "name": "workspace_close",
+      "comment": "wire form from contracts/fixtures/inbound/workspace_close.json",
+      "type": "workspace_close",
+      "direction": "c2s",
+      "json": "{\"protocol\":3,\"request_id\":\"req-workspace-close\",\"type\":\"workspace_close\",\"workspace_id\":\"w1\"}",
+      "decoded_json": "{\"type\":\"workspace_close\",\"protocol\":3,\"request_id\":\"req-workspace-close\",\"workspace_id\":\"w1\"}"
+    },
+    {
+      "name": "workspace_create",
+      "comment": "wire form from contracts/fixtures/inbound/workspace_create.json",
+      "type": "workspace_create",
+      "direction": "c2s",
+      "json": "{\"cwd\":\"/home/user/project\",\"label\":\"Project\",\"protocol\":3,\"request_id\":\"req-workspace-create\",\"type\":\"workspace_create\"}",
+      "decoded_json": "{\"type\":\"workspace_create\",\"protocol\":3,\"request_id\":\"req-workspace-create\",\"label\":\"Project\",\"cwd\":\"/home/user/project\"}"
+    },
+    {
+      "name": "workspace_file",
+      "comment": "synthesized canonical envelope",
+      "type": "workspace_file",
+      "direction": "c2s",
+      "json": "{\"pane_id\":\"pane-1\",\"path\":\"src/main.go\",\"protocol\":3,\"request_id\":\"req-wfile\",\"type\":\"workspace_file\"}",
+      "decoded_json": "{\"type\":\"workspace_file\",\"protocol\":3,\"request_id\":\"req-wfile\",\"pane_id\":\"pane-1\",\"path\":\"src/main.go\"}"
+    },
+    {
+      "name": "workspace_git_diff",
+      "comment": "synthesized canonical envelope",
+      "type": "workspace_git_diff",
+      "direction": "c2s",
+      "json": "{\"pane_id\":\"pane-1\",\"path\":\"src/main.go\",\"protocol\":3,\"request_id\":\"req-gdiff\",\"type\":\"workspace_git_diff\"}",
+      "decoded_json": "{\"type\":\"workspace_git_diff\",\"protocol\":3,\"request_id\":\"req-gdiff\",\"pane_id\":\"pane-1\",\"path\":\"src/main.go\"}"
+    },
+    {
+      "name": "workspace_git_status",
+      "comment": "synthesized canonical envelope",
+      "type": "workspace_git_status",
+      "direction": "c2s",
+      "json": "{\"pane_id\":\"pane-1\",\"protocol\":3,\"request_id\":\"req-gstatus\",\"type\":\"workspace_git_status\"}",
+      "decoded_json": "{\"type\":\"workspace_git_status\",\"protocol\":3,\"request_id\":\"req-gstatus\",\"pane_id\":\"pane-1\"}"
+    },
+    {
+      "name": "workspace_rename",
+      "comment": "wire form from contracts/fixtures/inbound/workspace_rename.json",
+      "type": "workspace_rename",
+      "direction": "c2s",
+      "json": "{\"label\":\"Renamed Project\",\"protocol\":3,\"request_id\":\"req-workspace-rename\",\"type\":\"workspace_rename\",\"workspace_id\":\"w1\"}",
+      "decoded_json": "{\"type\":\"workspace_rename\",\"protocol\":3,\"request_id\":\"req-workspace-rename\",\"label\":\"Renamed Project\",\"workspace_id\":\"w1\"}"
+    },
+    {
+      "name": "workspace_reorder",
+      "comment": "wire form from contracts/fixtures/inbound/workspace_reorder.json",
+      "type": "workspace_reorder",
+      "direction": "c2s",
+      "json": "{\"before_workspace_id\":\"w5\",\"protocol\":3,\"request_id\":\"req-workspace-reorder\",\"type\":\"workspace_reorder\",\"workspace_ids\":[\"w1\",\"w2\"]}",
+      "decoded_json": "{\"type\":\"workspace_reorder\",\"protocol\":3,\"request_id\":\"req-workspace-reorder\",\"workspace_ids\":[\"w1\",\"w2\"],\"before_workspace_id\":\"w5\"}"
+    },
+    {
+      "name": "workspace_tree",
+      "comment": "synthesized canonical envelope",
+      "type": "workspace_tree",
+      "direction": "c2s",
+      "json": "{\"pane_id\":\"pane-1\",\"protocol\":3,\"request_id\":\"req-wtree\",\"type\":\"workspace_tree\"}",
+      "decoded_json": "{\"type\":\"workspace_tree\",\"protocol\":3,\"request_id\":\"req-wtree\",\"pane_id\":\"pane-1\"}"
+    },
+    {
+      "name": "worktree_create",
+      "comment": "wire form from contracts/fixtures/inbound/worktree_create.json",
+      "type": "worktree_create",
+      "direction": "c2s",
+      "json": "{\"base\":\"main\",\"branch\":\"fix/issue-14\",\"label\":\"Issue 14\",\"protocol\":3,\"request_id\":\"req-worktree-create\",\"type\":\"worktree_create\",\"workspace_id\":\"w1\"}",
+      "decoded_json": "{\"type\":\"worktree_create\",\"protocol\":3,\"request_id\":\"req-worktree-create\",\"label\":\"Issue 14\",\"workspace_id\":\"w1\",\"branch\":\"fix/issue-14\",\"base\":\"main\"}"
+    },
+    {
+      "name": "worktree_list",
+      "comment": "wire form from contracts/fixtures/inbound/worktree_list.json",
+      "type": "worktree_list",
+      "direction": "c2s",
+      "json": "{\"protocol\":3,\"request_id\":\"req-worktree-list\",\"type\":\"worktree_list\",\"workspace_id\":\"w1\"}",
+      "decoded_json": "{\"type\":\"worktree_list\",\"protocol\":3,\"request_id\":\"req-worktree-list\",\"workspace_id\":\"w1\"}"
+    },
+    {
+      "name": "worktree_open",
+      "comment": "wire form from contracts/fixtures/inbound/worktree_open.json",
+      "type": "worktree_open",
+      "direction": "c2s",
+      "json": "{\"label\":\"Issue 14\",\"path\":\"/home/user/worktrees/project/issue-14\",\"protocol\":3,\"request_id\":\"req-worktree-open\",\"type\":\"worktree_open\",\"workspace_id\":\"w1\"}",
+      "decoded_json": "{\"type\":\"worktree_open\",\"protocol\":3,\"request_id\":\"req-worktree-open\",\"label\":\"Issue 14\",\"workspace_id\":\"w1\",\"path\":\"/home/user/worktrees/project/issue-14\"}"
+    },
+    {
+      "name": "worktree_remove",
+      "comment": "wire form from contracts/fixtures/inbound/worktree_remove.json",
+      "type": "worktree_remove",
+      "direction": "c2s",
+      "json": "{\"force\":false,\"protocol\":3,\"request_id\":\"req-worktree-remove\",\"type\":\"worktree_remove\",\"workspace_id\":\"w2\"}",
+      "decoded_json": "{\"type\":\"worktree_remove\",\"protocol\":3,\"request_id\":\"req-worktree-remove\",\"workspace_id\":\"w2\"}"
+    },
+    {
+      "name": "command-envelope-normalization",
+      "comment": "type:command + action:X decodes to type:X; decoded_json shows the normalized typed view.",
+      "type": "submit_prompt",
+      "direction": "c2s",
+      "json": "{\"action\":\"submit_prompt\",\"pane_id\":\"pane-1\",\"protocol\":3,\"request_id\":\"req-cmd\",\"text\":\"via command envelope\",\"type\":\"command\"}",
+      "decoded_json": "{\"type\":\"submit_prompt\",\"protocol\":3,\"request_id\":\"req-cmd\",\"pane_id\":\"pane-1\",\"text\":\"via command envelope\"}"
+    },
+    {
+      "name": "action-receipt-awaiting-evidence",
+      "type": "action_receipt",
+      "direction": "s2c",
+      "json": "{\"receipt\":{\"action_id\":\"action-3\",\"phase\":\"awaiting_evidence\"},\"request_id\":\"req-5\",\"type\":\"action_receipt\"}"
+    },
+    {
+      "name": "action-receipt-confirmed",
+      "type": "action_receipt",
+      "direction": "s2c",
+      "json": "{\"receipt\":{\"action_id\":\"action-4\",\"phase\":\"confirmed\"},\"request_id\":\"req-6\",\"type\":\"action_receipt\"}"
+    },
+    {
+      "name": "action-receipt-dispatched-unknown",
+      "type": "action_receipt",
+      "direction": "s2c",
+      "json": "{\"receipt\":{\"action_id\":\"action-5\",\"phase\":\"dispatched_unknown\"},\"request_id\":\"req-7\",\"type\":\"action_receipt\"}"
+    },
+    {
+      "name": "action-receipt-failed",
+      "comment": "failed_before_dispatch carries an embedded ApiError.",
+      "type": "action_receipt",
+      "direction": "s2c",
+      "json": "{\"receipt\":{\"action_id\":\"action-2\",\"phase\":\"failed_before_dispatch\",\"error\":{\"code\":\"reader_denied\",\"args\":{\"action\":\"agent_stop\"}}},\"request_id\":\"req-4\",\"type\":\"action_receipt\"}"
+    },
+    {
+      "name": "action-receipt-incompatible-v2",
+      "comment": "A numeric-but-wrong protocol renders received=\"2\".",
+      "type": "action_receipt",
+      "direction": "s2c",
+      "json": "{\"receipt\":{\"action_id\":\"action-7\",\"phase\":\"failed_before_dispatch\",\"error\":{\"code\":\"incompatible_protocol\",\"args\":{\"received\":\"2\",\"required\":\"3\"}}},\"request_id\":\"req-9\",\"type\":\"action_receipt\"}"
+    },
+    {
+      "name": "action-receipt-incompatible-zero",
+      "comment": "Missing/invalid protocol renders received=\"invalid\"; required is the current Version.",
+      "type": "action_receipt",
+      "direction": "s2c",
+      "json": "{\"receipt\":{\"action_id\":\"action-6\",\"phase\":\"failed_before_dispatch\",\"error\":{\"code\":\"incompatible_protocol\",\"args\":{\"received\":\"invalid\",\"required\":\"3\"}}},\"request_id\":\"req-8\",\"type\":\"action_receipt\"}"
+    },
+    {
+      "name": "action-receipt-prepared",
+      "type": "action_receipt",
+      "direction": "s2c",
+      "json": "{\"receipt\":{\"action_id\":\"action-1\",\"phase\":\"prepared\"},\"request_id\":\"req-3\",\"type\":\"action_receipt\"}"
+    },
+    {
+      "name": "activity",
+      "comment": "Single journal entry broadcast.",
+      "type": "activity",
+      "direction": "s2c",
+      "json": "{\"activity\":{\"id\":\"01HF7YAT31JFN1XGAQBNMY9EQJ\",\"timestamp\":1700000000000,\"kind\":\"prompt\",\"status\":\"completed\",\"summary\":\"Prompt submitted\",\"host\":\"devbox\",\"pane_id\":\"pane-1\",\"agent\":\"claude\",\"project\":\"project\",\"request_id\":\"req-1\",\"details\":{\"chars\":41}},\"type\":\"activity\"}"
+    },
+    {
+      "name": "activity-history",
+      "comment": "Post-handshake and get_activity response.",
+      "type": "activity_history",
+      "direction": "s2c",
+      "json": "{\"activities\":[{\"id\":\"01HF7YAT31JFN1XGAQBNMY9EQJ\",\"timestamp\":1700000000000,\"kind\":\"prompt\",\"status\":\"completed\",\"summary\":\"Prompt submitted\",\"host\":\"devbox\",\"pane_id\":\"pane-1\",\"agent\":\"claude\",\"project\":\"project\",\"request_id\":\"req-1\",\"details\":{\"chars\":41}}],\"type\":\"activity_history\"}"
+    },
+    {
+      "name": "agent-update",
+      "comment": "UDP/state change broadcast form (server.go agent_update map).",
+      "type": "agent_update",
+      "direction": "s2c",
+      "json": "{\"agent\":\"claude\",\"attention_kind\":\"question\",\"cwd\":\"/home/user/project\",\"event_id\":\"evt-1\",\"host\":\"devbox\",\"pane_id\":\"pane-1\",\"pane_revision\":7,\"project\":\"project\",\"raw_pane_id\":\"%1\",\"session\":\"main\",\"session_name\":\"main\",\"status\":\"working\",\"tab_id\":\"tab-1\",\"tab_label\":\"fix-parser\",\"tab_number\":1,\"type\":\"agent_update\",\"updated_at\":1700000000000,\"workspace_id\":\"workspace-1\"}"
+    },
+    {
+      "name": "agents-snapshot",
+      "comment": "Post-handshake inventory: agents array of coordinator.AgentState.",
+      "type": "agents",
+      "direction": "s2c",
+      "json": "{\"agents\":[{\"pane_id\":\"pane-1\",\"raw_pane_id\":\"%1\",\"terminal_id\":\"terminal-1\",\"server_session_id\":\"primary\",\"generation\":2,\"agent_session_id\":\"agent-session-1\",\"tab_id\":\"tab-1\",\"tab_label\":\"fix-parser\",\"tab_number\":1,\"workspace_id\":\"workspace-1\",\"agent\":\"claude\",\"name\":\"fix-parser\",\"status\":\"working\",\"_focused\":true,\"cwd\":\"/home/user/project\",\"project\":\"project\",\"host\":\"devbox\",\"session\":\"main\",\"session_name\":\"main\",\"updated_at\":1700000000000,\"last_active_at\":1700000001000,\"last_seen_at\":1700000002000,\"activity_seq\":42,\"pane_revision\":7}],\"type\":\"agents\"}"
+    },
+    {
+      "name": "app-deploy-status",
+      "type": "app_deploy_status",
+      "direction": "s2c",
+      "json": "{\"app_deploy\":{\"configured\":true,\"origin\":\"https://app.example.test\",\"project\":\"lerdr-app\",\"branch\":\"main\",\"revision\":\"0123456789abcdef0123456789abcdef01234567\",\"reason\":\"pinned\",\"state\":\"current\",\"target_version\":\"0.27.0\",\"target_revision\":\"0123456789abcdef0123456789abcdef01234567\",\"checked_at\":1700000000,\"error\":\"\"},\"type\":\"app_deploy_status\"}"
+    },
+    {
+      "name": "blocked",
+      "comment": "Transition broadcast when an agent blocks on approval/question.",
+      "type": "blocked",
+      "direction": "s2c",
+      "json": "{\"agent\":\"claude\",\"agent_session_id\":\"agent-session-1\",\"approval_fingerprint\":\"5105fbe5b6e54a57b38dbf8bd73848409bbcfacbb4c055879bdb8e30c7cc46f8\",\"attention_kind\":\"approval\",\"command\":\"rm -rf build/\",\"cwd\":\"/home/user/project\",\"event_id\":\"evt-blocked-1\",\"generation\":2,\"host\":\"devbox\",\"interaction\":null,\"interaction_id\":\"interaction-1\",\"name\":\"fix-parser\",\"options\":[\"Allow once\",\"Deny\"],\"pane_id\":\"pane-1\",\"pane_revision\":7,\"project\":\"project\",\"prompt\":\"Allow rm -rf build/?\",\"question_layout\":false,\"raw_pane_id\":\"%1\",\"server_session_id\":\"primary\",\"session\":\"main\",\"session_name\":\"main\",\"status\":\"blocked\",\"tab_id\":\"tab-1\",\"tab_label\":\"fix-parser\",\"tab_number\":1,\"terminal_id\":\"terminal-1\",\"type\":\"blocked\",\"updated_at\":1700000000000,\"workspace_id\":\"workspace-1\"}"
+    },
+    {
+      "name": "command-result-failed",
+      "comment": "data is omitted when nil.",
+      "type": "command_result",
+      "direction": "s2c",
+      "json": "{\"action\":\"agent_stop\",\"error\":\"Agent is not running\",\"ok\":false,\"pane_id\":\"pane-1\",\"phase\":\"failed\",\"request_id\":\"req-11\",\"type\":\"command_result\"}"
+    },
+    {
+      "name": "command-result-ok",
+      "comment": "commandResultMessage always includes error and pane_id even when empty.",
+      "type": "command_result",
+      "direction": "s2c",
+      "json": "{\"action\":\"submit_prompt\",\"data\":{\"echo\":\"submitted\"},\"error\":\"\",\"ok\":true,\"pane_id\":\"pane-1\",\"phase\":\"completed\",\"request_id\":\"req-10\",\"type\":\"command_result\"}"
+    },
+    {
+      "name": "error-invalid-request",
+      "comment": "ErrorResponse with a bounded ApiError and request correlation.",
+      "type": "error",
+      "direction": "s2c",
+      "json": "{\"error\":{\"code\":\"invalid_request\"},\"request_id\":\"req-1\",\"type\":\"error\"}"
+    },
+    {
+      "name": "error-no-request-id",
+      "comment": "request_id is omitted entirely when empty.",
+      "type": "error",
+      "direction": "s2c",
+      "json": "{\"error\":{\"code\":\"reader_denied\"},\"type\":\"error\"}"
+    },
+    {
+      "name": "error-unknown-action-args",
+      "comment": "ApiError args are sorted, lowercased, and bounded (\u003c=8 entries, \u003c=32-char keys, \u003c=256-char strings).",
+      "type": "error",
+      "direction": "s2c",
+      "json": "{\"error\":{\"code\":\"unknown_action\",\"args\":{\"action\":\"bogus_action\",\"alpha\":7,\"zeta\":\"last\"}},\"request_id\":\"req-2\",\"type\":\"error\"}"
+    },
+    {
+      "name": "herdr-status",
+      "comment": "Capability-status broadcast on reconnect/feature change.",
+      "type": "herdr_status",
+      "direction": "s2c",
+      "json": "{\"capabilities\":[\"attention_classification\",\"clear_activities\",\"directory_browser\",\"workspace_management\",\"worktree_management\",\"self_update\",\"structured_questions\",\"slash_commands\",\"conversation_history\",\"pane_size_lease\",\"pane_size_lease_rows\",\"workspace_inspection\",\"semantic_input\",\"secret_input\",\"invitation_qr\"],\"status\":{\"server_version\":\"1.4.2\",\"server_protocol\":3,\"server_protocol_known\":true,\"generation\":5,\"features\":{\"tabs\":{\"state\":\"ready\",\"reason\":\"\",\"generation\":0}}},\"type\":\"herdr_status\"}"
+    },
+    {
+      "name": "inventory-status-error",
+      "type": "inventory_status",
+      "direction": "s2c",
+      "json": "{\"error_code\":\"spawn_failed\",\"last_attempt_at\":1700000000000,\"last_success_at\":0,\"message\":\"herdr exited\",\"stale\":true,\"state\":\"error\",\"type\":\"inventory_status\"}"
+    },
+    {
+      "name": "inventory-status-ready",
+      "type": "inventory_status",
+      "direction": "s2c",
+      "json": "{\"error_code\":\"\",\"last_attempt_at\":1700000000000,\"last_success_at\":1700000000000,\"message\":\"\",\"stale\":false,\"state\":\"ready\",\"type\":\"inventory_status\"}"
+    },
+    {
+      "name": "pane-content-ansi-escapes",
+      "comment": "Raw ANSI and HTML-significant characters are JSON-escaped by encoding/json (\\u001b, \\u003c).",
+      "type": "pane_content",
+      "direction": "s2c",
+      "json": "{\"ack_required\":true,\"attention_kind\":\"\",\"command\":\"\",\"content\":\"\\u001b[1m\\u003cbold\\u003e \\u0026 \\\"quoted\\\"\\u001b[0m\",\"content_fingerprint\":\"0123456789abcdef\",\"format\":\"ansi\",\"interaction\":null,\"no_echo\":false,\"options\":null,\"pane_id\":\"pane-1\",\"prompt\":\"\",\"question_layout\":false,\"target\":{\"server_session_id\":\"primary\",\"pane_id\":\"pane-1\",\"terminal_id\":\"terminal-1\",\"generation\":2,\"agent_session_id\":\"agent-session-1\"},\"truncated\":false,\"type\":\"pane_content\",\"viewport_only\":true,\"viewport_rows\":48}"
+    },
+    {
+      "name": "pane-content-error",
+      "comment": "Failed read: same type, error field present, no classification keys.",
+      "type": "pane_content",
+      "direction": "s2c",
+      "json": "{\"content\":\"\",\"error\":\"Unable to read the agent pane\",\"format\":\"text\",\"pane_id\":\"pane-1\",\"type\":\"pane_content\"}"
+    },
+    {
+      "name": "pane-content-noecho",
+      "comment": "Secret prompt detected: no_echo + no_echo_prompt are set on the rendered content.",
+      "type": "pane_content",
+      "direction": "s2c",
+      "json": "{\"ack_required\":true,\"attention_kind\":\"\",\"command\":\"\",\"content\":\"[sudo] password for user: \",\"content_fingerprint\":\"0123456789abcdef\",\"format\":\"text\",\"interaction\":null,\"no_echo\":true,\"no_echo_prompt\":\"[sudo] password for user:\",\"options\":null,\"pane_id\":\"pane-1\",\"prompt\":\"\",\"question_layout\":false,\"target\":{\"server_session_id\":\"primary\",\"pane_id\":\"pane-1\",\"terminal_id\":\"terminal-1\",\"generation\":2,\"agent_session_id\":\"agent-session-1\"},\"truncated\":false,\"type\":\"pane_content\",\"viewport_only\":true,\"viewport_rows\":48}"
+    },
+    {
+      "name": "pane-content-question",
+      "comment": "Structured question rides inside pane_content.interaction.",
+      "type": "pane_content",
+      "direction": "s2c",
+      "json": "{\"ack_required\":true,\"attention_kind\":\"question\",\"command\":\"\",\"content\":\"$ ls\\nmain.go  go.mod\\n$ \",\"content_fingerprint\":\"0123456789abcdef\",\"format\":\"text\",\"interaction\":{\"id\":\"interaction-1\",\"kind\":\"choice\",\"question\":\"Which approach should I take?\",\"options\":[{\"index\":0,\"label\":\"Refactor the parser\",\"description\":\"Cleaner but slower\",\"selected\":true},{\"index\":1,\"label\":\"Patch the call site\",\"description\":\"Minimal diff\",\"selected\":false}],\"other\":{\"selected\":false,\"text\":\"\",\"label\":\"Something else\",\"placeholder\":\"Describe…\",\"allow_empty\":true},\"submit_label\":\"Submit answer\",\"can_chat\":true,\"can_go_back\":true,\"question_index\":1,\"question_total\":2},\"no_echo\":false,\"options\":[\"Refactor the parser\",\"Patch the call site\"],\"pane_id\":\"pane-1\",\"prompt\":\"\",\"question_layout\":true,\"target\":{\"server_session_id\":\"primary\",\"pane_id\":\"pane-1\",\"terminal_id\":\"terminal-1\",\"generation\":2,\"agent_session_id\":\"agent-session-1\"},\"truncated\":false,\"type\":\"pane_content\",\"viewport_only\":true,\"viewport_rows\":48}"
+    },
+    {
+      "name": "pane-content-watch-ack",
+      "comment": "Full frame on a watched pane: target, ack_required, content_fingerprint, classification keys.",
+      "type": "pane_content",
+      "direction": "s2c",
+      "json": "{\"ack_required\":true,\"attention_kind\":\"\",\"command\":\"\",\"content\":\"$ ls\\nmain.go  go.mod\\n$ \",\"content_fingerprint\":\"0123456789abcdef\",\"format\":\"text\",\"interaction\":null,\"no_echo\":false,\"options\":null,\"pane_id\":\"pane-1\",\"prompt\":\"\",\"question_layout\":false,\"target\":{\"server_session_id\":\"primary\",\"pane_id\":\"pane-1\",\"terminal_id\":\"terminal-1\",\"generation\":2,\"agent_session_id\":\"agent-session-1\"},\"truncated\":false,\"type\":\"pane_content\",\"viewport_only\":true,\"viewport_rows\":48}"
+    },
+    {
+      "name": "pane-delta",
+      "comment": "paneDeltaResponse: all pane_content fields minus content, plus base_fingerprint and segments.",
+      "type": "pane_delta",
+      "direction": "s2c",
+      "json": "{\"ack_required\":true,\"attention_kind\":\"\",\"base_fingerprint\":\"0123456789abcdef\",\"command\":\"\",\"content_fingerprint\":\"0123456789abcdef\",\"format\":\"text\",\"interaction\":null,\"no_echo\":false,\"options\":null,\"pane_id\":\"pane-1\",\"prompt\":\"\",\"question_layout\":false,\"segments\":[{\"copy_lines\":2},{\"text\":\"main.go  go.mod  go.sum\\n$ \"}],\"target\":{\"server_session_id\":\"primary\",\"pane_id\":\"pane-1\",\"terminal_id\":\"terminal-1\",\"generation\":2,\"agent_session_id\":\"agent-session-1\"},\"truncated\":false,\"type\":\"pane_delta\",\"viewport_only\":true,\"viewport_rows\":48}"
+    },
+    {
+      "name": "pane-probe",
+      "comment": "Probe frame used by the watch loop's cheap-changes check.",
+      "type": "pane_probe",
+      "direction": "s2c",
+      "json": "{\"content\":\"$ \",\"format\":\"text\",\"pane_id\":\"pane-1\",\"type\":\"pane_probe\"}"
+    },
+    {
+      "name": "pane-probe-error",
+      "type": "pane_probe",
+      "direction": "s2c",
+      "json": "{\"error\":\"Unable to read the agent pane\",\"format\":\"text\",\"pane_id\":\"pane-1\",\"type\":\"pane_probe\"}"
+    },
+    {
+      "name": "pane-resync",
+      "comment": "Stale-ack recovery: server asks for nothing but resends the full frame next tick.",
+      "type": "pane_resync",
+      "direction": "s2c",
+      "json": "{\"pane_id\":\"pane-1\",\"target\":{\"server_session_id\":\"primary\",\"pane_id\":\"pane-1\",\"terminal_id\":\"terminal-1\",\"generation\":2,\"agent_session_id\":\"agent-session-1\"},\"type\":\"pane_resync\"}"
+    },
+    {
+      "name": "pane-unchanged",
+      "comment": "Sent when the client's content_fingerprint already matches.",
+      "type": "pane_unchanged",
+      "direction": "s2c",
+      "json": "{\"content_fingerprint\":\"0123456789abcdef\",\"pane_id\":\"pane-1\",\"target\":{\"server_session_id\":\"primary\",\"pane_id\":\"pane-1\",\"terminal_id\":\"terminal-1\",\"generation\":2,\"agent_session_id\":\"agent-session-1\"},\"type\":\"pane_unchanged\"}"
+    },
+    {
+      "name": "push-config-full",
+      "comment": "push_config with capabilities, herdr_status, hybrid descriptor.",
+      "type": "push_config",
+      "direction": "s2c",
+      "json": "{\"type\":\"push_config\",\"vapid_public_key\":\"BExampleVAPIDPublicKey0123456789abcdef0123456789abcdef0123456789abcd\",\"host\":\"devbox\",\"home\":\"/home/user\",\"protocol\":3,\"version\":\"0.26.3\",\"release_version\":\"0.26.3\",\"revision\":\"abcdef0123456789abcdef0123456789abcdef01\",\"update\":{\"state\":\"idle\",\"current_version\":\"0.26.3\",\"current_revision\":\"abcdef0123456789abcdef0123456789abcdef01\",\"available_version\":\"0.27.0\",\"checked_at\":1700000000,\"eligible\":true,\"can_install\":true},\"app_deploy\":{\"configured\":true,\"origin\":\"https://app.example.test\",\"project\":\"lerdr-app\",\"branch\":\"main\",\"revision\":\"0123456789abcdef0123456789abcdef01234567\",\"reason\":\"pinned\",\"state\":\"current\",\"target_version\":\"0.27.0\",\"target_revision\":\"0123456789abcdef0123456789abcdef01234567\",\"checked_at\":1700000000,\"error\":\"\"},\"capabilities\":[\"attention_classification\",\"clear_activities\",\"directory_browser\",\"workspace_management\",\"worktree_management\",\"self_update\",\"structured_questions\",\"slash_commands\",\"conversation_history\",\"pane_size_lease\",\"pane_size_lease_rows\",\"workspace_inspection\",\"semantic_input\",\"secret_input\",\"invitation_qr\"],\"herdr_status\":{\"server_version\":\"1.4.2\",\"server_protocol\":3,\"server_protocol_known\":true,\"generation\":5,\"features\":{\"tabs\":{\"state\":\"ready\",\"reason\":\"\",\"generation\":2}}},\"speech_languages\":[\"en\",\"de\"],\"inventory\":{\"panes\":2,\"state\":\"ready\"},\"agent_profiles\":[{\"id\":\"claude\",\"label\":\"Claude\"}],\"hybrid\":{\"capability\":\"herdr-hybrid-v2\",\"gateway_url\":\"wss://gateway.example.test\",\"relay_id\":\"relay-abc\"}}"
+    },
+    {
+      "name": "push-config-minimal",
+      "comment": "omitempty drops speech_languages and hybrid when absent.",
+      "type": "push_config",
+      "direction": "s2c",
+      "json": "{\"type\":\"push_config\",\"vapid_public_key\":\"\",\"host\":\"devbox\",\"home\":\"/home/user\",\"protocol\":3,\"version\":\"0.26.3\",\"release_version\":\"0.26.3\",\"revision\":\"abcdef0123456789abcdef0123456789abcdef01\",\"update\":{\"state\":\"idle\"},\"app_deploy\":{\"configured\":false},\"capabilities\":[\"attention_classification\",\"clear_activities\",\"directory_browser\",\"workspace_management\",\"worktree_management\",\"self_update\",\"structured_questions\",\"slash_commands\",\"conversation_history\",\"pane_size_lease\",\"pane_size_lease_rows\",\"workspace_inspection\",\"semantic_input\",\"secret_input\",\"invitation_qr\"],\"herdr_status\":{\"server_protocol_known\":false,\"generation\":1,\"features\":{}},\"inventory\":{\"state\":\"pending\"},\"agent_profiles\":null}"
+    },
+    {
+      "name": "push-policy",
+      "comment": "pushPolicyResponse: categories is an object, durations in milliseconds.",
+      "type": "push_policy",
+      "direction": "s2c",
+      "json": "{\"policy\":{\"categories\":{\"attention\":true,\"question\":true,\"test\":true},\"cooldown_ms\":60000,\"device_id\":\"device-1\",\"locale\":\"en\",\"settle_ms\":1500,\"snooze_until\":\"2026-01-02T03:04:05Z\",\"snoozed\":false,\"update_once\":false},\"type\":\"push_policy\"}"
+    },
+    {
+      "name": "push-policy-result-invalid",
+      "comment": "Validation failures carry a stable code, not an ApiError object.",
+      "type": "push_policy_result",
+      "direction": "s2c",
+      "json": "{\"code\":\"push_invalid_snooze\",\"ok\":false,\"type\":\"push_policy_result\"}"
+    },
+    {
+      "name": "push-policy-result-ok",
+      "type": "push_policy_result",
+      "direction": "s2c",
+      "json": "{\"ok\":true,\"policy\":{\"categories\":{\"attention\":true,\"question\":true,\"test\":true},\"cooldown_ms\":60000,\"device_id\":\"device-1\",\"locale\":\"en\",\"settle_ms\":1500,\"snooze_until\":\"2026-01-02T03:04:05Z\",\"snoozed\":false,\"update_once\":false},\"type\":\"push_policy_result\"}"
+    },
+    {
+      "name": "push-subscribed",
+      "type": "push_subscribed",
+      "direction": "s2c",
+      "json": "{\"ok\":true,\"type\":\"push_subscribed\"}"
+    },
+    {
+      "name": "push-test-result",
+      "comment": "stage is one of queued|dropped|rate_limited.",
+      "type": "push_test_result",
+      "direction": "s2c",
+      "json": "{\"stage\":\"queued\",\"type\":\"push_test_result\"}"
+    },
+    {
+      "name": "push-unsubscribed",
+      "type": "push_unsubscribed",
+      "direction": "s2c",
+      "json": "{\"ok\":true,\"type\":\"push_unsubscribed\"}"
+    },
+    {
+      "name": "push-viewed-pane-result",
+      "type": "push_viewed_pane_result",
+      "direction": "s2c",
+      "json": "{\"ok\":true,\"type\":\"push_viewed_pane_result\"}"
+    },
+    {
+      "name": "speech-voices",
+      "comment": "Voice catalog broadcast (speechVoicePayload shape).",
+      "type": "speech_voices",
+      "direction": "s2c",
+      "json": "{\"cache_dir\":\"/home/user/.cache/lerdr/speech\",\"engine_installed\":true,\"languages\":[\"en\"],\"management_supported\":true,\"type\":\"speech_voices\",\"voices\":[{\"bytes\":68115456,\"engine\":\"piper\",\"installed\":true,\"language\":\"en\",\"name\":\"amy\"},{\"bytes\":0,\"engine\":\"piper\",\"installed\":false,\"language\":\"de\",\"name\":\"thorsten\"}]}"
+    },
+    {
+      "name": "update-status",
+      "type": "update_status",
+      "direction": "s2c",
+      "json": "{\"type\":\"update_status\",\"update\":{\"state\":\"idle\",\"current_version\":\"0.26.3\",\"current_revision\":\"abcdef0123456789abcdef0123456789abcdef01\",\"available_version\":\"0.27.0\",\"checked_at\":1700000000,\"eligible\":true,\"can_install\":true}}"
+    },
+    {
+      "name": "upload-begin-result",
+      "type": "upload_begin_result",
+      "direction": "s2c",
+      "json": "{\"request_id\":\"req-upload-begin\",\"result\":{\"upload_id\":\"upload-1\",\"chunk_bytes\":262144,\"expires_at\":\"2026-01-02T03:04:05Z\",\"limits\":{\"max_files\":8,\"max_file_bytes\":268435456,\"max_batch_bytes\":536870912}},\"type\":\"upload_begin_result\"}"
+    },
+    {
+      "name": "upload-cancel-result",
+      "comment": "Empty object result.",
+      "type": "upload_cancel_result",
+      "direction": "s2c",
+      "json": "{\"request_id\":\"req-upload-cancel\",\"result\":{},\"type\":\"upload_cancel_result\"}"
+    },
+    {
+      "name": "upload-chunk-result",
+      "type": "upload_chunk_result",
+      "direction": "s2c",
+      "json": "{\"request_id\":\"req-upload-chunk\",\"result\":{\"file_index\":0,\"next_sequence\":1,\"received_bytes\":262144},\"type\":\"upload_chunk_result\"}"
+    },
+    {
+      "name": "upload-finish-result",
+      "type": "upload_finish_result",
+      "direction": "s2c",
+      "json": "{\"request_id\":\"req-upload-finish\",\"result\":{\"attachments\":[{\"ref\":\"att-1\",\"name\":\"screenshot.png\",\"media_type\":\"image/png\",\"bytes\":262144,\"sha256\":\"4c4b6a3be1314ab86138bef4314dde022e600960e6e5f0f7133fa7a22c6400c9\",\"expires_at\":\"2026-01-09T03:04:05Z\"}]},\"type\":\"upload_finish_result\"}"
+    },
+    {
+      "name": "upload-result-error",
+      "comment": "Upload errors carry an ApiError object instead of result.",
+      "type": "upload_begin_result",
+      "direction": "s2c",
+      "json": "{\"error\":{\"code\":\"attachment_upload_unavailable\"},\"request_id\":\"req-upload-begin\",\"type\":\"upload_begin_result\"}"
+    },
+    {
+      "name": "webrtc-answer",
+      "comment": "Answer to a webrtc_offer; request_id correlates.",
+      "type": "webrtc_answer",
+      "direction": "s2c",
+      "json": "{\"request_id\":\"req-webrtc-offer\",\"sdp\":\"v=0\\r\\no=- 2 1 IN IP4 127.0.0.1\\r\\ns=-\\r\\n\",\"type\":\"webrtc_answer\"}"
+    },
+    {
+      "name": "webrtc-closed",
+      "type": "webrtc_closed",
+      "direction": "s2c",
+      "json": "{\"reason\":\"closed by client\",\"request_id\":\"req-webrtc-close\",\"type\":\"webrtc_closed\"}"
+    },
+    {
+      "name": "webrtc-ice",
+      "comment": "Relay-originated ICE candidate.",
+      "type": "webrtc_ice",
+      "direction": "s2c",
+      "json": "{\"candidate\":\"candidate:2 1 udp 1694498815 203.0.113.5 54321 typ srflx\",\"request_id\":\"req-webrtc-offer\",\"sdp_mid\":\"0\",\"sdp_mline_index\":0,\"type\":\"webrtc_ice\"}"
+    },
+    {
+      "name": "workspaces",
+      "comment": "Topology snapshot; worktree object is optional per workspace.",
+      "type": "workspaces",
+      "direction": "s2c",
+      "json": "{\"type\":\"workspaces\",\"workspaces\":[{\"workspace_id\":\"workspace-1\",\"number\":1,\"label\":\"project\",\"focused\":true,\"pane_count\":2,\"tab_count\":1,\"active_tab_id\":\"tab-1\",\"agent_status\":\"working\",\"cwd\":\"/home/user/project\",\"worktree\":{\"repo_key\":\"github.com/lerdr\",\"repo_name\":\"lerdr\",\"repo_root\":\"/home/user/Projects/lerdr\",\"checkout_path\":\"/home/user/Projects/lerdr-wt\",\"is_linked_worktree\":true}}]}"
+    }
+  ]
+}

@@ -160,8 +160,8 @@ read-only actions — enforced server-side.
 | `workspaces` / `workspace_list` / `tab_list` / `pane_list` | topology snapshots | replaceable |
 | `session_snapshot` / `inventory_status` | bootstrap + refresh state | |
 | `pane_content` | `{target, lines[], columns, rows, fingerprint, ack_required}` | full frame; replaceable |
-| `pane_delta` | `{target, base_fingerprint, frame_fingerprint, ops[], ack_required}` | **never** coalesced — chained |
-| `pane_resync` | full frame after drift | replaceable |
+| `pane_delta` | `{target, base_fingerprint, frame_fingerprint, segments[], ack_required}` | **never** coalesced — chained |
+| `pane_resync` | full frame after drift | replaceable; drops pending coalescables |
 | `pane_probe` | cheap probe result | |
 | `question` / `attention` | `QuestionInteraction` / `attention_kind` | structured input requests |
 | `activity` / `activity_history` | journal entries | |
@@ -180,7 +180,7 @@ client → {"type":"watch_pane", target:{…}}
 server → pane_content (fingerprint F0, ack_required)         # base frame
 client → {"type":"pane_applied", fingerprint:F0}             # ack
 server → pane_delta {base_fingerprint:F0, frame_fingerprint:F1,
-                     ops:[copy/insert/delete…], ack_required}
+                     segments:[{copy_start,copy_lines}|{text}…], ack_required}
 client → pane_applied F1                                     # ack
 …repeat per change tick (≤4 Hz)…
 ```
@@ -190,8 +190,23 @@ client → pane_applied F1                                     # ack
   only).
 - **Ack gate**: server holds at most one unacked `ack_required` frame;
   pending expires at ~4 s → full `pane_content` resync with `ack_required`.
-- **Client apply**: apply ops to its copy of the frame, recompute nothing —
-  the server sends the new fingerprint; store it as the next base.
+- **Delta codec**: `segments[]` is a 3-line-anchor copy format, NOT generic
+  ops — `{copy_start,copy_lines}` copies lines from the base frame, `{text}`
+  inserts literal. `copy_lines` alone = continue-from-last; `text` alone =
+  insert. Byte-exact semantics in `docs/specs/pane-delta.md`; vectors in
+  `fixtures/pane/pane.delta.json` (incl. the SplitAfter trailing-empty-line
+  trap).
+- **Client apply**: apply segments to its copy of the frame, recompute
+  nothing — the server sends the new fingerprint; store it as next base.
+- **Coalescing set** (8 replaceable types, verified in `ws.go`):
+  `agents`, `inventory_status`, `update_status`, `app_deploy_status`,
+  `herdr_status`, `pane_content`, `pane_unchanged`, `pane_resync`.
+  `pane_title`, `pane_delta`, `action_receipt` are NOT replaceable. Buffer
+  overflow
+  *rejects* the incoming push (`queueFull`); queued entries are never
+  dropped — eviction means disconnecting the client, not dropping data.
+  `pane_content`→`pane_unchanged` at coalesce time; `pane_resync` drops
+  anything pending.
 - **Size lease**: while watching, the client may hold a `lease_pane_size`
   (cols 40–240, rows 10–120, TTL ~120 s, renewed ~30 s); release on hide.
   The shared pane physically resizes — a lease means "I am the viewport".

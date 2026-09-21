@@ -1,0 +1,198 @@
+{
+  "format_version": 1,
+  "suite": "conversation.page.pi",
+  "source": {
+    "repo": "IGUNUBLUE/lerdr",
+    "commit": "d01ec329d2b0e87c536972ae0e49e19ea41c76fc",
+    "package": "internal/conversation",
+    "generator": "page_export_test.go"
+  },
+  "notes": [
+    "entry.id is sha256(raw jsonl line)[:24] for JSONL readers, the message id for opencode, the sqlite rowid for hermes; duplicate identical lines gain a '-N' suffix",
+    "claude continuation-segment entries carry namespaced:true with the raw suffix; the wire id is sha256(sessionID+\"\\x00\"+fileRevision)[:12]+\"-\"+id, and fileRevision is inode-dependent",
+    "next_cursor is the first entry id of the page (the 'before' argument that returns the next-older page); namespaced cursors are flagged",
+    "steps with append_jsonl_lines/append_sql_statements model live tail: content is appended before the step's read",
+    "total is the full visible entry count; truncated marks clamped payloads; source_corrupt marks skipped corrupt rows"
+  ],
+  "vectors": [
+    {
+      "name": "basic-conversation",
+      "comment": "text blocks, thinking block ignored, toolCall/toolResult association via toolCallId",
+      "agent": "pi",
+      "cwd": "/work",
+      "session_id": "423e4567-e89b-12d3-a456-426614174000",
+      "files": [
+        {
+          "path": ".pi/agent/sessions/--work--/session_423e4567-e89b-12d3-a456-426614174000.jsonl",
+          "jsonl_lines": [
+            "{\"message\":{\"content\":[{\"text\":\"run the tests\",\"type\":\"text\"}],\"role\":\"user\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"message\"}",
+            "{\"message\":{\"content\":[{\"thinking\":\"internal reasoning\",\"type\":\"thinking\"},{\"text\":\"Running tests.\",\"type\":\"text\"},{\"arguments\":{\"command\":\"go test ./...\"},\"id\":\"call_p1\",\"name\":\"bash\",\"type\":\"toolCall\"}],\"role\":\"assistant\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"message\"}",
+            "{\"message\":{\"content\":\"ok  internal/x\",\"role\":\"toolResult\",\"toolCallId\":\"call_p1\"},\"timestamp\":\"2026-08-12T10:00:01Z\",\"type\":\"message\"}",
+            "{\"message\":{\"content\":[{\"text\":\"All green.\",\"type\":\"text\"}],\"role\":\"assistant\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"message\"}"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "label": "all",
+          "before": "",
+          "limit": 80,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "9fddea7485f2b3a05197b42e",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "user",
+              "text": "run the tests"
+            },
+            {
+              "id": "0bdf6a481cf0ddfb97577bde",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "assistant",
+              "text": "Running tests.",
+              "tools": [
+                {
+                  "id": "call_p1",
+                  "name": "bash",
+                  "input": "{\"command\":\"go test ./...\"}",
+                  "output": "ok  internal/x"
+                }
+              ]
+            },
+            {
+              "id": "69934dd1a8db153b2747af12",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "assistant",
+              "text": "All green."
+            }
+          ],
+          "has_more": false,
+          "total": 3
+        }
+      ]
+    },
+    {
+      "name": "pagination",
+      "comment": "four turns paged two at a time",
+      "agent": "pi",
+      "cwd": "/work",
+      "session_id": "423e4567-e89b-12d3-a456-426614174000",
+      "files": [
+        {
+          "path": ".pi/agent/sessions/--work--/session_423e4567-e89b-12d3-a456-426614174000.jsonl",
+          "jsonl_lines": [
+            "{\"message\":{\"content\":[{\"text\":\"turn 0\",\"type\":\"text\"}],\"role\":\"user\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"message\"}",
+            "{\"message\":{\"content\":[{\"text\":\"turn 1\",\"type\":\"text\"}],\"role\":\"assistant\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"message\"}",
+            "{\"message\":{\"content\":[{\"text\":\"turn 2\",\"type\":\"text\"}],\"role\":\"user\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"message\"}",
+            "{\"message\":{\"content\":[{\"text\":\"turn 3\",\"type\":\"text\"}],\"role\":\"assistant\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"message\"}"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "label": "first-page",
+          "before": "",
+          "limit": 2,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "b5be8ee9f11b7db3f301ff17",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "user",
+              "text": "turn 2"
+            },
+            {
+              "id": "d376b1b009385ed8267c5a4b",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "assistant",
+              "text": "turn 3"
+            }
+          ],
+          "has_more": true,
+          "total": 4,
+          "next_cursor": "b5be8ee9f11b7db3f301ff17"
+        },
+        {
+          "label": "second-page",
+          "before": "",
+          "before_step": 0,
+          "limit": 2,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "b0424d6e788b68188c583838",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "user",
+              "text": "turn 0"
+            },
+            {
+              "id": "294ae2953368d3cf4b089683",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "assistant",
+              "text": "turn 1"
+            }
+          ],
+          "has_more": false,
+          "total": 4
+        }
+      ]
+    },
+    {
+      "name": "live-tail-append",
+      "agent": "pi",
+      "cwd": "/work",
+      "session_id": "423e4567-e89b-12d3-a456-426614174000",
+      "files": [
+        {
+          "path": ".pi/agent/sessions/--work--/session_423e4567-e89b-12d3-a456-426614174000.jsonl",
+          "jsonl_lines": [
+            "{\"message\":{\"content\":[{\"text\":\"first\",\"type\":\"text\"}],\"role\":\"user\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"message\"}"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "label": "initial",
+          "before": "",
+          "limit": 4,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "c74eea282f321a74749f66c3",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "user",
+              "text": "first"
+            }
+          ],
+          "has_more": false,
+          "total": 1
+        },
+        {
+          "label": "after-append",
+          "append_jsonl_lines": [
+            "{\"message\":{\"content\":[{\"text\":\"arrived later\",\"type\":\"text\"}],\"role\":\"assistant\"},\"timestamp\":\"2026-08-12T10:00:00Z\",\"type\":\"message\"}"
+          ],
+          "before": "",
+          "limit": 4,
+          "available": true,
+          "expected_entries": [
+            {
+              "id": "c74eea282f321a74749f66c3",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "user",
+              "text": "first"
+            },
+            {
+              "id": "671f49ee822281c34c7d0c25",
+              "timestamp": "2026-08-12T10:00:00Z",
+              "role": "assistant",
+              "text": "arrived later"
+            }
+          ],
+          "has_more": false,
+          "total": 2
+        }
+      ]
+    }
+  ]
+}

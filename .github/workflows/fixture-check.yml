@@ -1,0 +1,19 @@
+name: Fixture check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  schema:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate fixture suite envelopes
+        run: python3 tools/validate_fixtures.py fixtures
+
+  # Semantic harnesses land as the stacks do:
+  # - relay/tests/vectors   (Rust: decode + assert every suite)
+  # - :core:testing         (Kotlin/JVM fixture replay)
+  # Both read the same files; this job keeps the floor green meanwhile.

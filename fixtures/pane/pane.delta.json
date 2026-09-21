@@ -1,0 +1,337 @@
+{
+  "format_version": 1,
+  "suite": "pane.delta",
+  "source": {
+    "repo": "IGUNUBLUE/lerdr",
+    "commit": "d01ec329d2b0e87c536972ae0e49e19ea41c76fc",
+    "package": "internal/panedelta",
+    "generator": "delta_export_test.go"
+  },
+  "vectors": [
+    {
+      "name": "empty-previous",
+      "comment": "first frame: no anchors exist, whole frame is one literal",
+      "previous": "",
+      "current": "one\ntwo\nthree\n",
+      "expected_segments": [
+        {
+          "text": "one\ntwo\nthree\n"
+        }
+      ],
+      "expected_applied": "one\ntwo\nthree\n",
+      "efficient": false
+    },
+    {
+      "name": "identical-empty",
+      "comment": "empty to empty still emits a single empty-text literal segment",
+      "previous": "",
+      "current": "",
+      "expected_segments": [
+        {}
+      ],
+      "expected_applied": "",
+      "efficient": false
+    },
+    {
+      "name": "identical-nonempty",
+      "comment": "unchanged frame collapses to one copy segment; literalBytes=0 but the 64-byte segment overhead can still fail the efficient gate on small frames",
+      "previous": "one\ntwo\nthree\nfour\n",
+      "current": "one\ntwo\nthree\nfour\n",
+      "expected_segments": [
+        {
+          "copy_lines": 5
+        }
+      ],
+      "expected_applied": "one\ntwo\nthree\nfour\n",
+      "efficient": false
+    },
+    {
+      "name": "single-line-pane",
+      "comment": "one partial line, no newline; below the 3-line anchor floor so it is all literal",
+      "previous": "prompt$ ",
+      "current": "prompt$ ls -la",
+      "expected_segments": [
+        {
+          "text": "prompt$ ls -la"
+        }
+      ],
+      "expected_applied": "prompt$ ls -la",
+      "efficient": false
+    },
+    {
+      "name": "append-only",
+      "previous": "one\ntwo\nthree\nfour\n",
+      "current": "one\ntwo\nthree\nfour\nfive\n",
+      "expected_segments": [
+        {
+          "copy_lines": 4
+        },
+        {
+          "text": "five\n"
+        }
+      ],
+      "expected_applied": "one\ntwo\nthree\nfour\nfive\n",
+      "efficient": false
+    },
+    {
+      "name": "scrollback-roll",
+      "comment": "top line scrolls off, bottom line arrives: copy shifts by one line",
+      "previous": "one\ntwo\nthree\nfour\nfive\n",
+      "current": "two\nthree\nfour\nfive\nsix\n",
+      "expected_segments": [
+        {
+          "copy_start": 1,
+          "copy_lines": 4
+        },
+        {
+          "text": "six\n"
+        }
+      ],
+      "expected_applied": "two\nthree\nfour\nfive\nsix\n",
+      "efficient": false
+    },
+    {
+      "name": "prepend",
+      "previous": "two\nthree\nfour\nfive\n",
+      "current": "one\ntwo\nthree\nfour\nfive\n",
+      "expected_segments": [
+        {
+          "text": "one\n"
+        },
+        {
+          "copy_lines": 5
+        }
+      ],
+      "expected_applied": "one\ntwo\nthree\nfour\nfive\n",
+      "efficient": false
+    },
+    {
+      "name": "middle-rewrite-isolated",
+      "comment": "SplitAfter leaves a trailing \"\" element after the final newline, so the tail anchors as {four,five,\"\"}; without that phantom line this edit would be one literal",
+      "previous": "one\ntwo\nthree\nfour\nfive\n",
+      "current": "one\ntwo\nTHREE\nfour\nfive\n",
+      "expected_segments": [
+        {
+          "text": "one\ntwo\nTHREE\n"
+        },
+        {
+          "copy_start": 3,
+          "copy_lines": 3
+        }
+      ],
+      "expected_applied": "one\ntwo\nTHREE\nfour\nfive\n",
+      "efficient": false
+    },
+    {
+      "name": "middle-rewrite-anchored",
+      "comment": "three unchanged lines on each side let the edit sit in a literal between two copy segments",
+      "previous": "l1\nl2\nl3\nl4\nl5\nl6\nl7\n",
+      "current": "l1\nl2\nl3\nXX\nl5\nl6\nl7\n",
+      "expected_segments": [
+        {
+          "copy_lines": 3
+        },
+        {
+          "text": "XX\n"
+        },
+        {
+          "copy_start": 4,
+          "copy_lines": 4
+        }
+      ],
+      "expected_applied": "l1\nl2\nl3\nXX\nl5\nl6\nl7\n",
+      "efficient": false
+    },
+    {
+      "name": "full-rewrite",
+      "comment": "no shared 3-line anchor anywhere; also exercises efficient:false",
+      "previous": "alpha\nbeta\ngamma\ndelta\n",
+      "current": "zz1\nzz2\nzz3\nzz4\n",
+      "expected_segments": [
+        {
+          "text": "zz1\nzz2\nzz3\nzz4\n"
+        }
+      ],
+      "expected_applied": "zz1\nzz2\nzz3\nzz4\n",
+      "efficient": false
+    },
+    {
+      "name": "crlf-line-endings",
+      "comment": "SplitAfter keeps \\r\\n inside each line string; anchors and literals carry the CR verbatim",
+      "previous": "a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n",
+      "current": "a\r\nb\r\nX\r\nc\r\nd\r\ne\r\nf\r\n",
+      "expected_segments": [
+        {
+          "text": "a\r\nb\r\nX\r\n"
+        },
+        {
+          "copy_start": 2,
+          "copy_lines": 5
+        }
+      ],
+      "expected_applied": "a\r\nb\r\nX\r\nc\r\nd\r\ne\r\nf\r\n",
+      "efficient": false
+    },
+    {
+      "name": "unicode-wide-chars",
+      "comment": "anchors compare whole line strings; byte length feeds Efficient, not rune count",
+      "previous": "αβγ\n日本語の行\nwide 漢字\nmid\nδεζ\n🐑 ewe\n末端\n",
+      "current": "αβγ\n日本語の行\nwide 漢字\nMID 🐑\nδεζ\n🐑 ewe\n末端\n",
+      "expected_segments": [
+        {
+          "copy_lines": 3
+        },
+        {
+          "text": "MID 🐑\n"
+        },
+        {
+          "copy_start": 4,
+          "copy_lines": 4
+        }
+      ],
+      "expected_applied": "αβγ\n日本語の行\nwide 漢字\nMID 🐑\nδεζ\n🐑 ewe\n末端\n",
+      "efficient": false
+    },
+    {
+      "name": "anchor-collision-cap",
+      "comment": "the {p,p,p} key has 65 candidates; maxCandidates=64 drops index 67 which holds the only 4-line match, so the delta is copy(0,3)+literal instead of copy(67,4)",
+      "previous": "p\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\np\nQ\np\np\np\nR\n",
+      "current": "p\np\np\nR\n",
+      "expected_segments": [
+        {
+          "copy_lines": 3
+        },
+        {
+          "text": "R\n"
+        }
+      ],
+      "expected_applied": "p\np\np\nR\n",
+      "efficient": false
+    },
+    {
+      "name": "efficient-append-large",
+      "comment": "small append to a large frame passes the sender-side efficiency gate",
+      "previous": "terminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\n",
+      "current": "terminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\none new row\n",
+      "expected_segments": [
+        {
+          "copy_lines": 200
+        },
+        {
+          "text": "one new row\n"
+        }
+      ],
+      "expected_applied": "terminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\nterminal history row padding\none new row\n",
+      "efficient": true
+    },
+    {
+      "name": "efficient-false-mostly-rewritten",
+      "comment": "a copy segment exists but literalBytes+64·segments ≥ ¾·len(current), so the sender ships a full frame",
+      "previous": "kept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\n",
+      "current": "kept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\n",
+      "expected_segments": [
+        {
+          "copy_lines": 10
+        },
+        {
+          "text": "fresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\n"
+        }
+      ],
+      "expected_applied": "kept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nkept common row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\nfresh replacement row\n",
+      "efficient": false
+    },
+    {
+      "name": "trailing-whitespace-lines",
+      "comment": "trailing spaces/tabs are part of the line and must survive literals verbatim",
+      "previous": "a   \nb\t\nc \nd\n",
+      "current": "a   \nb\t\nX \nd\n",
+      "expected_segments": [
+        {
+          "text": "a   \nb\t\nX \nd\n"
+        }
+      ],
+      "expected_applied": "a   \nb\t\nX \nd\n",
+      "efficient": false
+    },
+    {
+      "name": "ansi-colored-lines",
+      "comment": "SGR bytes are opaque content inside line strings; unchanged colored lines still anchor copy segments",
+      "previous": "\u001b[31mred\u001b[0m\n\u001b[32mgreen\u001b[0m\n\u001b[34mblue\u001b[0m\nplain\n\u001b[1mbold\u001b[0m\n\u001b[4munder\u001b[0m\nend\n",
+      "current": "\u001b[31mred\u001b[0m\n\u001b[32mgreen\u001b[0m\n\u001b[34mblue\u001b[0m\n\u001b[36mcyan\u001b[0m\n\u001b[1mbold\u001b[0m\n\u001b[4munder\u001b[0m\nend\n",
+      "expected_segments": [
+        {
+          "copy_lines": 3
+        },
+        {
+          "text": "\u001b[36mcyan\u001b[0m\n"
+        },
+        {
+          "copy_start": 4,
+          "copy_lines": 4
+        }
+      ],
+      "expected_applied": "\u001b[31mred\u001b[0m\n\u001b[32mgreen\u001b[0m\n\u001b[34mblue\u001b[0m\n\u001b[36mcyan\u001b[0m\n\u001b[1mbold\u001b[0m\n\u001b[4munder\u001b[0m\nend\n",
+      "efficient": false
+    },
+    {
+      "name": "two-line-common-no-copy",
+      "comment": "a 2-line shared region is below minimumCopyLines=3 and must NOT become a copy segment",
+      "previous": "A\nB\nx1\nx2\nx3\n",
+      "current": "c1\nc2\nA\nB\nc3\n",
+      "expected_segments": [
+        {
+          "text": "c1\nc2\nA\nB\nc3\n"
+        }
+      ],
+      "expected_applied": "c1\nc2\nA\nB\nc3\n",
+      "efficient": false
+    },
+    {
+      "name": "three-line-common-copy",
+      "comment": "exactly 3 shared lines is the smallest legal copy segment",
+      "previous": "y\nA\nB\nC\nx\n",
+      "current": "z\nA\nB\nC\nw\n",
+      "expected_segments": [
+        {
+          "text": "z\n"
+        },
+        {
+          "copy_start": 1,
+          "copy_lines": 3
+        },
+        {
+          "text": "w\n"
+        }
+      ],
+      "expected_applied": "z\nA\nB\nC\nw\n",
+      "efficient": false
+    },
+    {
+      "name": "delete-all",
+      "comment": "shrinking to empty leaves a single empty literal",
+      "previous": "one\ntwo\nthree\n",
+      "current": "",
+      "expected_segments": [
+        {}
+      ],
+      "expected_applied": "",
+      "efficient": false
+    },
+    {
+      "name": "no-trailing-newline-tail",
+      "comment": "final partial line is a literal; SplitAfter does not synthesize a newline",
+      "previous": "a\nb\nc\nd",
+      "current": "a\nb\nc\ne",
+      "expected_segments": [
+        {
+          "copy_lines": 3
+        },
+        {
+          "text": "e"
+        }
+      ],
+      "expected_applied": "a\nb\nc\ne",
+      "efficient": false
+    }
+  ]
+}
