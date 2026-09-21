@@ -90,6 +90,20 @@ pub struct CredentialRecord {
     pub secret: String,
 }
 
+// Secrets are scrubbed when records drop — a removed invitation or revoked
+// credential must not leave its b64 secret in heap memory.
+impl Drop for Invitation {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.secret);
+    }
+}
+
+impl Drop for CredentialRecord {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.secret);
+    }
+}
+
 /// `diskState` — the persisted document. `rearm_bootstrap` is a runtime
 /// option, never persisted.
 #[derive(Debug, Serialize, Deserialize)]

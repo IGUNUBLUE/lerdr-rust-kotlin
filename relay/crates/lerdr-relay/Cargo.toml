@@ -21,6 +21,8 @@ rand = "0.9"         # OsRng: handshake ephemeral keys + nonces, device-id minti
 axum = { version = "0.8", features = ["ws"] }
 futures-util = "0.3" # StreamExt/SinkExt split for the axum WebSocket
 
+zeroize = { workspace = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tokio-tungstenite = "0.29" # real-socket WS client for the end-to-end test (same tungstenite axum uses)

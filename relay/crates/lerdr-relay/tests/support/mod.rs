@@ -241,7 +241,12 @@ pub fn seed_invitation(store: &MemoryAuthStore) -> (AuthSelector, [u8; SECRET_BY
         .expect("store writes b64 secrets");
     let secret: [u8; SECRET_BYTES] = secret_vec.try_into().expect("32 bytes");
     (
-        AuthSelector::new(AuthKind::Invitation, invitation.invitation_id, 1, "en"),
+        AuthSelector::new(
+            AuthKind::Invitation,
+            invitation.invitation_id.clone(),
+            1,
+            "en",
+        ),
         secret,
     )
 }

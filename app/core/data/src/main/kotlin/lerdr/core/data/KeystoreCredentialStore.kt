@@ -160,8 +160,13 @@ class KeystoreCredentialStore(
     /** Caller must hold [mutex]; on success the flow publishes [next]. */
     private suspend fun persistLocked(next: Map<String, RelayDeviceAuth>) {
         val state = PersistedAuthState(relays = next)
-        val sealed = cipher.seal(json.encodeToString(PersistedAuthState.serializer(), state)
-            .toByteArray(Charsets.UTF_8))
+        val plaintext = json.encodeToString(PersistedAuthState.serializer(), state)
+            .toByteArray(Charsets.UTF_8)
+        val sealed = try {
+            cipher.seal(plaintext)
+        } finally {
+            plaintext.fill(0)
+        }
         withContext(Dispatchers.IO) { writeFile(sealed) }
         _records.value = next
     }
@@ -187,6 +192,8 @@ class KeystoreCredentialStore(
             json.parseToJsonElement(String(plaintext, Charsets.UTF_8)) as? JsonObject
         } catch (e: IllegalArgumentException) {
             null
+        } finally {
+            plaintext.fill(0)
         } ?: return emptyMap()
         if ((root["version"] as? JsonPrimitive)?.intOrNull != STATE_VERSION) return emptyMap()
         val relays = root["relays"] as? JsonObject ?: return emptyMap()

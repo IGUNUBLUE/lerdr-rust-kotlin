@@ -139,8 +139,11 @@ impl AuthSelector {
     }
 }
 
-/// Per-direction session keys.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Per-direction session keys. Not `Copy` — clones are deliberate, and the
+/// bytes are scrubbed on drop (`ZeroizeOnDrop`). The `aes` crate's own
+/// `zeroize` feature additionally scrubs the `Aes256Gcm` round keys inside
+/// `Session` when it drops.
+#[derive(Debug, Clone, PartialEq, Eq, zeroize::ZeroizeOnDrop)]
 pub struct SessionKeys {
     /// Client → server AEAD key.
     pub c2s: [u8; 32],
