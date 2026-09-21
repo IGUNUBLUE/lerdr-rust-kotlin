@@ -118,3 +118,34 @@ moment two binaries are live.
 E2EE handshake byte-layout (doc 03), Herdr dispatch taxonomy + events_lost
 recovery (doc 08), plugin distribution contract (doc 09), actor topology,
 module layout, M3E isolation, phase gates.
+
+## Phase-0 implementation findings (stations, 2025)
+
+Recorded by the first Rust/Kotlin harness pass; none block Phase 1.
+
+- **replay vs seq error split** — Go emits one string ("invalid encrypted
+  frame sequence"); the fixture suite splits it (`received < expected` →
+  replay, otherwise seq). Both implementations encode the split — the spec
+  should bless it in the Phase-5 revision.
+- **Server-side hello/finish parsing** — `parse_server_hello` /
+  `parse_server_finish` validation rules were inferred symmetrically (the
+  Go relay never parses them; the JS client does). Error variant names are
+  implementation-chosen, not oracle strings.
+- **Zeroization** — Go `clear()`s secrets; neither new implementation
+  zeroizes yet. Add `zeroize` (Rust) + `Arrays.fill` discipline (Kotlin)
+  in the credential-store phase — dep was not in the Phase-0 allowlist.
+- **`Interaction.kind` fixture value `"choice"`** — one question vector
+  carries a kind outside the spec'd `single_select`/`multi_select`.
+  Kotlin keeps `kind` as raw `String` (lossless decode) with a typed
+  accessor; classify whether `"choice"` is a legacy alias before Phase 5.
+- **`apply` vs `applyStrict` divergence** — released JS client rejects
+  `{}` segments that Go `Apply` accepts; Kotlin ships both applies and
+  asserts the divergence. Boundary-table semantics (§6 of pane-delta
+  spec) remain normative for clients.
+- **`advance_seconds` fixture semantics** — maps to `advance` + one
+  `sweep_expired` (equivalent to Go's 1s ticker only while no ops
+  interleave mid-window); if vectors ever interleave, the sweep needs a
+  per-second loop.
+- **Relay-side `apply` policy** — if the Rust relay ever verifies deltas
+  it must decide between `SplitAfter` line counts and boundary-table
+  semantics (OPEN QUESTION-1 in the spec).

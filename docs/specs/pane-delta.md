@@ -21,9 +21,16 @@ Both sides model pane content as **lines that retain their `\n`**
 |---|---|---|
 | `""` | `[""]` | one empty line |
 | `"a\nb"` | `["a\n", "b"]` | no trailing newline |
-| `"a\nb\n"` | `["a\n", "b\n"]` | **no phantom empty line** |
-| `"a\n\n"` | `["a\n", "\n"]` | interior blank line kept |
+| `"a\nb\n"` | `["a\n", "b\n", ""]` | **phantom empty line** — a trailing `\n` yields a final `""` element |
+| `"a\n\n"` | `["a\n", "\n", ""]` | interior blank line kept + phantom tail |
 | `"a\r\nb"` | `["a\r\n", "b"]` | `\r` stays at end of line — CRLF is not normalized |
+
+The phantom `""` element is load-bearing: it participates in anchor search
+and `copy_lines` bounds, and it is why `Build` emits `{}` (empty-literal)
+segments for the `identical-empty` / `delete-all` cases (`flushLiteral`
+fires with `len(lines)==1`). Verified against Go `SplitAfter` behavior and
+the `pane.delta` fixture suite — an earlier revision of this table claimed
+no phantom line; that was wrong.
 
 > CRITICAL PARITY NOTE. The released JS client does **not** use `SplitAfter`
 > semantics to *index* the previous buffer. It builds a **boundary table**:

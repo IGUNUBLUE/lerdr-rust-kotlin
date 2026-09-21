@@ -1,0 +1,36 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.85"
+
+# Version policy: latest STABLE release (semver-pinned by major/minor).
+# Verify new deps ≥7 days published.
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+tokio = { version = "1.53", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+p256 = { version = "0.14", features = ["ecdh"] }
+aes-gcm = "0.11"
+hkdf = "0.13"
+sha2 = "0.11"
+hmac = "0.13"
+base64 = "0.23"
+hex = "0.4"
+
+# Dev/test deps live in workspace.dependencies too — members reference them
+# from their own [dev-dependencies] via workspace = true.
+rstest = "0.27"
+proptest = "1.11"
+insta = "1.48"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

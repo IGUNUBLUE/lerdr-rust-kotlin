@@ -1,6 +1,7 @@
-/target/
-/build/
+# Build outputs
+target/
+build/
+.gradle/
 *.iml
 .idea/
-.gradle/
 local.properties

@@ -1,0 +1,25 @@
+# Version policy: latest STABLE release only — no alpha/beta/RC.
+# Sole exception: material3 1.5.0-alphaXX for M3 Expressive (no stable
+# line exists; see docs/06-risks.md). Verify new pins ≥7 days old.
+[versions]
+kotlin = "2.4.20"
+coroutines = "1.11.0"
+serialization = "1.11.0"
+turbine = "1.2.1"
+junit = "4.13.2"
+truth = "1.4.5"
+agp = "9.4.1"           # app module only — check JDK floor when wiring :app
+hilt = "2.60.1"
+
+[libraries]
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
+turbine = { module = "app.cash.turbine:turbine", version.ref = "turbine" }
+junit = { module = "junit:junit", version.ref = "junit" }
+truth = { module = "com.google.truth:truth", version.ref = "truth" }
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+android-application = { id = "com.android.application", version.ref = "agp" }

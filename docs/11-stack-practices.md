@@ -104,3 +104,17 @@ feature flags, not per-call probing.
 | Screenshot lib | **Roborazzi** (not Paparazzi) | Hilt/Robolectric compat |
 | Rust test stack | `tokio test-util` + `proptest` + `insta` + `rstest` | |
 | Time in tests | virtual on both stacks | `start_paused` / `runTest` |
+
+## Version policy (user directive)
+
+- **Latest stable always** — no alpha/beta/RC pins. Refresh catalogs
+  (`libs.versions.toml`, `relay/Cargo.toml` workspace deps) at phase
+  boundaries, not per-PR.
+- Single documented exception: `material3` 1.5.0-alphaXX (M3 Expressive
+  has no stable line — tracked in docs/06-risks.md).
+- New deps must still be ≥7 days published (supply-chain floor) — a
+  version that landed yesterday is "not latest" for our purposes.
+- Snapshot of pins at Phase-0 scaffolding: kotlin 2.4.20, coroutines
+  1.11.0, serialization 1.11.0, turbine 1.2.1, truth 1.4.5, AGP 9.4.1
+  (app module later — JDK floor TBD), tokio 1.53, serde 1.0, p256 0.14,
+  aes-gcm 0.11, hkdf 0.13, sha2 0.11, hmac 0.13, base64 0.23.
