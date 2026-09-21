@@ -149,3 +149,71 @@ Recorded by the first Rust/Kotlin harness pass; none block Phase 1.
 - **Relay-side `apply` policy** — if the Rust relay ever verifies deltas
   it must decide between `SplitAfter` line counts and boundary-table
   semantics (OPEN QUESTION-1 in the spec).
+
+## Phase-1 round-3 findings (stations, 2025)
+
+Relay server crate, app shell, terminal surface, and data layer landed;
+none block Phase 1 continuation.
+
+### Wire/semantic (protocol-parity relevant)
+
+- **Fingerprint scope** — `content_fingerprint` binds content bytes only
+  (`sha256(utf8(content))[0..8]` hex), not `lines`/`viewport_rows`/
+  `format`. Same content under different budgets chains cleanly; render
+  parameters are unpinned. Phase-5 candidate: extend scope or document.
+- **Empty-string fingerprint suppresses watch_pane** — committed deltas
+  store `content_fingerprint=""` (JS `typeof` check), which then blocks
+  `watch_pane` re-issue until a real `pane_content` lands. Ported
+  verbatim; consider a relay-side invariant.
+- **4 MiB outbound cap vs pane_content** — a full frame exceeding the
+  send-buffer byte cap evicts the client. Delta efficiency gating makes
+  it rare but not impossible (large near-unchanged frames that fail
+  `Efficient` go full).
+- **Ack-gate oracle semantics pinned** — implicit delta acks while
+  watching; `pane_content` acks iff `ack_required && fingerprint!=""`;
+  `pane_unchanged` never acks (adopts + re-watches); resync → forced
+  `read_pane` (never throttled); server gate = one unacked frame, 4s
+  timeout; client read coalesce = 35s. `verifyContentHash` hardening
+  beyond oracle is on-by-default in Kotlin, flag-off = released-client
+  parity.
+- **Go `Apply` vs client boundary-table divergence confirmed harmful** —
+  Go's `Apply` rejects `copy_lines = count("\n")+1` yet the relay emits
+  exactly that shape for metadata-only frames and JS accepts it. If the
+  Rust relay ever verifies client acks with Go-style `Apply`, it will
+  flag legal frames — use boundary-table semantics relay-side.
+- **Inbox-overflow busy response can't echo ids** — request/action ids
+  live inside the encrypted frame; Go's "Relay is busy" reply has the
+  same constraint. Documented behavior, not a bug.
+
+### App-side
+
+- **`hilt-navigation-compose` absent** — Nav3 entries can't resolve
+  `@HiltViewModel`; ViewModels use `viewModel{}` factory initializers
+  (single swap point per screen). Revisit if the artifact returns.
+- **`androidx.navigation3.runtime.deeplink` doesn't exist in 1.1.7** —
+  local URI matcher parses `lerdr://pair?…` (cold + warm via
+  `onNewIntent`→Channel). Re-check on Nav3 updates.
+- **Setup-link divergences (deliberate)** — `lerdr://pair` requires
+  `relay=` and allows `ws` (no page origin to inherit, no mixed-content
+  rule); malformed `invite` params → hard reject instead of oracle's
+  silent downgrade to bootstrap import. Pairing spec should bless or fix.
+- **Bootstrap `setup` token must be exactly 32 UTF-8 bytes** at
+  `toPendingInvitation()` (relay-side requirement); link parse stays
+  oracle-loose (16–512 chars).
+- **`AndroidKeystoreCipher` untestable on JVM** by design — fakes cover
+  the store; needs an instrumented smoke test when emulator/Robolectric
+  lands.
+- **Draft debounce** intentionally left to the ViewModel
+  (`snapshotFlow.debounce(300)`), unlike oracle's built-in flush.
+
+### Relay-side
+
+- **`with_session_config` rebuilds shared state** — startup-time only;
+  runtime re-tuning would need `&mut self` before serving.
+- **`HandshakeError::KeyMaterial` label stretch** — also covers
+  `session.seal` on the finish frame; split variants if consumers care.
+- **No fixture replay at handshake layer** — `KeySource` seam exists for
+  pinning key+nonce; wire a `lerdr-fixture` golden `e2ee_server_hello`
+  assertion in a follow-up.
+- **Binary frames refused on `/ws`** (requireText parity) — `Codec` seam
+  in place for the future DataChannel transport.
