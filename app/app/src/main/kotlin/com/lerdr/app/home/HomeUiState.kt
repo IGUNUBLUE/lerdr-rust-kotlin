@@ -47,10 +47,10 @@ data class AgentListItemUi(
 data class RelayCardUi(
     val relayId: String,
     val label: String,
-    /** "tailscale" / "gateway" / "direct" — transport in use. */
+    /** "direct" / "tls" — the socket transport in use. */
     val transport: String,
-    /** "12ms" — live latency. */
-    val latencyLabel: String,
+    /** "connected" / "connecting…" / "offline" — live session status. */
+    val statusLabel: String,
     val agentCount: Int,
     val connected: Boolean,
 )

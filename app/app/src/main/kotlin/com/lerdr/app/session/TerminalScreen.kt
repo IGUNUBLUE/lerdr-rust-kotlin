@@ -1,16 +1,19 @@
 package com.lerdr.app.session
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -22,20 +25,26 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.PreviewLightDark
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.lerdr.app.di.AppEntryPoint
 import com.lerdr.core.designsystem.theme.LerdrTextStyles
 import com.lerdr.core.designsystem.theme.LerdrTheme
+import dagger.hilt.android.EntryPointAccessors
 
 /**
- * Terminal mode — the machine itself (docs/04 §Terminal mode). Scaffold
- * fidelity: static ANSI-colored lines stand in for the delta-applied
- * renderer; the special-keys bar and scroll-to-live pill are the real
- * affordances.
+ * Terminal mode — the machine itself (docs/04 §Terminal mode). The pane
+ * watch lives on [TerminalViewModel] for the screen's lifetime; this layer
+ * renders the committed snapshot and forwards key chords.
  */
 @Composable
 fun TerminalScreen(
@@ -43,37 +52,60 @@ fun TerminalScreen(
     onOpenFeed: () -> Unit,
     onBack: () -> Unit,
 ) {
+    val appContext = LocalContext.current.applicationContext
+    val viewModel: TerminalViewModel = viewModel(key = "terminal:$paneId") {
+        val entryPoint = EntryPointAccessors.fromApplication(appContext, AppEntryPoint::class.java)
+        TerminalViewModel(paneId, entryPoint.sessionRepository(), entryPoint.appScope())
+    }
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     TerminalContent(
-        paneId = paneId,
+        uiState = uiState,
         onOpenFeed = onOpenFeed,
         onBack = onBack,
+        onSendKeys = viewModel::sendKeys,
+        onRefresh = viewModel::refresh,
     )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TerminalContent(
-    paneId: String,
+    uiState: TerminalUiState,
     onOpenFeed: () -> Unit,
     onBack: () -> Unit,
+    onSendKeys: (List<String>) -> Unit,
+    onRefresh: () -> Unit,
 ) {
     val spacing = LerdrTheme.spacing
     val colors = LerdrTheme.extendedColors
+    val listState = rememberLazyListState()
+    LaunchedEffect(uiState.revision) {
+        if (uiState.lines.isNotEmpty()) {
+            listState.animateScrollToItem(uiState.lines.lastIndex)
+        }
+    }
     Scaffold(
         topBar = {
             SessionTopBar(
-                title = paneId.substringAfter("::", paneId),
-                breadcrumb = "lerdr · main · sd",
-                statusLabel = "lease 92×42",
-                statusColor = colors.attention,
+                title = uiState.title.ifEmpty { uiState.paneId.substringAfter("::") },
+                breadcrumb = uiState.breadcrumb,
+                statusLabel = uiState.statusLabel.ifEmpty {
+                    if (uiState.connected) "live" else "offline"
+                },
+                statusColor = if (uiState.connected) colors.live else colors.idle,
                 mode = SessionMode.TERMINAL,
                 onSelectMode = { mode ->
                     if (mode == SessionMode.FEED) onOpenFeed()
                 },
                 onBack = onBack,
+                trailing = {
+                    TextButton(onClick = onRefresh) {
+                        Text("Refresh", style = MaterialTheme.typography.labelMedium)
+                    }
+                },
             )
         },
-        bottomBar = { SpecialKeysBar() },
+        bottomBar = { SpecialKeysBar(onSendKeys = onSendKeys) },
     ) { innerPadding ->
         Box(
             modifier = Modifier
@@ -86,36 +118,45 @@ fun TerminalContent(
                 shape = MaterialTheme.shapes.medium,
                 modifier = Modifier.fillMaxSize(),
             ) {
-                Column(modifier = Modifier.padding(spacing.medium)) {
-                    TerminalLine("lerdr git:(main) cargo test -p lerdr-e2ee", colors.terminalAccent)
-                    TerminalLine("Compiling lerdr-e2ee v0.1.0  Compiling lerdr-core v0.1.0", colors.terminalText)
-                    TerminalLine("Finished test [unoptimized] in 4.12s  Running unittests src/lib.rs", colors.terminalText)
-                    TerminalLine("running 14 tests  test handshake_credential … ok", colors.terminalText)
-                    TerminalLine("test handshake_invitation … ok  test golden_vectors … ok", colors.terminalText)
-                    TerminalLine("test result: ok. 14 passed; 0 failed → lerdr git:(main) ▮", colors.terminalText)
+                if (uiState.waitingForContent) {
+                    Column(modifier = Modifier.padding(spacing.medium)) {
+                        TerminalLine(
+                            if (uiState.connected) {
+                                "Watching pane…"
+                            } else {
+                                "Waiting for relay…"
+                            },
+                            colors.terminalAccent,
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        state = listState,
+                        contentPadding = PaddingValues(spacing.medium),
+                    ) {
+                        itemsIndexed(uiState.lines) { _, line ->
+                            TerminalLine(line.ifEmpty { " " }, colors.terminalText)
+                        }
+                    }
                 }
             }
-            Surface(
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                contentColor = MaterialTheme.colorScheme.onSurface,
-                shape = CircleShape,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = spacing.medium),
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(
-                        horizontal = spacing.medium,
-                        vertical = spacing.small,
-                    ),
+            if (uiState.truncated) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                    shape = CircleShape,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = spacing.small),
                 ) {
-                    Icon(
-                        Icons.Default.KeyboardArrowDown,
-                        contentDescription = null,
-                        modifier = Modifier.padding(end = spacing.extraSmall),
+                    Text(
+                        "pane truncated — full view on the computer",
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(
+                            horizontal = spacing.small,
+                            vertical = spacing.extraSmall,
+                        ),
                     )
-                    Text("scroll to live", style = MaterialTheme.typography.labelMedium)
                 }
             }
         }
@@ -129,15 +170,16 @@ private fun TerminalLine(text: String, color: androidx.compose.ui.graphics.Color
         style = LerdrTextStyles.terminal,
         color = color,
         maxLines = 1,
+        softWrap = false,
         modifier = Modifier
             .fillMaxWidth()
             .horizontalScroll(rememberScrollState()),
     )
 }
 
-/** Esc Tab arrows Ctrl — the fixed special-keys bar (Ctrl latches). */
+/** Esc Tab arrows Ctrl — the fixed special-keys bar. */
 @Composable
-private fun SpecialKeysBar() {
+private fun SpecialKeysBar(onSendKeys: (List<String>) -> Unit) {
     val spacing = LerdrTheme.spacing
     Surface(color = MaterialTheme.colorScheme.surfaceContainerLow) {
         Column(
@@ -153,14 +195,15 @@ private fun SpecialKeysBar() {
                     .horizontalScroll(rememberScrollState())
                     .padding(horizontal = spacing.medium, vertical = spacing.small),
             ) {
-                listOf("Esc", "Tab", "←", "↓", "↑", "→", "Ctrl").forEach { key ->
+                SPECIAL_KEYS.forEach { (label, key) ->
                     Surface(
                         color = MaterialTheme.colorScheme.surfaceContainerHighest,
                         contentColor = MaterialTheme.colorScheme.onSurface,
                         shape = MaterialTheme.shapes.small,
+                        onClick = { onSendKeys(listOf(key)) },
                     ) {
                         Text(
-                            key,
+                            label,
                             style = MaterialTheme.typography.labelLarge,
                             modifier = Modifier.padding(
                                 horizontal = spacing.small + spacing.extraSmall,
@@ -201,14 +244,39 @@ private fun SpecialKeysBar() {
     }
 }
 
+/** label → wire key name the relay understands. */
+private val SPECIAL_KEYS = listOf(
+    "Esc" to "Escape",
+    "Tab" to "Tab",
+    "←" to "ArrowLeft",
+    "↓" to "ArrowDown",
+    "↑" to "ArrowUp",
+    "→" to "ArrowRight",
+    "Ctrl-C" to "Ctrl+C",
+)
+
 @PreviewLightDark
 @Composable
 private fun TerminalContentPreview() {
     LerdrTheme {
         TerminalContent(
-            paneId = "sd::%1",
+            uiState = TerminalUiState(
+                paneId = "sd::%1",
+                title = "claude",
+                breadcrumb = "lerdr · main · sd",
+                statusLabel = "lease 92×42",
+                connected = true,
+                waitingForContent = false,
+                lines = listOf(
+                    "lerdr git:(main) cargo test -p lerdr-e2ee",
+                    "running 14 tests  test handshake_credential … ok",
+                    "test result: ok. 14 passed; 0 failed",
+                ),
+            ),
             onOpenFeed = {},
             onBack = {},
+            onSendKeys = {},
+            onRefresh = {},
         )
     }
 }

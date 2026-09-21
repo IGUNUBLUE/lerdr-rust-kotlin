@@ -12,6 +12,7 @@ import com.lerdr.app.activity.ActivityScreen
 import com.lerdr.app.home.HomeScreen
 import com.lerdr.app.pairing.PairingScreen
 import com.lerdr.app.session.AgentFeedScreen
+import com.lerdr.app.session.SessionRepository
 import com.lerdr.app.session.TerminalScreen
 import com.lerdr.app.settings.SettingsScreen
 import com.lerdr.core.designsystem.theme.LerdrTheme
@@ -21,11 +22,15 @@ import com.lerdr.navigation.LerdrNavDisplay
 import com.lerdr.navigation.LerdrNavigator
 import com.lerdr.navigation.rememberLerdrNavigator
 import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.receiveAsFlow
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+
+    @Inject
+    lateinit var sessions: SessionRepository
 
     /**
      * Deep links that arrive while the app is running (singleTop) — emitted
@@ -68,6 +73,19 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         intent.dataString?.let { deepLinks.trySend(it) }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // Foreground — sessions resume keepalives; revalidate probes each
+        // connection for staleness (the oracle's revalidateConnections).
+        sessions.setHidden(false)
+        sessions.revalidateAll()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        sessions.setHidden(true)
     }
 }
 

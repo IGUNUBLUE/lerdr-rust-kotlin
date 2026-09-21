@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -27,25 +28,31 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.PreviewLightDark
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.lerdr.app.di.AppEntryPoint
+import com.lerdr.core.designsystem.components.LerdrLoadingIndicator
 import com.lerdr.core.designsystem.theme.LerdrTextStyles
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import com.lerdr.navigation.LerdrDeepLinks
 import com.lerdr.navigation.SetupLink
+import dagger.hilt.android.EntryPointAccessors
 
 /**
  * Pairing — accepts a `lerdr://pair?…` deep link (prefilled via [setupLink])
- * or a pasted setup link. The real flow (QR scan, handshake, credential
- * store) lands with `core:data`; this stub validates the link shape and
- * routes to Home.
+ * or a pasted setup link. [PairingViewModel] owns the redemption; the
+ * content below is a pure function of [PairingUiState].
  */
 @Composable
 fun PairingScreen(
@@ -53,9 +60,22 @@ fun PairingScreen(
     onPaired: () -> Unit,
     onBack: () -> Unit,
 ) {
+    val appContext = LocalContext.current.applicationContext
+    val viewModel: PairingViewModel = viewModel {
+        PairingViewModel(
+            EntryPointAccessors.fromApplication(appContext, AppEntryPoint::class.java)
+                .pairingManager(),
+        )
+    }
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    LaunchedEffect(uiState.phase) {
+        if (uiState.phase == PairingUiState.Phase.SUCCESS) onPaired()
+    }
     PairingContent(
         setupLink = setupLink,
-        onPaired = onPaired,
+        uiState = uiState,
+        onConnectLink = viewModel::connect,
+        onConnectPasted = viewModel::connectPasted,
         onBack = onBack,
     )
 }
@@ -64,12 +84,15 @@ fun PairingScreen(
 @Composable
 fun PairingContent(
     setupLink: SetupLink?,
-    onPaired: () -> Unit,
+    uiState: PairingUiState,
+    onConnectLink: (SetupLink) -> Unit,
+    onConnectPasted: (String) -> Unit,
     onBack: () -> Unit,
 ) {
     val spacing = LerdrTheme.spacing
     var pastedLink by rememberSaveable { mutableStateOf("") }
     val parsed = setupLink ?: LerdrDeepLinks.parseSetupLink(pastedLink)
+    val connecting = uiState.phase == PairingUiState.Phase.CONNECTING
 
     Scaffold(
         topBar = {
@@ -102,6 +125,7 @@ fun PairingContent(
 
             OutlinedButton(
                 onClick = { /* QR scanner lands with the pairing feature round */ },
+                enabled = !connecting,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Icon(
@@ -119,6 +143,7 @@ fun PairingContent(
                 placeholder = { Text("lerdr://pair?setup=…", style = LerdrTextStyles.code) },
                 textStyle = LerdrTextStyles.code,
                 singleLine = true,
+                enabled = !connecting,
                 isError = pastedLink.isNotEmpty() && parsed == null,
                 supportingText = {
                     if (pastedLink.isNotEmpty() && parsed == null) {
@@ -132,14 +157,32 @@ fun PairingContent(
                 SetupLinkCard(link)
             }
 
+            uiState.error?.let { error ->
+                Text(
+                    error.message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+
             Spacer(Modifier.height(spacing.small))
 
             Button(
-                onClick = onPaired,
-                enabled = parsed != null,
+                onClick = {
+                    if (setupLink != null) {
+                        onConnectLink(setupLink)
+                    } else {
+                        onConnectPasted(pastedLink)
+                    }
+                },
+                enabled = parsed != null && !connecting,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text("Connect")
+                if (connecting) {
+                    LerdrLoadingIndicator(modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.size(spacing.small))
+                }
+                Text(if (connecting) "Pairing…" else "Connect")
             }
         }
     }
@@ -200,13 +243,6 @@ private fun SetupLinkCard(link: SetupLink) {
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            if (link.gateways.isNotEmpty()) {
-                Text(
-                    "${link.gateways.size} gateway(s)",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
         }
     }
 }
@@ -215,7 +251,13 @@ private fun SetupLinkCard(link: SetupLink) {
 @Composable
 private fun PairingContentEmptyPreview() {
     LerdrTheme {
-        PairingContent(setupLink = null, onPaired = {}, onBack = {})
+        PairingContent(
+            setupLink = null,
+            uiState = PairingUiState(),
+            onConnectLink = {},
+            onConnectPasted = {},
+            onBack = {},
+        )
     }
 }
 
@@ -230,7 +272,23 @@ private fun PairingContentLinkedPreview() {
                 relay = "wss://relay.example.com",
                 invite = "inv_9f2k",
             ),
-            onPaired = {},
+            uiState = PairingUiState(),
+            onConnectLink = {},
+            onConnectPasted = {},
+            onBack = {},
+        )
+    }
+}
+
+@PreviewLightDark
+@Composable
+private fun PairingContentErrorPreview() {
+    LerdrTheme {
+        PairingContent(
+            setupLink = null,
+            uiState = PairingUiState(error = PairingUiState.Error.INVITATION_EXPIRED),
+            onConnectLink = {},
+            onConnectPasted = {},
             onBack = {},
         )
     }

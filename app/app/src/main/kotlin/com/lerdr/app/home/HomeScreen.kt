@@ -43,11 +43,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.PreviewLightDark
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.lerdr.app.di.AppEntryPoint
 import com.lerdr.core.designsystem.components.LerdrNavItem
+import dagger.hilt.android.EntryPointAccessors
 import com.lerdr.core.designsystem.components.LerdrShortNavigationBar
 import com.lerdr.core.designsystem.components.LerdrWavyProgressIndicator
 import com.lerdr.core.designsystem.theme.LerdrTheme
@@ -63,8 +66,16 @@ fun HomeScreen(
     onOpenAgent: (String) -> Unit,
     onSelectTopLevel: (LerdrKey) -> Unit,
     onPairDevice: () -> Unit,
-    viewModel: HomeViewModel = viewModel { HomeViewModel(FakeHomeRepository()) },
 ) {
+    // hilt-navigation-compose is absent — pull the bound repository
+    // through the singleton entry point.
+    val appContext = LocalContext.current.applicationContext
+    val viewModel: HomeViewModel = viewModel {
+        HomeViewModel(
+            EntryPointAccessors.fromApplication(appContext, AppEntryPoint::class.java)
+                .homeRepository(),
+        )
+    }
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     HomeContent(
         uiState = uiState,
@@ -494,7 +505,7 @@ private fun RelaysStrip(
                         )
                         Spacer(Modifier.width(LerdrTheme.spacing.extraSmall))
                         Text(
-                            "${relay.transport} · ${relay.latencyLabel}",
+                            "${relay.transport} · ${relay.statusLabel}",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
