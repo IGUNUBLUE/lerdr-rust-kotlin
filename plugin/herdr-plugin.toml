@@ -1,0 +1,114 @@
+# herdr-plugin.toml registers Lerdr with herdr as a plugin.
+# Install it with `herdr plugin install IGUNUBLUE/lerdr` once this repository
+# carries the release stream (herdr clones the repo, runs the [[build]]
+# pre-warm below after confirmation, and registers the entry points). While
+# the manifest lives under plugin/ use the subdirectory form:
+#   herdr plugin install <owner>/<repo>/plugin
+# or `herdr plugin link plugin/` from a local checkout.
+#
+# Every install and upgrade schedules the Setup action after the build finishes,
+# so Tailscale status is visible immediately. Invoke it explicitly as a
+# universal fallback, or set LERDR_NO_AUTO_SETUP=1 to suppress it:
+#   herdr plugin action invoke setup --plugin lerdr.events
+# or bind keys in herdr's config.toml and `herdr server reload-config`:
+#   [[keys.command]]
+#   key = "prefix+m"
+#   type = "plugin_action"
+#   command = "lerdr.events.setup"
+#   description = "Lerdr: Setup"
+
+id = "lerdr.events"
+name = "Lerdr"
+# Synced to the Rust workspace crates (relay/crates/*/Cargo.toml). Release PRs
+# bump it; the [[build]] hook resolves the matching v<version> release tag.
+version = "0.0.0"
+
+# Herdr 0.7.5 introduced the live-agent facade used for atomic starts and prompts.
+min_herdr_version = "0.7.5"
+description = "Remote mobile control for Herdr: approve and monitor agents from your smartphone (Android/iOS) with an installable web app, push notifications, QR pairing, and a private Tailscale transport"
+platforms = ["macos", "linux"]
+
+# Install the exact versioned, checksum- and manifest-verified release bundle.
+# This never compiles Rust and has no toolchain dependency.
+[[build]]
+command = ["bash", "scripts/plugin-build.sh"]
+
+# Re-assert the relay's socket/event/view state after herdr session restore and
+# server.live_handoff: agent.view.set projections are transient and per-server,
+# so the canonical attention-sorted view must be reinstalled on every startup.
+[[startup]]
+command = ["sh", "scripts/plugin-on-startup.sh"]
+
+# setup — the post-install chooser. The build schedules this automatically
+# after Herdr registers the new manifest when it can identify a safe terminal
+# destination; users can always invoke it directly as a fallback.
+[[actions]]
+id = "setup"
+title = "Lerdr: Setup"
+command = ["bash", "scripts/open-plugin-pane.sh", "setup"]
+
+# tailscale-setup — the tailnet transport: exposes the relay on this machine's
+# tailnet HTTPS name via `tailscale serve` and prints the private setup QR.
+[[actions]]
+id = "tailscale-setup"
+title = "Lerdr: Tailscale Serve Setup"
+command = ["bash", "scripts/open-plugin-pane.sh", "tailscale-setup"]
+
+# setup-link — reprints the private phone link and QR for the installed relay.
+[[actions]]
+id = "setup-link"
+title = "Lerdr: Show Phone Setup QR"
+command = ["bash", "scripts/open-plugin-pane.sh", "setup-link"]
+
+[[actions]]
+id = "uninstall"
+title = "Lerdr: Full Uninstall"
+command = ["bash", "scripts/open-plugin-pane.sh", "uninstall"]
+
+# status — a smoke test for support: shows the resolved config, background
+# service state, and the local relay health endpoint, then waits for Enter.
+[[actions]]
+id = "status"
+title = "Lerdr: Status"
+command = ["bash", "scripts/open-plugin-pane.sh", "status"]
+
+# The interactive halves of the actions above. herdr opens each in a managed
+# pane, runs the script, and tears the pane down when it exits.
+[[panes]]
+id = "setup"
+title = "Lerdr: Setup"
+placement = "zoomed"
+command = ["bash", "scripts/plugin-setup-menu.sh"]
+
+[[panes]]
+id = "tailscale-setup"
+title = "Lerdr: Tailscale Serve Setup"
+placement = "zoomed"
+command = ["bash", "scripts/plugin-tailscale-setup.sh"]
+
+[[panes]]
+id = "setup-link"
+title = "Lerdr: Show Phone Setup QR"
+placement = "zoomed"
+command = ["bash", "scripts/plugin-setup-link.sh"]
+
+[[panes]]
+id = "uninstall"
+title = "Lerdr: Full Uninstall"
+placement = "zoomed"
+command = ["bash", "scripts/uninstall.sh"]
+
+[[panes]]
+id = "status"
+title = "Lerdr: Status"
+placement = "overlay"
+command = ["bash", "scripts/plugin-status.sh"]
+
+# herdr fires pane.agent_status_changed whenever a local agent's status
+# changes; the hook forwards it over UDP to the local relay so phones see
+# blocked/finished transitions instantly instead of on the next poll. herdr
+# runs this for you — never invoke it by hand. Output is captured in
+# `herdr plugin log list --plugin lerdr.events`.
+[[events]]
+on = "pane.agent_status_changed"
+command = ["sh", "scripts/plugin-on-event.sh"]
