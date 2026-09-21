@@ -35,6 +35,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.PreviewLightDark
@@ -76,6 +77,7 @@ fun PairingScreen(
         uiState = uiState,
         onConnectLink = viewModel::connect,
         onConnectPasted = viewModel::connectPasted,
+        onConnectScanned = viewModel::connectScanned,
         onBack = onBack,
     )
 }
@@ -87,12 +89,20 @@ fun PairingContent(
     uiState: PairingUiState,
     onConnectLink: (SetupLink) -> Unit,
     onConnectPasted: (String) -> Unit,
+    onConnectScanned: (String) -> Unit,
     onBack: () -> Unit,
 ) {
     val spacing = LerdrTheme.spacing
     var pastedLink by rememberSaveable { mutableStateOf("") }
+    var scanning by rememberSaveable { mutableStateOf(false) }
     val parsed = setupLink ?: LerdrDeepLinks.parseSetupLink(pastedLink)
     val connecting = uiState.phase == PairingUiState.Phase.CONNECTING
+
+    // A decode (or any other path) starting a pairing attempt collapses
+    // the viewfinder so the camera isn't held while connecting.
+    LaunchedEffect(connecting) {
+        if (connecting) scanning = false
+    }
 
     Scaffold(
         topBar = {
@@ -124,7 +134,7 @@ fun PairingContent(
             )
 
             OutlinedButton(
-                onClick = { /* QR scanner lands with the pairing feature round */ },
+                onClick = { scanning = !scanning },
                 enabled = !connecting,
                 modifier = Modifier.fillMaxWidth(),
             ) {
@@ -133,7 +143,20 @@ fun PairingContent(
                     contentDescription = null,
                     modifier = Modifier.padding(end = spacing.small),
                 )
-                Text("Scan QR code")
+                Text(if (scanning) "Stop scanning" else "Scan QR code")
+            }
+
+            if (scanning) {
+                QrScanner(
+                    onSetupLink = { decoded ->
+                        scanning = false
+                        onConnectScanned(decoded)
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(320.dp)
+                        .clip(MaterialTheme.shapes.large),
+                )
             }
 
             OutlinedTextField(
@@ -256,6 +279,7 @@ private fun PairingContentEmptyPreview() {
             uiState = PairingUiState(),
             onConnectLink = {},
             onConnectPasted = {},
+            onConnectScanned = {},
             onBack = {},
         )
     }
@@ -275,6 +299,7 @@ private fun PairingContentLinkedPreview() {
             uiState = PairingUiState(),
             onConnectLink = {},
             onConnectPasted = {},
+            onConnectScanned = {},
             onBack = {},
         )
     }
@@ -289,6 +314,7 @@ private fun PairingContentErrorPreview() {
             uiState = PairingUiState(error = PairingUiState.Error.INVITATION_EXPIRED),
             onConnectLink = {},
             onConnectPasted = {},
+            onConnectScanned = {},
             onBack = {},
         )
     }

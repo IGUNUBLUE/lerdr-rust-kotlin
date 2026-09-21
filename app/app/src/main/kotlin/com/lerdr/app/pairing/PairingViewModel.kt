@@ -48,6 +48,9 @@ class PairingViewModel(
         pair(payload)
     }
 
+    /** Scan path — QR-decoded text through the same strict parser. */
+    fun connectScanned(text: String) = connectPasted(text)
+
     /** Paste path — raw link text through the strict parser directly. */
     fun connectPasted(text: String) {
         when (val result = lerdr.core.data.SetupLink.parse(text)) {
