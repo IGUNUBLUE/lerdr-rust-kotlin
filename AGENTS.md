@@ -23,7 +23,9 @@ implementing anything.
   protocol/terminal/crypto.
 - App visual changes: screenshot test (Paparazzi/Roborazzi) in the PR.
 
-## Skills (`.devin/skills/`)
+## Skills
+
+Repo-local (authored, `.devin/skills/`):
 
 | Skill | When |
 |---|---|
@@ -31,3 +33,10 @@ implementing anything.
 | `herdr-api` | Herdr socket/CLI boundary, events, capabilities |
 | `rust-relay` | Crate work under `relay/crates/` |
 | `android-app` | Gradle modules, Compose, M3E |
+
+Installed via `npx skills add` (`.agents/skills/`, lockfile
+`skills-lock.json` — restore with `npx skills experimental_install`):
+
+| Skill | When |
+|---|---|
+| `rust-async-patterns` | Tokio/async patterns reference (wshobson/agents) |
