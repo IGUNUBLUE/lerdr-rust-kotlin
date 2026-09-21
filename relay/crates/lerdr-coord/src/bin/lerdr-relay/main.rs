@@ -3,10 +3,13 @@
 //! SIGINT/SIGTERM.
 //!
 //! `lerdr-relay` with no subcommand is `serve`, matching the oracle's
-//! `command := "serve"` default.
+//! `command := "serve"` default. The helper subcommands (`event-hook`,
+//! `startup-hook`, `setup-fragment`, `normalize-origin`, `qr`, `support`,
+//! `version`) are the surface `plugin/scripts/*` invokes.
 
 mod bootstrap;
 mod config;
+mod hooks;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -40,6 +43,46 @@ enum Commands {
     /// Flags override the environment; LERDR_* variables override the
     /// legacy HERDR_* spellings (see config.rs for the full list).
     Serve(ServeArgs),
+    /// Print version (optionally as JSON).
+    Version {
+        /// Emit `{"version":…,"revision":…}` JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Herdr [[events]] hook: forward HERDR_PLUGIN_EVENT_JSON to the running
+    /// relay over UDP (fire-and-forget; invoked by herdr, never by hand).
+    EventHook,
+    /// Herdr [[startup]] hook: poke the running relay to re-assert its
+    /// socket/subscription/view state after session restore or
+    /// server.live_handoff.
+    StartupHook,
+    /// Build a setup-link fragment: setup-fragment TOKEN LABEL [RELAY].
+    SetupFragment {
+        token: String,
+        label: String,
+        relay: Option<String>,
+    },
+    /// Normalize a relay origin URL (https by default; http only for
+    /// loopback with --allow-loopback-http).
+    NormalizeOrigin {
+        /// Allow http:// for localhost/loopback origins.
+        #[arg(long)]
+        allow_loopback_http: bool,
+        origin: String,
+    },
+    /// Render a value as a terminal QR (half-block rows, EC level M).
+    Qr {
+        /// Maximum terminal columns; refuses when the code won't fit.
+        #[arg(long, default_value_t = 80)]
+        columns: usize,
+        value: String,
+    },
+    /// Print the running relay's support-state.json diagnostics.
+    Support {
+        /// Runtime directory override [default: resolved like serve].
+        #[arg(long)]
+        runtime_dir: Option<PathBuf>,
+    },
 }
 
 #[derive(Args, Debug, Default)]
@@ -89,21 +132,96 @@ impl From<&ServeArgs> for config::Overrides {
     }
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
     let cli = Cli::parse();
-    let args = match cli.command {
-        Some(Commands::Serve(args)) => args,
-        None => ServeArgs::default(),
-    };
-    match run(args).await {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            error!(%error, "lerdr-relay failed");
-            eprintln!("lerdr-relay: {error:#}");
-            ExitCode::FAILURE
+    match cli.command.unwrap_or(Commands::Serve(ServeArgs::default())) {
+        Commands::Serve(args) => {
+            let runtime = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(error) => {
+                    eprintln!("lerdr-relay: {error:#}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            match runtime.block_on(run(args)) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    error!(%error, "lerdr-relay failed");
+                    eprintln!("lerdr-relay: {error:#}");
+                    ExitCode::FAILURE
+                }
+            }
         }
+        command => run_hook(command),
     }
+}
+
+/// Sync subcommands — no tokio runtime, matching the oracle's dispatch.
+fn run_hook(command: Commands) -> ExitCode {
+    let result: Result<(), BoxError> = match command {
+        Commands::Version { json } => {
+            let version = env!("CARGO_PKG_VERSION");
+            let revision = option_env!("LERDR_REVISION").unwrap_or("dev");
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({"version": version, "revision": revision})
+                );
+            } else {
+                println!("lerdr {version} ({revision})");
+            }
+            Ok(())
+        }
+        Commands::EventHook => hooks::event_hook().map_err(Into::into),
+        Commands::StartupHook => hooks::startup_hook().map_err(Into::into),
+        Commands::SetupFragment {
+            token,
+            label,
+            relay,
+        } => {
+            println!(
+                "{}",
+                hooks::setup_fragment(&token, &label, relay.as_deref())
+            );
+            Ok(())
+        }
+        Commands::NormalizeOrigin {
+            allow_loopback_http,
+            origin,
+        } => hooks::normalize_origin(&origin, allow_loopback_http)
+            .map(|o| println!("{o}"))
+            .map_err(Into::into),
+        Commands::Qr { columns, value } => hooks::terminal_qr(&value, columns)
+            .map(|r| println!("{r}"))
+            .map_err(Into::into),
+        Commands::Support { runtime_dir } => {
+            let dir = match runtime_dir {
+                Some(dir) => dir,
+                None => match config::resolve(
+                    &|key| std::env::var(key).ok(),
+                    &|path| path.is_dir(),
+                    &config::Overrides::default(),
+                ) {
+                    Ok(cfg) => cfg.runtime_dir,
+                    Err(error) => return fail(Box::new(error)),
+                },
+            };
+            hooks::support(&dir).map_err(Into::into)
+        }
+        Commands::Serve(_) => unreachable!("serve handled in main"),
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => fail(error),
+    }
+}
+
+fn fail(error: BoxError) -> ExitCode {
+    eprintln!("lerdr-relay: {error:#}");
+    ExitCode::FAILURE
 }
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -182,12 +300,140 @@ async fn run(args: ServeArgs) -> Result<(), BoxError> {
     }
 
     spawn_signal_handlers(&relay, store, label, socket_url, cfg.token.clone());
+    spawn_udp_ingress(&topology, &cfg, relay.shutdown());
+    spawn_support_writer(&cfg, relay.shutdown());
 
     let listener = TcpListener::bind((cfg.host.as_str(), cfg.port)).await?;
     info!(addr = %listener.local_addr()?, "lerdr-relay listening");
     relay.serve(listener).await?;
     info!("lerdr-relay stopped");
     Ok(())
+}
+
+/// UDP event ingress — `internal/coordinator/udp.go`. `event-hook` and
+/// `startup-hook` deliver datagrams here; a valid one pokes the topology
+/// actor into a fresh `session.snapshot` read (invalidation semantics —
+/// payloads are never applied directly).
+fn spawn_udp_ingress(
+    topology: &lerdr_coord::TopologyHandle,
+    cfg: &config::Config,
+    shutdown: CancellationToken,
+) {
+    let port = std::env::var("LERDR_RELAY_PLUGIN_PORT")
+        .ok()
+        .or_else(|| std::env::var("HERDR_RELAY_PLUGIN_PORT").ok())
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(8376);
+    let expected_socket = cfg
+        .socket_path
+        .canonicalize()
+        .unwrap_or_else(|_| cfg.socket_path.clone());
+    let topology = topology.clone();
+
+    tokio::spawn(async move {
+        let Ok(socket) = tokio::net::UdpSocket::bind(("127.0.0.1", port)).await else {
+            warn!(port, "udp plugin port unavailable — event hooks disabled");
+            return;
+        };
+        info!(port, "udp event ingress listening");
+        let mut buf = vec![0u8; 65536];
+        loop {
+            tokio::select! {
+                _ = shutdown.cancelled() => break,
+                received = socket.recv_from(&mut buf) => {
+                    let Ok((n, _from)) = received else { continue };
+                    let Ok(event) = serde_json::from_slice::<serde_json::Value>(&buf[..n])
+                        else { continue };
+                    let kind = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    if kind != "agent_event" && kind != "startup" {
+                        continue;
+                    }
+                    if let Some(socket_path) =
+                        event.get("socket_path").and_then(|p| p.as_str())
+                    {
+                        let offered = std::path::Path::new(socket_path)
+                            .canonicalize()
+                            .unwrap_or_else(|_| PathBuf::from(socket_path));
+                        if offered != expected_socket {
+                            continue;
+                        }
+                    }
+                    topology.refresh().await;
+                }
+            }
+        }
+    });
+}
+
+/// `support-state.json` writer — the `support` subcommand reads this back.
+/// Refreshed on a slow interval; fields follow `internal/support.Snapshot`
+/// where the Rust relay has an equivalent value.
+fn spawn_support_writer(cfg: &config::Config, shutdown: CancellationToken) {
+    let runtime_dir = cfg.runtime_dir.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                _ = shutdown.cancelled() => break,
+                _ = interval.tick() => write_support_state(&runtime_dir),
+            }
+        }
+    });
+}
+
+fn write_support_state(runtime_dir: &std::path::Path) {
+    use std::io::Write;
+    let state = serde_json::json!({
+        "generated_at": chrono_free_timestamp(),
+        "version": env!("CARGO_PKG_VERSION"),
+        "revision": option_env!("LERDR_REVISION").unwrap_or("dev"),
+        "protocol": 3,
+        "readiness": "serving",
+        "inventory": {},
+        "components": {"relay": "rust"},
+        "activity_failures": 0,
+        "topology_retries": 0,
+        "poll_failures": 0,
+        "recent_errors": [],
+    });
+    let Ok(data) = serde_json::to_string_pretty(&state) else {
+        return;
+    };
+    if std::fs::create_dir_all(runtime_dir).is_err() {
+        return;
+    }
+    let path = runtime_dir.join("support-state.json");
+    let Ok(mut temp) = std::fs::File::create(runtime_dir.join(".support-state.tmp")) else {
+        return;
+    };
+    let _ = temp.write_all(data.as_bytes());
+    let _ = temp.sync_all();
+    drop(temp);
+    let _ = std::fs::rename(runtime_dir.join(".support-state.tmp"), path);
+}
+
+/// RFC3339 UTC without pulling in chrono for one timestamp.
+fn chrono_free_timestamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = secs / 86400;
+    let rem = secs % 86400;
+    let (h, m, s) = (rem / 3600, rem % 3600 / 60, rem % 60);
+    // Civil-from-days (Howard Hinnant's algorithm).
+    let z = days as i64 + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let mo = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if mo <= 2 { y + 1 } else { y };
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
 }
 
 /// `RUST_LOG` wins; `LERDR_RELAY_LOG_LEVEL` maps onto a global level for

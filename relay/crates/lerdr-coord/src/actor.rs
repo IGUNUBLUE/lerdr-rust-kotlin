@@ -47,6 +47,26 @@ pub struct TopologyHandle {
     pub invalidations: broadcast::Sender<Invalidation>,
     /// Herdr client for RPC (clone-cheap: the inner is `Arc`).
     pub client: Client,
+    /// Command lane — external triggers (UDP event hook, startup hook)
+    /// request a topology re-read through here.
+    commands: mpsc::Sender<TopologyCommand>,
+}
+
+/// External triggers the actor honors beside the event stream.
+#[derive(Debug)]
+enum TopologyCommand {
+    /// Re-read `session.snapshot` unconditionally — the UDP event hook and
+    /// the Herdr `[[startup]]` hook use this as their poke.
+    Refresh,
+}
+
+impl TopologyHandle {
+    /// Ask the actor to re-read the session snapshot. Cheap to call
+    /// redundantly — refreshes coalesce behind the in-flight read.
+    pub async fn refresh(&self) {
+        // Full inbox = a refresh is already queued; dropping is correct.
+        let _ = self.commands.try_send(TopologyCommand::Refresh);
+    }
 }
 
 /// The one-per-relay topology actor.
@@ -60,10 +80,12 @@ impl TopologyActor {
     pub fn spawn(client: Client, cancel: CancellationToken) -> TopologyHandle {
         let (topology_tx, topology_rx) = watch::channel(Arc::new(Topology::default()));
         let (inv_tx, _) = broadcast::channel(256);
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
         let handle = TopologyHandle {
             topology: topology_rx,
             invalidations: inv_tx.clone(),
             client: client.clone(),
+            commands: cmd_tx,
         };
 
         tokio::spawn(
@@ -115,6 +137,26 @@ impl TopologyActor {
                                             .send(Arc::new(clone_topology(&state)));
                                     }
                                 }
+                            }
+                        }
+                        command = cmd_rx.recv() => {
+                            match command {
+                                Some(TopologyCommand::Refresh) => {
+                                    // External poke (UDP hook): same
+                                    // invalidation semantics — re-read,
+                                    // never trust the payload.
+                                    match client.session_snapshot().await {
+                                        Ok(fresh) => {
+                                            state.accept(fresh);
+                                            let _ = topology_tx
+                                                .send(Arc::new(clone_topology(&state)));
+                                        }
+                                        Err(err) => {
+                                            warn!(error = %err, "refresh-command snapshot failed; staying on last state");
+                                        }
+                                    }
+                                }
+                                None => break,
                             }
                         }
                     }
