@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.Lerdr" parent="android:Theme.Material.Light.NoActionBar" />
+    <!-- Dark base so the launch flash matches the app's flagship theme;
+         Compose (LerdrTheme) owns real theming. -->
+    <style name="Theme.Lerdr" parent="android:Theme.Material.NoActionBar" />
 </resources>
