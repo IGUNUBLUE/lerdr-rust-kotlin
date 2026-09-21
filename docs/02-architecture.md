@@ -54,6 +54,8 @@ relay/
 │   ├── lerdr-core/            # protocol types, action catalog, framing
 │   ├── lerdr-e2ee/            # handshake + AEAD sessions + frame codecs
 │   ├── lerdr-herdr/           # Unix socket API, event stream, CLI fallback
+│   │                          #   singleflight + dial semaphore +
+│   │                          #   DispatchError taxonomy (see doc 08)
 │   ├── lerdr-watch/           # pane fingerprints, delta engine, probe loop
 │   ├── lerdr-coord/           # per-pane scheduler, receipts, ledger
 │   ├── lerdr-store/           # device credentials, config, stable state
@@ -66,6 +68,13 @@ relay/
     ├── vectors/               # golden fixtures generated from Go impl
     └── interop/               # Rust↔Go handshake + frame roundtrips
 ```
+
+**Service topology**: actor model — channels own the boundaries, tasks
+own the state. TopologyActor projects the Herdr event stream onto a
+`watch::Sender`; per-pane watch tasks feed ordered frame channels;
+per-client SessionActors own E2EE state + bounded send queues (lag →
+evict, mirroring the Go sendbuffer contract). Full diagram and rules in
+[08 — Herdr boundary](08-herdr-boundary.md).
 
 ### Crate choices
 
@@ -84,34 +93,40 @@ relay/
 
 ## Kotlin app (`app/`)
 
+Aligned to the nowinandroid modularization guide (single feature
+modules — the api/impl split was dropped for Navigation 3):
+
 ```
 app/
 ├── settings.gradle.kts
 ├── gradle/libs.versions.toml    # pinned: compose-bom-alpha
 ├── core/
-│   ├── protocol/                # kotlinx.serialization DTOs — mirrors
-│   │                            #   protocol.go field-for-field
-│   ├── e2ee/                    # handshake + session (JCE/Conscrypt:
-│   │                            #   ECDH P-256, AES/GCM/NoPadding, HKDF)
-│   ├── transport/               # OkHttp WebSocket, reconnect/backoff,
-│   │                            #   keepalive, gateway path, WebRTC later
-│   ├── terminal/                # ANSI→AnnotatedString parser, delta
-│   │                            #   applier, frame store, cell metrics
-│   ├── conversation/            # Entry/ToolActivity models + paging
-│   ├── store/                   # StateFlows: agents, workspaces, panes,
-│   │                            #   connections — port of store.ts shape
-│   ├── data/                    # Room/DataStore: relays, drafts,
-│   │                            #   credentials (EncryptedSharedPreferences /
-│   │                            #   Keystore), push policy
-│   └── push/                    # notification channels, deep-link resolver
+│   ├── model/                   # shared DTOs — mirrors protocol.go
+│   ├── data/                    # repositories; expose Flows, never
+│   │                            #   snapshots; WS deltas reconcile in
+│   ├── network/                 # OkHttp WS, E2EE session, backoff,
+│   │                            #   keepalive, gateway path
+│   ├── crypto/                  # handshake (ECDH P-256, AES-GCM, HKDF),
+│   │                            #   Keystore-wrapped credential storage
+│   ├── terminal/                # ANSI→AnnotatedString, delta applier,
+│   │                            #   frame store, fingerprint chain
+│   ├── conversation/            # paging source for Entry feeds
+│   ├── designsystem/            # M3E theme + expressive wrappers
+│   ├── ui/                      # shared components (agent row, tool card)
+│   ├── datastore/               # prefs, credentials, per-agent drafts
+│   ├── notifications/           # channels, push-open deep links
+│   ├── service/                 # foreground connection service
+│   └── testing/                 # fakes for all repos + fixture loaders
 ├── feature/
-│   ├── home/                    # mission control: agents + attention inbox
-│   ├── agent/                   # session screen: feed + terminal modes
-│   ├── workspaces/              # workspaces, worktrees, files, git
+│   ├── agents/                  # home mission control
+│   ├── session/                 # feed + terminal + details modes
+│   ├── workspaces/              # tree, files, git status/diffs
 │   ├── activity/                # journal + detail
-│   ├── pairing/                 # QR scan, clipboard, invitations, devices
-│   └── settings/                # relays, push policy, speech, updates
-└── app/                         # nav graph, theme (M3E), service, DI
+│   ├── pairing/                 # QR, clipboard, invitations, devices
+│   └── settings/                # relays, push, speech, updates
+├── navigation/                  # Nav3 entries + top-level destinations
+├── app/                         # Application, MainActivity, nav host, DI
+└── app-benchmarks/              # Macrobenchmark + Baseline Profile
 ```
 
 ### Library choices

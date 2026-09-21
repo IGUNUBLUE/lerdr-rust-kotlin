@@ -1,0 +1,33 @@
+# Agent Instructions
+
+Migration repo: Go relay → Rust, Tauri WebView → Kotlin/Compose.
+Everything is specified in `docs/` — read `00-inventory`, `02-architecture`,
+`03-protocol`, `04-app-design`, `05-roadmap`, `08-herdr-boundary` before
+implementing anything.
+
+## Rules
+
+- Wire protocol is frozen (`protocol v3` / `herdr-e2ee-v2`) — golden
+  vectors in `fixtures/` are the oracle; never guess format details.
+- English only: code, docs, commits.
+- Every commit builds and passes tests; one PR per coherent unit; no
+  direct pushes to main.
+- Only touch `~/Projects/lerdr` to *generate* fixtures (test-only hooks).
+- Parallel work uses disjoint file ownership; shared/generated files
+  belong to the orchestrator.
+
+## Verification
+
+- Rust: `cargo test -p <crate>` + `tests/vectors` when wire-facing.
+- Kotlin: `./gradlew :module:test` + fixture conformance for
+  protocol/terminal/crypto.
+- App visual changes: screenshot test (Paparazzi/Roborazzi) in the PR.
+
+## Skills (`.devin/skills/`)
+
+| Skill | When |
+|---|---|
+| `protocol-parity` | Wire bytes, codecs, crypto, fixtures |
+| `herdr-api` | Herdr socket/CLI boundary, events, capabilities |
+| `rust-relay` | Crate work under `relay/crates/` |
+| `android-app` | Gradle modules, Compose, M3E |
