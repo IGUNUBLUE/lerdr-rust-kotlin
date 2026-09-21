@@ -42,13 +42,14 @@ lease vs local terminal resize vs second controller) and expiry/freeze
 semantics — the code comments encode hard-won mobile behavior (hidden-tab
 clamping) that must not be lost.
 
-### 5. Pairing + credential store format — migration hinge
+### 5. Pairing + credential store format — ~~migration hinge~~ resolved
 QR payload fields, invitation→credential exchange, device-file layout
-(`~/.local/share/lerdr` / `HERDR_PLUGIN_CONFIG_DIR`), `credential_version`
-monotonicity. **Gap**: explicit decision + spec — does the Rust relay
-read the Go store byte-for-byte (paired phones survive cutover) or do we
-bump `credential_version` and re-pair? This is THE user-facing migration
-decision; currently unwritten.
+(`HERDR_PLUGIN_CONFIG_DIR`), `credential_version` monotonicity.
+**Decision (reimplementation framing)**: fresh Rust-native store — no
+byte-compat with the Go layout. Re-pairing is one QR scan, the same UX
+as day one; optionally import device names/roles for continuity. What
+still needs speccing: the QR payload + handshake fields (inherited from
+doc 03, unchanged) and the new store schema itself.
 
 ## P1 — phase-gated, needed before their phase ships
 

@@ -1,6 +1,6 @@
 ---
 name: protocol-parity
-description: "Trigger: protocol change, wire format, e2ee, fixture, vector, golden test, compatibility. Enforces frozen wire-protocol rules and the golden-vector workflow for the Lerdr Rust+Kotlin migration."
+description: "Trigger: protocol change, wire format, e2ee, fixture, vector, golden test, compatibility. Enforces frozen wire-protocol rules and the golden-vector workflow for the Lerdr Rust+Kotlin reimplementation."
 license: Apache-2.0
 metadata:
   author: "IGUNUBLUE"

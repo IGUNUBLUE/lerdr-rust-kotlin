@@ -25,7 +25,7 @@
 │  ┌────────────────────────────────────────────────────────┐ │
 │  │ axum HTTP: /ws + /healthz — no web assets (Android-    │ │
 │  │ only product; the Go relay can keep serving the PWA    │ │
-│  │ in parallel during/after migration if wanted)          │ │
+│  │ in parallel during coexistence if wanted)              │ │
 │  ├────────────────────────────────────────────────────────┤ │
 │  │ session actor per client: send buffer, coalescing,     │ │
 │  │ eviction, E2EE session (p256 + aes-gcm + hkdf)         │ │

@@ -11,11 +11,11 @@ native shell.
 |---|---|
 | `lerdr` | Per-computer relay. Serves the PWA (`web/` embedded via ldflags or disk), terminates E2EE WebSocket, talks to Herdr over Unix socket, pushes web-push notifications, watches panes, coordinates multi-device actions. |
 | `lerdr-gateway` | Optional public rendezvous: multiplexed WS carrying per-relay client connections for phones that have no direct path. Stateless — copies already-encrypted frames. |
-| `fake-herdr` | Herdr simulator for tests — becomes the contract harness for the Rust port. |
+| `fake-herdr` | Herdr simulator for tests — becomes the contract harness for the Rust implementation. |
 
-## Go packages by migration weight
+## Go packages by reimplementation weight
 
-### Core — must port first
+### Core — reimplement first
 
 | Package | LOC | What it does |
 |---|---|---|
@@ -28,7 +28,7 @@ native shell.
 | `internal/deviceauth` | ~0.9k | Paired-device store: credentials, invitations, roles (reader/controller), revocation |
 | `internal/state`/`session` | ~1k | Agent inventory snapshots, targeted lookups, generation counters |
 
-### Product features — port second
+### Product features — implement second
 
 | Package | LOC | What it does |
 |---|---|---|
@@ -44,7 +44,7 @@ native shell.
 | `internal/speech` | ~1k | TTS voice catalog + `speak_text` |
 | `internal/agentroots` | ~0.5k | Locates per-agent session file roots |
 
-### Infrastructure — port third
+### Infrastructure — implement third
 
 | Package | LOC | What it does |
 |---|---|---|

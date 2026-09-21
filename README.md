@@ -1,10 +1,12 @@
 # lerdr-rust-kotlin
 
-Migration plan for Lerdr: relay Go → **Rust**, Android app Tauri/WebView →
+New implementation of Lerdr: relay in **Rust**, Android app in
 **Kotlin + Jetpack Compose (Material 3 Expressive)**.
 
-This repo contains the plan only — no production code yet. Implementation
-will live in the crates and Gradle modules these documents describe.
+`IGUNUBLUE/lerdr` (Go + Tauri/WebView) is the reference implementation and
+behavior oracle — it defines the product and generates the golden fixtures;
+this repo builds the improved implementation, not a line-by-line port.
+This repo contains the plan only — no production code yet.
 
 ## Why
 

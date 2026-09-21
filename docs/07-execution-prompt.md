@@ -1,6 +1,6 @@
 # 07 — Execution prompt
 
-The master prompt to drive the migration. Designed for an orchestrator
+The master prompt to drive the build. Designed for an orchestrator
 agent session (Devin/Herdr) that can run parallel stations. Each phase is
 a loop with an explicit exit gate; never advance a phase on red.
 
@@ -9,8 +9,9 @@ a loop with an explicit exit gate; never advance a phase on red.
 ## Master prompt
 
 ```
-You are executing the Lerdr Rust+Kotlin migration. Read these first —
-they are the spec, do not re-derive them:
+You are building the new Lerdr implementation: Rust relay +
+Kotlin/Compose app. The Go/Tauri repo is the reference and oracle —
+read these first, they are the spec, do not re-derive them:
 
   ~/Projects/lerdr-rust-kotlin/docs/00-inventory.md      (what exists)
   ~/Projects/lerdr-rust-kotlin/docs/02-architecture.md   (target layout)

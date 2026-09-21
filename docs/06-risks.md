@@ -78,13 +78,14 @@ when a format drifts, fix once in the relay, both clients benefit.
   rows: port the segmentation tests, use `BreakIterator` not `length`.
 - **4 MiB send-buffer ceiling** — giant full frames evict the client;
   monitor pane sizes, prefer deltas, document the limit before raising it.
-- **Dual maintenance window** — Go and Rust relays coexist during
-  migration; fixes must land in both or drift silently. Mitigation: the
-  shadow-diff harness doubles as a regression alarm; freeze Go features
-  once Rust hits shadow parity.
+- **Reference drift** — the Go relay stays the production product while
+  Rust reaches parity; reference bugfixes land there and must be
+  re-extracted into fixtures/specs or the oracle lies. Mitigation: the
+  shadow-diff harness doubles as a regression alarm; treat the Go repo as
+  frozen for features once Rust hits shadow parity.
 - **Keystore loss on backup/restore** — credentials wrapped by Keystore
-  keys may not survive device migration; pairing recovery UX (re-pair QR)
-  must be easy.
+  keys may not survive device replacement; pairing recovery UX (re-pair
+  QR) must be easy.
 
 ## Explicitly accepted
 

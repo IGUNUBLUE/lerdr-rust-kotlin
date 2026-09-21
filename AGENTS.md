@@ -1,14 +1,17 @@
 # Agent Instructions
 
-Migration repo: Go relay → Rust, Tauri WebView → Kotlin/Compose.
-Everything is specified in `docs/` — read `00-inventory`, `02-architecture`,
-`03-protocol`, `04-app-design`, `05-roadmap`, `08-herdr-boundary` before
-implementing anything.
+New implementation of Lerdr: Rust relay + Kotlin/Compose app.
+`~/Projects/lerdr` (Go + Tauri/WebView) is the **reference and oracle** —
+it defines product behavior and generates fixtures; nothing is ported
+line-by-line. Everything is specified in `docs/` — read `00-inventory`,
+`02-architecture`, `03-protocol`, `04-app-design`, `05-roadmap`,
+`08-herdr-boundary`, `10-spec-gaps` before implementing anything.
 
 ## Rules
 
-- Wire protocol is frozen (`protocol v3` / `herdr-e2ee-v2`) — golden
-  vectors in `fixtures/` are the oracle; never guess format details.
+- Wire protocol starts at `protocol v3` / `herdr-e2ee-v2` (proven contract,
+  golden vectors are the oracle); changes land only through the deliberate
+  Phase-5 revision — never by drift.
 - English only: code, docs, commits.
 - Every commit builds and passes tests; one PR per coherent unit; no
   direct pushes to main.
