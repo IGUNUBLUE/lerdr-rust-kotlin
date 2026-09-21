@@ -1,0 +1,764 @@
+//! The Herdr socket client: one fresh connection per request, bounded by a
+//! dial semaphore, with singleflight fan-out on read-only methods.
+//!
+//! Every `call*` returns [`HerdrError`] with the dispatch boundary intact —
+//! callers can always distinguish "safe to retry" (`NotStarted`) from "may
+//! have applied" (`DispatchedUnknown`) from "definitively did not apply"
+//! (`Refused`).
+
+use std::io;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use serde_json::{json, Value};
+use tokio::sync::Semaphore;
+use tokio::time::Instant;
+use tracing::instrument;
+
+use crate::error::{BootstrapError, DispatchPhase, HerdrError, SubscribeError};
+use crate::events::{
+    self, topology_subscriptions, Bootstrap, Event, EventStream, EventSupervisor, Subscription,
+    SupervisorStream, EVENTS_REQUEST_ID,
+};
+use crate::singleflight::Singleflight;
+use crate::transport::{default_socket_path, Transport, UnixTransport};
+use crate::types::*;
+use crate::wire;
+
+/// Client configuration.
+#[derive(Debug, Clone)]
+pub struct ClientConfig {
+    /// Cap on simultaneous requests — each in-flight request is one open fd
+    /// to Herdr, so a thundering herd of watch probes cannot fd-storm it.
+    /// Default 16.
+    pub max_in_flight: usize,
+    /// Deadline covering dial + write + response read for a unary call.
+    /// Default 15s (the Go client's `defaultTimeout`).
+    pub request_timeout: Duration,
+    /// Cap on a single response/event line. Default 4 MiB (Herdr's own
+    /// `maxOutputBytes`).
+    pub max_response_bytes: usize,
+    /// Events buffered between the socket reader task and the stream
+    /// consumer before `EventStreamError::Lagged` fires. Default 1024.
+    pub event_queue_capacity: usize,
+    /// Retry `pane.read` once when the first attempt fails non-definitively
+    /// (`NotStarted`/`DispatchedUnknown`). Mirrors the Go client's
+    /// read-then-retry behavior; `Refused` is never retried.
+    pub read_retry: bool,
+    /// Request-id prefix (`lerdr-api-N`).
+    pub id_prefix: String,
+}
+
+impl Default for ClientConfig {
+    fn default() -> Self {
+        ClientConfig {
+            max_in_flight: 16,
+            request_timeout: wire::DEFAULT_REQUEST_TIMEOUT,
+            max_response_bytes: wire::MAX_LINE_BYTES,
+            event_queue_capacity: 1024,
+            read_retry: true,
+            id_prefix: "lerdr-api".to_string(),
+        }
+    }
+}
+
+/// Methods routed through singleflight: pure reads where N concurrent
+/// identical calls collapse to one socket round-trip. Waits are deliberately
+/// excluded — each wait has its own timeout semantics, and cancelling one
+/// waiter must not cancel another's.
+const SINGLEFLIGHT_METHODS: &[&str] = &[
+    "ping",
+    "session.snapshot",
+    "agent.list",
+    "agent.explain",
+    "pane.list",
+    "pane.read",
+    "workspace.list",
+    "tab.list",
+];
+
+/// `workspace.reordered` subscription capability — probed optimistically on
+/// each bootstrap, matching the Go client's reset→attempt→note lifecycle.
+const WS_REORDERED_UNKNOWN: u8 = 0;
+const WS_REORDERED_SUPPORTED: u8 = 1;
+const WS_REORDERED_UNSUPPORTED: u8 = 2;
+
+struct ClientInner {
+    transport: Arc<dyn Transport>,
+    config: ClientConfig,
+    /// One permit per in-flight request — bounds concurrent fds to Herdr.
+    dial_semaphore: Semaphore,
+    seq: AtomicU64,
+    flights: Singleflight,
+    workspace_reordered: AtomicU8,
+}
+
+/// A client for the Herdr socket API. Cheap to clone — all state is shared.
+///
+/// Construct via [`Client::unix`], [`Client::from_env`], or
+/// [`Client::new`] with a custom [`Transport`].
+#[derive(Clone)]
+pub struct Client {
+    inner: Arc<ClientInner>,
+}
+
+impl Client {
+    /// Wrap an arbitrary transport (test doubles, a future Windows named
+    /// pipe).
+    pub fn new(transport: Arc<dyn Transport>, config: ClientConfig) -> Self {
+        Client {
+            inner: Arc::new(ClientInner {
+                transport,
+                dial_semaphore: Semaphore::new(config.max_in_flight.max(1)),
+                config,
+                seq: AtomicU64::new(0),
+                flights: Singleflight::default(),
+                workspace_reordered: AtomicU8::new(WS_REORDERED_UNKNOWN),
+            }),
+        }
+    }
+
+    /// Client for a Unix socket path.
+    pub fn unix(path: impl Into<PathBuf>) -> Self {
+        Client::new(
+            Arc::new(UnixTransport::new(path.into())),
+            ClientConfig::default(),
+        )
+    }
+
+    /// Client for a Unix socket path with an explicit config.
+    pub fn unix_with(path: impl Into<PathBuf>, config: ClientConfig) -> Self {
+        Client::new(Arc::new(UnixTransport::new(path.into())), config)
+    }
+
+    /// Client for the socket resolved from the environment
+    /// (`HERDR_SOCKET_PATH` → `HERDR_SESSION` → `~/.config/herdr/herdr.sock`).
+    /// `None` when no path can be resolved.
+    pub fn from_env() -> Option<Self> {
+        default_socket_path().map(Client::unix)
+    }
+
+    /// The transport target, for logs.
+    pub fn describe(&self) -> String {
+        self.inner.transport.describe()
+    }
+
+    fn next_id(&self) -> String {
+        format!(
+            "{}-{}",
+            self.inner.config.id_prefix,
+            self.inner.seq.fetch_add(1, Ordering::Relaxed) + 1
+        )
+    }
+
+    /// Raw NDJSON call: `{"id","method","params"}` → the `result` payload as a
+    /// [`Value`], or a [`HerdrError`] carrying the dispatch boundary.
+    ///
+    /// This is the escape hatch for methods without a typed wrapper — and for
+    /// `command.invoke`, whose result type the upstream schema does not pin
+    /// down.
+    #[instrument(skip_all, fields(method, transport = %self.inner.transport.describe()))]
+    pub async fn call<P: Serialize + Sync>(
+        &self,
+        method: &str,
+        params: &P,
+    ) -> Result<Value, HerdrError> {
+        self.call_inner(method, params, Some(self.inner.config.request_timeout))
+            .await
+    }
+
+    /// Like [`call`](Self::call) with an explicit deadline — `None` waits
+    /// indefinitely (server-side waits use this).
+    pub async fn call_with_timeout<P: Serialize + Sync>(
+        &self,
+        method: &str,
+        params: &P,
+        timeout: Option<Duration>,
+    ) -> Result<Value, HerdrError> {
+        self.call_inner(method, params, timeout).await
+    }
+
+    async fn call_inner<P: Serialize + Sync>(
+        &self,
+        method: &str,
+        params: &P,
+        timeout: Option<Duration>,
+    ) -> Result<Value, HerdrError> {
+        let deadline = Instant::now() + timeout.unwrap_or(events::FAR_FUTURE);
+        let request_id = self.next_id();
+        let payload = wire::encode_request(&request_id, method, params)?;
+
+        // One fd per request: hold a semaphore permit for the connection's
+        // whole lifetime. A stalled acquire inside the deadline means the
+        // request never started.
+        let _permit = tokio::time::timeout_at(deadline, self.inner.dial_semaphore.acquire())
+            .await
+            .map_err(|_| {
+                HerdrError::not_started(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "herdr dial semaphore wait timed out",
+                ))
+            })?
+            .map_err(|_| {
+                HerdrError::not_started(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "herdr dial semaphore closed",
+                ))
+            })?;
+
+        let mut conn = tokio::time::timeout_at(deadline, self.inner.transport.dial())
+            .await
+            .map_err(|_| {
+                HerdrError::not_started(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "herdr dial timed out",
+                ))
+            })?
+            .map_err(HerdrError::not_started)?;
+
+        wire::write_request(&mut conn, &payload, deadline).await?;
+        let line = wire::read_line(&mut conn, deadline, self.inner.config.max_response_bytes)
+            .await
+            .map_err(HerdrError::dispatched_io)?;
+        let response = wire::decode_response(&line)?;
+        wire::classify_response(response, &request_id)
+            .map(|raw| serde_json::from_str(raw.get()).unwrap_or(Value::Null))
+    }
+
+    /// Route through singleflight when `method` is read-only.
+    async fn call_shared<P: Serialize + Sync>(
+        &self,
+        method: &str,
+        params: &P,
+    ) -> Result<Value, HerdrError> {
+        if !SINGLEFLIGHT_METHODS.contains(&method) {
+            return self.call(method, params).await;
+        }
+        let params_value = serde_json::to_value(params)
+            .map_err(|e| HerdrError::not_started(io::Error::new(io::ErrorKind::InvalidData, e)))?;
+        let key = format!("{method}\0{params_value}");
+        self.inner
+            .flights
+            .execute(key, || self.call(method, &params_value))
+            .await
+    }
+
+    /// Decode `result` as `T` after asserting its `type` tag — a mismatched
+    /// tag means the response cannot be trusted (`DispatchedUnknown`, like
+    /// the Go client's `decodeSocketResult`).
+    async fn call_result<P, T>(
+        &self,
+        method: &str,
+        params: &P,
+        want_type: &str,
+    ) -> Result<T, HerdrError>
+    where
+        P: Serialize + Sync,
+        T: DeserializeOwned,
+    {
+        let raw = self.call_shared(method, params).await?;
+        Self::decode_result(raw, want_type)
+    }
+
+    /// Same, but never singleflighted and with an explicit timeout (waits and
+    /// mutations).
+    async fn call_result_opts<P, T>(
+        &self,
+        method: &str,
+        params: &P,
+        want_type: &str,
+        timeout: Option<Duration>,
+    ) -> Result<T, HerdrError>
+    where
+        P: Serialize + Sync,
+        T: DeserializeOwned,
+    {
+        let raw = self.call_with_timeout(method, params, timeout).await?;
+        Self::decode_result(raw, want_type)
+    }
+
+    fn decode_result<T: DeserializeOwned>(raw: Value, want_type: &str) -> Result<T, HerdrError> {
+        let got = raw.get("type").and_then(Value::as_str);
+        if got != Some(want_type) {
+            return Err(HerdrError::dispatched_msg(format!(
+                "herdr returned result type {got:?}, want {want_type:?}"
+            )));
+        }
+        serde_json::from_value(raw)
+            .map_err(|e| HerdrError::dispatched_io(io::Error::new(io::ErrorKind::InvalidData, e)))
+    }
+
+    /// Client timeout for a server-side wait: the server's `timeout_ms` plus
+    /// margin, or no timeout when the server wait is indefinite.
+    fn wait_timeout(timeout_ms: Option<u64>) -> Option<Duration> {
+        timeout_ms.map(|ms| Duration::from_millis(ms).saturating_add(Duration::from_secs(10)))
+    }
+
+    // -- server ------------------------------------------------------------
+
+    /// `ping` → `pong`: version, protocol, and advertised capabilities.
+    pub async fn ping(&self) -> Result<Pong, HerdrError> {
+        #[derive(serde::Deserialize)]
+        struct PongResult {
+            version: String,
+            protocol: u32,
+            #[serde(default)]
+            capabilities: Option<ServerCapabilities>,
+        }
+        let r: PongResult = self.call_result("ping", &json!({}), "pong").await?;
+        Ok(Pong {
+            version: r.version,
+            protocol: r.protocol,
+            capabilities: r.capabilities,
+        })
+    }
+
+    /// `session.snapshot` — the one-call full topology reconcile and the
+    /// `events_lost` recovery base.
+    pub async fn session_snapshot(&self) -> Result<SessionSnapshot, HerdrError> {
+        #[derive(serde::Deserialize)]
+        struct R {
+            snapshot: SessionSnapshot,
+        }
+        Ok(self
+            .call_result::<_, R>("session.snapshot", &json!({}), "session_snapshot")
+            .await?
+            .snapshot)
+    }
+
+    // -- inventory reads ---------------------------------------------------
+
+    /// `agent.list` → all detected agents.
+    pub async fn agent_list(&self) -> Result<Vec<AgentInfo>, HerdrError> {
+        #[derive(serde::Deserialize)]
+        struct R {
+            agents: Vec<AgentInfo>,
+        }
+        Ok(self
+            .call_result::<_, R>("agent.list", &json!({}), "agent_list")
+            .await?
+            .agents)
+    }
+
+    /// `pane.list` → all panes (optionally scoped to one workspace).
+    pub async fn pane_list(&self, workspace_id: Option<&str>) -> Result<Vec<PaneInfo>, HerdrError> {
+        #[derive(serde::Deserialize)]
+        struct R {
+            panes: Vec<PaneInfo>,
+        }
+        Ok(self
+            .call_result::<_, R>(
+                "pane.list",
+                &json!({ "workspace_id": workspace_id }),
+                "pane_list",
+            )
+            .await?
+            .panes)
+    }
+
+    /// `workspace.list` → all workspaces.
+    pub async fn workspace_list(&self) -> Result<Vec<WorkspaceInfo>, HerdrError> {
+        #[derive(serde::Deserialize)]
+        struct R {
+            workspaces: Vec<WorkspaceInfo>,
+        }
+        Ok(self
+            .call_result::<_, R>("workspace.list", &json!({}), "workspace_list")
+            .await?
+            .workspaces)
+    }
+
+    /// `tab.list` → all tabs (optionally scoped to one workspace).
+    pub async fn tab_list(&self, workspace_id: Option<&str>) -> Result<Vec<TabInfo>, HerdrError> {
+        #[derive(serde::Deserialize)]
+        struct R {
+            tabs: Vec<TabInfo>,
+        }
+        Ok(self
+            .call_result::<_, R>(
+                "tab.list",
+                &json!({ "workspace_id": workspace_id }),
+                "tab_list",
+            )
+            .await?
+            .tabs)
+    }
+
+    /// `pane.read` — the hot path. Singleflighted, and retried once on
+    /// non-definitive failures per the Go client's read-then-retry behavior
+    /// (`Refused` is returned immediately).
+    pub async fn pane_read(
+        &self,
+        pane_id: &str,
+        source: ReadSource,
+        lines: u32,
+        format: ReadFormat,
+    ) -> Result<PaneReadResult, HerdrError> {
+        #[derive(serde::Deserialize)]
+        struct R {
+            read: PaneReadResult,
+        }
+        let params = PaneReadParams::new(pane_id, source, lines, format);
+        let mut last_err = None;
+        for attempt in 0..2u8 {
+            match self
+                .call_result::<_, R>("pane.read", &params, "pane_read")
+                .await
+            {
+                Ok(r) => return Ok(r.read),
+                Err(e) => {
+                    let retry = self.inner.config.read_retry
+                        && attempt == 0
+                        && e.phase() != DispatchPhase::Refused;
+                    if !retry {
+                        return Err(e);
+                    }
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.expect("retry loop ran at least once"))
+    }
+
+    /// `pane.send_input` — text and/or logical keys through Herdr's input
+    /// path (paste-mode honored). Mutating; no singleflight.
+    pub async fn pane_send_input(
+        &self,
+        pane_id: &str,
+        text: Option<&str>,
+        keys: Vec<String>,
+    ) -> Result<(), HerdrError> {
+        self.call_result::<_, Value>(
+            "pane.send_input",
+            &PaneSendInputParams {
+                pane_id: pane_id.to_string(),
+                text: text.map(str::to_string),
+                keys,
+            },
+            "ok",
+        )
+        .await?;
+        Ok(())
+    }
+
+    // -- waits (server-side, hold the connection until match/timeout) -------
+
+    /// `pane.wait_for_output` — resolve when `match` fires on the pane's
+    /// selected source. Server timeout elapses → `Refused{code:"timeout"}`.
+    pub async fn pane_wait_for_output(
+        &self,
+        pane_id: &str,
+        source: ReadSource,
+        match_: OutputMatch,
+        strip_ansi: Option<bool>,
+        lines: Option<u32>,
+        timeout_ms: Option<u64>,
+    ) -> Result<OutputMatchedResult, HerdrError> {
+        let params = PaneWaitForOutputParams {
+            pane_id: pane_id.to_string(),
+            source,
+            match_,
+            strip_ansi,
+            lines,
+            timeout_ms,
+        };
+        self.call_result_opts(
+            "pane.wait_for_output",
+            &params,
+            "output_matched",
+            Self::wait_timeout(timeout_ms),
+        )
+        .await
+    }
+
+    /// `agent.wait` — resolve when the resolved agent reaches one of `until`
+    /// (empty `until` uses Herdr's settled-state defaults). Returns the
+    /// `agent_info` snapshot that satisfied the wait.
+    pub async fn agent_wait(
+        &self,
+        target: &str,
+        until: Vec<AgentStatus>,
+        timeout_ms: Option<u64>,
+    ) -> Result<AgentInfo, HerdrError> {
+        #[derive(serde::Deserialize)]
+        struct R {
+            agent: AgentInfo,
+        }
+        Ok(self
+            .call_result_opts::<_, R>(
+                "agent.wait",
+                &AgentWaitParams {
+                    target: target.to_string(),
+                    until,
+                    timeout_ms,
+                },
+                "agent_info",
+                Self::wait_timeout(timeout_ms),
+            )
+            .await?
+            .agent)
+    }
+
+    /// `events.wait` — one-shot wait for a matching event. Server timeout
+    /// elapses → `Refused{code:"timeout"}`. Note the server currently only
+    /// honors `pane_agent_status_changed` matches
+    /// (`unsupported_event_wait_match` otherwise).
+    pub async fn events_wait(
+        &self,
+        match_: EventMatch,
+        timeout_ms: Option<u64>,
+    ) -> Result<Event, HerdrError> {
+        #[derive(Serialize)]
+        struct Params {
+            match_event: EventMatch,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            timeout_ms: Option<u64>,
+        }
+        #[derive(serde::Deserialize)]
+        struct R {
+            event: Event,
+        }
+        Ok(self
+            .call_result_opts::<_, R>(
+                "events.wait",
+                &Params {
+                    match_event: match_,
+                    timeout_ms,
+                },
+                "wait_matched",
+                Self::wait_timeout(timeout_ms),
+            )
+            .await?
+            .event)
+    }
+
+    /// `agent.explain` — the server's detection snapshot for a pane: matched
+    /// rule, evaluated evidence, skip reasons. The `explain` object is
+    /// free-form upstream (`"explain": true` in the schema), so this returns
+    /// raw JSON.
+    pub async fn agent_explain(&self, target: &str) -> Result<Value, HerdrError> {
+        #[derive(serde::Deserialize)]
+        struct R {
+            explain: Value,
+        }
+        Ok(self
+            .call_result::<_, R>(
+                "agent.explain",
+                &json!({ "target": target }),
+                "agent_explain",
+            )
+            .await?
+            .explain)
+    }
+
+    // -- mutations ----------------------------------------------------------
+
+    /// `agent.view.set` — install the transient declarative projection that
+    /// drives Herdr's sidebar and its mobile Agents list.
+    pub async fn agent_view_set(
+        &self,
+        params: AgentViewSetParams,
+    ) -> Result<AgentViewState, HerdrError> {
+        self.call_result("agent.view.set", &params, "agent_view")
+            .await
+    }
+
+    /// `agent.view.clear` — clear the projection, optionally only when
+    /// `source` still owns it.
+    pub async fn agent_view_clear(
+        &self,
+        source: Option<&str>,
+    ) -> Result<AgentViewState, HerdrError> {
+        #[derive(Serialize)]
+        struct P<'a> {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            source: Option<&'a str>,
+        }
+        self.call_result("agent.view.clear", &P { source }, "agent_view")
+            .await
+    }
+
+    /// `layout.apply` — apply a whole layout tree (workspace templates from
+    /// the phone).
+    pub async fn layout_apply(
+        &self,
+        params: LayoutApplyParams,
+    ) -> Result<LayoutDescription, HerdrError> {
+        #[derive(serde::Deserialize)]
+        struct R {
+            layout: LayoutDescription,
+        }
+        self.call_result::<_, R>("layout.apply", &params, "layout_apply")
+            .await
+            .map(|r| r.layout)
+    }
+
+    /// `command.invoke` — an endpoint-issued command id validated against the
+    /// pane's content revision. The upstream schema does not pin the success
+    /// result type, so the raw result payload is returned.
+    pub async fn command_invoke(&self, params: CommandInvokeParams) -> Result<Value, HerdrError> {
+        self.call("command.invoke", &params).await
+    }
+
+    /// `notification.show` — a desktop toast for phone-originated actions.
+    pub async fn notification_show(
+        &self,
+        params: NotificationShowParams,
+    ) -> Result<NotificationOutcome, HerdrError> {
+        self.call_result("notification.show", &params, "notification_show")
+            .await
+    }
+
+    /// `plugin.action.invoke` — drive an installed Herdr plugin's manifest
+    /// action through the socket.
+    pub async fn plugin_action_invoke(
+        &self,
+        params: PluginActionInvokeParams,
+    ) -> Result<PluginActionInvocation, HerdrError> {
+        self.call_result("plugin.action.invoke", &params, "plugin_action_invoked")
+            .await
+    }
+
+    // -- events -------------------------------------------------------------
+
+    /// `events.subscribe` — perform the handshake and return the live event
+    /// stream. `subscription_started` is consumed here; every later line is
+    /// an event or a terminal error (`events_lost`).
+    ///
+    /// The dial semaphore is held only for the handshake — a subscription is
+    /// long-lived, not an in-flight request.
+    pub async fn subscribe_events(
+        &self,
+        subscriptions: &[Subscription],
+    ) -> Result<EventStream, SubscribeError> {
+        let timeout = self.inner.config.request_timeout;
+        let (conn, lines) = {
+            let _permit = tokio::time::timeout(timeout, self.inner.dial_semaphore.acquire())
+                .await
+                .map_err(|_| {
+                    SubscribeError::transport(HerdrError::not_started(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "herdr dial semaphore wait timed out",
+                    )))
+                })?
+                .map_err(|_| {
+                    SubscribeError::transport(HerdrError::not_started_msg(
+                        "herdr dial semaphore closed",
+                    ))
+                })?;
+            events::subscribe_on(
+                self.inner.transport.as_ref(),
+                subscriptions,
+                EVENTS_REQUEST_ID,
+                timeout,
+                self.inner.config.max_response_bytes,
+            )
+            .await?
+        };
+        Ok(EventStream::spawn(
+            conn,
+            lines,
+            self.inner.config.event_queue_capacity,
+        ))
+    }
+
+    /// The topology subscription set with the `workspace.reordered` fallback:
+    /// attempt including it while its capability is not known-unsupported, and
+    /// on Herdr's pre-dispatch rejection resubscribe without it — the Go
+    /// client's `Bootstrap` behavior.
+    pub async fn subscribe_topology(&self) -> Result<EventStream, SubscribeError> {
+        // Optimistic probe per bootstrap: reconnects may face a different
+        // server build.
+        self.inner
+            .workspace_reordered
+            .store(WS_REORDERED_UNKNOWN, Ordering::Relaxed);
+        match self.subscribe_events(&topology_subscriptions(true)).await {
+            Ok(stream) => {
+                self.inner
+                    .workspace_reordered
+                    .store(WS_REORDERED_SUPPORTED, Ordering::Relaxed);
+                Ok(stream)
+            }
+            Err(err) if err.is_workspace_reordered_rejected() => {
+                self.inner
+                    .workspace_reordered
+                    .store(WS_REORDERED_UNSUPPORTED, Ordering::Relaxed);
+                self.subscribe_events(&topology_subscriptions(false)).await
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// The documented bootstrap/recovery step verbatim: subscribe →
+    /// `subscription_started` → `session.snapshot` on a second connection →
+    /// drain the events that arrived in the gap (`gap_events` — invalidation
+    /// signals only, never replayed onto the snapshot).
+    pub async fn bootstrap(
+        &self,
+        subscriptions: &[Subscription],
+    ) -> Result<Bootstrap, BootstrapError> {
+        self.bootstrap_with(subscriptions, false).await
+    }
+
+    /// `bootstrap()` over the topology subscription set, including the
+    /// `workspace.reordered` capability fallback.
+    pub async fn bootstrap_topology(&self) -> Result<Bootstrap, BootstrapError> {
+        self.bootstrap_with(&[], true).await
+    }
+
+    pub(crate) async fn bootstrap_with(
+        &self,
+        subscriptions: &[Subscription],
+        topology_fallback: bool,
+    ) -> Result<Bootstrap, BootstrapError> {
+        let mut stream = if topology_fallback {
+            self.subscribe_topology()
+                .await
+                .map_err(BootstrapError::Subscribe)?
+        } else {
+            self.subscribe_events(subscriptions)
+                .await
+                .map_err(BootstrapError::Subscribe)?
+        };
+        let snapshot = self
+            .session_snapshot()
+            .await
+            .map_err(BootstrapError::Snapshot)?;
+        let gap_events = stream.drain();
+        Ok(Bootstrap {
+            snapshot,
+            stream,
+            gap_events,
+        })
+    }
+
+    /// Run the supervised resync loop — resubscribe → snapshot → forward
+    /// events as invalidation signals; on any stream end back off and repeat.
+    /// Drop the returned stream to stop the task.
+    pub fn supervise_events(&self, supervisor: EventSupervisor) -> SupervisorStream {
+        supervisor.run(self.clone())
+    }
+
+    /// Whether `workspace.reordered` was confirmed (Some(true)), rejected
+    /// (Some(false)), or not yet probed (None) by the last bootstrap.
+    pub fn workspace_reordered_supported(&self) -> Option<bool> {
+        match self.inner.workspace_reordered.load(Ordering::Relaxed) {
+            WS_REORDERED_SUPPORTED => Some(true),
+            WS_REORDERED_UNSUPPORTED => Some(false),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client")
+            .field("transport", &self.inner.transport.describe())
+            .field("config", &self.inner.config)
+            .finish()
+    }
+}

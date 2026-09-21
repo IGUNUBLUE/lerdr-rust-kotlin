@@ -1,0 +1,21 @@
+[package]
+name = "lerdr-herdr"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Herdr socket boundary: NDJSON RPC client, dispatch-boundary error taxonomy, event stream + resync supervisor, singleflight."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { version = "1.0", features = ["raw_value"] }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+futures-core = "0.3" # Stream trait for the event API surface
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+futures-util = "0.3" # StreamExt in tests
+rstest = { workspace = true }
+tempfile = "3"
