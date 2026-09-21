@@ -80,6 +80,27 @@ pub struct SessionConfig {
     /// Messages pushed right after the session starts — the
     /// `sendConnectionSnapshot` seam. Defaults to a minimal `push_config`.
     pub snapshot: Vec<Outbound>,
+    /// When set, supersedes `snapshot`: evaluated per connection so
+    /// late-joining clients get current state (lerdr-coord wires the
+    /// topology projection in here).
+    pub snapshot_fn: Option<SnapshotFn>,
+}
+
+/// Per-connection snapshot builder — wraps `Arc<dyn Fn>` so
+/// `SessionConfig` stays `Clone + Debug`.
+#[derive(Clone)]
+pub struct SnapshotFn(pub std::sync::Arc<dyn Fn() -> Vec<Outbound> + Send + Sync>);
+
+impl std::fmt::Debug for SnapshotFn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SnapshotFn(..)")
+    }
+}
+
+impl SnapshotFn {
+    pub fn build(&self) -> Vec<Outbound> {
+        (self.0)()
+    }
 }
 
 impl Default for SessionConfig {
@@ -92,6 +113,7 @@ impl Default for SessionConfig {
             send_timeout: SEND_TIMEOUT,
             close_timeout: CLOSE_TIMEOUT,
             snapshot: default_snapshot(),
+            snapshot_fn: None,
         }
     }
 }
@@ -477,7 +499,11 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
         parent: CancellationToken,
     ) {
         // Post-handshake snapshot — `onConnect(client)` in the Go hub.
-        for message in self.config.snapshot.clone() {
+        let snapshot = match &self.config.snapshot_fn {
+            Some(f) => f.build(),
+            None => self.config.snapshot.clone(),
+        };
+        for message in snapshot {
             if self.enqueue(message) == STOP {
                 return;
             }
