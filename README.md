@@ -39,6 +39,9 @@ stable contract. That allows:
 | [04 — App design](docs/04-app-design.md) | UX redesign with Material 3 Expressive, screen by screen |
 | [05 — Roadmap](docs/05-roadmap.md) | Phases, deliverables, cutover criteria |
 | [06 — Risks](docs/06-risks.md) | Technical risks and mitigations |
+| [07 — Execution prompt](docs/07-execution-prompt.md) | Copy-paste master prompt + per-phase loops |
+
+![App concept mockup](docs/mockup.png)
 
 ## Project rules
 
@@ -49,5 +52,7 @@ stable contract. That allows:
   fixtures generated from the current Go/TS implementation.
 - **No capability regression**: the new app must do everything the web app
   does — the ~70-action catalog is the checklist.
-- **The Rust relay also serves the PWA**: `web/` is embedded in the binary,
-  same as today.
+- **Android-only client**: no PWA in scope. The Rust relay is a pure
+  WS+API backend — no `web/` asset pipeline. (Consequence: iOS and desktop
+  browsers lose a client; the existing Go+PWA stack can keep serving them
+  in parallel if desired, since the protocol is shared.)

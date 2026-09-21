@@ -1,9 +1,16 @@
 # 04 — App design: a new experience, not a port
 
+![Concept mockup: Home, Feed, Terminal](mockup.png)
+
 Design intent: **sit at the computer from the phone**. Two renderers over
 one stream — a semantic feed that answers *what is the agent doing / what
 does it need*, and a full-fidelity terminal that answers *let me drive*.
 Neither is a fallback for the other; both are first-class.
+
+The app is **Android + Kotlin only** — no PWA target. That frees the
+design to lean fully into Compose/M3E: predictive back, foreground
+service realtime, OEM-aware notification strategy, and no web-compat
+lowest-common-denominator anywhere.
 
 ## Navigation model
 

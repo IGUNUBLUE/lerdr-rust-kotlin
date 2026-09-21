@@ -23,7 +23,9 @@
 ┌─────────────────────────────────────────────────────────────┐
 │  Computer — Rust relay (single static binary)               │
 │  ┌────────────────────────────────────────────────────────┐ │
-│  │ axum HTTP: PWA assets (embedded) + /ws + /healthz      │ │
+│  │ axum HTTP: /ws + /healthz — no web assets (Android-    │ │
+│  │ only product; the Go relay can keep serving the PWA    │ │
+│  │ in parallel during/after migration if wanted)          │ │
 │  ├────────────────────────────────────────────────────────┤ │
 │  │ session actor per client: send buffer, coalescing,     │ │
 │  │ eviction, E2EE session (p256 + aes-gcm + hkdf)         │ │
@@ -151,20 +153,24 @@ keeps serving PWA clients unchanged.
 ## The seam strategy — why this is low-risk
 
 ```
-Go relay ⇄ Web PWA        (today, production)
+Go relay ⇄ Web PWA        (today, production — stays running for any
+                           non-Android device during transition)
 Go relay ⇄ Kotlin app     (phase 1 target — validates the client half)
-Rust relay ⇄ Web PWA      (phase 2 target — validates the server half)
-Rust relay ⇄ Kotlin app   (end state)
+Rust relay ⇄ test client  (shadow parity harness vs the Go oracle)
+Rust relay ⇄ Kotlin app   (end state — the only shipped combination)
 ```
 
 Every combination in the matrix is a supported configuration at every
-point in time. No flag day on either side.
+point in time. No flag day on either side. The Rust relay validates
+against a **protocol-level test client** (fixtures + scripted watch
+sessions) rather than the PWA, since the PWA is out of product scope.
 
 ## What deliberately does NOT move
 
 - **Herdr** — the relay is a client of it; unchanged.
-- **The PWA** — the Rust relay embeds `web/`; iOS/desktop keep working.
 - **The protocol** — v3 + `herdr-e2ee-v2` stay the contract. Improvements
   land as negotiated capabilities, never silently.
 - **The Go codebase** — stays as reference implementation and test-vector
   generator until cutover criteria in [05 — Roadmap](05-roadmap.md) pass.
+  Its PWA-serving side stays useful for any non-Android device during the
+  transition, but no new web UI work is planned.

@@ -57,22 +57,23 @@ largest single component; don't block the feed on it.
   gateway path already works; likely worth it only for bandwidth-heavy
   sessions).
 
-**Exit**: zero features only in the web app. The Tauri shell is retired
-for Android (PWA remains for iOS/desktop).
+**Exit**: zero features that only exist in the old web app. The Tauri
+shell is retired — Android is the only client going forward.
 
 ## Phase 3 — Rust relay core (shadow parity)
 
 - `lerdr-core` + `lerdr-e2ee` + `lerdr-herdr` + `lerdr-watch` +
   `lerdr-coord` + `lerdr-store` + `lerdr-push` + minimal `lerdr-relay`
-  binary serving `/ws` + `web/` + actions.
+  binary serving `/ws` + `/healthz` + actions (no web assets).
 - Run **shadow**: Rust relay on a second port against the same Herdr;
   compare outbound event streams (agents, panes, questions) with the Go
   relay — a diff harness is the parity oracle.
 - Keep scope: skip appdeploy/update/speech/appdirs niceties until the core
   is proven; they are leaf packages.
 
-**Exit**: Rust relay serves the production phone + PWA for a week with
-no behavioral divergence; CPU/RSS ≤ Go baseline on identical load.
+**Exit**: Rust relay serves the production Kotlin app for a week with
+no behavioral divergence vs the shadow-diff harness; CPU/RSS ≤ Go
+baseline on identical load.
 
 ## Phase 4 — Rust completes
 
