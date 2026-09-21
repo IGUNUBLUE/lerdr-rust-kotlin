@@ -24,7 +24,7 @@ use lerdr_core::protocol::{
     action_receipt_response, error_codes, error_response, ActionReceipt, ActionReceiptPhase,
     ApiError, Inbound, Outbound, PaneContent, RequestScope,
 };
-use lerdr_herdr::{DispatchPhase, HerdrError, ReadFormat, ReadSource};
+use lerdr_herdr::{DispatchPhase, HerdrError, PaneReadResult, ReadFormat, ReadSource};
 use lerdr_relay::router::{ActionRouter, ClientContext, RouterReply};
 use lerdr_relay::session::ClientSink;
 use tokio_util::sync::CancellationToken;
@@ -32,7 +32,7 @@ use tracing::Instrument;
 
 use crate::actor::TopologyHandle;
 use crate::snapshot::topology_broadcast;
-use crate::watches::{WatchSet, DEFAULT_LINES};
+use crate::watches::{watch_interval, WatchSet, WatchSpec, DEFAULT_LINES};
 
 /// How a router resolves its own client's push endpoint. Wired to
 /// `Relay::client_sink` at construction — the lookup is lazy because the
@@ -234,10 +234,12 @@ impl ActionRouter for HerdRouter {
 }
 
 impl HerdRouter {
-    /// `read_pane` → async `pane.read` → `pane_content` push → receipt.
-    /// The wire `content_fingerprint` field is raw-only (not on typed
-    /// `Inbound`), so the fingerprint-hit `pane_unchanged` path needs the
-    /// raw-field seam — baseline always answers full content.
+    /// `read_pane` → async `pane.read` → `pane_content`/`pane_unchanged`
+    /// push → receipt. `content_fingerprint` rides the raw seam: a string
+    /// equal to the fresh read's fingerprint answers `pane_unchanged` (the
+    /// computed fingerprint is canonical 16-lower-hex, so any malformed
+    /// wire value is simply a miss — never an error). Like the oracle, an
+    /// explicit read stops the pane's watch.
     fn route_read_pane(
         &mut self,
         request_id: String,
@@ -250,11 +252,16 @@ impl HerdRouter {
         if self.sink().is_none() {
             return refused(&request_id, &action_id, "session_not_ready");
         }
+        // The oracle's `read_pane` supersedes the watch (`stopPaneWatch`) —
+        // otherwise the watch could race a frame past this read's answer.
+        self.watches.stop(&pane_id);
         let client = self.handle.client.clone();
         let lines = u32::try_from(message.lines)
             .ok()
             .filter(|l| *l > 0)
             .unwrap_or(DEFAULT_LINES);
+        let fingerprint = message.content_fingerprint().map(str::to_owned);
+        let target = message.target.clone();
         let rid = request_id.clone();
         let aid = action_id.clone();
         self.push_later(async move {
@@ -268,15 +275,7 @@ impl HerdRouter {
                 .await
             {
                 Ok(read) => vec![
-                    Outbound::PaneContent(Box::new(PaneContent {
-                        r#type: "pane_content".to_owned(),
-                        pane_id: Some(pane_id.clone()),
-                        content: Some(read.text.clone()),
-                        content_fingerprint: Some(crate::content_fingerprint(&read.text)),
-                        format: Some("text".to_owned()),
-                        truncated: Some(read.truncated),
-                        ..PaneContent::default()
-                    })),
+                    read_pane_frame(&pane_id, &read, fingerprint.as_deref(), target),
                     receipt(&rid, &aid, ActionReceiptPhase::CONFIRMED, None),
                 ],
                 Err(err) => vec![receipt_for_herdr_error(&rid, &aid, &err)],
@@ -285,7 +284,10 @@ impl HerdRouter {
         RouterReply::empty()
     }
 
-    /// `watch_pane` — start the event-driven watch task.
+    /// `watch_pane` — start the event-driven watch task. `interval_ms`
+    /// becomes the watch's minimum read cadence (clamped), and a wire
+    /// `content_fingerprint` matching the first read adopts the current
+    /// frame instead of pushing a duplicate.
     fn route_watch_pane(
         &mut self,
         request_id: String,
@@ -299,15 +301,19 @@ impl HerdRouter {
             return refused(&request_id, &action_id, "session_not_ready");
         };
         if !self.watches.watching(&pane_id) {
-            let lines = u32::try_from(message.lines)
-                .ok()
-                .filter(|l| *l > 0)
-                .unwrap_or(DEFAULT_LINES);
+            let spec = WatchSpec {
+                lines: u32::try_from(message.lines)
+                    .ok()
+                    .filter(|l| *l > 0)
+                    .unwrap_or(DEFAULT_LINES),
+                interval: watch_interval(message.interval_ms()),
+                known_fingerprint: message.content_fingerprint().map(str::to_owned),
+            };
             self.watches.start(
                 pane_id,
-                lines,
+                spec,
                 self.handle.client.clone(),
-                sink,
+                Arc::new(sink),
                 self.handle.invalidations.clone(),
                 self.cancel.clone(),
             );
@@ -393,6 +399,35 @@ impl HerdRouter {
 
 fn non_empty(s: &str) -> Option<String> {
     (!s.is_empty()).then(|| s.to_owned())
+}
+
+/// The `read_pane` result frame (`unchangedPaneResponse`): `pane_unchanged`
+/// when the wire `content_fingerprint` equals the fresh read's,
+/// `pane_content` otherwise — including absent/malformed wire values, since
+/// equality against the canonical computed fingerprint is the entire
+/// validation. `target` echoes the request's when present (the oracle
+/// assigns `resp["target"]` only then; `pane_unchanged` emits the key
+/// either way — `null` when absent).
+fn read_pane_frame(
+    pane_id: &str,
+    read: &PaneReadResult,
+    fingerprint: Option<&str>,
+    target: Option<lerdr_core::protocol::TargetRef>,
+) -> Outbound {
+    let computed = crate::content_fingerprint(&read.text);
+    if fingerprint == Some(computed.as_str()) {
+        return crate::watches::pane_unchanged(pane_id, &computed, target);
+    }
+    Outbound::PaneContent(Box::new(PaneContent {
+        r#type: "pane_content".to_owned(),
+        pane_id: Some(pane_id.to_owned()),
+        content: Some(read.text.clone()),
+        content_fingerprint: Some(computed),
+        format: Some("text".to_owned()),
+        truncated: Some(read.truncated),
+        target: target.map(lerdr_core::json::MaybeNull::Value),
+        ..PaneContent::default()
+    }))
 }
 
 fn receipt(
@@ -485,6 +520,20 @@ fn refused(request_id: &str, action_id: &str, code: &str) -> RouterReply {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lerdr_core::json::MaybeNull;
+    use lerdr_core::protocol::TargetRef;
+    use std::time::Duration;
+
+    fn pane_read(text: &str) -> PaneReadResult {
+        PaneReadResult {
+            text: text.to_owned(),
+            ..PaneReadResult::default()
+        }
+    }
+
+    fn inbound(map: serde_json::Map<String, serde_json::Value>) -> Inbound {
+        Inbound::decode_map(&map).expect("decode")
+    }
 
     #[test]
     fn receipt_phases() {
@@ -520,5 +569,140 @@ mod tests {
             }
             _ => panic!(),
         }
+    }
+
+    // -- read_pane fingerprint path ---------------------------------------
+
+    /// `unchangedPaneResponse`: wire `content_fingerprint` == fresh read's
+    /// → `pane_unchanged` echoing the request's `target` (`null` absent).
+    #[test]
+    fn read_pane_fingerprint_hit_is_pane_unchanged() {
+        let frame = read_pane_frame(
+            "wE:pE",
+            &pane_read("hello world\n"),
+            Some("a948904f2f0f479b"),
+            None,
+        );
+        match frame {
+            Outbound::PaneUnchanged(m) => {
+                assert_eq!(m.pane_id.as_deref(), Some("wE:pE"));
+                assert_eq!(m.content_fingerprint.as_deref(), Some("a948904f2f0f479b"));
+                assert!(matches!(m.target, Some(MaybeNull::Null)));
+            }
+            other => panic!("expected pane_unchanged, got {other:?}"),
+        }
+    }
+
+    /// Stale fingerprint → full `pane_content` carrying the fresh one.
+    #[test]
+    fn read_pane_fingerprint_miss_is_pane_content() {
+        let frame = read_pane_frame(
+            "wE:pE",
+            &pane_read("hello world\n"),
+            Some("0000000000000000"),
+            None,
+        );
+        match frame {
+            Outbound::PaneContent(m) => {
+                assert_eq!(m.content.as_deref(), Some("hello world\n"));
+                assert_eq!(m.content_fingerprint.as_deref(), Some("a948904f2f0f479b"));
+            }
+            other => panic!("expected pane_content, got {other:?}"),
+        }
+        // Absent entirely — same full-content answer.
+        assert!(matches!(
+            read_pane_frame("wE:pE", &pane_read("hello world\n"), None, None),
+            Outbound::PaneContent(_)
+        ));
+    }
+
+    /// Malformed wire fingerprints are a miss, never an error: wrong
+    /// length, non-hex, wrong case, empty — the canonical computed value
+    /// can never equal any of them.
+    #[test]
+    fn read_pane_malformed_fingerprint_is_a_miss() {
+        let read = pane_read("hello world\n");
+        for bad in [
+            "",
+            "a948904f2f0f479",   // 15 chars
+            "a948904f2f0f479bb", // 17 chars
+            "A948904F2F0F479B",  // uppercase hex
+            "zzzzzzzzzzzzzzzz",  // non-hex
+        ] {
+            assert!(
+                matches!(
+                    read_pane_frame("wE:pE", &read, Some(bad), None),
+                    Outbound::PaneContent(_)
+                ),
+                "{bad:?} should be a fingerprint miss"
+            );
+        }
+    }
+
+    /// Both answer shapes echo the request `target` when present (the
+    /// oracle assigns `resp["target"]` before the unchanged check).
+    #[test]
+    fn read_pane_frames_echo_request_target() {
+        let target = || {
+            Some(TargetRef {
+                pane_id: "wE:pE".to_owned(),
+                ..TargetRef::default()
+            })
+        };
+        let read = pane_read("hello world\n");
+        match read_pane_frame("wE:pE", &read, Some("a948904f2f0f479b"), target()) {
+            Outbound::PaneUnchanged(m) => {
+                assert!(matches!(m.target, Some(MaybeNull::Value(_))))
+            }
+            other => panic!("expected pane_unchanged, got {other:?}"),
+        }
+        match read_pane_frame("wE:pE", &read, None, target()) {
+            Outbound::PaneContent(m) => {
+                assert!(matches!(m.target, Some(MaybeNull::Value(_))))
+            }
+            other => panic!("expected pane_content, got {other:?}"),
+        }
+    }
+
+    // -- watch_pane raw fields --------------------------------------------
+
+    /// `interval_ms` rides the raw seam into the clamped cadence;
+    /// `content_fingerprint` is the watch's initial-known fingerprint.
+    #[test]
+    fn watch_pane_wire_fields_reach_the_spec() {
+        let msg = inbound(
+            serde_json::json!({"type":"watch_pane","pane_id":"wE:pE","interval_ms":500})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        assert_eq!(
+            watch_interval(msg.interval_ms()),
+            Duration::from_millis(500)
+        );
+        assert_eq!(msg.content_fingerprint(), None);
+
+        let msg = inbound(
+            serde_json::json!({"type":"watch_pane","pane_id":"wE:pE","interval_ms":10,"content_fingerprint":"a948904f2f0f479b"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        assert_eq!(
+            watch_interval(msg.interval_ms()),
+            crate::watches::MIN_WATCH_INTERVAL
+        );
+        assert_eq!(msg.content_fingerprint(), Some("a948904f2f0f479b"));
+
+        let msg = inbound(
+            serde_json::json!({"type":"watch_pane","pane_id":"wE:pE","interval_ms":120000})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        assert_eq!(
+            watch_interval(msg.interval_ms()),
+            crate::watches::MAX_WATCH_INTERVAL
+        );
     }
 }
