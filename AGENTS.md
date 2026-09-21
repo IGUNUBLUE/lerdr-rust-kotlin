@@ -22,9 +22,20 @@ line-by-line. Everything is specified in `docs/` — read `00-inventory`,
 ## Verification
 
 - Rust: `cargo test -p <crate>` + `tests/vectors` when wire-facing.
-- Kotlin: `./gradlew :module:test` + fixture conformance for
-  protocol/terminal/crypto.
-- App visual changes: screenshot test (Paparazzi/Roborazzi) in the PR.
+  Workspace root: `relay/` (fmt + `clippy -D warnings` clean).
+- Kotlin: `cd app && ./gradlew test` — JVM modules use `:core:x:test`,
+  Android-library modules use `:core:x:testDebugUnitTest`, and
+  `:app:assembleDebug` must stay green. JDK 17 at `~/.local/opt/jdk17`;
+  SDK at `~/Android/Sdk` (pinned via `app/local.properties`).
+- Toolchain floors: Gradle 9.7.1 wrapper, AGP 9.4.1 (built-in Kotlin —
+  never add `org.jetbrains.kotlin.android`), compileSdk 37
+  (`platforms;android-37.2`), minSdk 28, targetSdk 36.
+- Fixture consumers: `com.lerdr.core.testing.Fixtures` (Kotlin),
+  `lerdr-fixture` crate (Rust).
+- Live gates (not in CI): `LERDR_INTEROP=1 :core:transport:test --tests
+  InteropTest` pairs against the running Go relay; `HERDR_LIVE=1 cargo
+  test -p lerdr-herdr --test live` hits the real Herdr socket.
+- App visual changes: screenshot test (Roborazzi) in the PR.
 
 ## Skills
 
