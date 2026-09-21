@@ -43,3 +43,5 @@ Installed via `npx skills add` (`.agents/skills/`, lockfile
 | Skill | When |
 |---|---|
 | `rust-async-patterns` | Tokio/async patterns reference (wshobson/agents) |
+| `navigation-3` | Nav3 graphs, scenes, deep links (official android/skills) |
+| `testing-setup` | Android test strategy/harnesses (official android/skills) |

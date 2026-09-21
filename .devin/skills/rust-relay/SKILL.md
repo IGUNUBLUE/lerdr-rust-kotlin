@@ -20,6 +20,9 @@ Use when creating or editing crates under `relay/crates/`.
 - Error taxonomy per layer: `thiserror` enums at crate edges (`HerdrError`, `E2eeError`, `CoordError`); `anyhow` only in the binary wiring. Dispatch boundary (`NotStarted`/`DispatchedUnknown`/`Refused`) must survive to `ActionReceipt.phase`.
 - Structured concurrency: spawned tasks tracked in `JoinSet`/`CancellationToken`; watch tasks die with their last subscriber; graceful shutdown via token cascade, not task leaks.
 - `tracing` instrumentation: `#[instrument]` on actor loops and request handlers; `tracing-journald` layer behind a feature flag (journald acceptance test exists).
+- **State-machine + driver split**: actor cores are synchronous state machines; a thin tokio driver owns I/O — cores unit-test without a runtime.
+- **Virtual time in tests**: `#[tokio::test(start_paused = true)]` + `time::{pause,advance}` for backoff/lease-TTL/keepalive/eviction (`test-util` feature).
+- **Test stack**: `proptest` codec invariants (`Apply(Build(a,b))==b`, `open(seal(x))==x`) layered on golden vectors; `insta` for response/event snapshots; `rstest` fixture tables.
 - No new dependency without a note in the PR justifying it vs. std/existing crates; prefer crates ≥7 days published.
 
 ## Decision Gates
@@ -38,3 +41,5 @@ Every crate exposes a narrow `pub` surface; internal types stay private. Tests: 
 ## References
 
 - `docs/02-architecture.md`, `docs/08-herdr-boundary.md` — topology and boundaries.
+- `docs/11-stack-practices.md` — Rust test/pattern stack rationale.
+- Installed skill: `rust-async-patterns` (generic Tokio reference).

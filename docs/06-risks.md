@@ -34,13 +34,17 @@ order keeps every landing reviewable.
 
 ## Medium severity
 
-### Material 3 Expressive is alpha
-`material3` 1.5.x APIs are still `@ExperimentalMaterial3ExpressiveApi` in
-part; component names changed across alphas (ButtonGroup moved packages).
+### Material 3 Expressive is alpha-only (sharper than "alpha")
+Expressive APIs were **removed from stable 1.4.x entirely** — they exist
+only in `1.5.0-alphaXX` (alpha28 latest). Components graduate piecemeal:
+`ButtonGroup` went stable in alpha22, `Flexible*AppBar` family in
+alpha24; some remain `@ExperimentalMaterial3ExpressiveApi`.
 
-**Mitigation**: pin `compose-bom-alpha`; isolate expressive components
-behind `ui/components` wrappers with stable-signature fallbacks; a
-screenshot-test baseline (Paparazzi) catches API reshuffles at upgrade.
+**Mitigation**: `compose-bom-alpha` pin is mandatory (no stable path
+exists); isolate every expressive component behind `designsystem`
+wrappers with stable-signature fallbacks; Roborazzi screenshot baseline
+catches API reshuffles at upgrade; track the 1.5 stable milestone and
+re-pin the moment it lands.
 
 ### WebRTC on Android is heavy
 Google's `webrtc` AAR adds ~30–40 MB of native libs. The direct path is a

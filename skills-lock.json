@@ -1,11 +1,23 @@
 {
   "version": 1,
   "skills": {
+    "navigation-3": {
+      "source": "android/skills",
+      "sourceType": "github",
+      "skillPath": "navigation/navigation-3/SKILL.md",
+      "computedHash": "919b7d7773d173f2324651c2432f930a57ba71a913b3969cab6ae7d0315ccc55"
+    },
     "rust-async-patterns": {
       "source": "wshobson/agents",
       "sourceType": "github",
       "skillPath": "plugins/systems-programming/skills/rust-async-patterns/SKILL.md",
       "computedHash": "20d32ef58158c94eb4dfc4aaf19bec7ae2a025ae5d42da7b49ccfbaeda389273"
+    },
+    "testing-setup": {
+      "source": "android/skills",
+      "sourceType": "github",
+      "skillPath": "testing/testing-setup/SKILL.md",
+      "computedHash": "76bfe8e0180767c7c1631066fd1c000ef21bd9145945d1e3192bb165b3d80d4d"
     }
   }
 }

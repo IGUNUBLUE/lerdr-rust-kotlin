@@ -45,6 +45,7 @@ stable contract. That allows:
 | [08 — Herdr boundary](docs/08-herdr-boundary.md) | Deep API contract + improved actor topology |
 | [09 — Plugin distribution](docs/09-plugin-distribution.md) | Shipping the Rust relay as a `lerdr.events` Herdr plugin |
 | [10 — Spec gaps](docs/10-spec-gaps.md) | Strict self-review: what is not yet specified, by severity |
+| [11 — Stack practices](docs/11-stack-practices.md) | Herdr API upgrades, M3E state, Kotlin/Rust testing + perf rules |
 
 Repo-level agent skills live in [`.devin/skills/`](.devin/skills/) —
 see [AGENTS.md](AGENTS.md).

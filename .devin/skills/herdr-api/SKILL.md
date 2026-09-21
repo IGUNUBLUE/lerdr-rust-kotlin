@@ -26,7 +26,9 @@ to the Herdr socket/CLI.
 - Singleflight identical read-only requests (same method+canonical params) — fan out one result.
 - Event stream: request id `lerdr-events`; canonicalize legacy names via the 26-alias map; on drop → re-subscribe + re-bootstrap before resuming emission.
 - `events_lost` recovery (upstream-specified): connection closes → resubscribe, wait `subscription_started`, pull `session.snapshot`, treat later events as invalidation signals only (serialize refreshes; snapshots/events share no sequence boundary — never replay buffered events).
-- Prefer wait primitives over polling: `agent.wait{until:[...]}`, `events.wait{match_event}`, `pane.wait_for_output{match}`.
+- Prefer wait primitives over polling: `agent.wait{until:[...]}`, `events.wait{match_event}`, `pane.wait_for_output{pane_id,source,match,strip_ansi,timeout_ms}`.
+- `session.snapshot` = one-call full topology reconcile (workspaces+tabs+panes+layouts+agents+focus) — the `events_lost` recovery base.
+- High-value methods beyond the Go relay's subset: `layout.apply/export` (templates), `command.invoke` (endpoint-issued ids, revision-validated), `agent.explain` (detection debugging), `notification.show`, `plugin.action.invoke` (drive other plugins), `server.reload_config`, `integration.*` — full table in `docs/11-stack-practices.md`.
 - `agent.view.set` with `source:"plugin:lerdr.events"` installs the canonical attention-sorted projection (drives Herdr's mobile Agents list too); reapply after `[[startup]]`/live handoff.
 - Capabilities come from `herdr api schema --json` (SchemaRegistry) first, TTL-probe fallback for `pane.read`, `workspace.move_block`, `tab.move`, `workspace.reordered`, `client_shell.endpoint`, `direct_terminal`, `ordinary_json`; refreshed on reconnect.
 
