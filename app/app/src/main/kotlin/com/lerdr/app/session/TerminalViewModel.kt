@@ -2,6 +2,10 @@ package com.lerdr.app.session
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.lerdr.app.ui.terminal.TerminalCursorUi
+import com.lerdr.app.ui.terminal.TerminalRowUi
+import com.lerdr.app.ui.terminal.parseTerminalRows
+import com.lerdr.app.ui.terminal.terminalCursor
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -23,6 +27,15 @@ data class TerminalUiState(
     /** True until the first pane frame commits. */
     val waitingForContent: Boolean = true,
     val lines: List<String> = emptyList(),
+    /**
+     * The committed frame as parsed render rows — what [TerminalSurface]
+     * draws. The instance is reused across metadata-only commits (the
+     * parse is keyed on content, not revision), so Compose skips
+     * re-measuring rows the delta did not touch.
+     */
+    val rows: List<TerminalRowUi> = emptyList(),
+    /** Write cursor — last row, one cell past its content. */
+    val cursor: TerminalCursorUi? = null,
     val revision: Long = 0,
     val truncated: Boolean = false,
     val noEcho: Boolean = false,
@@ -47,12 +60,32 @@ class TerminalViewModel(
     private val relayId = paneId.substringBefore("::")
     private val lastError = MutableStateFlow<String?>(null)
 
+    // Parse cache keyed on the committed content — a metadata-only delta
+    // bumps revision without touching `lines`, so the row list survives
+    // unchanged and the renderer keeps its measured draw state.
+    private var parsedContent: String? = null
+    private var parsedFormat: String = ""
+    private var parsedRows: List<TerminalRowUi> = emptyList()
+    private var parsedCursor: TerminalCursorUi? = null
+
     val uiState: StateFlow<TerminalUiState> = combine(
         sessions.paneSnapshot(paneId),
         sessions.agent(paneId),
         sessions.connection(relayId),
         lastError,
     ) { snapshot, agent, connection, error ->
+        val content = snapshot?.content
+        val format = snapshot?.format.orEmpty()
+        if (content != parsedContent || format != parsedFormat) {
+            parsedContent = content
+            parsedFormat = format
+            parsedRows = if (snapshot == null) {
+                emptyList()
+            } else {
+                parseTerminalRows(snapshot.lines, format)
+            }
+            parsedCursor = terminalCursor(parsedRows)
+        }
         TerminalUiState(
             paneId = paneId,
             title = agent?.name ?: agent?.agent ?: paneId.substringAfter("::"),
@@ -69,6 +102,8 @@ class TerminalViewModel(
             connected = connection?.status == RelayStatus.CONNECTED,
             waitingForContent = snapshot == null,
             lines = snapshot?.lines.orEmpty(),
+            rows = parsedRows,
+            cursor = parsedCursor,
             revision = snapshot?.revision ?: 0,
             truncated = snapshot?.truncated == true,
             noEcho = snapshot?.noEcho == true,
@@ -111,12 +146,28 @@ class TerminalViewModel(
         }
     }
 
-    /** Typed text + Enter — terminal mode's composer path. */
+    /** Typed text + Enter — terminal mode's composer path (`send_input`). */
     fun sendText(text: String) {
         if (text.isEmpty()) return
         viewModelScope.launch {
             try {
                 sessions.sendTerminalText(paneId, text)
+            } catch (failure: Exception) {
+                lastError.value = failure.message
+            }
+        }
+    }
+
+    /**
+     * `send_text` — literal injection at the pane cursor, no Enter. The
+     * input bar's Send/IME-Send action; the pane's own echo (or lack of
+     * it) reflects the text back.
+     */
+    fun sendLiteralText(text: String) {
+        if (text.isEmpty()) return
+        viewModelScope.launch {
+            try {
+                sessions.sendText(paneId, text)
             } catch (failure: Exception) {
                 lastError.value = failure.message
             }

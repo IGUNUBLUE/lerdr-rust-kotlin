@@ -10,15 +10,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Keyboard
-import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -27,7 +22,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,6 +31,10 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lerdr.app.di.AppEntryPoint
+import com.lerdr.app.ui.terminal.TerminalInputBar
+import com.lerdr.app.ui.terminal.TerminalSurface
+import com.lerdr.app.ui.terminal.TERMINAL_FORMAT_ANSI
+import com.lerdr.app.ui.terminal.parseTerminalRows
 import com.lerdr.core.designsystem.theme.LerdrTextStyles
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import dagger.hilt.android.EntryPointAccessors
@@ -63,6 +61,8 @@ fun TerminalScreen(
         onOpenFeed = onOpenFeed,
         onBack = onBack,
         onSendKeys = viewModel::sendKeys,
+        onSendText = viewModel::sendLiteralText,
+        onViewportMeasured = viewModel::onViewportMeasured,
         onRefresh = viewModel::refresh,
     )
 }
@@ -74,16 +74,12 @@ fun TerminalContent(
     onOpenFeed: () -> Unit,
     onBack: () -> Unit,
     onSendKeys: (List<String>) -> Unit,
+    onSendText: (String) -> Unit,
+    onViewportMeasured: (columns: Int, rows: Int) -> Unit,
     onRefresh: () -> Unit,
 ) {
     val spacing = LerdrTheme.spacing
     val colors = LerdrTheme.extendedColors
-    val listState = rememberLazyListState()
-    LaunchedEffect(uiState.revision) {
-        if (uiState.lines.isNotEmpty()) {
-            listState.animateScrollToItem(uiState.lines.lastIndex)
-        }
-    }
     Scaffold(
         topBar = {
             SessionTopBar(
@@ -105,7 +101,15 @@ fun TerminalContent(
                 },
             )
         },
-        bottomBar = { SpecialKeysBar(onSendKeys = onSendKeys) },
+        bottomBar = {
+            Column {
+                SpecialKeysBar(onSendKeys = onSendKeys)
+                TerminalInputBar(
+                    onSendText = onSendText,
+                    onSendKeys = onSendKeys,
+                )
+            }
+        },
     ) { innerPadding ->
         Box(
             modifier = Modifier
@@ -120,24 +124,24 @@ fun TerminalContent(
             ) {
                 if (uiState.waitingForContent) {
                     Column(modifier = Modifier.padding(spacing.medium)) {
-                        TerminalLine(
+                        Text(
                             if (uiState.connected) {
                                 "Watching pane…"
                             } else {
                                 "Waiting for relay…"
                             },
-                            colors.terminalAccent,
+                            style = LerdrTextStyles.terminal,
+                            color = colors.terminalAccent,
                         )
                     }
                 } else {
-                    LazyColumn(
-                        state = listState,
+                    TerminalSurface(
+                        rows = uiState.rows,
+                        cursor = uiState.cursor,
+                        revision = uiState.revision,
                         contentPadding = PaddingValues(spacing.medium),
-                    ) {
-                        itemsIndexed(uiState.lines) { _, line ->
-                            TerminalLine(line.ifEmpty { " " }, colors.terminalText)
-                        }
-                    }
+                        onViewportMeasured = onViewportMeasured,
+                    )
                 }
             }
             if (uiState.truncated) {
@@ -161,20 +165,6 @@ fun TerminalContent(
             }
         }
     }
-}
-
-@Composable
-private fun TerminalLine(text: String, color: androidx.compose.ui.graphics.Color) {
-    Text(
-        text,
-        style = LerdrTextStyles.terminal,
-        color = color,
-        maxLines = 1,
-        softWrap = false,
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
-    )
 }
 
 /** Esc Tab arrows Ctrl — the fixed special-keys bar. */
@@ -267,15 +257,20 @@ private fun TerminalContentPreview() {
                 statusLabel = "lease 92×42",
                 connected = true,
                 waitingForContent = false,
-                lines = listOf(
-                    "lerdr git:(main) cargo test -p lerdr-e2ee",
-                    "running 14 tests  test handshake_credential … ok",
-                    "test result: ok. 14 passed; 0 failed",
+                rows = parseTerminalRows(
+                    listOf(
+                        "lerdr git:(main) [32mcargo test[0m -p lerdr-e2ee",
+                        "running 14 tests  test handshake_credential … [32mok[0m",
+                        "[1mtest result: ok.[0m 14 passed; 0 failed",
+                    ),
+                    TERMINAL_FORMAT_ANSI,
                 ),
             ),
             onOpenFeed = {},
             onBack = {},
             onSendKeys = {},
+            onSendText = {},
+            onViewportMeasured = { _, _ -> },
             onRefresh = {},
         )
     }
