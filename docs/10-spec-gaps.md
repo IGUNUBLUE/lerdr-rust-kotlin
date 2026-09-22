@@ -253,3 +253,36 @@ none block Phase 1 continuation.
 - **Pane-size leases ride `stty` via process lookup** — `lease_pane_size`
   needs `PaneProcessInfo` from Herdr's `pane.inspect`; panes whose TTY
   can't be resolved fail `failed` like the oracle.
+
+## Phase-1 round-7 findings (stations, 2025)
+
+### Subsystem ports (coordinator)
+
+- **Push identity is connection-bound** — `ActionContext.client_id` is a
+  connection label, not an authenticated device identity; device-binding
+  for `push_test_device`/`push_viewed_pane` uses the session's credential
+  device as the stand-in. Thread the enrolled device id through the
+  session handshake when multi-device-per-credential matters.
+- **Web Push delivery is not implemented** — `push.rs` does policy,
+  subscription validation, signed refs, snooze, and queue bookkeeping;
+  actual webpush/vapid fan-out is absent (the app uses FCM/dataSync,
+  making this dormant unless a web client appears).
+- **Upload audit logging absent** — uploads record journal activity but
+  the oracle's secret-aware write-audit line is not yet emitted; the
+  central write-audit slice remains queued.
+- **Speech voice updates are requester-only** — the oracle broadcasts
+  voice-catalog changes to all sessions; ours replies to the requesting
+  client only until a manager→broadcast seam is added (the journal
+  forwarder pattern applies).
+- **Questions replay idempotency relies on the store, not the ledger** —
+  the ack ledger is not consulted for question re-answers; the store's
+  own pending/fingerprint checks provide the oracle's semantics.
+
+### Files mode (app)
+
+- **`workspace_file` images decode from base64 in the ViewModel** — fine
+  for icons/screenshots; large images will hit the pane-read cap first
+  (bounded at the coordinator, oracle-faithful).
+- **Git diff shown for the selected file only** — the oracle's
+  `workspace_git_diff` is repo-scoped; we filter hunks by path client-
+  side and degrade to "no diff" silently on parse gaps.
