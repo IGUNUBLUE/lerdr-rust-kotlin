@@ -286,3 +286,63 @@ none block Phase 1 continuation.
 - **Git diff shown for the selected file only** — the oracle's
   `workspace_git_diff` is repo-scoped; we filter hunks by path client-
   side and degrade to "no diff" silently on parse gaps.
+
+## Phase-1 round-8/9/10 findings (stations + orchestrator, 2025)
+
+### Resolved this round
+
+- **Push identity now keys on `identity.device_id`** — `ActionContext`
+  carries both the transport `client_id` (connection bookkeeping) and the
+  authenticated `device_id`; policy/subscriptions/viewed-pane/event-refs
+  bind the authenticated device like the oracle. Wire `client_id` stays a
+  subscription claim and the `push_unsubscribe` filter only.
+- **Web Push delivery lands** — VAPID load-or-generate (fatal on corrupt
+  key material, matching `push.NewManager`), RFC 8291 aes128gcm payloads
+  (golden-vector pinned), RFC 8292 ES256 JWT, no-redirect 10s client, the
+  oracle's due-order/retry/404-410-prune/recoverPruned semantics. The
+  queue itself (`queue.json`) remains in-memory — the oracle persists it;
+  deliveries in flight at restart are lost, subscriptions survive.
+- **Voice-catalog + `update_status` fan out relay-wide** through the
+  shared `Notices` broadcast (`spawn_notice_broadcast`), requester
+  excluded when it already holds the frame.
+- **Write-audit is live** — attempt rows at admission (post validation/
+  auth/pane-target, pre-dispatch), result rows per emitted
+  `command_result`, hub-admin results audited in the session layer,
+  `send_secret` records only `text_bytes`, failures warn-and-continue.
+- **Activity journal is durable** — JSONL under `runtime_dir/activity`
+  with tombstones, compaction, permission repair, monotonic ids across
+  reload, mutate-after-write ordering, live broadcast fanout.
+- **Peer-session revocation is prompt** — the credential→session index +
+  250ms deferred sweep disconnects revoked peers instead of waiting for
+  their next action; version fences cover the registration race.
+- **App: biometric lock gates `sessions.start()`** — unlock latch is
+  injectable `LockState`; no relay traffic before verification.
+- **App: uploads end-to-end** — SAF picker → `upload_begin/chunk/finish`
+  staging → `Attachment: <ref>` draft lines → `submit_prompt`.
+- **App: settings sections** — push policy (six wire categories, whole-
+  map replace), device management (list/rename/revoke/invite+QR/reset),
+  speech (enable/language prefs, voice catalog management, MediaPlayer
+  WAV playback of `speak_text` chunks with prefetch + `cancel_speech`).
+- **App: terminal find-in-buffer** — `terminal-find.ts` port: unicode
+  case-fold literal search, 1000-match cap, cross-row fragments, wrap
+  navigation, center-row reveal; highlight overlay is a separate pass
+  that never touches the fingerprint/delta row reuse.
+- **App: worktrees + workspace tabs** — sheet (list/create/open/remove
+  with force escalation on `dirty_worktree_requires_force`) entered from
+  the session bar; workspace tab strip with pointer-driven reorder
+  (`insert_index` pre-move semantics) under the mode switch.
+
+### Still open
+
+- **Push queue persistence** — `queue.json` in-memory only (see above).
+- **Conversation history** — readers in flight (rs-conversation);
+  `get_conversation_history` still returns the oracle's browserless
+  failure until the router arm re-points.
+- **App never sends a web-push subscription** — Android notifications
+  ride the socket + local notifier; `push_subscribe` UI is intentionally
+  absent. The relay path exists for future web/desktop clients.
+- **`speak_text` on Android plays relay-synthesized WAV** — no on-device
+  TTS fallback when the relay lacks `speech_synthesis` (capability-gated
+  section hides; oracle parity).
+- **Multi-relay settings are per-card** — sections render under each
+  relay card; no global rollup (oracle parity: per-connection).
