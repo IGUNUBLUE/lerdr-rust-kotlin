@@ -7,6 +7,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
@@ -19,8 +20,12 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import lerdr.core.conversation.ConversationPage
 import lerdr.core.conversation.ConversationPageRequest
 import lerdr.core.conversation.ConversationProjector
@@ -41,6 +46,13 @@ import lerdr.core.model.Inbound
 import lerdr.core.model.Interaction
 import lerdr.core.model.ServerMessage
 import lerdr.core.model.UnknownServerMessage
+import lerdr.core.model.UploadBeginResult
+import lerdr.core.model.UploadBeginResultMessage
+import lerdr.core.model.UploadCancelResultMessage
+import lerdr.core.model.UploadChunkResult
+import lerdr.core.model.UploadChunkResultMessage
+import lerdr.core.model.UploadFinishResult
+import lerdr.core.model.UploadFinishResultMessage
 import lerdr.core.protocol.Protocol
 import lerdr.core.protocol.ServerMessageCodec
 import lerdr.core.store.Agent
@@ -69,6 +81,19 @@ data class RelayActivity(
     val key: String,
     val relayId: String,
     val entry: ActivityEntry,
+)
+
+/** `upload.FileSpec` — one `upload_begin` files[] entry (`{name, media_type, bytes}`). */
+data class UploadFileSpec(
+    val name: String,
+    val mediaType: String,
+    val bytes: Long,
+)
+
+/** `upload.FileDigest` — one `upload_finish` files[] entry (`{file_index, sha256}`). */
+data class UploadFileDigest(
+    val fileIndex: Int,
+    val sha256: String,
 )
 
 /**
@@ -119,6 +144,9 @@ class SessionRepository @Inject constructor(
     private val openPanes = LinkedHashSet<String>()
 
     private val pendingRaw = ConcurrentHashMap<String, PendingRaw>()
+
+    /** `pendingUploads` — `upload_*` requests answer on their own frame type. */
+    private val pendingUploads = ConcurrentHashMap<String, PendingUpload>()
 
     /** Latest auth records — `getAuthentication` is sync, so this is the cache. */
     @Volatile
@@ -201,6 +229,7 @@ class SessionRepository @Inject constructor(
     private fun teardown(runtime: SessionRuntime) {
         runtime.jobs.forEach { it.cancel() }
         runtime.handle.close()
+        rejectUploads(runtime.endpoint.id, "Relay disconnected")
         connectionStore.disconnect(runtime.endpoint.id)
         agentStore.removeRelay(runtime.endpoint.id)
         synchronized(lock) {
@@ -267,9 +296,10 @@ class SessionRepository @Inject constructor(
                         code = state.reason?.code,
                     ),
                 )
+                rejectUploads(endpoint.id, state.reason?.reason ?: "Relay disconnected")
                 disconnectPanes(endpoint.id)
             }
-            is RelaySession.SessionState.AuthRejected ->
+            is RelaySession.SessionState.AuthRejected -> {
                 connectionStore.onTransportStatus(
                     endpoint.id,
                     TransportStatus.CLOSED,
@@ -279,8 +309,12 @@ class SessionRepository @Inject constructor(
                         code = TransportStatusDetail.DEVICE_UNAUTHORIZED,
                     ),
                 )
-            RelaySession.SessionState.Closed ->
+                rejectUploads(endpoint.id, state.reason.reason)
+            }
+            RelaySession.SessionState.Closed -> {
                 connectionStore.disconnect(endpoint.id)
+                rejectUploads(endpoint.id, "Relay disconnected")
+            }
             RelaySession.SessionState.Idle -> Unit
         }
     }
@@ -313,6 +347,10 @@ class SessionRepository @Inject constructor(
             is CommandResultMessage -> resolveCommandResult(message)
             is ActionReceiptMessage -> resolveActionReceipt(message)
             is ErrorMessage -> resolveError(message)
+            is UploadBeginResultMessage -> resolveUploadResult(relayId, message)
+            is UploadChunkResultMessage -> resolveUploadResult(relayId, message)
+            is UploadFinishResultMessage -> resolveUploadResult(relayId, message)
+            is UploadCancelResultMessage -> resolveUploadResult(relayId, message)
             is ActivityMessage -> upsertActivity(relayId, message.activity)
             is ActivityHistoryMessage -> mergeActivityHistory(relayId, message.activities)
             else -> Unit
@@ -593,6 +631,254 @@ class SessionRepository @Inject constructor(
             extras = stringExtras("activity_label" to activityLabel),
         )
     }
+
+    // ── attachment uploads ────────────────────────────────────────────
+
+    /**
+     * `upload_begin` — stages a batch on the relay; answers
+     * `upload_begin_result` `{upload_id, chunk_bytes, expires_at, limits}`.
+     * Upload frames carry only `target` + their own fields — the oracle's
+     * `sendUploadRequest` spreads the request over the top-level map, so
+     * `files`/`upload_id`/`file_index`/`sequence`/`sha256` ride as raw
+     * extras the flat [Inbound] does not declare.
+     */
+    suspend fun uploadBegin(paneId: String, files: List<UploadFileSpec>): UploadBeginResult {
+        val agent = requireAgent(paneId)
+        val frame = requestUpload(
+            agent.relayId,
+            uploadInbound(agent, "upload_begin"),
+            extras = mapOf(
+                "files" to buildJsonArray {
+                    files.forEach { spec ->
+                        add(
+                            buildJsonObject {
+                                put("name", spec.name)
+                                put("media_type", spec.mediaType)
+                                put("bytes", spec.bytes)
+                            },
+                        )
+                    }
+                },
+            ),
+            resultType = "upload_begin_result",
+        )
+        return (frame as? UploadBeginResultMessage)?.let(::unwrapUploadResult)
+            ?: throw invalidUploadResponse()
+    }
+
+    /**
+     * `upload_chunk` — one base64 `data` slice; answers `upload_chunk_result`
+     * `{file_index, next_sequence, received_bytes}`.
+     */
+    suspend fun uploadChunk(
+        paneId: String,
+        uploadId: String,
+        fileIndex: Int,
+        sequence: Int,
+        data: ByteArray,
+        sha256: String,
+    ): UploadChunkResult {
+        val agent = requireAgent(paneId)
+        val frame = requestUpload(
+            agent.relayId,
+            uploadInbound(agent, "upload_chunk").copy(
+                data = java.util.Base64.getEncoder().encodeToString(data),
+            ),
+            extras = mapOf(
+                "upload_id" to JsonPrimitive(uploadId),
+                "file_index" to JsonPrimitive(fileIndex),
+                "sequence" to JsonPrimitive(sequence),
+                "sha256" to JsonPrimitive(sha256),
+            ),
+            resultType = "upload_chunk_result",
+        )
+        return (frame as? UploadChunkResultMessage)?.let(::unwrapUploadResult)
+            ?: throw invalidUploadResponse()
+    }
+
+    /**
+     * `upload_finish` — whole-file SHA-256 claims; answers
+     * `upload_finish_result` `{attachments:[{ref,name,media_type,bytes,sha256,expires_at}]}`.
+     */
+    suspend fun uploadFinish(
+        paneId: String,
+        uploadId: String,
+        files: List<UploadFileDigest>,
+    ): UploadFinishResult {
+        val agent = requireAgent(paneId)
+        val frame = requestUpload(
+            agent.relayId,
+            uploadInbound(agent, "upload_finish"),
+            extras = mapOf(
+                "upload_id" to JsonPrimitive(uploadId),
+                "files" to buildJsonArray {
+                    files.forEach { digest ->
+                        add(
+                            buildJsonObject {
+                                put("file_index", digest.fileIndex)
+                                put("sha256", digest.sha256)
+                            },
+                        )
+                    }
+                },
+            ),
+            resultType = "upload_finish_result",
+        )
+        return (frame as? UploadFinishResultMessage)?.let(::unwrapUploadResult)
+            ?: throw invalidUploadResponse()
+    }
+
+    /** `upload_cancel` — discards the staged session; answers `upload_cancel_result` `{}`. */
+    suspend fun uploadCancel(paneId: String, uploadId: String) {
+        val agent = requireAgent(paneId)
+        val frame = requestUpload(
+            agent.relayId,
+            uploadInbound(agent, "upload_cancel"),
+            extras = mapOf("upload_id" to JsonPrimitive(uploadId)),
+            resultType = "upload_cancel_result",
+        )
+        val message = frame as? UploadCancelResultMessage
+            ?: throw invalidUploadResponse()
+        message.error?.let { error ->
+            throw CommandException(
+                message = error.code,
+                code = error.code,
+                apiError = error,
+            )
+        }
+        if (message.result == null) throw invalidUploadResponse()
+    }
+
+    /**
+     * The oracle's `attachmentController` gate — upload frames need an exact
+     * target tuple; without one the relay answers `upload_scope_mismatch`.
+     */
+    fun canAttachTo(paneId: String): Boolean =
+        agentStore.agentNow(paneId)?.wireTarget() != null
+
+    private fun uploadInbound(agent: Agent, type: String): Inbound {
+        val target = agent.wireTarget()
+            ?: throw IllegalStateException("This terminal does not have a stable attachment target.")
+        return Inbound(type = type, target = target)
+    }
+
+    /**
+     * `sendUploadRequest` — `upload_*` answers arrive on their own
+     * `upload_*_result` type (never `command_result`), so they correlate on
+     * [pendingUploads]. Same request_id/protocol/write discipline as
+     * [requestRaw]; the deferred resolves with the decoded frame.
+     */
+    private suspend fun requestUpload(
+        relayId: String,
+        message: Inbound,
+        extras: Map<String, JsonElement>,
+        resultType: String,
+        timeoutMs: Long = UPLOAD_TIMEOUT_MS,
+    ): ServerMessage {
+        val session = sessionFor(relayId) ?: throw TransportException.NotConnected()
+        if (session.state.value !is RelaySession.SessionState.Connected) {
+            throw TransportException.NotConnected()
+        }
+        val requestId = UUID.randomUUID().toString()
+        val framed = message.copy(requestId = requestId, protocol = Protocol.VERSION)
+        val wire = withExtras(framed, extras)
+        val pending = PendingUpload(
+            deferred = CompletableDeferred(),
+            relayId = relayId,
+            responseType = resultType,
+        )
+        pendingUploads[requestId] = pending
+        pending.rearm(requestId, timeoutMs)
+        if (!session.sendRaw(wire.toString())) {
+            pendingUploads.remove(requestId)
+            pending.timeoutJob?.cancel()
+            throw TransportException.WriteRejected("Could not send command to relay")
+        }
+        try {
+            return pending.deferred.await()
+        } catch (cancelled: CancellationException) {
+            pendingUploads.remove(requestId)
+            pending.timeoutJob?.cancel()
+            throw cancelled
+        }
+    }
+
+    /** `handleUploadResult` — request_id + relay + matching `*_result` type. */
+    private fun resolveUploadResult(relayId: String, message: ServerMessage) {
+        val requestId = when (message) {
+            is UploadBeginResultMessage -> message.requestId
+            is UploadChunkResultMessage -> message.requestId
+            is UploadFinishResultMessage -> message.requestId
+            is UploadCancelResultMessage -> message.requestId
+            else -> return
+        } ?: return
+        val pending = pendingUploads[requestId] ?: return
+        if (pending.relayId != relayId || pending.responseType != message.type) return
+        pendingUploads.remove(requestId)
+        pending.timeoutJob?.cancel()
+        pending.deferred.complete(message)
+    }
+
+    /**
+     * `rejectPendingOperations` for uploads — a dropped session strands every
+     * in-flight `upload_*`; the frame may still have landed, so the failure is
+     * `dispatched_unknown` like the oracle.
+     */
+    private fun rejectUploads(relayId: String, message: String) {
+        for ((requestId, pending) in pendingUploads) {
+            if (pending.relayId != relayId) continue
+            if (pendingUploads.remove(requestId, pending)) {
+                pending.timeoutJob?.cancel()
+                pending.deferred.completeExceptionally(
+                    CommandException(
+                        message = message,
+                        phase = "dispatched_unknown",
+                        dispatchedUnknown = true,
+                    ),
+                )
+            }
+        }
+    }
+
+    private fun PendingUpload.rearm(requestId: String, timeoutMs: Long) {
+        timeoutJob?.cancel()
+        timeoutJob = scope.launch {
+            delay(timeoutMs)
+            if (pendingUploads.remove(requestId, this@rearm)) {
+                deferred.completeExceptionally(
+                    CommandException(
+                        message = "Attachment upload did not finish in time.",
+                        phase = "dispatched_unknown",
+                        dispatchedUnknown = true,
+                    ),
+                )
+            }
+        }
+    }
+
+    private fun <T> unwrapUploadResult(message: ServerMessage): T {
+        val (result, error) = when (message) {
+            is UploadBeginResultMessage -> message.result to message.error
+            is UploadChunkResultMessage -> message.result to message.error
+            is UploadFinishResultMessage -> message.result to message.error
+            is UploadCancelResultMessage -> message.result to message.error
+            else -> null to null
+        }
+        if (error != null) {
+            throw CommandException(
+                message = error.code,
+                code = error.code,
+                apiError = error,
+            )
+        }
+        @Suppress("UNCHECKED_CAST")
+        return (result as? T) ?: throw invalidUploadResponse()
+    }
+
+    private fun invalidUploadResponse(): CommandException = CommandException(
+        message = "Relay returned an invalid attachment upload result.",
+        code = "attachment_invalid_response",
+    )
 
     /**
      * `lease_pane_size` — the terminal view's measured grid. Rows ride only
@@ -974,6 +1260,13 @@ class SessionRepository @Inject constructor(
         @Volatile var timeoutJob: Job? = null,
     )
 
+    private class PendingUpload(
+        val deferred: CompletableDeferred<ServerMessage>,
+        val relayId: String,
+        val responseType: String,
+        @Volatile var timeoutJob: Job? = null,
+    )
+
     companion object {
         const val REALTIME_DELTA_CAPABILITY = "pane_realtime_delta"
         const val LEASE_CAPABILITY = "pane_size_lease"
@@ -987,6 +1280,8 @@ class SessionRepository @Inject constructor(
         const val CONVERSATION_TIMEOUT_MS = 20_000L
         const val WORKSPACE_TIMEOUT_MS = 20_000L
         const val WORKSPACE_INSPECTION_CAPABILITY = "workspace_inspection"
+        /** `ATTACHMENT_UPLOAD_TIMEOUT_MS` — per-request, chunks included. */
+        const val UPLOAD_TIMEOUT_MS = 60_000L
         const val ACTIVITY_LIMIT = 500
         const val MAX_ACTIVITIES = 500
     }

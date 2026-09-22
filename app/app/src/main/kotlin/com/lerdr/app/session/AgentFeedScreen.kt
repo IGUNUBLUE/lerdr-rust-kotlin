@@ -1,7 +1,11 @@
 package com.lerdr.app.session
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -17,15 +21,20 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.InputChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -72,9 +81,23 @@ fun AgentFeedScreen(
     val appContext = LocalContext.current.applicationContext
     val viewModel: FeedViewModel = viewModel(key = "feed:$paneId") {
         val entryPoint = EntryPointAccessors.fromApplication(appContext, AppEntryPoint::class.java)
-        FeedViewModel(paneId, entryPoint.sessionRepository(), entryPoint.draftStore())
+        FeedViewModel(
+            paneId,
+            entryPoint.sessionRepository(),
+            entryPoint.draftStore(),
+            AttachmentUploads(entryPoint.appScope(), entryPoint.sessionRepository(), appContext),
+        )
     }
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    // SAF picker — `*/*` so client-side validation reports the oracle's
+    // per-file issue text instead of silently hiding unsupported types.
+    val picker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            viewModel.selectAttachments(uris.map { it.toString() })
+        }
+    }
     AgentFeedContent(
         uiState = uiState,
         onOpenTerminal = onOpenTerminal,
@@ -88,6 +111,10 @@ fun AgentFeedScreen(
         },
         onLoadOlder = viewModel::loadOlderHistory,
         onRetryHistory = viewModel::loadHistory,
+        onPickAttachments = { picker.launch(arrayOf("*/*")) },
+        onRemoveAttachment = viewModel::removeAttachment,
+        onClearAttachments = viewModel::clearAttachments,
+        onRestartAttachments = viewModel::restartAttachments,
     )
 }
 
@@ -104,6 +131,10 @@ fun AgentFeedContent(
     onAnswerOption: (Int) -> Unit,
     onLoadOlder: () -> Unit,
     onRetryHistory: () -> Unit,
+    onPickAttachments: () -> Unit,
+    onRemoveAttachment: (String) -> Unit,
+    onClearAttachments: () -> Unit,
+    onRestartAttachments: () -> Unit,
 ) {
     val spacing = LerdrTheme.spacing
     val listState = rememberLazyListState()
@@ -141,8 +172,16 @@ fun AgentFeedContent(
                 agentLabel = uiState.title.ifEmpty { uiState.paneId.substringAfter("::") },
                 draft = uiState.composerDraft,
                 sending = uiState.responding,
+                canAttach = uiState.canAttach,
+                attachments = uiState.attachments,
+                uploadStatus = uiState.uploadStatus,
+                uploadError = uiState.uploadError,
                 onDraftChange = onDraftChange,
                 onSend = onSendPrompt,
+                onPickAttachments = onPickAttachments,
+                onRemoveAttachment = onRemoveAttachment,
+                onClearAttachments = onClearAttachments,
+                onRestartAttachments = onRestartAttachments,
             )
         },
     ) { innerPadding ->
@@ -379,39 +418,198 @@ private fun Composer(
     agentLabel: String,
     draft: String,
     sending: Boolean,
+    canAttach: Boolean,
+    attachments: AttachmentBatch,
+    uploadStatus: String,
+    uploadError: Boolean,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
+    onPickAttachments: () -> Unit,
+    onRemoveAttachment: (String) -> Unit,
+    onClearAttachments: () -> Unit,
+    onRestartAttachments: () -> Unit,
 ) {
     val spacing = LerdrTheme.spacing
+    val controlsLocked = sending || attachments.uploading
     Surface(color = MaterialTheme.colorScheme.surface) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(spacing.medium),
-        ) {
-            OutlinedTextField(
-                value = draft,
-                onValueChange = onDraftChange,
-                placeholder = { Text("Message $agentLabel…") },
-                enabled = !sending,
-                singleLine = false,
-                maxLines = 4,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(onSend = { onSend() }),
-                shape = MaterialTheme.shapes.extraLarge,
-                modifier = Modifier.weight(1f),
-            )
-            Spacer(Modifier.width(spacing.small))
-            IconButton(onClick = onSend, enabled = !sending && draft.isNotBlank()) {
-                Icon(
-                    Icons.AutoMirrored.Filled.Send,
-                    contentDescription = "Send",
-                    tint = MaterialTheme.colorScheme.primary,
+        Column(modifier = Modifier.fillMaxWidth()) {
+            if (attachments.items.isNotEmpty() || attachments.issue != null) {
+                AttachmentTray(
+                    attachments = attachments,
+                    controlsLocked = controlsLocked,
+                    onRemoveAttachment = onRemoveAttachment,
+                    onClearAttachments = onClearAttachments,
+                    onRestartAttachments = onRestartAttachments,
                 )
+            }
+            if (uploadStatus.isNotEmpty()) {
+                Text(
+                    uploadStatus,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (uploadError) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    modifier = Modifier.padding(horizontal = spacing.medium),
+                )
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(spacing.medium),
+            ) {
+                if (canAttach) {
+                    IconButton(onClick = onPickAttachments, enabled = !controlsLocked) {
+                        Icon(
+                            Icons.Default.AttachFile,
+                            contentDescription = "Attach files",
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    Spacer(Modifier.width(spacing.extraSmall))
+                }
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = onDraftChange,
+                    placeholder = { Text("Message $agentLabel…") },
+                    enabled = !sending,
+                    singleLine = false,
+                    maxLines = 4,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(onSend = { onSend() }),
+                    shape = MaterialTheme.shapes.extraLarge,
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(spacing.small))
+                val sendable = draft.isNotBlank() ||
+                    attachments.items.any { it.state == AttachmentItemState.SELECTED }
+                IconButton(onClick = onSend, enabled = !controlsLocked && sendable) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.Send,
+                        contentDescription = "Send",
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
             }
         }
     }
+}
+
+/**
+ * The chip row — one [InputChip] per batch item (state icon + name + size),
+ * plus batch actions: Restart for interrupted items, Clear for all.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun AttachmentTray(
+    attachments: AttachmentBatch,
+    controlsLocked: Boolean,
+    onRemoveAttachment: (String) -> Unit,
+    onClearAttachments: () -> Unit,
+    onRestartAttachments: () -> Unit,
+) {
+    val spacing = LerdrTheme.spacing
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = spacing.medium),
+        verticalArrangement = Arrangement.spacedBy(spacing.extraSmall),
+    ) {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(spacing.small),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            attachments.items.forEach { item ->
+                AttachmentChip(
+                    item = item,
+                    controlsLocked = controlsLocked,
+                    onRemove = { onRemoveAttachment(item.clientId) },
+                )
+            }
+        }
+        attachments.issue?.let { issue ->
+            Text(
+                attachmentIssueText(issue),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(spacing.small)) {
+            if (attachments.canRestart) {
+                TextButton(onClick = onRestartAttachments, enabled = !controlsLocked) {
+                    Text("Restart upload")
+                }
+            }
+            TextButton(onClick = onClearAttachments, enabled = !controlsLocked) {
+                Text("Clear")
+            }
+        }
+    }
+}
+
+@Composable
+private fun AttachmentChip(
+    item: AttachmentItem,
+    controlsLocked: Boolean,
+    onRemove: () -> Unit,
+) {
+    val label = buildString {
+        append(item.name.ifEmpty { "attachment" })
+        if (item.bytes >= 0) {
+            append(" · ")
+            append(formatBytes(item.bytes))
+        }
+    }
+    InputChip(
+        selected = item.state == AttachmentItemState.READY,
+        onClick = onRemove,
+        enabled = !controlsLocked,
+        label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        leadingIcon = {
+            when (item.state) {
+                AttachmentItemState.UPLOADING -> CircularProgressIndicator(
+                    progress = { item.progress },
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp,
+                )
+                AttachmentItemState.READY -> Icon(
+                    Icons.Default.CheckCircle,
+                    contentDescription = "Uploaded",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(16.dp),
+                )
+                AttachmentItemState.REJECTED,
+                AttachmentItemState.INTERRUPTED,
+                -> Icon(
+                    Icons.Default.Warning,
+                    contentDescription = item.issue?.let { attachmentIssueText(it) }
+                        ?: "Attachment failed",
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(16.dp),
+                )
+                AttachmentItemState.SELECTED -> Icon(
+                    Icons.Default.AttachFile,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+        },
+        trailingIcon = {
+            Icon(
+                Icons.Default.Close,
+                contentDescription = "Remove ${item.name}",
+                modifier = Modifier.size(16.dp),
+            )
+        },
+    )
+}
+
+private fun formatBytes(bytes: Long): String = when {
+    bytes >= 1L shl 20 -> "%.1f MiB".format(bytes.toDouble() / (1L shl 20))
+    bytes >= 1L shl 10 -> "%.1f KiB".format(bytes.toDouble() / (1L shl 10))
+    else -> "$bytes B"
 }
 
 @PreviewLightDark
@@ -437,6 +635,10 @@ private fun AgentFeedContentPreview() {
             onAnswerOption = {},
             onLoadOlder = {},
             onRetryHistory = {},
+            onPickAttachments = {},
+            onRemoveAttachment = {},
+            onClearAttachments = {},
+            onRestartAttachments = {},
         )
     }
 }

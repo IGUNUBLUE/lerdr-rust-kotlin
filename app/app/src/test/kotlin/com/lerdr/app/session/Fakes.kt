@@ -258,3 +258,27 @@ class FakeCredentialStore : CredentialStore {
         _records.value = emptyMap()
     }
 }
+
+/**
+ * In-memory [AttachmentSource] — `content://…` uris resolve to fixed bytes;
+ * `opens` records each fresh stream (hashing/upload passes re-open).
+ */
+class FakeAttachmentSource(
+    private val files: Map<String, ByteArray>,
+    private val names: Map<String, String> = emptyMap(),
+    private val mimes: Map<String, String?> = emptyMap(),
+) : AttachmentSource {
+    val opens = mutableListOf<String>()
+
+    override fun probe(uri: String): AttachmentProbe? {
+        val bytes = files[uri] ?: return null
+        return AttachmentProbe(
+            name = names[uri] ?: uri.substringAfterLast('/'),
+            mediaType = mimes[uri] ?: "text/plain",
+            bytes = bytes.size.toLong(),
+        )
+    }
+
+    override fun open(uri: String): java.io.InputStream? =
+        files[uri]?.let { opens += uri; java.io.ByteArrayInputStream(it) }
+}
