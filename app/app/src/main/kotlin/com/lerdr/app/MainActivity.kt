@@ -10,6 +10,7 @@ import androidx.compose.runtime.remember
 import androidx.navigation3.runtime.EntryProviderScope
 import com.lerdr.app.activity.ActivityScreen
 import com.lerdr.app.home.HomeScreen
+import com.lerdr.app.notify.RequestPostNotificationsPermission
 import com.lerdr.app.pairing.PairingScreen
 import com.lerdr.app.session.AgentFeedScreen
 import com.lerdr.app.session.SessionRepository
@@ -48,6 +49,8 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             LerdrTheme {
+                RequestPostNotificationsPermission()
+
                 val navigator = rememberLerdrNavigator(
                     *remember {
                         buildList {

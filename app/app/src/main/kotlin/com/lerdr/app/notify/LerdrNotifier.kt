@@ -18,9 +18,6 @@ import javax.inject.Singleton
  * The Android half of the notification path — owns the channels and renders
  * [NotificationCommand]s from [AttentionReducer]. Deliberately dumb: every
  * decision (dedupe, collapse, cancel) is made upstream in the pure reducer.
- *
- * No app icon resource exists yet (`res/` holds only themes), so posts fall
- * back to a platform small icon — swap for a real glyph when assets land.
  */
 @Singleton
 class LerdrNotifier @Inject constructor(
@@ -84,7 +81,7 @@ class LerdrNotifier @Inject constructor(
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val notification = NotificationCompat.Builder(context, command.channel.id)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(com.lerdr.app.R.drawable.ic_notification)
             .setContentTitle(command.title)
             .setContentText(command.body)
             .setContentIntent(pendingIntent)
@@ -125,7 +122,7 @@ class LerdrNotifier @Inject constructor(
         val relays = if (relayCount == 1) "1 relay" else "$relayCount relays"
         val agents = if (agentCount == 1) "1 agent" else "$agentCount agents"
         return NotificationCompat.Builder(context, NotifyChannel.SERVICE.id)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(com.lerdr.app.R.drawable.ic_notification)
             .setContentTitle("Lerdr")
             .setContentText("$relays connected · $agents")
             .setContentIntent(pendingIntent)

@@ -13,6 +13,8 @@
 
     <application
         android:name=".LerdrApp"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="Lerdr"
         android:theme="@style/Theme.Lerdr"
         android:usesCleartextTraffic="false">
