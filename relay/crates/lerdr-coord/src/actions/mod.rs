@@ -12,13 +12,16 @@
 //! device auth, speech, updates, the question/approval state machine) are
 //! not routed here — they keep the router's honest `dispatched_unknown`.
 
+pub(crate) mod activity;
 pub(crate) mod agents;
 pub(crate) mod input;
 pub(crate) mod inspect;
 pub(crate) mod leases;
 pub(crate) mod local;
 pub(crate) mod profiles;
+pub(crate) mod questions;
 pub(crate) mod tabs;
+pub(crate) mod uploads;
 pub(crate) mod workspace;
 pub(crate) mod worktree;
 
@@ -67,6 +70,16 @@ pub(crate) struct ActionContext {
     /// Agent launch profile resolver — the `profiles.Resolver` port; lives
     /// behind a handle because `agent_start`/`agent_clear` share it.
     pub profiles: profiles::Resolver,
+    /// Question/approval state store — `approval.go`'s per-pane pending
+    /// interactions.
+    #[allow(dead_code)] // populated now; read once the state machine lands
+    pub questions: questions::Questions,
+    /// Attachment upload manager — `upload.Manager`'s staging surface.
+    #[allow(dead_code)] // populated now; read once uploads land
+    pub uploads: uploads::Uploads,
+    /// Relay-side activity journal — `activity.Journal`'s ring buffer.
+    #[allow(dead_code)] // populated now; read once the journal lands
+    pub activities: activity::Journal,
     pub client_id: String,
 }
 
@@ -494,6 +507,21 @@ pub(crate) fn created_target(value: &serde_json::Value) -> CreatedTarget {
             "/workspace/workspace_id",
         ]),
     }
+}
+
+/// The honest terminal receipt for an action whose backend subsystem does
+/// not exist yet — bytes never left the relay, so `dispatched_unknown`
+/// overstates nothing; the receipt alone (no `command_result`) is what the
+/// baseline router emitted for unhandled kinds.
+pub(crate) fn unknown(request_id: &str, action_id: &str) -> Vec<Outbound> {
+    vec![Outbound::ActionReceipt(action_receipt_response(
+        request_id,
+        ActionReceipt {
+            action_id: action_id.to_owned(),
+            phase: ActionReceiptPhase::from(ActionReceiptPhase::DISPATCHED_UNKNOWN),
+            error: None,
+        },
+    ))]
 }
 
 #[cfg(test)]

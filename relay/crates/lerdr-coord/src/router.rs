@@ -41,12 +41,16 @@ use crate::watches::{watch_interval, WatchSet, WatchSpec, DEFAULT_LINES};
 pub type ClientSinkLookup = Arc<dyn Fn(&str) -> Option<ClientSink> + Send + Sync>;
 
 /// Cross-session action state — the oracle's singletons (`paneSizeM`,
-/// the acknowledgment ledger, the profile resolver) live once per relay,
+/// the acknowledgment ledger, the profile resolver, the question store,
+/// the upload manager, the activity journal) live once per relay,
 /// not once per connection.
 struct ActionShared {
     leases: actions::leases::Leases,
     acks: actions::Acks,
     profiles: actions::profiles::Resolver,
+    questions: actions::questions::Questions,
+    uploads: actions::uploads::Uploads,
+    activities: actions::activity::Journal,
 }
 
 /// Builds one [`HerdRouter`] per accepted session.
@@ -67,6 +71,7 @@ impl HerdRouterFactory {
         handle: TopologyHandle,
         sink_of: ClientSinkLookup,
         cancel: CancellationToken,
+        uploads_dir: std::path::PathBuf,
     ) -> Self {
         let leases = actions::leases::Leases::new(handle.client.clone());
         leases.spawn_sweeper(cancel.clone());
@@ -78,6 +83,9 @@ impl HerdRouterFactory {
                 leases,
                 acks: actions::Acks::default(),
                 profiles: actions::profiles::Resolver::new(),
+                questions: actions::questions::Questions::default(),
+                uploads: actions::uploads::Uploads::new(uploads_dir),
+                activities: actions::activity::Journal::default(),
             }),
         }
     }
@@ -207,6 +215,9 @@ impl HerdRouter {
             leases: self.shared.leases.clone(),
             acks: self.shared.acks.clone(),
             profiles: self.shared.profiles.clone(),
+            questions: self.shared.questions.clone(),
+            uploads: self.shared.uploads.clone(),
+            activities: self.shared.activities.clone(),
             client_id: self.client_id.clone().unwrap_or_default(),
         }
     }
@@ -232,14 +243,6 @@ impl Drop for HerdRouter {
             });
         }
     }
-}
-
-/// Structured-answer actions the question/approval state machine would
-/// own — the oracle composes option labels and multi-select joins there.
-/// Until that subsystem exists they keep the baseline text send, which is
-/// closer to the reference than an honest `dispatched_unknown`.
-fn is_baseline_input_action(kind: &str) -> bool {
-    matches!(kind, "respond" | "answer_question")
 }
 
 /// Spawn an [`actions`] handler for a routed action: clone the request
@@ -326,9 +329,80 @@ impl ActionRouter for HerdRouter {
                 message,
                 actions::input::agent_stop
             ),
-            kind if is_baseline_input_action(kind) => {
-                self.route_pane_input(request_id, action_id, message)
-            }
+            "respond" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::questions::respond
+            ),
+            "answer_question" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::questions::answer_question
+            ),
+            "clarify_question" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::questions::clarify_question
+            ),
+            "navigate_question" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::questions::navigate_question
+            ),
+
+            // --- uploads ---------------------------------------------------
+            "upload_begin" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::uploads::upload_begin
+            ),
+            "upload_chunk" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::uploads::upload_chunk
+            ),
+            "upload_finish" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::uploads::upload_finish
+            ),
+            "upload_cancel" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::uploads::upload_cancel
+            ),
+
+            // --- activity --------------------------------------------------
+            "get_activity" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::activity::get_activity
+            ),
+            "clear_activities" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::activity::clear_activities
+            ),
 
             // --- workspace -------------------------------------------------
             "workspace_create" => {
@@ -632,61 +706,6 @@ impl HerdRouter {
             ActionReceiptPhase::CONFIRMED,
             None,
         )])
-    }
-
-    /// `respond`/`answer_question` baseline — `pane.send_input` of the
-    /// composed answer text (`choice`, else `prompt`/`text`). The oracle's
-    /// structured-answer composition (option labels, multi-select joins)
-    /// belongs to the question state machine; until it exists this keeps
-    /// the primary text flowing.
-    fn route_pane_input(
-        &mut self,
-        request_id: String,
-        action_id: String,
-        message: &Inbound,
-    ) -> RouterReply {
-        let Some(pane_id) = non_empty(&message.pane_id) else {
-            return invalid_request(&request_id, &action_id, "pane_id is required");
-        };
-        if self.sink().is_none() {
-            return refused(&request_id, &action_id, "session_not_ready");
-        }
-        let text = match message.r#type.as_str() {
-            "send_text" | "submit_prompt" => Some(if message.text.is_empty() {
-                message.prompt.clone()
-            } else {
-                message.text.clone()
-            }),
-            "respond" | "answer_question" => Some(if message.choice.is_empty() {
-                message.text.clone()
-            } else {
-                message.choice.clone()
-            }),
-            _ => None,
-        }
-        .filter(|t| !t.is_empty());
-        let keys = if message.keys.is_empty() {
-            None
-        } else {
-            Some(message.keys.clone())
-        };
-        if text.is_none() && keys.is_none() {
-            return invalid_request(&request_id, &action_id, "nothing to send");
-        }
-
-        let client = self.handle.client.clone();
-        let rid = request_id.clone();
-        let aid = action_id.clone();
-        self.push_later(async move {
-            let outcome = client
-                .pane_send_input(&pane_id, text.as_deref(), keys.unwrap_or_default())
-                .await;
-            vec![match &outcome {
-                Ok(()) => receipt(&rid, &aid, ActionReceiptPhase::CONFIRMED, None),
-                Err(err) => receipt_for_herdr_error(&rid, &aid, err),
-            }]
-        });
-        RouterReply::empty()
     }
 }
 

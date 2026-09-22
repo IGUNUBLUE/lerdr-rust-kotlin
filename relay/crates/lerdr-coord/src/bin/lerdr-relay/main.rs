@@ -281,8 +281,13 @@ async fn run(args: ServeArgs) -> Result<(), BoxError> {
     };
     let shutdown = CancellationToken::new();
     let topology = TopologyActor::spawn(herdr, shutdown.clone());
-    let factory =
-        HerdRouterFactory::new(topology.clone(), sink_of, shutdown.clone()).into_factory();
+    let factory = HerdRouterFactory::new(
+        topology.clone(),
+        sink_of,
+        shutdown.clone(),
+        cfg.runtime_dir.join("uploads"),
+    )
+    .into_factory();
     let topology_for_snapshot = topology.clone();
     let relay = Relay::with_router_factory(auth, factory).with_session_config(SessionConfig {
         snapshot_fn: Some(SnapshotFn(Arc::new(move || {
