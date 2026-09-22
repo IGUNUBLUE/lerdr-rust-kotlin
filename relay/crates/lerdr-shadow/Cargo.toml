@@ -1,0 +1,22 @@
+[package]
+name = "lerdr-shadow"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Phase-3 shadow-diff harness: scripted herdr-e2ee-v2 client, fake Herdr socket API, normalized trace differ."
+
+[dependencies]
+lerdr-core = { path = "../lerdr-core" }
+lerdr-e2ee = { path = "../lerdr-e2ee" }
+serde = { workspace = true }
+serde_json = "1.0"
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+similar = { workspace = true }
+p256 = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,394 @@
+{
+  "name": "core",
+  "vars": {
+    "pane_id": "wE:p1",
+    "workspace_id": "wE",
+    "target": {
+      "server_session_id": "primary",
+      "pane_id": "wE:p1",
+      "terminal_id": "term-1",
+      "generation": 0,
+      "agent_session_id": ""
+    }
+  },
+  "compare": {
+    "drop_types": [
+      "e2ee_server_hello",
+      "action_receipt",
+      "inventory_status"
+    ],
+    "unordered_types": [
+      "push_config",
+      "herdr_status",
+      "workspaces",
+      "agents",
+      "activity_history",
+      "inventory_status",
+      "capabilities",
+      "update_status",
+      "speech_voices",
+      "agent_profiles",
+      "push_policy",
+      "activity"
+    ],
+    "drop_keys": [
+      "_server_received_at",
+      "_server_sequence",
+      "at",
+      "id",
+      "created_at",
+      "updated_at",
+      "paired_at_ms",
+      "last_seen_at_ms",
+      "expires_at_ms",
+      "started_at",
+      "completed_at",
+      "timestamp",
+      "ts",
+      "idle_since",
+      "last_active_at",
+      "received_at_ms",
+      "content_fingerprint",
+      "last_seen_at",
+      "target"
+    ],
+    "type_drop_keys": {
+      "push_config": [
+        "agent_profiles",
+        "app_deploy",
+        "capabilities",
+        "herdr_status",
+        "home",
+        "host",
+        "inventory",
+        "speech_languages",
+        "update",
+        "vapid_public_key",
+        "version",
+        "release_version",
+        "revision"
+      ],
+      "herdr_status": [
+        "features",
+        "generation",
+        "surface_interest",
+        "capabilities"
+      ],
+      "agents": [
+        "activity_seq",
+        "pane_revision",
+        "project",
+        "raw_pane_id",
+        "server_session_id",
+        "session",
+        "session_name",
+        "tab_label",
+        "tab_number",
+        "tab_order",
+        "updated_at",
+        "tokens",
+        "state_labels"
+      ],
+      "workspaces": [
+        "cwd",
+        "tokens",
+        "worktree"
+      ],
+      "activity": [
+        "project",
+        "session",
+        "session_name",
+        "host"
+      ],
+      "activity_history": [
+        "project",
+        "session",
+        "session_name",
+        "host"
+      ],
+      "pane_content": [
+        "attention_kind",
+        "command",
+        "interaction",
+        "no_echo",
+        "options",
+        "prompt",
+        "question_layout",
+        "viewport_only"
+      ]
+    },
+    "map_keys": [
+      "device_id",
+      "credential_id",
+      "credential_secret",
+      "vapid_public_key",
+      "host",
+      "home",
+      "version",
+      "release_version",
+      "revision",
+      "machine_id",
+      "instance_id",
+      "socket_path",
+      "endpoint",
+      "public_key",
+      "proof",
+      "nonce",
+      "url"
+    ],
+    "async_dedupe": true,
+    "notes": [
+      "action_receipt is Rust's v3 dispatch-evidence addition \u2014 Go has no counterpart; dropped (census still shows it).",
+      "inventory_status is a Go-only inventory-poller frame; dropped.",
+      "push_config is compared on {type,protocol} only \u2014 capability lists, update/inventory/speech blocks are implementation-scoped.",
+      "agents/workspaces compare the common projection core; Go-only fields (activity_seq, pane_revision, project, raw_pane_id, server_session_id, tab_label/number/order, cwd) are declared deltas in type_drop_keys.",
+      "herdr_status compares health_check/server_protocol/server_version; per-probe feature maps and generation counters are per-implementation.",
+      "pane_content compares content/format/pane_id/truncated; Go's attention/prompt/layout fields are a wider projection.",
+      "Go pushes an empty activity_history at connect; drop_matches removes only the null-activities variant.",
+      "Go orders the startup burst push_config,agents,workspaces,activity_history,inventory_status; Rust sends push_config,herdr_status,workspaces,agents \u2014 unordered_types covers the interleaving."
+    ],
+    "drop_matches": [
+      {
+        "type": "activity_history",
+        "contains": {
+          "activities": null
+        }
+      }
+    ]
+  },
+  "steps": [
+    {
+      "op": "expect",
+      "label": "startup-push-config",
+      "match": {
+        "type": "push_config"
+      },
+      "timeout_ms": 8000
+    },
+    {
+      "op": "expect",
+      "label": "startup-workspaces",
+      "match": {
+        "type": "workspaces",
+        "contains": {
+          "workspaces": [
+            {
+              "workspace_id": "{workspace_id}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "op": "expect",
+      "label": "startup-agents",
+      "match": {
+        "type": "agents",
+        "contains": {
+          "agents": [
+            {
+              "pane_id": "{pane_id}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "op": "settle",
+      "label": "startup-settle",
+      "ms": 600
+    },
+    {
+      "op": "fence",
+      "label": "startup-done"
+    },
+    {
+      "op": "send",
+      "label": "list-directories",
+      "request_id": "req-dirs",
+      "frame": {
+        "type": "list_directories",
+        "protocol": 3,
+        "request_id": "{request_id}",
+        "path": ""
+      },
+      "until": {
+        "type": "command_result",
+        "request_id": "{request_id}"
+      }
+    },
+    {
+      "op": "send",
+      "label": "worktree-list",
+      "request_id": "req-wt",
+      "frame": {
+        "type": "worktree_list",
+        "protocol": 3,
+        "request_id": "{request_id}",
+        "workspace_id": "{workspace_id}"
+      },
+      "until": {
+        "type": "command_result",
+        "request_id": "{request_id}"
+      }
+    },
+    {
+      "op": "send",
+      "label": "push-policy-get",
+      "request_id": "req-pp",
+      "frame": {
+        "type": "push_policy_get",
+        "protocol": 3,
+        "request_id": "{request_id}"
+      },
+      "capture": [
+        "push_policy"
+      ],
+      "until": {
+        "type": "push_policy"
+      }
+    },
+    {
+      "op": "send",
+      "label": "send-input-text",
+      "request_id": "req-si",
+      "frame": {
+        "type": "send_input",
+        "protocol": 3,
+        "request_id": "{request_id}",
+        "pane_id": "{pane_id}",
+        "text": "echo shadow\n",
+        "target": "{target}"
+      },
+      "until": {
+        "type": "command_result",
+        "request_id": "{request_id}",
+        "contains": {
+          "phase": "completed"
+        }
+      },
+      "timeout_ms": 10000
+    },
+    {
+      "op": "send",
+      "label": "send-input-keys",
+      "request_id": "req-sk",
+      "frame": {
+        "type": "send_input",
+        "protocol": 3,
+        "request_id": "{request_id}",
+        "pane_id": "{pane_id}",
+        "keys": [
+          "Enter"
+        ],
+        "target": "{target}"
+      },
+      "until": {
+        "type": "command_result",
+        "request_id": "{request_id}",
+        "contains": {
+          "phase": "completed"
+        }
+      }
+    },
+    {
+      "op": "send",
+      "label": "send-text",
+      "request_id": "req-st",
+      "frame": {
+        "type": "send_text",
+        "protocol": 3,
+        "request_id": "{request_id}",
+        "pane_id": "{pane_id}",
+        "text": "echo shadow text\n",
+        "target": "{target}"
+      },
+      "until": {
+        "type": "command_result",
+        "request_id": "{request_id}",
+        "contains": {
+          "phase": "completed"
+        }
+      }
+    },
+    {
+      "op": "send",
+      "label": "send-keys",
+      "request_id": "req-keys",
+      "frame": {
+        "type": "send_keys",
+        "protocol": 3,
+        "request_id": "{request_id}",
+        "pane_id": "{pane_id}",
+        "keys": [
+          "ctrl+c"
+        ],
+        "target": "{target}"
+      },
+      "until": {
+        "type": "command_result",
+        "request_id": "{request_id}",
+        "contains": {
+          "phase": "completed"
+        }
+      }
+    },
+    {
+      "op": "send",
+      "label": "read-pane",
+      "request_id": "req-rp",
+      "frame": {
+        "type": "read_pane",
+        "protocol": 3,
+        "request_id": "{request_id}",
+        "pane_id": "{pane_id}",
+        "lines": 30,
+        "format": "text",
+        "target": "{target}"
+      },
+      "capture": [
+        "pane_content",
+        "pane_unchanged"
+      ],
+      "until": {
+        "type": "pane_content"
+      },
+      "timeout_ms": 10000
+    },
+    {
+      "op": "send",
+      "label": "get-activity",
+      "request_id": "req-ga",
+      "frame": {
+        "type": "get_activity",
+        "protocol": 3,
+        "request_id": "{request_id}",
+        "limit": 50
+      },
+      "capture": [
+        "activity_history"
+      ],
+      "until": {
+        "type": "activity_history"
+      }
+    },
+    {
+      "op": "send",
+      "label": "unknown-action",
+      "request_id": "req-zz",
+      "frame": {
+        "type": "zz_no_such_action",
+        "protocol": 3,
+        "request_id": "{request_id}"
+      },
+      "timeout_ms": 2500,
+      "quiesce_ms": 400
+    },
+    {
+      "op": "collect",
+      "label": "drain",
+      "timeout_ms": 2000,
+      "quiesce_ms": 500
+    }
+  ]
+}

@@ -1,0 +1,123 @@
+{
+  "version": "0.9.1",
+  "protocol": 22,
+  "panes": [
+    {
+      "pane_id": "wE:p1",
+      "terminal_id": "term-1",
+      "tab_id": "wE:t1",
+      "tab_label": "main",
+      "tab_number": 1,
+      "workspace_id": "wE",
+      "agent": "claude",
+      "name": "claude-main",
+      "agent_status": "idle",
+      "focused": true,
+      "cwd": "/home/relay/project",
+      "foreground_cwd": "/home/relay/project",
+      "revision": 3,
+      "state_change_seq": 7,
+      "scroll": {"offset_from_bottom": 0, "max_offset_from_bottom": 0, "viewport_rows": 24}
+    }
+  ],
+  "workspaces": [
+    {
+      "workspace_id": "wE",
+      "label": "main",
+      "number": 1,
+      "focused": true,
+      "pane_count": 1,
+      "tab_count": 1,
+      "active_tab_id": "wE:t1",
+      "agent_status": "idle"
+    }
+  ],
+  "tabs": [
+    {
+      "tab_id": "wE:t1",
+      "workspace_id": "wE",
+      "label": "main",
+      "number": 1,
+      "focused": true,
+      "pane_count": 1,
+      "agent_status": "idle",
+      "cwd": "/home/relay/project"
+    }
+  ],
+  "agents": {
+    "wE:p1": {
+      "pane_id": "wE:p1",
+      "agent": "claude",
+      "name": "claude-main",
+      "agent_status": "idle",
+      "running": true
+    }
+  },
+  "content": {
+    "wE:p1": "$ cargo test\n    Finished `test` profile\n    test result: ok. 42 passed\n"
+  },
+  "responses": {
+    "worktree\u0000list\u0000--workspace\u0000wE": "{\"result\":{\"source\":{\"repo_key\":\"repo-1\",\"repo_name\":\"project\",\"repo_root\":\"/home/relay/project\",\"source_checkout_path\":\"/home/relay/project\",\"source_workspace_id\":\"wE\"},\"worktrees\":[{\"path\":\"/home/relay/project\",\"branch\":\"main\",\"is_bare\":false,\"is_detached\":false,\"is_prunable\":false,\"is_linked_worktree\":false,\"label\":\"main checkout\",\"open_workspace_id\":\"wE\"},{\"path\":\"/home/relay/project-wt1\",\"branch\":\"feature/shadow\",\"is_bare\":false,\"is_detached\":false,\"is_prunable\":false,\"is_linked_worktree\":true,\"label\":\"shadow wt\",\"open_workspace_id\":null}]}}"
+  },
+  "socket": {
+    "capabilities": {
+      "health_check": true,
+      "live_handoff": false,
+      "detached_server_daemon": false,
+      "surface_interest": false
+    },
+    "agents": [
+      {
+        "pane_id": "wE:p1",
+        "terminal_id": "term-1",
+        "workspace_id": "wE",
+        "tab_id": "wE:t1",
+        "focused": true,
+        "name": "claude-main",
+        "agent": "claude",
+        "agent_status": "idle",
+        "cwd": "/home/relay/project",
+        "foreground_cwd": "/home/relay/project",
+        "revision": 3,
+        "state_change_seq": 7
+      }
+    ],
+    "layouts": [],
+    "focused_workspace_id": "wE",
+    "focused_tab_id": "wE:t1",
+    "focused_pane_id": "wE:p1",
+    "worktree_list": {
+      "wE": {
+        "source": {
+          "repo_key": "repo-1",
+          "repo_name": "project",
+          "repo_root": "/home/relay/project",
+          "source_checkout_path": "/home/relay/project",
+          "source_workspace_id": "wE"
+        },
+        "worktrees": [
+          {
+            "path": "/home/relay/project",
+            "branch": "main",
+            "is_bare": false,
+            "is_detached": false,
+            "is_prunable": false,
+            "is_linked_worktree": false,
+            "label": "main checkout",
+            "open_workspace_id": "wE"
+          },
+          {
+            "path": "/home/relay/project-wt1",
+            "branch": "feature/shadow",
+            "is_bare": false,
+            "is_detached": false,
+            "is_prunable": false,
+            "is_linked_worktree": true,
+            "label": "shadow wt",
+            "open_workspace_id": null
+          }
+        ]
+      }
+    }
+  }
+}

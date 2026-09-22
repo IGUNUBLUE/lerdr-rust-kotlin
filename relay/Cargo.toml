@@ -28,6 +28,11 @@ hex = "0.4"
 # redirects off at the call site (oracle CheckRedirect -> ErrUseLastResponse).
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots"] }
 
+# lerdr-shadow: WS client + trace differ for the Phase-3 parity harness.
+tokio-tungstenite = "0.29" # same tungstenite generation axum's ws uses
+futures-util = "0.3"
+similar = "2"              # unified diff rendering (insta already pins it)
+
 # Dev/test deps live in workspace.dependencies too — members reference them
 # from their own [dev-dependencies] via workspace = true.
 rstest = "0.27"
