@@ -652,6 +652,70 @@ class SessionRepository @Inject constructor(
         sendToAgent(agent, Inbound(type = "release_pane_size"))
     }
 
+    // ── workspace inspection (Files mode) ────────────────────────────
+
+    /**
+     * `workspace_tree` — the whole workspace as one bounded flat listing
+     * (relay caps at 4,000 entries and reports `truncated`).
+     */
+    suspend fun workspaceTree(paneId: String): WorkspaceTree {
+        val agent = requireAgent(paneId)
+        requireWorkspaceInspection(agent)
+        val result = sendToAgent(
+            agent,
+            Inbound(type = "workspace_tree"),
+            timeoutMs = WORKSPACE_TIMEOUT_MS,
+        )
+        return parseWorkspaceTree(result.data)
+    }
+
+    /** `workspace_file` — bounded text (1 MiB) / image (5 MiB, data-url) preview. */
+    suspend fun workspaceFile(paneId: String, path: String): WorkspaceFilePreview {
+        val agent = requireAgent(paneId)
+        requireWorkspaceInspection(agent)
+        val result = sendToAgent(
+            agent,
+            Inbound(type = "workspace_file", path = path),
+            timeoutMs = WORKSPACE_TIMEOUT_MS,
+        )
+        return parseWorkspaceFile(result.data, path)
+    }
+
+    /** `workspace_git_status` — porcelain status; `available=false` is "not a repo". */
+    suspend fun workspaceGitStatus(paneId: String): WorkspaceGitStatus {
+        val agent = requireAgent(paneId)
+        requireWorkspaceInspection(agent)
+        val result = sendToAgent(
+            agent,
+            Inbound(type = "workspace_git_status"),
+            timeoutMs = WORKSPACE_TIMEOUT_MS,
+        )
+        return parseWorkspaceGitStatus(result.data)
+    }
+
+    /** `workspace_git_diff` — staged + unstaged unified diff for one changed path. */
+    suspend fun workspaceGitDiff(paneId: String, path: String): WorkspaceGitDiff {
+        val agent = requireAgent(paneId)
+        requireWorkspaceInspection(agent)
+        val result = sendToAgent(
+            agent,
+            Inbound(type = "workspace_git_diff", path = path),
+            timeoutMs = WORKSPACE_TIMEOUT_MS,
+        )
+        return parseWorkspaceGitDiff(result.data, path)
+    }
+
+    /** `workspaceInspectionAvailable` — the oracle's capability + cwd gate. */
+    private fun requireWorkspaceInspection(agent: Agent) {
+        val connection = connectionStore.connectionNow(agent.relayId)
+        if (connection?.capabilities?.contains(WORKSPACE_INSPECTION_CAPABILITY) != true) {
+            throw CommandException("This relay does not support workspace inspection.")
+        }
+        if (agent.cwd.isNullOrBlank()) {
+            throw CommandException("This agent does not report a workspace path.")
+        }
+    }
+
     /** `get_conversation_history` — one tail-first page, projected. */
     suspend fun conversationPage(
         paneId: String,
@@ -921,6 +985,8 @@ class SessionRepository @Inject constructor(
         const val RESPOND_TIMEOUT_MS = 12_000L
         const val QUESTION_TIMEOUT_MS = 20_000L
         const val CONVERSATION_TIMEOUT_MS = 20_000L
+        const val WORKSPACE_TIMEOUT_MS = 20_000L
+        const val WORKSPACE_INSPECTION_CAPABILITY = "workspace_inspection"
         const val ACTIVITY_LIMIT = 500
         const val MAX_ACTIVITIES = 500
     }

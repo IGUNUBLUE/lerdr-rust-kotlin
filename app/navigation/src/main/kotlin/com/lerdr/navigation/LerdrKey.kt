@@ -34,6 +34,10 @@ sealed interface LerdrKey : NavKey {
     @Serializable
     data class Terminal(val paneId: String) : LerdrKey
 
+    /** Workspace browser — tree, file preview, git status/diff — for the session. */
+    @Serializable
+    data class Files(val paneId: String) : LerdrKey
+
     /** Relays, devices, speech, app. */
     @Serializable
     data object Settings : LerdrKey

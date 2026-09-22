@@ -48,6 +48,7 @@ import dagger.hilt.android.EntryPointAccessors
 fun TerminalScreen(
     paneId: String,
     onOpenFeed: () -> Unit,
+    onOpenFiles: () -> Unit,
     onBack: () -> Unit,
 ) {
     val appContext = LocalContext.current.applicationContext
@@ -59,6 +60,7 @@ fun TerminalScreen(
     TerminalContent(
         uiState = uiState,
         onOpenFeed = onOpenFeed,
+        onOpenFiles = onOpenFiles,
         onBack = onBack,
         onSendKeys = viewModel::sendKeys,
         onSendText = viewModel::sendLiteralText,
@@ -72,6 +74,7 @@ fun TerminalScreen(
 fun TerminalContent(
     uiState: TerminalUiState,
     onOpenFeed: () -> Unit,
+    onOpenFiles: () -> Unit,
     onBack: () -> Unit,
     onSendKeys: (List<String>) -> Unit,
     onSendText: (String) -> Unit,
@@ -91,7 +94,11 @@ fun TerminalContent(
                 statusColor = if (uiState.connected) colors.live else colors.idle,
                 mode = SessionMode.TERMINAL,
                 onSelectMode = { mode ->
-                    if (mode == SessionMode.FEED) onOpenFeed()
+                    when (mode) {
+                        SessionMode.FEED -> onOpenFeed()
+                        SessionMode.FILES -> onOpenFiles()
+                        SessionMode.TERMINAL -> Unit
+                    }
                 },
                 onBack = onBack,
                 trailing = {
@@ -267,6 +274,7 @@ private fun TerminalContentPreview() {
                 ),
             ),
             onOpenFeed = {},
+            onOpenFiles = {},
             onBack = {},
             onSendKeys = {},
             onSendText = {},

@@ -87,9 +87,6 @@ fun SessionTopBar(
             options = SessionMode.entries.map { it.label },
             selectedIndex = mode.ordinal,
             onSelect = { onSelectMode(SessionMode.entries[it]) },
-            // Files mode lands in a later round — the segment stays visible
-            // but inert, matching the mockup's three-slot control.
-            enabledOptions = SessionMode.entries.map { it != SessionMode.FILES },
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = spacing.medium, vertical = spacing.small),

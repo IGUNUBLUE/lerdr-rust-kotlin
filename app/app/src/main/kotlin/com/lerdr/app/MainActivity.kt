@@ -13,6 +13,7 @@ import com.lerdr.app.home.HomeScreen
 import com.lerdr.app.notify.RequestPostNotificationsPermission
 import com.lerdr.app.pairing.PairingScreen
 import com.lerdr.app.session.AgentFeedScreen
+import com.lerdr.app.session.FilesScreen
 import com.lerdr.app.session.SessionRepository
 import com.lerdr.app.session.TerminalScreen
 import com.lerdr.app.settings.SettingsScreen
@@ -124,6 +125,7 @@ private fun EntryProviderScope<LerdrKey>.lerdrEntries(
         AgentFeedScreen(
             paneId = key.paneId,
             onOpenTerminal = { navigator.openTerminal(key.paneId) },
+            onOpenFiles = { navigator.openFiles(key.paneId) },
             onBack = navigator::goBack,
         )
     }
@@ -131,6 +133,15 @@ private fun EntryProviderScope<LerdrKey>.lerdrEntries(
         TerminalScreen(
             paneId = key.paneId,
             onOpenFeed = { navigator.openAgent(key.paneId) },
+            onOpenFiles = { navigator.openFiles(key.paneId) },
+            onBack = navigator::goBack,
+        )
+    }
+    entry<LerdrKey.Files> { key ->
+        FilesScreen(
+            paneId = key.paneId,
+            onOpenFeed = { navigator.openAgent(key.paneId) },
+            onOpenTerminal = { navigator.openTerminal(key.paneId) },
             onBack = navigator::goBack,
         )
     }

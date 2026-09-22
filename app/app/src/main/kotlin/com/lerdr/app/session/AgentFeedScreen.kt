@@ -66,6 +66,7 @@ import lerdr.core.store.attentionKind
 fun AgentFeedScreen(
     paneId: String,
     onOpenTerminal: () -> Unit,
+    onOpenFiles: () -> Unit,
     onBack: () -> Unit,
 ) {
     val appContext = LocalContext.current.applicationContext
@@ -77,6 +78,7 @@ fun AgentFeedScreen(
     AgentFeedContent(
         uiState = uiState,
         onOpenTerminal = onOpenTerminal,
+        onOpenFiles = onOpenFiles,
         onBack = onBack,
         onDraftChange = viewModel::onDraftChange,
         onSendPrompt = viewModel::sendPrompt,
@@ -94,6 +96,7 @@ fun AgentFeedScreen(
 fun AgentFeedContent(
     uiState: FeedUiState,
     onOpenTerminal: () -> Unit,
+    onOpenFiles: () -> Unit,
     onBack: () -> Unit,
     onDraftChange: (String) -> Unit,
     onSendPrompt: () -> Unit,
@@ -124,7 +127,11 @@ fun AgentFeedContent(
                 },
                 mode = SessionMode.FEED,
                 onSelectMode = { mode ->
-                    if (mode == SessionMode.TERMINAL) onOpenTerminal()
+                    when (mode) {
+                        SessionMode.TERMINAL -> onOpenTerminal()
+                        SessionMode.FILES -> onOpenFiles()
+                        SessionMode.FEED -> Unit
+                    }
                 },
                 onBack = onBack,
             )
@@ -422,6 +429,7 @@ private fun AgentFeedContentPreview() {
                 historyAvailable = true,
             ),
             onOpenTerminal = {},
+            onOpenFiles = {},
             onBack = {},
             onDraftChange = {},
             onSendPrompt = {},
