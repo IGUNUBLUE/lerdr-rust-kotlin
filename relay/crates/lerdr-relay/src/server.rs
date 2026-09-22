@@ -121,8 +121,18 @@ impl Relay {
     /// have fallen behind are skipped; the session's send-buffer contract
     /// already evicts them.
     pub fn broadcast(&self, message: &Outbound) {
+        self.broadcast_except(message, "");
+    }
+
+    /// Broadcast to every live client except `exclude` — used when the
+    /// requester already carries the frame in its own response (the
+    /// oracle's `broadcastToAll` + per-client response ordering).
+    pub fn broadcast_except(&self, message: &Outbound, exclude: &str) {
         let clients = self.shared.clients.lock().expect("clients poisoned");
-        for sink in clients.values() {
+        for (id, sink) in clients.iter() {
+            if id == exclude {
+                continue;
+            }
             let _ = sink.try_send(message);
         }
     }

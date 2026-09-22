@@ -320,6 +320,15 @@ async fn run(args: ServeArgs) -> Result<(), BoxError> {
         },
         relay.shutdown(),
     );
+    // `broadcastToAll` — voice-catalog changes fan out to every session
+    // except the requester (it already has the frame in its response).
+    router_factory.spawn_speech_broadcast(
+        {
+            let relay = relay.clone();
+            move |message, exclude| relay.broadcast_except(message, exclude)
+        },
+        relay.shutdown(),
+    );
     // Tie the topology actor's token to the relay's real shutdown token.
     {
         let relay_shutdown = relay.shutdown();

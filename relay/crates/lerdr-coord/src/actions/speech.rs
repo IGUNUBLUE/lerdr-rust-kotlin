@@ -55,6 +55,7 @@ use lerdr_core::protocol::{
     action_receipt_response, error_codes, ActionReceipt, ActionReceiptPhase, Inbound, Outbound,
     SpeechVoice, SpeechVoicesMessage,
 };
+use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 use super::local::home_dir;
@@ -302,6 +303,18 @@ pub(crate) struct Registration {
 struct SpeechInner {
     engine: Arc<dyn SpeechEngine>,
     state: Mutex<SpeechState>,
+    /// `s.broadcastToAll` — voice-catalog changes reach every session,
+    /// not just the requester. The router's forwarder drains this.
+    events: broadcast::Sender<SpeechFanout>,
+}
+
+/// A frame destined for every live session except `exclude_client` (the
+/// requester already carries it in its response frames — the oracle's
+/// broadcast-before-result ordering stays deterministic that way).
+#[derive(Debug, Clone)]
+pub(crate) struct SpeechFanout {
+    pub frame: Outbound,
+    pub exclude_client: String,
 }
 
 /// The speech subsystem one relay session hands to every action context.
@@ -322,8 +335,15 @@ impl Speech {
             inner: Arc::new(SpeechInner {
                 engine,
                 state: Mutex::new(SpeechState::default()),
+                events: broadcast::channel(64).0,
             }),
         }
+    }
+
+    /// `Journal::subscribe`'s twin — the fanout task subscribes here and
+    /// re-broadcasts each frame to every session but the requester.
+    pub(crate) fn subscribe(&self) -> broadcast::Receiver<SpeechFanout> {
+        self.inner.events.subscribe()
     }
 
     /// `s.speechStatus` + `rememberSpeechLanguages` — refresh the cached
@@ -1929,7 +1949,15 @@ async fn change_speech_voice(
         )
         .frames(request_id, action, action_id);
     }
-    let mut frames = vec![speech_voices_frame(&status)];
+    let voices = speech_voices_frame(&status);
+    // `broadcastToAll` — every session learns the catalog changed; the
+    // requester is excluded from the fanout because the frame below is
+    // already its first response (preserving broadcast-before-result).
+    let _ = ctx.speech.inner.events.send(SpeechFanout {
+        frame: voices.clone(),
+        exclude_client: ctx.client_id.clone(),
+    });
+    let mut frames = vec![voices];
     frames.extend(Outcome::completed("", Some(payload)).frames(request_id, action, action_id));
     frames
 }
@@ -2489,6 +2517,45 @@ mod tests {
             ActionReceiptPhase::CONFIRMED
         );
         assert_eq!(engine.installed.lock().unwrap().as_slice(), ["fr"]);
+    }
+
+    #[tokio::test]
+    async fn voice_install_fans_out_to_peer_sessions() {
+        // `broadcastToAll` — the catalog frame also leaves via the
+        // fanout channel, addressed to every session but the requester.
+        let engine = Arc::new(FakeEngine::new());
+        let speech = Speech::with_engine(engine);
+        let mut rx = speech.subscribe();
+        let ctx = test_context(speech, "client-1");
+        let frames = voice_install(
+            ctx,
+            "req-1",
+            "act-1",
+            &message(serde_json::json!({"language": "fr"})),
+        )
+        .await;
+        assert_eq!(frames.len(), 3);
+        let fanout = rx.try_recv().expect("fanout frame for peer sessions");
+        assert_eq!(fanout.exclude_client, "client-1");
+        assert!(matches!(fanout.frame, Outbound::SpeechVoices(_)));
+    }
+
+    #[tokio::test]
+    async fn voice_install_failure_sends_no_fanout() {
+        let engine = Arc::new(FakeEngine::new());
+        *engine.install_result.lock().unwrap() = Err("curl exploded".to_owned());
+        let speech = Speech::with_engine(engine);
+        let mut rx = speech.subscribe();
+        let ctx = test_context(speech, "client-1");
+        let frames = voice_install(
+            ctx,
+            "req-1",
+            "act-1",
+            &message(serde_json::json!({"language": "fr"})),
+        )
+        .await;
+        assert_eq!(frames.len(), 2);
+        assert!(rx.try_recv().is_err(), "no fanout on failure");
     }
 
     #[tokio::test]

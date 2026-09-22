@@ -36,8 +36,8 @@
 //!   over content bytes only (doc 10, round-3 finding).
 
 mod actions;
-pub(crate) mod audit;
 mod actor;
+pub(crate) mod audit;
 mod fingerprint;
 mod router;
 mod snapshot;

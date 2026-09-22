@@ -124,6 +124,29 @@ impl HerdRouterFactory {
         });
     }
 
+    /// `broadcastToAll` for speech — voice-catalog fanout to every
+    /// session but the requesting one (it already has the frame).
+    pub fn spawn_speech_broadcast(
+        &self,
+        broadcast_except: impl Fn(&Outbound, &str) + Send + Sync + 'static,
+        cancel: CancellationToken,
+    ) {
+        let speech = self.shared.speech.clone();
+        tokio::spawn(async move {
+            let mut rx = speech.subscribe();
+            loop {
+                tokio::select! {
+                    () = cancel.cancelled() => break,
+                    event = rx.recv() => match event {
+                        Ok(fanout) => broadcast_except(&fanout.frame, &fanout.exclude_client),
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    },
+                }
+            }
+        });
+    }
+
     /// The closure `Relay::with_router_factory` expects.
     pub fn into_factory(self) -> impl Fn() -> Box<dyn ActionRouter> + Send + Sync {
         move || {
