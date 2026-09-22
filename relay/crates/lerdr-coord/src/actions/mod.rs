@@ -38,6 +38,7 @@ use lerdr_core::protocol::{
     CommandResultMessage, Outbound,
 };
 use lerdr_herdr::{DispatchPhase, HerdrError};
+use tokio::sync::broadcast;
 
 use crate::actor::TopologyHandle;
 use crate::topology::Topology;
@@ -84,7 +85,48 @@ pub(crate) struct ActionContext {
     pub push: push::Push,
     /// Speech subsystem — engine handle + in-flight speech requests.
     pub speech: speech::Speech,
+    /// `hub.Broadcast` — frames every session must see (voice-catalog
+    /// changes, `update_status` notices). The router's forwarder drains
+    /// it through `Relay::broadcast_except`.
+    pub notices: Notices,
     pub client_id: String,
+}
+
+/// A relay-wide frame — the `hub.Broadcast`/`broadcastToAll` payloads
+/// action handlers emit beside their response frames.
+#[derive(Debug, Clone)]
+pub(crate) struct RelayNotice {
+    pub frame: Outbound,
+    /// Skip this client — it already carries the frame in its own
+    /// response (broadcast-before-result ordering stays deterministic on
+    /// that connection). Empty means every session.
+    pub exclude_client: String,
+}
+
+/// Cloneable handle over the relay-wide notice channel — every session's
+/// `ActionContext` shares the one the router drains.
+#[derive(Clone)]
+pub(crate) struct Notices(broadcast::Sender<RelayNotice>);
+
+impl Notices {
+    /// `broadcastToAll` — no receivers is a silent no-op (the binary wires
+    /// the forwarder; tests observe through [`Notices::subscribe`]).
+    pub(crate) fn send(&self, frame: Outbound, exclude_client: String) {
+        let _ = self.0.send(RelayNotice {
+            frame,
+            exclude_client,
+        });
+    }
+
+    pub(crate) fn subscribe(&self) -> broadcast::Receiver<RelayNotice> {
+        self.0.subscribe()
+    }
+}
+
+impl Default for Notices {
+    fn default() -> Self {
+        Self(broadcast::channel(64).0)
+    }
 }
 
 /// `recordActivity` — commit one journal row with the pane attribution the

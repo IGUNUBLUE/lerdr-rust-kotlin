@@ -1407,16 +1407,19 @@ fn update_status_frame(update: serde_json::Value) -> Outbound {
 /// `check_update` — `update_status` notices plus a `command_result`
 /// carrying `{"update": <state>}`.
 pub(crate) async fn check_update(
-    _ctx: ActionContext,
+    ctx: ActionContext,
     request_id: &str,
     action_id: &str,
     _message: &Inbound,
 ) -> Vec<Outbound> {
-    let mut frames = vec![update_status_frame(serde_json::json!({
+    let checking = update_status_frame(serde_json::json!({
         "state": "checking",
         "current_version": env!("CARGO_PKG_VERSION"),
         "current_revision": option_env!("LERDR_REVISION").unwrap_or("dev"),
-    }))];
+    }));
+    // `s.hub.Broadcast` — peer sessions see the check begin too.
+    ctx.notices.send(checking.clone(), ctx.client_id.clone());
+    let mut frames = vec![checking];
     // The network fetch runs unlocked, like the oracle's mutex release —
     // concurrent state()/schedule() calls observe the `checking` state.
     let (early, fetcher) = {
@@ -1430,9 +1433,9 @@ pub(crate) async fn check_update(
             update_manager().lock().await.check_finish(fetched).await
         }
     };
-    frames.push(update_status_frame(
-        serde_json::to_value(&state).unwrap_or_default(),
-    ));
+    let checked = update_status_frame(serde_json::to_value(&state).unwrap_or_default());
+    ctx.notices.send(checked.clone(), ctx.client_id.clone());
+    frames.push(checked);
     frames.extend(
         Outcome::completed("", Some(serde_json::json!({ "update": state }))).frames(
             request_id,
@@ -1446,7 +1449,7 @@ pub(crate) async fn check_update(
 /// `install_update` — schedules the pending update; `command_result`
 /// carries `{"job","update"}` on success, `{"update"}` on failure.
 pub(crate) async fn install_update(
-    _ctx: ActionContext,
+    ctx: ActionContext,
     request_id: &str,
     action_id: &str,
     message: &Inbound,
@@ -1458,9 +1461,10 @@ pub(crate) async fn install_update(
         .await;
     match result {
         Ok((job, state)) => {
-            let mut frames = vec![update_status_frame(
-                serde_json::to_value(&state).unwrap_or_default(),
-            )];
+            let scheduled = update_status_frame(serde_json::to_value(&state).unwrap_or_default());
+            // `watchJobStates` — the schedule change reaches every client.
+            ctx.notices.send(scheduled.clone(), ctx.client_id.clone());
+            let mut frames = vec![scheduled];
             frames.extend(
                 Outcome {
                     ok: true,

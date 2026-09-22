@@ -53,6 +53,7 @@ struct ActionShared {
     activities: actions::activity::Journal,
     push: actions::push::Push,
     speech: actions::speech::Speech,
+    notices: actions::Notices,
 }
 
 /// Builds one [`HerdRouter`] per accepted session.
@@ -96,6 +97,7 @@ impl HerdRouterFactory {
                     actions::push::Push::default()
                 }),
                 speech: actions::speech::Speech::default(),
+                notices: actions::Notices::default(),
             }),
         }
     }
@@ -124,21 +126,22 @@ impl HerdRouterFactory {
         });
     }
 
-    /// `broadcastToAll` for speech — voice-catalog fanout to every
-    /// session but the requesting one (it already has the frame).
-    pub fn spawn_speech_broadcast(
+    /// `hub.Broadcast`/`broadcastToAll` — drains the shared notices
+    /// channel: voice-catalog changes, `update_status`, any relay-wide
+    /// frame a handler emits beside its response. `exclude_client` skips
+    /// the requester when it already carries the frame.
+    pub fn spawn_notice_broadcast(
         &self,
         broadcast_except: impl Fn(&Outbound, &str) + Send + Sync + 'static,
         cancel: CancellationToken,
     ) {
-        let speech = self.shared.speech.clone();
+        let mut rx = self.shared.notices.subscribe();
         tokio::spawn(async move {
-            let mut rx = speech.subscribe();
             loop {
                 tokio::select! {
                     () = cancel.cancelled() => break,
                     event = rx.recv() => match event {
-                        Ok(fanout) => broadcast_except(&fanout.frame, &fanout.exclude_client),
+                        Ok(notice) => broadcast_except(&notice.frame, &notice.exclude_client),
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     },
@@ -277,6 +280,7 @@ impl HerdRouter {
             activities: self.shared.activities.clone(),
             push: self.shared.push.clone(),
             speech: self.shared.speech.clone(),
+            notices: self.shared.notices.clone(),
             client_id: self.client_id.clone().unwrap_or_default(),
         }
     }

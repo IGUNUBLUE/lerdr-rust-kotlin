@@ -320,9 +320,10 @@ async fn run(args: ServeArgs) -> Result<(), BoxError> {
         },
         relay.shutdown(),
     );
-    // `broadcastToAll` — voice-catalog changes fan out to every session
-    // except the requester (it already has the frame in its response).
-    router_factory.spawn_speech_broadcast(
+    // `broadcastToAll`/`hub.Broadcast` — voice-catalog changes,
+    // `update_status`, and any other relay-wide notice fan out to every
+    // session except the requesting one (it already has the frame).
+    router_factory.spawn_notice_broadcast(
         {
             let relay = relay.clone();
             move |message, exclude| relay.broadcast_except(message, exclude)

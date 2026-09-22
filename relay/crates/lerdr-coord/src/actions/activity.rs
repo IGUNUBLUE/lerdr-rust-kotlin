@@ -385,6 +385,7 @@ mod tests {
             activities: journal,
             push: crate::actions::push::Push::default(),
             speech: crate::actions::speech::Speech::default(),
+            notices: crate::actions::Notices::default(),
             client_id: "test-client".to_owned(),
         }
     }
