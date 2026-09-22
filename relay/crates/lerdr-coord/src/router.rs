@@ -30,6 +30,7 @@ use lerdr_relay::session::ClientSink;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
+use crate::actions::{self, ActionContext};
 use crate::actor::TopologyHandle;
 use crate::snapshot::topology_broadcast;
 use crate::watches::{watch_interval, WatchSet, WatchSpec, DEFAULT_LINES};
@@ -39,27 +40,45 @@ use crate::watches::{watch_interval, WatchSet, WatchSpec, DEFAULT_LINES};
 /// sink registers only after the handshake commits.
 pub type ClientSinkLookup = Arc<dyn Fn(&str) -> Option<ClientSink> + Send + Sync>;
 
+/// Cross-session action state — the oracle's singletons (`paneSizeM`,
+/// the acknowledgment ledger, the profile resolver) live once per relay,
+/// not once per connection.
+struct ActionShared {
+    leases: actions::leases::Leases,
+    acks: actions::Acks,
+    profiles: actions::profiles::Resolver,
+}
+
 /// Builds one [`HerdRouter`] per accepted session.
 #[derive(Clone)]
 pub struct HerdRouterFactory {
     handle: TopologyHandle,
     sink_of: ClientSinkLookup,
     cancel: CancellationToken,
+    shared: Arc<ActionShared>,
 }
 
 impl HerdRouterFactory {
     /// `handle` comes from [`crate::TopologyActor::spawn`]; `sink_of` is
     /// typically `move |id| relay.client_sink(id)`; `cancel` should be the
-    /// relay shutdown token (watches die with the relay).
+    /// relay shutdown token (watches and the lease sweeper die with the
+    /// relay).
     pub fn new(
         handle: TopologyHandle,
         sink_of: ClientSinkLookup,
         cancel: CancellationToken,
     ) -> Self {
+        let leases = actions::leases::Leases::new(handle.client.clone());
+        leases.spawn_sweeper(cancel.clone());
         Self {
             handle,
             sink_of,
             cancel,
+            shared: Arc::new(ActionShared {
+                leases,
+                acks: actions::Acks::default(),
+                profiles: actions::profiles::Resolver::new(),
+            }),
         }
     }
 
@@ -70,6 +89,7 @@ impl HerdRouterFactory {
                 self.handle.clone(),
                 self.sink_of.clone(),
                 self.cancel.child_token(),
+                self.shared.clone(),
             )) as Box<dyn ActionRouter>
         }
     }
@@ -80,6 +100,7 @@ pub struct HerdRouter {
     handle: TopologyHandle,
     sink_of: ClientSinkLookup,
     cancel: CancellationToken,
+    shared: Arc<ActionShared>,
     /// Lazily captured from the first `ClientContext`.
     client_id: Option<String>,
     watches: WatchSet,
@@ -88,11 +109,17 @@ pub struct HerdRouter {
 }
 
 impl HerdRouter {
-    fn new(handle: TopologyHandle, sink_of: ClientSinkLookup, cancel: CancellationToken) -> Self {
+    fn new(
+        handle: TopologyHandle,
+        sink_of: ClientSinkLookup,
+        cancel: CancellationToken,
+        shared: Arc<ActionShared>,
+    ) -> Self {
         Self {
             handle,
             sink_of,
             cancel,
+            shared,
             client_id: None,
             watches: WatchSet::default(),
             forwarder: None,
@@ -169,6 +196,20 @@ impl HerdRouter {
             .instrument(tracing::info_span!("action", client_id = %span_id)),
         );
     }
+
+    /// Everything a spawned action needs — the admission-time topology
+    /// snapshot plus the shared subsystems.
+    fn action_context(&self) -> ActionContext {
+        ActionContext {
+            client: self.handle.client.clone(),
+            topology: self.handle.topology.borrow().clone(),
+            handle: self.handle.clone(),
+            leases: self.shared.leases.clone(),
+            acks: self.shared.acks.clone(),
+            profiles: self.shared.profiles.clone(),
+            client_id: self.client_id.clone().unwrap_or_default(),
+        }
+    }
 }
 
 impl Drop for HerdRouter {
@@ -177,19 +218,44 @@ impl Drop for HerdRouter {
         if let Some(f) = self.forwarder.take() {
             f.abort();
         }
+        // `ReleaseClient` — the disconnect path drops this client's pane
+        // leases immediately (no grace).
+        if let (Some(client_id), Ok(runtime)) = (
+            self.client_id.clone(),
+            tokio::runtime::Handle::try_current(),
+        ) {
+            let leases = self.shared.leases.clone();
+            runtime.spawn(async move {
+                if let Err(err) = leases.release_client(&client_id).await {
+                    tracing::warn!(client_id, error = %err, "pane size release on disconnect failed");
+                }
+            });
+        }
     }
 }
 
-/// The baseline action set — everything else answers `dispatched_unknown`.
-///
-/// The oracle's full table (~50 cases in `dispatch.go`) lands in later
-/// slices: workspace/worktree mutation, conversation history, uploads,
-/// push/policy, speech, qr_code, device admin, update flow, size leases.
-fn is_pane_input_action(kind: &str) -> bool {
-    matches!(
-        kind,
-        "send_text" | "send_keys" | "respond" | "answer_question" | "submit_prompt"
-    )
+/// Structured-answer actions the question/approval state machine would
+/// own — the oracle composes option labels and multi-select joins there.
+/// Until that subsystem exists they keep the baseline text send, which is
+/// closer to the reference than an honest `dispatched_unknown`.
+fn is_baseline_input_action(kind: &str) -> bool {
+    matches!(kind, "respond" | "answer_question")
+}
+
+/// Spawn an [`actions`] handler for a routed action: clone the request
+/// pieces into the task (handler futures borrow them — they cannot outlive
+/// owned locals of a closure, so this must expand at the call site),
+/// await the handler, push its frames. `route` returns immediately — the
+/// global ingress lock is never held across Herdr calls.
+macro_rules! spawn_action {
+    ($router:expr, $request_id:expr, $action_id:expr, $message:expr, $handler:expr) => {{
+        let ctx = $router.action_context();
+        let rid = $request_id.clone();
+        let aid = $action_id.clone();
+        let msg = $message.clone();
+        $router.push_later(async move { $handler(ctx, &rid, &aid, &msg).await });
+        RouterReply::empty()
+    }};
 }
 
 impl ActionRouter for HerdRouter {
@@ -217,12 +283,217 @@ impl ActionRouter for HerdRouter {
                 RouterReply::empty()
             }
 
-            // --- input ---------------------------------------------------
-            kind if is_pane_input_action(kind) => {
+            // --- input ----------------------------------------------------
+            "send_text" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::input::send_text
+            ),
+            "send_keys" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::input::send_keys
+            ),
+            "send_input" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::input::send_input
+            ),
+            "send_secret" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::input::send_secret
+            ),
+            "submit_prompt" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::input::submit_prompt
+            ),
+            "agent_stop" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::input::agent_stop
+            ),
+            kind if is_baseline_input_action(kind) => {
                 self.route_pane_input(request_id, action_id, message)
             }
 
-            // --- everything else: honest terminal state ------------------
+            // --- workspace -------------------------------------------------
+            "workspace_create" => {
+                spawn_action!(
+                    self,
+                    request_id,
+                    action_id,
+                    message,
+                    actions::workspace::workspace_create
+                )
+            }
+            "workspace_rename" => {
+                spawn_action!(
+                    self,
+                    request_id,
+                    action_id,
+                    message,
+                    actions::workspace::workspace_rename
+                )
+            }
+            "workspace_reorder" => {
+                spawn_action!(
+                    self,
+                    request_id,
+                    action_id,
+                    message,
+                    actions::workspace::workspace_reorder
+                )
+            }
+            "workspace_close" => {
+                spawn_action!(
+                    self,
+                    request_id,
+                    action_id,
+                    message,
+                    actions::workspace::workspace_close
+                )
+            }
+
+            // --- worktree --------------------------------------------------
+            "worktree_list" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::worktree::worktree_list
+            ),
+            "worktree_create" => {
+                spawn_action!(
+                    self,
+                    request_id,
+                    action_id,
+                    message,
+                    actions::worktree::worktree_create
+                )
+            }
+            "worktree_open" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::worktree::worktree_open
+            ),
+            "worktree_remove" => {
+                spawn_action!(
+                    self,
+                    request_id,
+                    action_id,
+                    message,
+                    actions::worktree::worktree_remove
+                )
+            }
+
+            // --- tabs / agents ---------------------------------------------
+            "agent_rename" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::tabs::agent_rename
+            ),
+            "tab_reorder" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::tabs::tab_reorder
+            ),
+            "acknowledge_pane" => {
+                spawn_action!(
+                    self,
+                    request_id,
+                    action_id,
+                    message,
+                    actions::tabs::acknowledge_pane
+                )
+            }
+            "agent_start" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::agents::agent_start
+            ),
+            "agent_clear" => spawn_action!(self, request_id, action_id, message, |c, r, a, m| {
+                actions::agents::agent_clear(c, r, a, m, "agent_clear")
+            }),
+            "agent_restart" => spawn_action!(self, request_id, action_id, message, |c, r, a, m| {
+                actions::agents::agent_clear(c, r, a, m, "agent_restart")
+            }),
+            "refresh_agents" => {
+                let ctx = self.action_context();
+                self.push_later(async move { actions::agents::refresh_agents(ctx).await });
+                RouterReply::empty()
+            }
+
+            // --- pane-size leases ------------------------------------------
+            "lease_pane_size" => {
+                let ctx = self.action_context();
+                let cancel = self.cancel.clone();
+                let rid = request_id;
+                let msg = message.clone();
+                self.push_later(async move {
+                    vec![actions::leases::lease_pane_size(ctx, &cancel, &rid, &msg).await]
+                });
+                RouterReply::empty()
+            }
+            "release_pane_size" => {
+                let ctx = self.action_context();
+                let rid = request_id;
+                let msg = message.clone();
+                self.push_later(async move {
+                    vec![actions::leases::release_pane_size(ctx, &rid, &msg).await]
+                });
+                RouterReply::empty()
+            }
+
+            // --- local / inspection ----------------------------------------
+            "list_directories" => {
+                let rid = request_id;
+                let msg = message.clone();
+                self.push_later(async move { vec![actions::local::list_directories(&rid, &msg)] });
+                RouterReply::empty()
+            }
+            "qr_code" => {
+                let rid = request_id;
+                let msg = message.clone();
+                self.push_later(async move { vec![actions::local::qr_code(&rid, &msg)] });
+                RouterReply::empty()
+            }
+            kind @ ("workspace_tree"
+            | "workspace_file"
+            | "workspace_git_status"
+            | "workspace_git_diff") => {
+                let ctx = self.action_context();
+                let rid = request_id;
+                let kind = kind.to_owned();
+                let msg = message.clone();
+                self.push_later(async move {
+                    vec![actions::inspect::inspect(ctx, &rid, &kind, &msg).await]
+                });
+                RouterReply::empty()
+            }
+
+            // --- everything else: honest terminal state --------------------
             _ => RouterReply::send(vec![receipt(
                 &request_id,
                 &action_id,
@@ -255,7 +526,13 @@ impl HerdRouter {
         // The oracle's `read_pane` supersedes the watch (`stopPaneWatch`) —
         // otherwise the watch could race a frame past this read's answer.
         self.watches.stop(&pane_id);
+        // `HandleReadPane` acknowledges the pane — the local half of that
+        // is the ledger record at the pane's current `state_change_seq`.
+        if let Some(agent) = self.handle.topology.borrow().pane_of(&pane_id) {
+            self.shared.acks.record(&pane_id, agent.state_change_seq);
+        }
         let client = self.handle.client.clone();
+        let leases = self.shared.leases.clone();
         let lines = u32::try_from(message.lines)
             .ok()
             .filter(|l| *l > 0)
@@ -265,6 +542,13 @@ impl HerdRouter {
         let rid = request_id.clone();
         let aid = action_id.clone();
         self.push_later(async move {
+            // `applyPaneReadLease` — an active size lease marks the read
+            // viewport-only (the pane was resized for this shape).
+            let viewport_columns = leases.active_columns(&pane_id).await;
+            let viewport_rows = leases.active_rows(&pane_id).await;
+            let settling = leases
+                .resized_within(&pane_id, actions::leases::RESIZE_SETTLE_WINDOW)
+                .await;
             match client
                 .pane_read(
                     &pane_id,
@@ -275,7 +559,15 @@ impl HerdRouter {
                 .await
             {
                 Ok(read) => vec![
-                    read_pane_frame(&pane_id, &read, fingerprint.as_deref(), target),
+                    read_pane_frame(
+                        &pane_id,
+                        &read,
+                        fingerprint.as_deref(),
+                        target,
+                        viewport_columns.is_some(),
+                        viewport_rows,
+                        settling,
+                    ),
                     receipt(&rid, &aid, ActionReceiptPhase::CONFIRMED, None),
                 ],
                 Err(err) => vec![receipt_for_herdr_error(&rid, &aid, &err)],
@@ -342,10 +634,11 @@ impl HerdRouter {
         )])
     }
 
-    /// Text/keys/respond → `pane.send_input`. `respond`/`answer_question`
-    /// compose the answer text (`choice`, else `prompt`/`text`) — the
-    /// oracle's structured-answer composition (option labels, multi-select
-    /// joins) is a follow-up; this baseline sends the primary text.
+    /// `respond`/`answer_question` baseline — `pane.send_input` of the
+    /// composed answer text (`choice`, else `prompt`/`text`). The oracle's
+    /// structured-answer composition (option labels, multi-select joins)
+    /// belongs to the question state machine; until it exists this keeps
+    /// the primary text flowing.
     fn route_pane_input(
         &mut self,
         request_id: String,
@@ -413,6 +706,9 @@ fn read_pane_frame(
     read: &PaneReadResult,
     fingerprint: Option<&str>,
     target: Option<lerdr_core::protocol::TargetRef>,
+    viewport_only: bool,
+    viewport_rows: Option<i64>,
+    resize_settling: bool,
 ) -> Outbound {
     let computed = crate::content_fingerprint(&read.text);
     if fingerprint == Some(computed.as_str()) {
@@ -426,6 +722,12 @@ fn read_pane_frame(
         format: Some("text".to_owned()),
         truncated: Some(read.truncated),
         target: target.map(lerdr_core::json::MaybeNull::Value),
+        viewport_only: viewport_only.then_some(true),
+        viewport_rows: if viewport_only { viewport_rows } else { None },
+        // The agent re-renders after a lease resize and can push redrawn
+        // rows into scrollback — frames read inside the settle window
+        // must not commit as history.
+        resize_settling: (viewport_only && resize_settling).then_some(true),
         ..PaneContent::default()
     }))
 }
@@ -582,6 +884,9 @@ mod tests {
             &pane_read("hello world\n"),
             Some("a948904f2f0f479b"),
             None,
+            false,
+            None,
+            false,
         );
         match frame {
             Outbound::PaneUnchanged(m) => {
@@ -601,6 +906,9 @@ mod tests {
             &pane_read("hello world\n"),
             Some("0000000000000000"),
             None,
+            false,
+            None,
+            false,
         );
         match frame {
             Outbound::PaneContent(m) => {
@@ -611,7 +919,15 @@ mod tests {
         }
         // Absent entirely — same full-content answer.
         assert!(matches!(
-            read_pane_frame("wE:pE", &pane_read("hello world\n"), None, None),
+            read_pane_frame(
+                "wE:pE",
+                &pane_read("hello world\n"),
+                None,
+                None,
+                false,
+                None,
+                false
+            ),
             Outbound::PaneContent(_)
         ));
     }
@@ -631,7 +947,7 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    read_pane_frame("wE:pE", &read, Some(bad), None),
+                    read_pane_frame("wE:pE", &read, Some(bad), None, false, None, false),
                     Outbound::PaneContent(_)
                 ),
                 "{bad:?} should be a fingerprint miss"
@@ -650,13 +966,21 @@ mod tests {
             })
         };
         let read = pane_read("hello world\n");
-        match read_pane_frame("wE:pE", &read, Some("a948904f2f0f479b"), target()) {
+        match read_pane_frame(
+            "wE:pE",
+            &read,
+            Some("a948904f2f0f479b"),
+            target(),
+            false,
+            None,
+            false,
+        ) {
             Outbound::PaneUnchanged(m) => {
                 assert!(matches!(m.target, Some(MaybeNull::Value(_))))
             }
             other => panic!("expected pane_unchanged, got {other:?}"),
         }
-        match read_pane_frame("wE:pE", &read, None, target()) {
+        match read_pane_frame("wE:pE", &read, None, target(), false, None, false) {
             Outbound::PaneContent(m) => {
                 assert!(matches!(m.target, Some(MaybeNull::Value(_))))
             }

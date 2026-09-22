@@ -35,6 +35,7 @@
 //! - **Fingerprint**: `content_fingerprint` = `hex(sha256(content)[0..8])`
 //!   over content bytes only (doc 10, round-3 finding).
 
+mod actions;
 mod actor;
 mod fingerprint;
 mod router;
