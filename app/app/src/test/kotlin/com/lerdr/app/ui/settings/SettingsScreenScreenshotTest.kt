@@ -45,12 +45,14 @@ class SettingsScreenScreenshotTest {
                     uiState = SettingsUiState(),
                     appVersion = "0.1.0",
                     notificationsEnabled = true,
+                    appLockReady = true,
                     snackbarHostState = SnackbarHostState(),
                     onSelectTopLevel = {},
                     onReconnectRelay = {},
                     onForgetRelay = {},
                     onRevalidateAll = {},
                     onThemeMode = {},
+                    onAppLockChange = {},
                     onOpenNotificationSettings = {},
                 )
             }
@@ -90,12 +92,14 @@ class SettingsScreenScreenshotTest {
                     ),
                     appVersion = "0.1.0",
                     notificationsEnabled = true,
+                    appLockReady = true,
                     snackbarHostState = SnackbarHostState(),
                     onSelectTopLevel = {},
                     onReconnectRelay = {},
                     onForgetRelay = {},
                     onRevalidateAll = {},
                     onThemeMode = {},
+                    onAppLockChange = {},
                     onOpenNotificationSettings = {},
                 )
             }

@@ -3,6 +3,7 @@ package com.lerdr.app.settings
 import androidx.compose.runtime.Immutable
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import javax.inject.Inject
@@ -36,8 +37,24 @@ class AppPreferences @Inject constructor(
         dataStore.edit { it[THEME_MODE_KEY] = mode.stored }
     }
 
+    /**
+     * Opt-in app lock (oracle docs/security.md "device verification") —
+     * when on, `security.LockGate` covers the UI at process start until
+     * `BiometricPrompt` verifies the user once. Defaults off. UX gate
+     * only: this flag is not a secret and the Keystore credential seal
+     * is unaffected by it.
+     */
+    val appLockEnabled: Flow<Boolean> = dataStore.data
+        .map { it[APP_LOCK_ENABLED_KEY] ?: false }
+        .distinctUntilChanged()
+
+    suspend fun setAppLockEnabled(enabled: Boolean) {
+        dataStore.edit { it[APP_LOCK_ENABLED_KEY] = enabled }
+    }
+
     companion object {
         val THEME_MODE_KEY = stringPreferencesKey("lerdr_theme_mode")
+        val APP_LOCK_ENABLED_KEY = booleanPreferencesKey("lerdr_app_lock_enabled")
     }
 }
 

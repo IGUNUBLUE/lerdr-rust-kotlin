@@ -34,6 +34,11 @@ data class RelayRowUi(
 data class SettingsUiState(
     val relays: List<RelayRowUi> = emptyList(),
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    /**
+     * App-lock toggle (docs/04 §App "biometric lock"). The gate itself
+     * lives in `security.LockGate`; this flag is its durable switch.
+     */
+    val appLockEnabled: Boolean = false,
     /** Transient failure from an action — rendered once as a snackbar. */
     val lastError: String? = null,
 )
@@ -52,6 +57,8 @@ data class SettingsUiState(
  *   registry diff tears the session down itself.
  * - [setThemeMode] — persists the picker selection (the screen applies
  *   the visual switch — that needs a `Context`, which a VM never holds).
+ * - [setAppLockEnabled] — persists the app-lock toggle; `LockViewModel`
+ *   observes the same preference and re-locks the moment it flips on.
  */
 class SettingsViewModel(
     private val sessions: SessionRepository,
@@ -64,11 +71,13 @@ class SettingsViewModel(
         sessions.relays,
         sessions.connections,
         preferences.themeMode,
+        preferences.appLockEnabled,
         lastError,
-    ) { relays, connections, themeMode, error ->
+    ) { relays, connections, themeMode, appLockEnabled, error ->
         SettingsUiState(
             relays = relays.map { it.toRow(connections[it.id]) },
             themeMode = themeMode,
+            appLockEnabled = appLockEnabled,
             lastError = error,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState())
@@ -102,6 +111,15 @@ class SettingsViewModel(
     /** Theme picker intent — persists; the screen applies the switch. */
     fun setThemeMode(mode: ThemeMode) {
         viewModelScope.launch { preferences.setThemeMode(mode) }
+    }
+
+    /**
+     * App-lock toggle intent — persists. Enabling locks the app right
+     * away (the gate's session latch is off until the first successful
+     * verification), which doubles as a "verify the prompt works" check.
+     */
+    fun setAppLockEnabled(enabled: Boolean) {
+        viewModelScope.launch { preferences.setAppLockEnabled(enabled) }
     }
 
     /** Snackbar consumed the error. */

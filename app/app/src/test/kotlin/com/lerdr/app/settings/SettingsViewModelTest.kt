@@ -225,4 +225,16 @@ class SettingsViewModelTest {
         h.await { viewModel.uiState.value.themeMode == ThemeMode.DARK }
         assertThat(h.preferences.themeMode.first()).isEqualTo(ThemeMode.DARK)
     }
+
+    @Test
+    fun `app lock intent persists and flows back into ui state`() = runTest {
+        val h = Harness(this, tmp.root)
+        val viewModel = h.viewModel()
+        backgroundScope.launch { viewModel.uiState.collect { } }
+        h.await { !viewModel.uiState.value.appLockEnabled }
+
+        viewModel.setAppLockEnabled(true)
+        h.await { viewModel.uiState.value.appLockEnabled }
+        assertThat(h.preferences.appLockEnabled.first()).isTrue()
+    }
 }

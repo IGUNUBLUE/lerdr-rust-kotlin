@@ -2,8 +2,8 @@ package com.lerdr.app
 
 import android.content.Intent
 import android.os.Bundle
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
@@ -12,6 +12,7 @@ import com.lerdr.app.activity.ActivityScreen
 import com.lerdr.app.home.HomeScreen
 import com.lerdr.app.notify.RequestPostNotificationsPermission
 import com.lerdr.app.pairing.PairingScreen
+import com.lerdr.app.security.LockGate
 import com.lerdr.app.session.AgentFeedScreen
 import com.lerdr.app.session.FilesScreen
 import com.lerdr.app.session.SessionRepository
@@ -29,7 +30,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.receiveAsFlow
 
 @AndroidEntryPoint
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
 
     @Inject
     lateinit var sessions: SessionRepository
@@ -67,8 +68,12 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                LerdrNavDisplay(navigator = navigator) {
-                    lerdrEntries(navigator)
+                // App-lock gate — the oracle "verifies before it will
+                // connect at open"; locked content is never composed.
+                LockGate {
+                    LerdrNavDisplay(navigator = navigator) {
+                        lerdrEntries(navigator)
+                    }
                 }
             }
         }

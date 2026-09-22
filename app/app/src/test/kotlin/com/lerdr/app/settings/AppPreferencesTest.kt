@@ -33,6 +33,21 @@ class AppPreferencesTest {
     }
 
     @Test
+    fun `app lock defaults off and persists`() = runTest {
+        val dataStore = PreferenceDataStoreFactory.create(scope = backgroundScope) {
+            File(tmp.root, "lock.preferences_pb")
+        }
+        val preferences = AppPreferences(dataStore)
+        assertThat(preferences.appLockEnabled.first()).isFalse()
+
+        preferences.setAppLockEnabled(true)
+        assertThat(preferences.appLockEnabled.first()).isTrue()
+
+        // A fresh wrapper over the same store reads the durable value.
+        assertThat(AppPreferences(dataStore).appLockEnabled.first()).isTrue()
+    }
+
+    @Test
     fun `unrecognized stored value falls back to SYSTEM`() = runTest {
         val dataStore = PreferenceDataStoreFactory.create(scope = backgroundScope) {
             File(tmp.root, "foreign.preferences_pb")

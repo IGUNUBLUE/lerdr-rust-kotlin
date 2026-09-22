@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Devices
+import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Notifications
@@ -38,6 +39,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -60,6 +62,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.lerdr.app.security.BiometricPromptHelper
+import com.lerdr.app.security.SecurityEntryPoint
 import com.lerdr.core.designsystem.components.LerdrNavItem
 import com.lerdr.core.designsystem.components.LerdrShortNavigationBar
 import com.lerdr.core.designsystem.theme.LerdrTheme
@@ -69,20 +73,24 @@ import lerdr.core.protocol.Protocol
 
 /**
  * Settings (docs/04 §Settings) — Relays with working lifecycle actions,
- * Appearance (per-app night mode, API 31+), Notifications status +
- * system-settings link, About. Every visible control does something; rows
- * without a backend (devices, speech, updates) stay absent on purpose.
+ * Security (app lock), Appearance (per-app night mode, API 31+),
+ * Notifications status + system-settings link, About. Every visible
+ * control does something; rows without a backend (devices, speech,
+ * updates) stay absent on purpose.
  */
 @Composable
 fun SettingsScreen(
     onSelectTopLevel: (LerdrKey) -> Unit,
 ) {
     // hilt-navigation-compose is absent — pull the bound singletons
-    // through the screen's entry point.
+    // through the screen's entry points.
     val context = LocalContext.current
     val appContext = context.applicationContext
     val entryPoint = remember(appContext) {
         EntryPointAccessors.fromApplication(appContext, SettingsEntryPoint::class.java)
+    }
+    val securityEntryPoint = remember(appContext) {
+        EntryPointAccessors.fromApplication(appContext, SecurityEntryPoint::class.java)
     }
     val viewModel: SettingsViewModel = viewModel {
         SettingsViewModel(entryPoint.sessionRepository(), entryPoint.appPreferences())
@@ -101,6 +109,10 @@ fun SettingsScreen(
         uiState = uiState,
         appVersion = remember { appVersionName(context) },
         notificationsEnabled = rememberNotificationsEnabled(context),
+        appLockReady = rememberAppLockReady(
+            context,
+            securityEntryPoint.biometricPromptHelper(),
+        ),
         snackbarHostState = snackbarHostState,
         onSelectTopLevel = onSelectTopLevel,
         onReconnectRelay = viewModel::reconnectRelay,
@@ -110,6 +122,7 @@ fun SettingsScreen(
             viewModel.setThemeMode(mode)
             applyThemeMode(context, mode)
         },
+        onAppLockChange = viewModel::setAppLockEnabled,
         onOpenNotificationSettings = { openNotificationSettings(context) },
     )
 }
@@ -120,12 +133,14 @@ fun SettingsContent(
     uiState: SettingsUiState,
     appVersion: String,
     notificationsEnabled: Boolean,
+    appLockReady: Boolean,
     snackbarHostState: SnackbarHostState,
     onSelectTopLevel: (LerdrKey) -> Unit,
     onReconnectRelay: (String) -> Unit,
     onForgetRelay: (String) -> Unit,
     onRevalidateAll: () -> Unit,
     onThemeMode: (ThemeMode) -> Unit,
+    onAppLockChange: (Boolean) -> Unit,
     onOpenNotificationSettings: () -> Unit,
 ) {
     val spacing = LerdrTheme.spacing
@@ -190,6 +205,41 @@ fun SettingsContent(
                     onReconnect = { onReconnectRelay(relay.relayId) },
                     onForget = { forgetTarget = relay },
                     modifier = Modifier.padding(horizontal = spacing.medium),
+                )
+            }
+
+            item(key = "security-header") {
+                SectionHeader(title = "Security")
+            }
+            item(key = "security-app-lock") {
+                ListItem(
+                    headlineContent = { Text("App lock") },
+                    supportingContent = {
+                        Text(
+                            when {
+                                !uiState.appLockEnabled ->
+                                    "Require biometrics or the device PIN to open Lerdr."
+                                appLockReady ->
+                                    "On — verifies once every time the app opens."
+                                else ->
+                                    "On, but no screen lock is set up — " +
+                                        "the gate opens without verifying."
+                            },
+                        )
+                    },
+                    leadingContent = {
+                        Icon(
+                            Icons.Default.Fingerprint,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = uiState.appLockEnabled,
+                            onCheckedChange = onAppLockChange,
+                        )
+                    },
                 )
             }
 
@@ -429,6 +479,35 @@ private fun rememberNotificationsEnabled(context: Context): Boolean {
     return enabled
 }
 
+/**
+ * Whether an authenticator can run at all — re-probed on resume because
+ * the user can enrol a biometric or a lockscreen in system settings
+ * between visits, and the App lock row copy follows what the gate would
+ * actually do.
+ */
+@Composable
+private fun rememberAppLockReady(
+    context: Context,
+    promptHelper: BiometricPromptHelper,
+): Boolean {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val ready by produceState(
+        initialValue = promptHelper.canPrompt(context),
+        context,
+        lifecycleOwner,
+        promptHelper,
+    ) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                value = promptHelper.canPrompt(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        awaitDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    return ready
+}
+
 /** `ACTION_APP_NOTIFICATION_SETTINGS`, falling back to the app-info page. */
 private fun openNotificationSettings(context: Context) {
     val direct = Intent(AndroidSettings.ACTION_APP_NOTIFICATION_SETTINGS)
@@ -513,12 +592,14 @@ private fun SettingsContentPreview() {
             ),
             appVersion = "0.1.0",
             notificationsEnabled = true,
+            appLockReady = true,
             snackbarHostState = remember { SnackbarHostState() },
             onSelectTopLevel = {},
             onReconnectRelay = {},
             onForgetRelay = {},
             onRevalidateAll = {},
             onThemeMode = {},
+            onAppLockChange = {},
             onOpenNotificationSettings = {},
         )
     }
