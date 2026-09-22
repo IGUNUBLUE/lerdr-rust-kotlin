@@ -24,4 +24,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.navigation3)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.truth)
 }

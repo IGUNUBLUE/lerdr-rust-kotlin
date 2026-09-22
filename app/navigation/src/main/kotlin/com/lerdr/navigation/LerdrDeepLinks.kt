@@ -14,6 +14,8 @@ import java.net.URLDecoder
  * - `lerdr://pair?<query>` and `lerdr://pair#<fragment>` — the Android form
  *   of the setup link (`<appOrigin>/#<query>` in the oracle; see
  *   docs/specs/pairing-store.md §A.2).
+ * - `lerdr://agent?pane_id=<id>` — notification deep link into the agent
+ *   feed (`NotifyDeepLinks.agent`); `lerdr://agents` lands on Home.
  * - `<scheme>://<anything>[?|#]…setup=…` — a pasted/web setup link. Any link
  *   carrying a `setup` param routes to Pairing.
  */
@@ -21,6 +23,8 @@ object LerdrDeepLinks {
 
     const val SCHEME = "lerdr"
     const val HOST_PAIR = "pair"
+    const val HOST_AGENT = "agent"
+    const val HOST_AGENTS = "agents"
 
     /**
      * Resolve a URI string to its destination key, or null when the link is
@@ -32,6 +36,10 @@ object LerdrDeepLinks {
         if (uri.scheme == SCHEME) {
             return when (uri.host) {
                 HOST_PAIR -> LerdrKey.Pairing(setupLinkFromUri(uri))
+                HOST_AGENT -> decodeParams(uri.rawQuery)["pane_id"]
+                    ?.takeIf(String::isNotEmpty)
+                    ?.let(LerdrKey::AgentFeed)
+                HOST_AGENTS -> LerdrKey.Home
                 else -> null
             }
         }
