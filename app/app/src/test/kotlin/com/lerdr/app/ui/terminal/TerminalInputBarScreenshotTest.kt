@@ -11,6 +11,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 /**
  * Roborazzi smoke coverage for the terminal input bar — records via
@@ -19,12 +20,16 @@ import org.robolectric.annotation.Config
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = com.lerdr.app.TestApp::class)
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
 class TerminalInputBarScreenshotTest {
 
     @get:Rule
     val composeRule = createAndroidComposeRule<ComponentActivity>()
 
     private val options = RoborazziOptions(
+        // Dump (the JVM default) paints a semantics-tree overlay whose
+        // node text jitters run-to-run — force a plain bitmap capture.
+        captureType = RoborazziOptions.CaptureType.Screenshot(),
         compareOptions = RoborazziOptions.CompareOptions(changeThreshold = 0.02f),
     )
 
