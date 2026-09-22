@@ -335,6 +335,7 @@ class SessionRepository @Inject constructor(
             UnknownServerMessage(type = type, fields = raw)
         }
         reducer.handle(relayId, message)
+        _frames.tryEmit(RelayFrame(relayId, message))
 
         // Pane frames — raw JsonObject into the surface (presence semantics).
         when (type) {
@@ -1056,6 +1057,20 @@ class SessionRepository @Inject constructor(
     val connections get() = connectionStore.connections
     val relays get() = relayRegistry.relays
 
+    /**
+     * Decoded server frames after the internal routes ran — feature VMs
+     * (push policy, devices, speech, worktrees) observe replies that are
+     * not `command_result`-correlated here (`push_policy`,
+     * `push_test_result`, unsolicited `speech_voices`, …). Buffer-bounded;
+     * slow collectors drop frames rather than stall the session.
+     */
+    val frames: kotlinx.coroutines.flow.SharedFlow<RelayFrame> get() = _frames
+    private val _frames =
+        kotlinx.coroutines.flow.MutableSharedFlow<RelayFrame>(extraBufferCapacity = 64)
+
+    /** One decoded frame tagged with its origin relay. */
+    data class RelayFrame(val relayId: String, val message: ServerMessage)
+
     // ── command plumbing ─────────────────────────────────────────────
 
     private fun requireAgent(paneId: String): Agent =
@@ -1082,6 +1097,21 @@ class SessionRepository @Inject constructor(
             ?: throw TransportException.NotConnected()
         return session.request(message.withAgentTarget(agent), timeoutMs)
     }
+
+    /**
+     * Public `requestRaw` — feature VMs send catalog actions (`device_list`,
+     * `push_policy_set`, `speech_voices_list`, `worktree_*`, `tab_reorder`,
+     * `speak_text`, …) whose replies come back as the correlated
+     * `command_result` (payload in `data`) and/or as typed frames on
+     * [frames]. Extras spread over the top-level map exactly like the
+     * oracle's `sendCommand`.
+     */
+    suspend fun request(
+        relayId: String,
+        message: Inbound,
+        extras: Map<String, kotlinx.serialization.json.JsonElement> = emptyMap(),
+        timeoutMs: Long = ReconnectPolicy.COMMAND_TIMEOUT_MS,
+    ): CommandResultMessage = requestRaw(relayId, message, extras, timeoutMs)
 
     /**
      * `sendCommand` for messages carrying fields the flat `Inbound` cannot
