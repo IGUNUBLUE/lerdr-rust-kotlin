@@ -37,7 +37,6 @@
 
 mod actions;
 mod actor;
-pub(crate) mod audit;
 mod fingerprint;
 mod router;
 mod snapshot;

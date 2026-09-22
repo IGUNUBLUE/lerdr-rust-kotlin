@@ -10,10 +10,12 @@
 //!   coalescing.
 //! - [`lease`]: pane-size lease arbitration with an injected clock.
 //! - [`json`]: Go-compatible JSON formatting shared by all of the above.
+//! - [`audit`]: the secret-safe remote-write audit log (`internal/audit`).
 //!
 //! Golden vectors under `fixtures/` are the oracle; conformance tests live
 //! in `tests/`.
 
+pub mod audit;
 pub mod delta;
 pub mod json;
 pub mod lease;
