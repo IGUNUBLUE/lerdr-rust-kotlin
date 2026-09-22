@@ -331,16 +331,24 @@ none block Phase 1 continuation.
   with force escalation on `dirty_worktree_requires_force`) entered from
   the session bar; workspace tab strip with pointer-driven reorder
   (`insert_index` pre-move semantics) under the mode switch.
+- **Conversation history lands** — `internal/conversation` port:
+  provider roots (claude/codex/qoder/pi/omp/omo/opencode/hermes),
+  bounded tail/JSONL/sqlite reads behind strict containment
+  (canonicalized root prefix + `O_NOFOLLOW`), `ConversationBrowser`
+  behind a thin action adapter with the oracle's
+  `sameConversationTuple` post-read recheck. Fixture-verified: 9
+  suites, 34 vectors, 52 steps. Deliberate deltas: raw entry-id
+  cursors instead of signed `hb1.` envelopes, no prepare/snapshot
+  jobs.
+- **Shadow-diff harness lands** — `lerdr-shadow` scripted WS client +
+  normalizer + differ, `lerdr-fake-herdr` fixture endpoint, and
+  `tools/shadow/shadow_diff.py` driving Rust-vs-Rust self mode and
+  Go-oracle-vs-Rust mode on one Herdr socket. Both gates report
+  `IDENTICAL` on the `core` scenario.
 
 ### Still open
 
 - **Push queue persistence** — `queue.json` in-memory only (see above).
-- **Conversation history** — readers in flight (rs-conversation);
-  `get_conversation_history` still returns the oracle's browserless
-  failure until the router arm re-points.
-- **Shadow-diff harness** — in flight (rs-shadow-diff): `lerdr-shadow`
-  scripted client + scenario runner diffing normalized frame streams
-  across both relays on one Herdr socket; Phase-3 exit gate.
 - **Idle RSS baseline (release builds, same socket, 2026-09)** — Go
   `lerdr` 0.27.1 ≈ 22.3 MB vs Rust `lerdr-relay` ≈ 10.4 MB at idle
   (~2.1x lighter). Load comparison still owed by the shadow harness.
