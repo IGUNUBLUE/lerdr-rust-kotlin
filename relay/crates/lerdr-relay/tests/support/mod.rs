@@ -274,8 +274,8 @@ pub fn serve(
             "client-1".to_owned(),
             config,
             parent,
-            Some(Box::new(move |sink| {
-                let _ = sink_tx.send(sink);
+            Some(Box::new(move |registration| {
+                let _ = sink_tx.send(registration.sink);
             })),
         )
         .await

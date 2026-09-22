@@ -30,7 +30,10 @@ use tracing::{debug, info, info_span, warn, Instrument};
 use crate::auth::DeviceAuthStore;
 use crate::handshake::OsKeySource;
 use crate::router::{ActionRouter, StubRouter};
-use crate::session::{serve_connection, ClientSink, ConnectionEnd, OnConnect, SessionConfig};
+use crate::session::{
+    serve_connection, ClientRegistration, ClientSink, ConnectionEnd, DisconnectCredentials,
+    OnConnect, SessionConfig,
+};
 use crate::ws::WsIo;
 
 /// `wsMaxReadBytes` — the largest WS message the relay reads (21 MiB).
@@ -52,10 +55,24 @@ struct Shared {
     make_router: RouterFactory,
     config: SessionConfig,
     shutdown: CancellationToken,
-    /// `hub.clients` — live push endpoints by `client-N`.
-    clients: Mutex<HashMap<String, ClientSink>>,
+    /// `hub.clients` + `hub.blocked` under the `register`/`mu` pair — one
+    /// mutex serializes registration against the `DisconnectCredential`
+    /// sweep like the oracle's lock ordering does.
+    registry: Mutex<Registry>,
     next_client_id: AtomicU64,
     tracker: TaskTracker,
+}
+
+/// The live-session registry — `hub.clients` plus the credential index.
+#[derive(Default)]
+struct Registry {
+    /// `client-N` → push endpoint, credential binding, kill switch.
+    clients: HashMap<String, ClientRegistration>,
+    /// `credential_id → through_version` — `hub.blocked`: once a
+    /// revocation sweep runs, sessions authenticating at or below the
+    /// fenced version never register (the completion-to-registration
+    /// race the deferred disconnect leaves open, `ws.go:211-217`).
+    blocked: HashMap<String, u64>,
 }
 
 impl Relay {
@@ -75,7 +92,7 @@ impl Relay {
                 make_router: Arc::new(factory),
                 config: SessionConfig::default(),
                 shutdown: CancellationToken::new(),
-                clients: Mutex::new(HashMap::new()),
+                registry: Mutex::new(Registry::default()),
                 next_client_id: AtomicU64::new(0),
                 tracker: TaskTracker::new(),
             }),
@@ -90,7 +107,7 @@ impl Relay {
             make_router: self.shared.make_router.clone(),
             config,
             shutdown: self.shared.shutdown.clone(),
-            clients: Mutex::new(HashMap::new()),
+            registry: Mutex::new(Registry::default()),
             next_client_id: AtomicU64::new(0),
             tracker: TaskTracker::new(),
         });
@@ -105,16 +122,22 @@ impl Relay {
     /// `hub.clients` — live push endpoints, keyed by `client-N`.
     pub fn client_sink(&self, client_id: &str) -> Option<ClientSink> {
         self.shared
-            .clients
+            .registry
             .lock()
-            .expect("clients poisoned")
+            .expect("registry poisoned")
+            .clients
             .get(client_id)
-            .cloned()
+            .map(|registration| registration.sink.clone())
     }
 
     /// `Metrics.ConnectedClients`.
     pub fn connected_clients(&self) -> usize {
-        self.shared.clients.lock().expect("clients poisoned").len()
+        self.shared
+            .registry
+            .lock()
+            .expect("registry poisoned")
+            .clients
+            .len()
     }
 
     /// `hub.broadcast` — push a frame to every live client. Sinks that
@@ -128,12 +151,12 @@ impl Relay {
     /// requester already carries the frame in its own response (the
     /// oracle's `broadcastToAll` + per-client response ordering).
     pub fn broadcast_except(&self, message: &Outbound, exclude: &str) {
-        let clients = self.shared.clients.lock().expect("clients poisoned");
-        for (id, sink) in clients.iter() {
+        let registry = self.shared.registry.lock().expect("registry poisoned");
+        for (id, registration) in registry.clients.iter() {
             if id == exclude {
                 continue;
             }
-            let _ = sink.try_send(message);
+            let _ = registration.sink.try_send(message);
         }
     }
 
@@ -163,6 +186,37 @@ impl Relay {
         tracker.close();
         tracker.wait().await;
         Ok(())
+    }
+}
+
+impl Shared {
+    /// `s.disconnectCredentials` → `hub.DisconnectCredential` per pair
+    /// (`ws.go:612-634`). For each `(credential_id, through_version)` the
+    /// fence lands in `blocked` first — registrations at or below it are
+    /// refused from now on — then every live session bound to the
+    /// credential at or below `through_version` gets the
+    /// `GoingAway`/"device credential revoked" close. The requester is
+    /// skipped: its own deferred self-close stands.
+    fn disconnect_credentials(&self, requester: &str, pairs: &[(String, u64)]) {
+        let mut registry = self.registry.lock().expect("registry poisoned");
+        for (credential_id, through_version) in pairs {
+            if credential_id.is_empty() || *through_version == 0 {
+                continue;
+            }
+            let fence = registry.blocked.entry(credential_id.clone()).or_insert(0);
+            *fence = (*fence).max(*through_version);
+            for (client_id, registration) in registry.clients.iter() {
+                if client_id == requester {
+                    continue;
+                }
+                let identity = &registration.identity;
+                if identity.credential_id == *credential_id
+                    && identity.credential_version <= *through_version
+                {
+                    registration.close_credential_revoked();
+                }
+            }
+        }
     }
 }
 
@@ -226,17 +280,39 @@ async fn handle_socket(shared: Arc<Shared>, socket: WebSocket, addr: SocketAddr)
 
     let auth = Arc::clone(&shared.auth);
     let make_router = Arc::clone(&shared.make_router);
-    let config = shared.config.clone();
+    let mut config = shared.config.clone();
     let shared_for_task = Arc::clone(&shared);
     let shared_for_register = Arc::clone(&shared);
+    // `s.disconnectCredentials` — the session actor reaches the registry
+    // back through this hook when `revoke_device`/`reset_devices` lands;
+    // the sweep runs on the actor's 250 ms deferral.
+    let shared_for_disconnect = Arc::clone(&shared);
+    config.disconnect_credentials =
+        Some(DisconnectCredentials(Arc::new(move |requester, pairs| {
+            shared_for_disconnect.disconnect_credentials(requester, pairs)
+        })));
     let registered_id = client_id.clone();
     shared.tracker.spawn(async move {
-        let register: OnConnect = Box::new(move |sink| {
-            shared_for_register
-                .clients
+        let register: OnConnect = Box::new(move |registration| {
+            let mut registry = shared_for_register
+                .registry
                 .lock()
-                .expect("clients poisoned")
-                .insert(registered_id.clone(), sink);
+                .expect("registry poisoned");
+            // `identity.CredentialVersion <= blockedVersion` — a session
+            // whose handshake committed before the sweep but registers
+            // after it is refused outright (`conn.CloseNow()`).
+            let blocked = registry
+                .blocked
+                .get(&registration.identity.credential_id)
+                .copied()
+                .unwrap_or(0);
+            if !registration.identity.credential_id.is_empty()
+                && registration.identity.credential_version <= blocked
+            {
+                registration.close_now();
+                return;
+            }
+            registry.clients.insert(registered_id.clone(), registration);
         });
         let end = serve_connection(
             WsIo::new(socket),
@@ -251,9 +327,10 @@ async fn handle_socket(shared: Arc<Shared>, socket: WebSocket, addr: SocketAddr)
         .instrument(span)
         .await;
         shared_for_task
-            .clients
+            .registry
             .lock()
-            .expect("clients poisoned")
+            .expect("registry poisoned")
+            .clients
             .remove(&client_id);
         match &end {
             ConnectionEnd::HandshakeFailed(e) if e.peer_closed() => {

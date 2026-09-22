@@ -102,6 +102,17 @@ pub struct SessionConfig {
     /// (the next `arm_invitation`/`ensure_pairing` — SIGUSR1 or restart —
     /// mints a fresh one).
     pub reset_bootstrap: Option<BootstrapRearm>,
+    /// `s.disconnectCredentials` reach — after a successful
+    /// `revoke_device`/`reset_devices` answers (and the 250 ms deferral
+    /// elapses), the actor hands the affected `(credential_id,
+    /// through_version)` fences here so the server can close every OTHER
+    /// live session bound to them (`ws.go:612`). The [`Relay`] wires its
+    /// own registry in per connection, overwriting whatever is set here;
+    /// `None` — a bare `serve_connection` with no registry — leaves peers
+    /// to the lazy `authorize` fence.
+    ///
+    /// [`Relay`]: crate::server::Relay
+    pub disconnect_credentials: Option<DisconnectCredentials>,
 }
 
 /// Per-connection snapshot builder — wraps `Arc<dyn Fn>` so
@@ -121,6 +132,32 @@ impl SnapshotFn {
     }
 }
 
+/// The peer-disconnect callable — `(requester_client_id, fences)` where
+/// each fence is `(credential_id, through_version)`.
+pub type DisconnectFn = dyn Fn(&str, &[(String, u64)]) + Send + Sync;
+
+/// The peer-disconnect hook — `s.disconnectCredentials`. Arguments are the
+/// requester's `client_id` (skipped — the requester keeps its own deferred
+/// self-close) and the `(credential_id, through_version)` fences, one per
+/// destroyed credential: the tombstone's post-bump `credential.Version`
+/// for `revoke_device`, the pre-reset versions for `reset_devices`
+/// (`server.go:817`, `server.go:846-848`).
+#[derive(Clone)]
+pub struct DisconnectCredentials(pub std::sync::Arc<DisconnectFn>);
+
+impl std::fmt::Debug for DisconnectCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DisconnectCredentials(..)")
+    }
+}
+
+impl DisconnectCredentials {
+    /// Fire the sweep — `hub.DisconnectCredential` per pair.
+    pub fn disconnect(&self, requester: &str, pairs: &[(String, u64)]) {
+        (self.0)(requester, pairs)
+    }
+}
+
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
@@ -133,6 +170,7 @@ impl Default for SessionConfig {
             snapshot: default_snapshot(),
             snapshot_fn: None,
             reset_bootstrap: None,
+            disconnect_credentials: None,
         }
     }
 }
@@ -326,17 +364,54 @@ impl Signal {
     }
 }
 
+/// What the registry records per session — the `onConnect(client)`
+/// payload. Beyond the push endpoint it carries the committed identity
+/// (the credential→session index key) and the session's kill switch, so
+/// `DisconnectCredential` can close every peer bound to a destroyed
+/// credential — and the `blocked` fence can refuse a registration that
+/// lands behind the sweep.
+pub struct ClientRegistration {
+    /// `Hub.Send` reach.
+    pub sink: ClientSink,
+    /// The committed handshake identity — `client.identity` in Go.
+    pub identity: AuthenticatedIdentity,
+    signal: Signal,
+}
+
+impl ClientRegistration {
+    /// `conn.Close(CloseGoingAway, "device credential revoked")` — the
+    /// close a `DisconnectCredential` peer sees (`ws.go:630`).
+    pub fn close_credential_revoked(&self) {
+        self.signal.fire(
+            CloseMode::Graceful(CloseStatus::GoingAway),
+            "device credential revoked",
+            EndKind::Evicted(EvictReason::CredentialRevoked),
+        );
+    }
+
+    /// `conn.CloseNow()` — a registration that arrives at or below the
+    /// `blocked` fence drops without a close frame (`ws.go:212-217`).
+    pub fn close_now(&self) {
+        self.signal.fire(
+            CloseMode::Now,
+            "",
+            EndKind::Evicted(EvictReason::CredentialRevoked),
+        );
+    }
+}
+
 /// `SetOnConnect` — fires once the session is registered, handing the
-/// server's registry the push endpoint for this client (`Hub.Send` reach).
-pub type OnConnect = Box<dyn FnOnce(ClientSink) + Send>;
+/// server's registry this client's [`ClientRegistration`].
+pub type OnConnect = Box<dyn FnOnce(ClientRegistration) + Send>;
 
 /// `serve_connection` — one client from upgrade to close: handshake, then
 /// the session actor + pumps, all joined before return. Transport-agnostic;
 /// `server.rs` feeds it [`WsIo`](crate::ws::WsIo), tests feed it duplexes.
 ///
-/// `on_connect` receives this client's [`ClientSink`] right after the
-/// handshake commits — the registry stores it for producers; the sink is
-/// dropped (and the session torn down) when this returns.
+/// `on_connect` receives this client's [`ClientRegistration`] right after
+/// the handshake commits — the registry stores it for producers and the
+/// credential→session index; it is dropped (and the session torn down)
+/// when this returns.
 #[allow(clippy::too_many_arguments)]
 pub async fn serve_connection<I, A, R, K>(
     io: I,
@@ -425,9 +500,15 @@ where
     let (sealed_tx, sealed_rx) = mpsc::channel(config.send_buffer_items);
 
     // Registration — `onConnect(client)` — before the first frame moves.
+    // The registry gets the push endpoint, the credential binding the
+    // `DisconnectCredential` sweep matches on, and the kill switch.
     if let Some(hook) = on_connect {
-        hook(ClientSink {
-            tx: outbound_tx.clone(),
+        hook(ClientRegistration {
+            sink: ClientSink {
+                tx: outbound_tx.clone(),
+            },
+            identity: identity.clone(),
+            signal: signal.clone(),
         });
     }
 
@@ -465,6 +546,8 @@ where
         signal: signal.clone(),
         config: &config,
         revoked_at: None,
+        pending_disconnects: Vec::new(),
+        self_disconnect: false,
     };
 
     // The actor runs inline — it IS the supervisor's payload. Producers
@@ -508,9 +591,16 @@ struct Actor<'a, A: DeviceAuthStore + ?Sized, R: ActionRouter> {
     signal: Signal,
     config: &'a SessionConfig,
     /// `DisconnectCredential` deferred past the response flush
-    /// (`time.AfterFunc(250ms)` in the oracle) — set when `revoke_device`/
-    /// `reset_devices` destroys this connection's own credential.
+    /// (`time.AfterFunc(250ms)` in the oracle) — armed by a successful
+    /// `revoke_device`/`reset_devices`; peers bound to the destroyed
+    /// credentials are swept through `config.disconnect_credentials` and
+    /// this session closes too when `self_disconnect` is set.
     revoked_at: Option<Instant>,
+    /// `(credential_id, through_version)` fences awaiting the deferred
+    /// sweep — `disconnectCredentials`' argument list.
+    pending_disconnects: Vec<(String, u64)>,
+    /// This connection's own credential is among `pending_disconnects`.
+    self_disconnect: bool,
 }
 
 /// Loop control — `false` stops the actor.
@@ -551,21 +641,17 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
                     STOP
                 }
                 _ = self.signal.token.cancelled() => STOP,
-                // `time.AfterFunc(250ms, DisconnectCredential)` — the
-                // self-revoking client gets its answer, then the door.
+                // `time.AfterFunc(250ms, disconnectCredentials)` — the
+                // requester gets its answer, then the doors: peers bound
+                // to the destroyed credentials are swept through the
+                // registry, this session closes when its own credential
+                // was among them.
                 _ = async {
                     match self.revoked_at {
                         Some(at) => tokio::time::sleep_until(at).await,
                         None => std::future::pending().await,
                     }
-                } => {
-                    self.signal.fire(
-                        CloseMode::Graceful(CloseStatus::GoingAway),
-                        "device credential revoked",
-                        EndKind::Evicted(EvictReason::CredentialRevoked),
-                    );
-                    STOP
-                }
+                } => self.disconnect_revoked(),
                 raw = inbound_rx.recv() => match raw {
                     None => {
                         // The reader exited without firing — abnormal.
@@ -774,8 +860,17 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
                         error: None,
                     },
                 )));
-                if outcome.self_disconnect {
-                    self.revoked_at = Some(Instant::now() + REVOKED_DISCONNECT_DELAY);
+                // `time.AfterFunc(250ms, disconnectCredentials)` — the
+                // response frames above flush first; at the deadline the
+                // peers bound to the destroyed credentials are swept and
+                // this session closes when its own credential was among
+                // them. Back-to-back destructive actions merge into the
+                // earliest pending deadline.
+                if outcome.self_disconnect || !outcome.disconnects.is_empty() {
+                    self.pending_disconnects.extend(outcome.disconnects);
+                    self.self_disconnect |= outcome.self_disconnect;
+                    let at = Instant::now() + REVOKED_DISCONNECT_DELAY;
+                    self.revoked_at = Some(self.revoked_at.map_or(at, |armed| armed.min(at)));
                 }
             }
             Err(error) => {
@@ -847,11 +942,11 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
         }
     }
 
-    /// `revoke_device` — same resolution; on success the oracle also drops
-    /// every session holding the revoked credential. The session registry
-    /// cannot reach peers from inside the actor, so only the self-revoking
-    /// connection gets the deferred close — every other holder is fenced by
-    /// `authorize` on its next action (`ws.go:610-635`'s durable half).
+    /// `revoke_device` — same resolution; on success the oracle drops
+    /// every session holding the revoked credential, deferred past the
+    /// response (`time.AfterFunc(250ms, DisconnectCredential)`). The
+    /// tombstone's post-bump version is the sweep's `through_version`
+    /// fence (`ws.go:617-624`).
     fn admin_revoke(&self, inbound: &Inbound) -> AdminOutcome {
         match self.credential_id_for(&inbound.device_id) {
             Err(error) => AdminOutcome::failed(error.to_string()),
@@ -859,14 +954,15 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
             Ok(Some(credential_id)) => match self.auth.revoke_device(&credential_id) {
                 Ok(credential) => {
                     let self_disconnect = credential.credential_id == self.identity.credential_id;
-                    let outcome = AdminOutcome::ok(DeviceData {
+                    let mut outcome = AdminOutcome::ok(DeviceData {
                         device: device_wire(&credential, false),
                     });
+                    outcome.disconnects =
+                        vec![(credential.credential_id.clone(), credential.version)];
                     if self_disconnect {
-                        outcome.disconnecting()
-                    } else {
-                        outcome
+                        outcome = outcome.disconnecting();
                     }
+                    outcome
                 }
                 Err(error) => AdminOutcome::failed(error.to_string()),
             },
@@ -874,15 +970,29 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
     }
 
     /// `reset_devices` — `ResetWithBootstrap(token, hostname, locale)`:
-    /// every credential and the invitation die in one swap. This
+    /// every credential and the invitation die in one swap. The
+    /// disconnect set is `activeDeviceCredentials` captured BEFORE the
+    /// wipe, each at its pre-reset version (`server.go:830-848`). This
     /// connection's own credential is among them, so success always ends
     /// the session (deferred — the answer must reach the wire first).
     fn admin_reset(&self) -> AdminOutcome {
+        let active = match self.auth.list_devices() {
+            Ok(credentials) => credentials,
+            Err(error) => return AdminOutcome::failed(error.to_string()),
+        };
         match self
             .auth
             .reset_devices(self.config.reset_bootstrap.as_ref(), &self.identity.locale)
         {
-            Ok(()) => AdminOutcome::ok_empty().disconnecting(),
+            Ok(()) => {
+                let mut outcome = AdminOutcome::ok_empty().disconnecting();
+                outcome.disconnects = active
+                    .into_iter()
+                    .filter(|c| !c.revoked)
+                    .map(|c| (c.credential_id, c.version))
+                    .collect();
+                outcome
+            }
             Err(error) => AdminOutcome::failed(error.to_string()),
         }
     }
@@ -940,6 +1050,31 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
         CONTINUE
     }
 
+    /// The deferred `disconnectCredentials` sweep (`ws.go:612-634`): every
+    /// OTHER session bound to a destroyed credential gets the
+    /// `GoingAway`/"device credential revoked" close through the registry
+    /// hook; this session follows when its own credential was among them
+    /// (the oracle's sweep includes the requester — the deferral is what
+    /// protects its response). A peer-only sweep leaves this session
+    /// running.
+    fn disconnect_revoked(&mut self) -> Step {
+        self.revoked_at = None;
+        let pairs = std::mem::take(&mut self.pending_disconnects);
+        if let Some(hook) = &self.config.disconnect_credentials {
+            hook.disconnect(&self.client_id, &pairs);
+        }
+        if !self.self_disconnect {
+            return CONTINUE;
+        }
+        self.self_disconnect = false;
+        self.signal.fire(
+            CloseMode::Graceful(CloseStatus::GoingAway),
+            "device credential revoked",
+            EndKind::Evicted(EvictReason::CredentialRevoked),
+        );
+        STOP
+    }
+
     /// Lag/violation exit: Go ends evicted connections with a normal close
     /// (`removeClient` → `Close(CloseNormal)`).
     fn evict(&mut self, reason: EvictReason) -> Step {
@@ -965,10 +1100,14 @@ fn reader_denied(operation: &str) -> ApiError {
 // ---------------------------------------------------------------------------
 
 /// One device-admin answer: the `command_result` payload (or the refusal
-/// text) plus whether success destroyed this connection's own credential —
-/// `DisconnectCredential`'s deferred close.
+/// text), the credential→version fences `disconnectCredentials` sweeps at
+/// the deferred deadline, and whether success destroyed this connection's
+/// own credential — `DisconnectCredential`'s deferred close.
 struct AdminOutcome {
     result: Result<Option<RawJson>, String>,
+    /// `(credential_id, through_version)` — one per credential the action
+    /// destroyed; the peer sweep disconnects sessions at or below.
+    disconnects: Vec<(String, u64)>,
     self_disconnect: bool,
 }
 
@@ -976,6 +1115,7 @@ impl AdminOutcome {
     fn ok(data: impl Serialize) -> Self {
         Self {
             result: Ok(Some(raw_json(&data))),
+            disconnects: Vec::new(),
             self_disconnect: false,
         }
     }
@@ -983,6 +1123,7 @@ impl AdminOutcome {
     fn ok_empty() -> Self {
         Self {
             result: Ok(None),
+            disconnects: Vec::new(),
             self_disconnect: false,
         }
     }
@@ -990,6 +1131,7 @@ impl AdminOutcome {
     fn failed(error: impl Into<String>) -> Self {
         Self {
             result: Err(error.into()),
+            disconnects: Vec::new(),
             self_disconnect: false,
         }
     }
