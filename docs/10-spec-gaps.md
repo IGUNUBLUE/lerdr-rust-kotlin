@@ -217,3 +217,39 @@ none block Phase 1 continuation.
   assertion in a follow-up.
 - **Binary frames refused on `/ws`** (requireText parity) — `Codec` seam
   in place for the future DataChannel transport.
+
+## Phase-1 round-6 findings (stations, 2025)
+
+### Device-admin (relay)
+
+- **Peer-session revocation is lazy, not prompt** — the oracle disconnects
+  every session bound to a revoked credential; `lerdr-relay` disconnects
+  only the session that performed `revoke_device`. Other sessions on the
+  same credential are fenced at their next action (store re-read). Needs a
+  credential→session index to match oracle promptness.
+- **`reset_devices` during fixture replay kills the replay session** —
+  sweep-style tests must run destructive admin fixtures on a dedicated
+  connection last (the session-test pattern).
+- **Admin responses are two frames** — `command_result` then
+  `action_receipt` on success, `command_result` alone on failure. Generic
+  "one response per request" harness assumptions break.
+
+### Notifications/app
+
+- **`POST_NOTIFICATIONS` is requested at the composition root** —
+  first-run prompt on launch; revisit placement if UX review wants it
+  tied to the first real relay instead.
+- **Roborazzi JVM path defaults to `captureType=Dump`** (semantics
+  overlay, ~1px text jitter). All screenshot tests must force
+  `CaptureType.Screenshot()` + `@GraphicsMode(NATIVE)` or goldens flake.
+- **Foreground suppression is absent by design (v1)** — attention
+  notifications post even while the app is foregrounded.
+
+### Action table (coordinator)
+
+- **Ack ledger records but does not yet project** — `acknowledge_pane`
+  binds `pane_id → state_change_seq`; the `attention_kind` projection
+  that would consume it (agent list "needs you" dimming) doesn't exist.
+- **Pane-size leases ride `stty` via process lookup** — `lease_pane_size`
+  needs `PaneProcessInfo` from Herdr's `pane.inspect`; panes whose TTY
+  can't be resolved fail `failed` like the oracle.
