@@ -18,6 +18,7 @@ use std::sync::Arc;
 use clap::{Args, Parser, Subcommand};
 use lerdr_coord::{ClientSinkLookup, HerdRouterFactory, TopologyActor};
 use lerdr_herdr::Client;
+use lerdr_relay::auth::BootstrapRearm;
 use lerdr_relay::session::{SessionConfig, SnapshotFn};
 use lerdr_relay::store::FileAuthStore;
 use lerdr_relay::Relay;
@@ -287,6 +288,20 @@ async fn run(args: ServeArgs) -> Result<(), BoxError> {
         snapshot_fn: Some(SnapshotFn(Arc::new(move || {
             lerdr_coord::compose_snapshot(&topology_for_snapshot.topology.borrow())
         }))),
+        // `ResetWithBootstrap` — a configured relay key re-arms the
+        // bootstrap invitation after `reset_devices` wipes the store, so
+        // the printed setup link keeps pairing (the oracle feeds
+        // `[]byte(cfg.Token)`; the type requires exactly 32 bytes).
+        reset_bootstrap: cfg.token.as_deref().and_then(|token| {
+            token
+                .as_bytes()
+                .try_into()
+                .ok()
+                .map(|secret| BootstrapRearm {
+                    secret,
+                    name: label.clone(),
+                })
+        }),
         ..SessionConfig::default()
     });
     let _ = relay_cell.set(relay.clone());

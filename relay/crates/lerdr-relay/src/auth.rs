@@ -102,8 +102,65 @@ fn is_zero(v: &i64) -> bool {
     *v == 0
 }
 
+/// `invitationFromRecord` — the public shape `CreateInvitation` returns and
+/// the `create_device_invitation` response embeds (it carries `secret` for
+/// the QR/link). Bookkeeping fields (`failed_attempts`, `next_attempt_at`,
+/// `pending_credential_id`) stay inside the store's record type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssuedInvitation {
+    pub invitation_id: String,
+    pub version: u64,
+    /// base64url of the 32-byte pairing secret — the `setup=` link param.
+    pub secret: String,
+    /// Unix milliseconds.
+    pub expires_at_ms: i64,
+    pub name: String,
+    pub role: Role,
+    pub locale: String,
+}
+
+// Scrub the encoded secret when the issued copy drops, same discipline as
+// the store's own records.
+impl Drop for IssuedInvitation {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.secret);
+    }
+}
+
+/// The bootstrap re-arm for [`DeviceAuthStore::reset_devices`] — the
+/// oracle's `ResetWithBootstrap` inputs (`s.cfg.Token` + `s.hostname`):
+/// after the wipe the printed setup link keeps pairing.
+#[derive(Clone)]
+pub struct BootstrapRearm {
+    /// The raw 32-byte pairing secret — `[]byte(s.cfg.Token)`; its length is
+    /// guaranteed by the type, so a misconfigured token fails at wiring
+    /// time instead of at the action.
+    pub secret: [u8; SECRET_BYTES],
+    /// The re-armed bootstrap record's display name (the host label).
+    pub name: String,
+}
+
+// Never print the token.
+impl std::fmt::Debug for BootstrapRearm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BootstrapRearm")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for BootstrapRearm {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.secret);
+    }
+}
+
 /// Device-auth failures. `is_rejected` decides the close code: rejected
 /// means "stop retrying" (4401), everything else is transient.
+///
+/// The `Display` text doubles as the `command_result.error` payload for the
+/// device-admin actions — the variant strings are the oracle's
+/// `internal/deviceauth` errors verbatim.
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
     /// Selector unknown, version stale, or proof bookkeeping on a dead
@@ -123,6 +180,28 @@ pub enum AuthError {
     /// legitimate device keeps its invitation (`ErrRateLimited`).
     #[error("invitation attempt rate limited")]
     RateLimited,
+    /// No credential carries that id (`ErrNotFound`).
+    #[error("device credential not found")]
+    NotFound,
+    /// The target is the last active controller — revoking it would leave
+    /// the relay unmanageable (`ErrLastController`).
+    #[error("cannot revoke the last controller")]
+    LastController,
+    /// `validateMetadata` rejected the device name — empty, >80 bytes, or
+    /// control characters (`ErrInvalidName`).
+    #[error("invalid device name")]
+    InvalidName,
+    /// The role is neither `controller` nor `reader` (`ErrInvalidRole`).
+    #[error("invalid device role")]
+    InvalidRole,
+    /// `validateMetadata` rejected the locale — empty, >32 bytes, control
+    /// characters, or a space/slash/backslash (`ErrInvalidLocale`).
+    #[error("invalid device locale")]
+    InvalidLocale,
+    /// The store does not implement device administration — surfaced as
+    /// the oracle's nil-`deviceAuth` answer, verbatim (capital D).
+    #[error("Device management is unavailable")]
+    Unsupported,
     /// Store I/O / corruption — transient at the auth boundary.
     #[error("device store failure: {0}")]
     Store(#[source] Box<dyn std::error::Error + Send + Sync>),
@@ -169,4 +248,60 @@ pub trait DeviceAuthStore: Send + Sync {
     /// credential must still exist, be unrevoked, and match `version`
     /// (rotated/revoked credentials stop mid-session actions).
     fn authorize(&self, credential_id: &str, version: u64) -> Option<Credential>;
+
+    // ----- device administration ----------------------------------------
+    //
+    // The session actor serves the device-admin actions straight out of
+    // this store — the `s.deviceAuth.*` calls inside the Go hub's action
+    // switch (`internal/app/server.go`). Stores without an admin surface
+    // keep the defaults and the client gets the oracle's nil-`deviceAuth`
+    // answer ("Device management is unavailable" via
+    // [`AuthError::Unsupported`]).
+
+    /// `ListCredentials` — every credential record, tombstones included;
+    /// the caller filters revoked rows for display and resolves
+    /// `device_id` -> `credential_id` over the full list.
+    fn list_devices(&self) -> Result<Vec<Credential>, AuthError> {
+        Err(AuthError::Unsupported)
+    }
+
+    /// `RenameCredential` — keyed by credential id (not device id), like
+    /// the Go store; `name` is trimmed and `validateMetadata`-checked.
+    /// Returns the updated record.
+    fn rename_device(&self, _credential_id: &str, _name: &str) -> Result<Credential, AuthError> {
+        Err(AuthError::Unsupported)
+    }
+
+    /// `RevokeCredential` — tombstone the credential: `revoked`,
+    /// `version++`, secret scrubbed, and an invitation still pending on it
+    /// dropped. [`AuthError::LastController`] when the target is the last
+    /// active controller. Returns the revoked record.
+    fn revoke_device(&self, _credential_id: &str) -> Result<Credential, AuthError> {
+        Err(AuthError::Unsupported)
+    }
+
+    /// `CreateInvitation` — `validateMetadata` the caller-supplied name,
+    /// role (arrives unvalidated, like `deviceauth.Role(inbound.Role)`),
+    /// and locale, then mint a record (random id + 32-byte secret +
+    /// 10-minute expiry) replacing the invitation slot.
+    fn create_invitation(
+        &self,
+        _name: &str,
+        _role: &str,
+        _locale: &str,
+    ) -> Result<IssuedInvitation, AuthError> {
+        Err(AuthError::Unsupported)
+    }
+
+    /// `ResetWithBootstrap` — wipe every credential and the invitation in
+    /// one atomic swap; `rearm` (the operator's setup token + host label)
+    /// re-installs the `bootstrap` record so the printed link keeps
+    /// pairing. `locale` is the caller's (`identity.Locale`).
+    fn reset_devices(
+        &self,
+        _rearm: Option<&BootstrapRearm>,
+        _locale: &str,
+    ) -> Result<(), AuthError> {
+        Err(AuthError::Unsupported)
+    }
 }

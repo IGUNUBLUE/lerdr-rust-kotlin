@@ -19,20 +19,26 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use lerdr_core::json::MaybeNull;
+use lerdr_core::json::{MaybeNull, RawJson};
 use lerdr_core::protocol::{
-    compatible, decode_failure_response, error_codes, error_response, incompatible_response,
-    ActionClass, ActionMetadata, ApiError, CommandResultMessage, HerdrStatus, Inbound, Outbound,
-    PushConfig, RequestScope, CAPABILITIES, VERSION,
+    action_receipt_response, compatible, decode_failure_response, error_codes, error_response,
+    incompatible_response, ActionClass, ActionMetadata, ActionReceipt, ActionReceiptPhase,
+    ApiError, CommandResultMessage, HerdrStatus, Inbound, Outbound, PushConfig, RequestScope,
+    CAPABILITIES, VERSION,
 };
 use lerdr_core::sendbuffer::{is_replaceable, PushResult, RejectReason, SendBuffer};
 use lerdr_e2ee::Session;
+use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info_span, warn, Instrument};
 
-use crate::auth::{AuthenticatedIdentity, DeviceAuthStore, Role};
+use crate::auth::{
+    AuthError, AuthenticatedIdentity, BootstrapRearm, Credential, DeviceAuthStore,
+    IssuedInvitation, Role,
+};
 use crate::frame::{CloseStatus, FrameIo, FrameRead, FrameWrite, ReadError};
 use crate::handshake::{self, KeySource};
 use crate::router::{ActionRouter, ClientContext};
@@ -47,6 +53,11 @@ pub const INBOUND_CAPACITY: usize = 128;
 /// Producer channel depth — bounded like everything else; a full producer
 /// queue is lag, and lag evicts.
 pub const OUTBOUND_CAPACITY: usize = 64;
+
+/// `time.AfterFunc(250*time.Millisecond, …)` — the grace between answering a
+/// `revoke_device`/`reset_devices` and closing the revoked connection, so
+/// the `command_result` reaches the wire first (`server.go:816, 846`).
+const REVOKED_DISCONNECT_DELAY: Duration = Duration::from_millis(250);
 
 /// Push actions bound to the caller's own device — a reader is as entitled
 /// as a controller (`authorizeAuthenticatedIdentity`).
@@ -84,6 +95,13 @@ pub struct SessionConfig {
     /// late-joining clients get current state (lerdr-coord wires the
     /// topology projection in here).
     pub snapshot_fn: Option<SnapshotFn>,
+    /// The bootstrap re-arm for `reset_devices` — the oracle's
+    /// `ResetWithBootstrap([]byte(cfg.Token), s.hostname, …)` inputs: the
+    /// relay key keeps the printed setup link pairing after the wipe.
+    /// `None` on a tokenless relay resets to a pristine, unpaired store
+    /// (the next `arm_invitation`/`ensure_pairing` — SIGUSR1 or restart —
+    /// mints a fresh one).
+    pub reset_bootstrap: Option<BootstrapRearm>,
 }
 
 /// Per-connection snapshot builder — wraps `Arc<dyn Fn>` so
@@ -114,6 +132,7 @@ impl Default for SessionConfig {
             close_timeout: CLOSE_TIMEOUT,
             snapshot: default_snapshot(),
             snapshot_fn: None,
+            reset_bootstrap: None,
         }
     }
 }
@@ -269,6 +288,9 @@ pub enum EvictReason {
     /// Opened plaintext was not a JSON object — Go closes the connection
     /// for this on the encrypted socket.
     MalformedMessage,
+    /// `revoke_device`/`reset_devices` destroyed this connection's own
+    /// credential — `DisconnectCredential`, deferred past the response.
+    CredentialRevoked,
 }
 
 struct Directive {
@@ -442,6 +464,7 @@ where
         sealed_tx,
         signal: signal.clone(),
         config: &config,
+        revoked_at: None,
     };
 
     // The actor runs inline — it IS the supervisor's payload. Producers
@@ -484,6 +507,10 @@ struct Actor<'a, A: DeviceAuthStore + ?Sized, R: ActionRouter> {
     sealed_tx: mpsc::Sender<Vec<u8>>,
     signal: Signal,
     config: &'a SessionConfig,
+    /// `DisconnectCredential` deferred past the response flush
+    /// (`time.AfterFunc(250ms)` in the oracle) — set when `revoke_device`/
+    /// `reset_devices` destroys this connection's own credential.
+    revoked_at: Option<Instant>,
 }
 
 /// Loop control — `false` stops the actor.
@@ -524,6 +551,21 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
                     STOP
                 }
                 _ = self.signal.token.cancelled() => STOP,
+                // `time.AfterFunc(250ms, DisconnectCredential)` — the
+                // self-revoking client gets its answer, then the door.
+                _ = async {
+                    match self.revoked_at {
+                        Some(at) => tokio::time::sleep_until(at).await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    self.signal.fire(
+                        CloseMode::Graceful(CloseStatus::GoingAway),
+                        "device credential revoked",
+                        EndKind::Evicted(EvictReason::CredentialRevoked),
+                    );
+                    STOP
+                }
                 raw = inbound_rx.recv() => match raw {
                     None => {
                         // The reader exited without firing — abnormal.
@@ -613,6 +655,18 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
         if let Some(error) = self.authorize(&scope.action, &inbound.device_id) {
             return self.enqueue(Outbound::Error(error_response(&inbound.request_id, error)));
         }
+        // Device administration is hub-owned in the oracle — the
+        // `s.deviceAuth.*` arms of the action switch (`server.go:757-853`)
+        // — so it resolves straight out of the auth store here; the router
+        // never sees it.
+        if let Some(reply) = self.device_admin(&scope, &inbound) {
+            for message in reply {
+                if self.enqueue(message) == STOP {
+                    return STOP;
+                }
+            }
+            return CONTINUE;
+        }
         let ctx = ClientContext {
             client_id: &self.client_id,
             identity: &self.identity,
@@ -684,6 +738,169 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
         Some(reader_denied(action.operation))
     }
 
+    /// The device-admin actions — the `s.deviceAuth.*` arms of the oracle's
+    /// action switch (`server.go:757-853`) — answered straight out of the
+    /// auth store. `None` for every other action, which the router sees.
+    ///
+    /// Success answers `command_result` first (the correlated request
+    /// resolves on its payload) then the terminal `action_receipt` at
+    /// `confirmed` — lerdr-coord's "result message first, receipt last"
+    /// ordering. A store refusal answers the `failed` `command_result`
+    /// alone, exactly the oracle's reply shape.
+    fn device_admin(&mut self, scope: &RequestScope, inbound: &Inbound) -> Option<Vec<Outbound>> {
+        let outcome = match scope.action.operation {
+            "device_list" => self.admin_list(),
+            "create_device_invitation" => self.admin_create_invitation(inbound),
+            "rename_device" => self.admin_rename(inbound),
+            "revoke_device" => self.admin_revoke(inbound),
+            "reset_devices" => self.admin_reset(),
+            _ => return None,
+        };
+        let mut outbound = Vec::with_capacity(2);
+        match outcome.result {
+            Ok(data) => {
+                outbound.push(command_result(
+                    &inbound.request_id,
+                    scope.action.operation,
+                    true,
+                    "",
+                    data,
+                ));
+                outbound.push(Outbound::ActionReceipt(action_receipt_response(
+                    &inbound.request_id,
+                    ActionReceipt {
+                        action_id: scope.action_id.clone(),
+                        phase: ActionReceiptPhase::from(ActionReceiptPhase::CONFIRMED),
+                        error: None,
+                    },
+                )));
+                if outcome.self_disconnect {
+                    self.revoked_at = Some(Instant::now() + REVOKED_DISCONNECT_DELAY);
+                }
+            }
+            Err(error) => {
+                outbound.push(command_result(
+                    &inbound.request_id,
+                    scope.action.operation,
+                    false,
+                    &error,
+                    None,
+                ));
+            }
+        }
+        Some(outbound)
+    }
+
+    /// `device_list` — `activeDeviceCredentials` (tombstones filtered,
+    /// `current` marked on the caller's own credential) plus `device_id` and
+    /// `role` from the session identity — `client.Identity()` in the oracle,
+    /// which the `authorizeDeviceAction` refresh never reaches (it mutates a
+    /// copy).
+    fn admin_list(&self) -> AdminOutcome {
+        let credentials = match self.auth.list_devices() {
+            Ok(credentials) => credentials,
+            Err(error) => return AdminOutcome::failed(error.to_string()),
+        };
+        let role = self.identity.role;
+        let devices = credentials
+            .iter()
+            .filter(|c| !c.revoked)
+            .map(|c| device_wire(c, c.credential_id == self.identity.credential_id))
+            .collect();
+        AdminOutcome::ok(DeviceListData {
+            current_device_id: self.identity.device_id.clone(),
+            devices,
+            role,
+        })
+    }
+
+    /// `create_device_invitation` — `CreateInvitation(inbound.Name,
+    /// Role(inbound.Role), identity.Locale)`: name and role arrive raw from
+    /// the wire for the store's `validateMetadata`; the locale is the
+    /// caller's, not the message's.
+    fn admin_create_invitation(&self, inbound: &Inbound) -> AdminOutcome {
+        match self
+            .auth
+            .create_invitation(&inbound.name, &inbound.role, &self.identity.locale)
+        {
+            Ok(invitation) => AdminOutcome::ok(InvitationData {
+                invitation: invitation_wire(&invitation),
+            }),
+            Err(error) => AdminOutcome::failed(error.to_string()),
+        }
+    }
+
+    /// `rename_device` — `deviceCredentialID` resolves the wire `device_id`
+    /// then `RenameCredential` validates and persists the name.
+    fn admin_rename(&self, inbound: &Inbound) -> AdminOutcome {
+        match self.credential_id_for(&inbound.device_id) {
+            Err(error) => AdminOutcome::failed(error.to_string()),
+            Ok(None) => AdminOutcome::failed("Device credential was not found"),
+            Ok(Some(credential_id)) => {
+                match self.auth.rename_device(&credential_id, &inbound.name) {
+                    Ok(credential) => AdminOutcome::ok(DeviceData {
+                        device: device_wire(&credential, false),
+                    }),
+                    Err(error) => AdminOutcome::failed(error.to_string()),
+                }
+            }
+        }
+    }
+
+    /// `revoke_device` — same resolution; on success the oracle also drops
+    /// every session holding the revoked credential. The session registry
+    /// cannot reach peers from inside the actor, so only the self-revoking
+    /// connection gets the deferred close — every other holder is fenced by
+    /// `authorize` on its next action (`ws.go:610-635`'s durable half).
+    fn admin_revoke(&self, inbound: &Inbound) -> AdminOutcome {
+        match self.credential_id_for(&inbound.device_id) {
+            Err(error) => AdminOutcome::failed(error.to_string()),
+            Ok(None) => AdminOutcome::failed("Device credential was not found"),
+            Ok(Some(credential_id)) => match self.auth.revoke_device(&credential_id) {
+                Ok(credential) => {
+                    let self_disconnect = credential.credential_id == self.identity.credential_id;
+                    let outcome = AdminOutcome::ok(DeviceData {
+                        device: device_wire(&credential, false),
+                    });
+                    if self_disconnect {
+                        outcome.disconnecting()
+                    } else {
+                        outcome
+                    }
+                }
+                Err(error) => AdminOutcome::failed(error.to_string()),
+            },
+        }
+    }
+
+    /// `reset_devices` — `ResetWithBootstrap(token, hostname, locale)`:
+    /// every credential and the invitation die in one swap. This
+    /// connection's own credential is among them, so success always ends
+    /// the session (deferred — the answer must reach the wire first).
+    fn admin_reset(&self) -> AdminOutcome {
+        match self
+            .auth
+            .reset_devices(self.config.reset_bootstrap.as_ref(), &self.identity.locale)
+        {
+            Ok(()) => AdminOutcome::ok_empty().disconnecting(),
+            Err(error) => AdminOutcome::failed(error.to_string()),
+        }
+    }
+
+    /// `deviceCredentialID` — a `device_id` resolves to a `credential_id`
+    /// over every record, tombstones included; blank finds nothing.
+    fn credential_id_for(&self, device_id: &str) -> Result<Option<String>, AuthError> {
+        if device_id.trim().is_empty() {
+            return Ok(None);
+        }
+        Ok(self
+            .auth
+            .list_devices()?
+            .into_iter()
+            .find(|c| c.device_id == device_id)
+            .map(|c| c.credential_id))
+    }
+
     /// `Hub.Send` → `push` → evict-on-reject.
     fn enqueue(&mut self, message: Outbound) -> Step {
         let push = OutboundPush::of(&message);
@@ -740,6 +957,191 @@ fn reader_denied(operation: &str) -> ApiError {
     ApiError::new(
         error_codes::READER_DENIED,
         BTreeMap::from([("operation".to_owned(), serde_json::Value::from(operation))]),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Device administration — the local `s.deviceAuth.*` answers.
+// ---------------------------------------------------------------------------
+
+/// One device-admin answer: the `command_result` payload (or the refusal
+/// text) plus whether success destroyed this connection's own credential —
+/// `DisconnectCredential`'s deferred close.
+struct AdminOutcome {
+    result: Result<Option<RawJson>, String>,
+    self_disconnect: bool,
+}
+
+impl AdminOutcome {
+    fn ok(data: impl Serialize) -> Self {
+        Self {
+            result: Ok(Some(raw_json(&data))),
+            self_disconnect: false,
+        }
+    }
+
+    fn ok_empty() -> Self {
+        Self {
+            result: Ok(None),
+            self_disconnect: false,
+        }
+    }
+
+    fn failed(error: impl Into<String>) -> Self {
+        Self {
+            result: Err(error.into()),
+            self_disconnect: false,
+        }
+    }
+
+    /// The action wiped this session's credential — answer, then close.
+    fn disconnecting(mut self) -> Self {
+        self.self_disconnect = true;
+        self
+    }
+}
+
+/// `commandResultMessage` (`server.go:2977`) — the flat map with `error`/
+/// `pane_id` always present and `data` only when the command produced one.
+/// `phase` is `completed`/`failed` (fixture `command-result-ok` pins it).
+fn command_result(
+    request_id: &str,
+    action: &str,
+    ok: bool,
+    error: &str,
+    data: Option<RawJson>,
+) -> Outbound {
+    Outbound::CommandResult(CommandResultMessage {
+        action: Some(action.to_owned()),
+        data: data.map(MaybeNull::Value),
+        error: Some(error.to_owned()),
+        ok: Some(ok),
+        pane_id: Some(String::new()),
+        phase: Some(if ok { "completed" } else { "failed" }.to_owned()),
+        request_id: Some(request_id.to_owned()),
+        r#type: "command_result".to_owned(),
+    })
+}
+
+fn raw_json(data: &impl Serialize) -> RawJson {
+    let text = serde_json::to_string(data).expect("wire DTO serialization cannot fail");
+    RawJson(serde_json::value::RawValue::from_string(text).expect("DTO is valid JSON"))
+}
+
+/// `deviceauth.Credential` — wire form, Go struct order. `paired_at`/
+/// `last_seen_at` are `time.Time` values (RFC3339; `omitempty` is a no-op on
+/// a struct, so an unset one emits the zero time); `current` is
+/// `,omitempty` — only the caller's own row in `device_list` carries it.
+#[derive(Serialize)]
+struct DeviceWire {
+    device_id: String,
+    credential_id: String,
+    name: String,
+    role: Role,
+    locale: String,
+    paired_at: String,
+    last_seen_at: String,
+    version: u64,
+    revoked: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    current: bool,
+}
+
+fn device_wire(credential: &Credential, current: bool) -> DeviceWire {
+    DeviceWire {
+        device_id: credential.device_id.clone(),
+        credential_id: credential.credential_id.clone(),
+        name: credential.name.clone(),
+        role: credential.role,
+        locale: credential.locale.clone(),
+        paired_at: wire_time(credential.paired_at_ms),
+        last_seen_at: wire_time(credential.last_seen_at_ms),
+        version: credential.version,
+        revoked: credential.revoked,
+        current,
+    }
+}
+
+/// `deviceauth.Invitation` — wire form, Go struct order. `secret` is the
+/// QR/link material (`invitation_secret` in the fixture families) — the one
+/// place it is allowed on the wire.
+#[derive(Serialize)]
+struct InvitationWire {
+    invitation_id: String,
+    version: u64,
+    secret: String,
+    expires_at: String,
+    name: String,
+    role: Role,
+    locale: String,
+}
+
+fn invitation_wire(invitation: &IssuedInvitation) -> InvitationWire {
+    InvitationWire {
+        invitation_id: invitation.invitation_id.clone(),
+        version: invitation.version,
+        secret: invitation.secret.clone(),
+        expires_at: wire_time(invitation.expires_at_ms),
+        name: invitation.name.clone(),
+        role: invitation.role,
+        locale: invitation.locale.clone(),
+    }
+}
+
+/// `map[string]any{"devices":…,"current_device_id":…,"role":…}` — Go emits
+/// map keys sorted, so the fields declare in that order.
+#[derive(Serialize)]
+struct DeviceListData {
+    current_device_id: String,
+    devices: Vec<DeviceWire>,
+    role: Role,
+}
+
+#[derive(Serialize)]
+struct DeviceData {
+    device: DeviceWire,
+}
+
+#[derive(Serialize)]
+struct InvitationData {
+    invitation: InvitationWire,
+}
+
+/// Unix milliseconds → RFC3339Nano (`time.Time.MarshalJSON`): the fraction
+/// prints only when nonzero, trailing zeros trimmed. `0` — the unset
+/// sentinel — renders Go's zero time (`0001-01-01T00:00:00Z`).
+fn wire_time(ms: i64) -> String {
+    if ms == 0 {
+        return "0001-01-01T00:00:00Z".to_owned();
+    }
+    let secs = ms.div_euclid(1000);
+    let millis = ms.rem_euclid(1000);
+    let days = secs.div_euclid(86_400);
+    let tod = secs.rem_euclid(86_400);
+    // civil_from_days (Hinnant): days since 1970-01-01 → civil y/m/d.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let mut y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let mo = if mp < 10 { mp + 3 } else { mp - 9 };
+    if mo <= 2 {
+        y += 1;
+    }
+    let fraction = match millis {
+        0 => String::new(),
+        n if n % 100 == 0 => format!(".{}", n / 100),
+        n if n % 10 == 0 => format!(".{:02}", n / 10),
+        n => format!(".{n:03}"),
+    };
+    format!(
+        "{y:04}-{mo:02}-{d:02}T{:02}:{:02}:{:02}{fraction}Z",
+        tod / 3600,
+        tod % 3600 / 60,
+        tod % 60
     )
 }
 

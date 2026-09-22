@@ -39,10 +39,12 @@ async fn routed_action_gets_dispatched_unknown_receipt() {
     let (mut client, mut session, server, _sink_rx) =
         establish(store, test_config(), CancellationToken::new()).await;
 
+    // `get_activity` reaches the stub router (device-admin actions are
+    // intercepted in the session layer — covered by device_admin.rs).
     client
         .send_json(
             &mut session,
-            br#"{"type":"device_list","protocol":3,"request_id":"req-1","action_id":"act-9"}"#,
+            br#"{"type":"get_activity","protocol":3,"request_id":"req-1","action_id":"act-9"}"#,
         )
         .await;
     let reply = client.read_until_type(&mut session, "action_receipt").await;

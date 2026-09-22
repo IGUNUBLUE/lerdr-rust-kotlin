@@ -24,7 +24,10 @@ use base64::Engine;
 use lerdr_e2ee::handshake::{AuthKind, AuthSelector, SECRET_BYTES};
 use tracing::{debug, info, warn};
 
-use lerdr_relay::auth::{AuthError, AuthOutcome, BoxFuture, Credential, DeviceAuthStore, Role};
+use lerdr_relay::auth::{
+    AuthError, AuthOutcome, BootstrapRearm, BoxFuture, Credential, DeviceAuthStore,
+    IssuedInvitation, Role,
+};
 use lerdr_relay::store::{
     FileAuthStore, Invitation, BOOTSTRAP_INVITATION_ID, INVITATION_LIFETIME_MS, STORE_FILENAME,
 };
@@ -357,6 +360,35 @@ impl DeviceAuthStore for EventedAuthStore {
 
     fn authorize(&self, credential_id: &str, version: u64) -> Option<Credential> {
         self.inner.authorize(credential_id, version)
+    }
+
+    // Device administration delegates straight through — without these the
+    // trait defaults answer `Unsupported` ("Device management is
+    // unavailable") even though `FileAuthStore` implements them.
+
+    fn list_devices(&self) -> Result<Vec<Credential>, AuthError> {
+        self.inner.list_devices()
+    }
+
+    fn rename_device(&self, credential_id: &str, name: &str) -> Result<Credential, AuthError> {
+        self.inner.rename_device(credential_id, name)
+    }
+
+    fn revoke_device(&self, credential_id: &str) -> Result<Credential, AuthError> {
+        self.inner.revoke_device(credential_id)
+    }
+
+    fn create_invitation(
+        &self,
+        name: &str,
+        role: &str,
+        locale: &str,
+    ) -> Result<IssuedInvitation, AuthError> {
+        self.inner.create_invitation(name, role, locale)
+    }
+
+    fn reset_devices(&self, rearm: Option<&BootstrapRearm>, locale: &str) -> Result<(), AuthError> {
+        self.inner.reset_devices(rearm, locale)
     }
 }
 

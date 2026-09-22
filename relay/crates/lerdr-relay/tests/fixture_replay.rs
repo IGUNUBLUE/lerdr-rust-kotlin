@@ -256,9 +256,71 @@ async fn read_reply(client: &mut TestClient, session: &mut Session, name: &str) 
         .unwrap_or_else(|err| panic!("{name}: reply is not a decodable outbound envelope: {err}"))
 }
 
+/// Device-admin actions the session layer answers directly — success is
+/// `command_result` then `action_receipt`, failure is `command_result`
+/// alone. `reset_devices`/`revoke_device` also destroy this session's own
+/// credential, so they replay on fresh sessions after the sweep.
+fn is_admin_action(name: &str) -> bool {
+    matches!(
+        name,
+        "device_list"
+            | "create_device_invitation"
+            | "rename_device"
+            | "revoke_device"
+            | "reset_devices"
+    )
+}
+
+fn is_self_destructive_admin(name: &str) -> bool {
+    matches!(name, "reset_devices" | "revoke_device")
+}
+
+/// Read replies until the request's terminal frame: `action_receipt` for
+/// routed actions, `command_result` first for device-admin (a failed one
+/// is terminal on its own — the oracle emits no receipt for it).
+async fn read_until_terminal(
+    client: &mut TestClient,
+    session: &mut Session,
+    name: &str,
+    request_id: &str,
+) {
+    for _ in 0..4 {
+        match read_reply(client, session, name).await {
+            Outbound::ActionReceipt(reply) => {
+                assert_eq!(reply.r#type, "action_receipt", "{name}: reply type");
+                assert_eq!(
+                    reply.request_id.as_deref().unwrap_or_default(),
+                    request_id,
+                    "{name}: receipt must echo request_id"
+                );
+                let receipt = reply
+                    .receipt
+                    .expect("action_receipt envelope carries a receipt");
+                assert!(
+                    !receipt.phase.as_str().is_empty(),
+                    "{name}: receipt phase must be set"
+                );
+                return;
+            }
+            Outbound::CommandResult(result) => {
+                assert_eq!(
+                    result.request_id.as_deref().unwrap_or_default(),
+                    request_id,
+                    "{name}: command_result must echo request_id"
+                );
+                if result.ok == Some(false) {
+                    return; // failed admin action is terminal without receipt
+                }
+            }
+            other => panic!("{name}: expected action_receipt/command_result, got {other:?}"),
+        }
+    }
+    panic!("{name}: never reached a terminal reply");
+}
+
 /// Every canonical `c2s` fixture is driven through a real established
 /// session (handshake → sealed frame → actor → sealed reply). The session
-/// must answer each with an `action_receipt` echoing the request id —
+/// must answer each with its terminal frame echoing the request id —
 /// proving the wire shape passed decode, the catalog/protocol/fence/authz
 /// gates, and routing — and it must still be alive after all 72.
 #[tokio::test]
@@ -274,6 +336,11 @@ async fn session_replays_every_inbound_envelope_fixture() {
     let mut replayed = 0usize;
     for vector in vectors.iter().filter(|v| v.direction == "c2s") {
         let name = vector.name.as_str();
+        // Credential-destroying admin actions run at the end on their own
+        // sessions — they disconnect the caller ~250ms after replying.
+        if is_self_destructive_admin(name) {
+            continue;
+        }
         // Pair replies by the decoded request id — the same view of the
         // fixture the actor will compute.
         let inbound = Inbound::decode(vector.json.as_bytes())
@@ -282,36 +349,36 @@ async fn session_replays_every_inbound_envelope_fixture() {
         // The fixture's canonical wire bytes, verbatim, under the e2ee seal.
         client.send_json(&mut session, vector.json.as_bytes()).await;
 
-        match read_reply(&mut client, &mut session, name).await {
-            Outbound::ActionReceipt(reply) => {
-                assert_eq!(reply.r#type, "action_receipt", "{name}: reply type");
-                assert_eq!(
-                    reply.request_id.as_deref().unwrap_or_default(),
-                    inbound.request_id,
-                    "{name}: receipt must echo request_id"
-                );
-                let receipt = reply
-                    .receipt
-                    .expect("action_receipt envelope carries a receipt");
-                assert!(
-                    !receipt.phase.as_str().is_empty(),
-                    "{name}: receipt phase must be set"
-                );
+        if is_admin_action(name) {
+            read_until_terminal(&mut client, &mut session, name, &inbound.request_id).await;
+        } else {
+            match read_reply(&mut client, &mut session, name).await {
+                Outbound::ActionReceipt(reply) => {
+                    assert_eq!(reply.r#type, "action_receipt", "{name}: reply type");
+                    assert_eq!(
+                        reply.request_id.as_deref().unwrap_or_default(),
+                        inbound.request_id,
+                        "{name}: receipt must echo request_id"
+                    );
+                    let receipt = reply
+                        .receipt
+                        .expect("action_receipt envelope carries a receipt");
+                    assert!(
+                        !receipt.phase.as_str().is_empty(),
+                        "{name}: receipt phase must be set"
+                    );
+                }
+                other => panic!("{name}: expected action_receipt, got {other:?}"),
             }
-            other => panic!("{name}: expected action_receipt, got {other:?}"),
         }
         replayed += 1;
     }
-    assert_eq!(
-        replayed, 72,
-        "every c2s fixture crossed the session boundary"
-    );
 
-    // The session survived the whole sweep — a final action still receipts.
+    // The session survived the sweep — a final routed action still receipts.
     client
         .send_json(
             &mut session,
-            br#"{"type":"device_list","protocol":3,"request_id":"req-after-sweep"}"#,
+            br#"{"type":"get_activity","protocol":3,"request_id":"req-after-sweep"}"#,
         )
         .await;
     match read_reply(&mut client, &mut session, "liveness").await {
@@ -329,6 +396,33 @@ async fn session_replays_every_inbound_envelope_fixture() {
             ConnectionEnd::PeerClosed { .. } | ConnectionEnd::TransportFailed
         ),
         "session must not have been evicted during the sweep: {end:?}"
+    );
+
+    // Destructive admin fixtures — each on a fresh store+session since the
+    // credential they destroy is the one that just paired.
+    for vector in vectors
+        .iter()
+        .filter(|v| v.direction == "c2s" && is_self_destructive_admin(&v.name))
+    {
+        let name = vector.name.as_str();
+        let store = Arc::new(MemoryAuthStore::new());
+        let (selector, secret) = seed_credential(&store);
+        let (mut client, server_io) = TestClient::pair(64 * 1024);
+        let (server, _sink_rx) = serve(server_io, store, test_config(), CancellationToken::new());
+        let mut session = client.handshake(&selector, &secret).await.session;
+        let inbound = Inbound::decode(vector.json.as_bytes()).expect("decode");
+
+        client.send_json(&mut session, vector.json.as_bytes()).await;
+        read_until_terminal(&mut client, &mut session, name, &inbound.request_id).await;
+        replayed += 1;
+
+        drop(client);
+        let _ = server.await;
+    }
+
+    assert_eq!(
+        replayed, 72,
+        "every c2s fixture crossed the session boundary"
     );
 }
 
@@ -351,6 +445,12 @@ async fn session_receipts_representative_actions() {
         let inbound = Inbound::decode(vector.json.as_bytes()).expect("fixture decodes");
 
         client.send_json(&mut session, vector.json.as_bytes()).await;
+        // `device_list` is session-intercepted: `command_result` precedes
+        // the receipt; routed actions receipt directly.
+        if is_admin_action(want) {
+            read_until_terminal(&mut client, &mut session, want, &inbound.request_id).await;
+            continue;
+        }
         match read_reply(&mut client, &mut session, want).await {
             Outbound::ActionReceipt(reply) => {
                 assert_eq!(

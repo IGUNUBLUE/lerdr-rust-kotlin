@@ -127,9 +127,10 @@ async fn ws_end_to_end_handshake_and_receipt() {
     assert_eq!(finish.device_id, "device-1");
 
     // One routed action → dispatched_unknown receipt (the snapshot's
-    // push_config may arrive first — read through it).
+    // push_config may arrive first — read through it). `get_activity`
+    // reaches the router; `device_list` would be session-intercepted.
     let action = session
-        .seal(br#"{"type":"device_list","protocol":3,"request_id":"req-ws"}"#)
+        .seal(br#"{"type":"get_activity","protocol":3,"request_id":"req-ws"}"#)
         .unwrap();
     sink.send(Message::Text(String::from_utf8(action).unwrap().into()))
         .await

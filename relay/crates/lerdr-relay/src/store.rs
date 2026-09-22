@@ -27,7 +27,8 @@ use lerdr_e2ee::handshake::{AuthKind, AuthSelector, SECRET_BYTES};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{
-    AuthError, AuthOutcome, AuthenticatedIdentity, BoxFuture, Credential, DeviceAuthStore, Role,
+    AuthError, AuthOutcome, AuthenticatedIdentity, BootstrapRearm, BoxFuture, Credential,
+    DeviceAuthStore, IssuedInvitation, Role,
 };
 
 /// `storeFilename`.
@@ -39,6 +40,10 @@ pub const INVITATION_LIFETIME_MS: i64 = 10 * 60 * 1000;
 pub const MAX_INVITE_ATTEMPTS: u32 = 5;
 /// `bootstrapInvitationID` — the operator-printed first-pairing invitation.
 pub const BOOTSTRAP_INVITATION_ID: &str = "bootstrap";
+/// `maxNameBytes` — `validateMetadata`'s device/invitation name cap.
+const MAX_NAME_BYTES: usize = 80;
+/// `maxLocaleBytes` — `validateMetadata`'s locale cap.
+const MAX_LOCALE_BYTES: usize = 32;
 
 const IDENTIFIER_BYTES: usize = 18;
 /// `io.LimitReader` cap on the stored document.
@@ -56,6 +61,36 @@ pub fn normalize_locale(value: &str) -> String {
     } else {
         "en".to_owned()
     }
+}
+
+/// `validText` — non-empty, within the byte cap, no control characters
+/// (the `utf8.ValidString` arm is free: `&str` is always valid UTF-8).
+fn valid_text(value: &str, max_bytes: usize) -> bool {
+    !value.is_empty() && value.len() <= max_bytes && !value.chars().any(|c| c.is_control())
+}
+
+/// `validateMetadata` — the shared device/invitation metadata check; the
+/// trimmed name and locale come back for storage. Error order is the
+/// oracle's: name, then role, then locale.
+fn validate_metadata(
+    name: &str,
+    role: &str,
+    locale: &str,
+) -> Result<(String, Role, String), AuthError> {
+    let name = name.trim();
+    let locale = locale.trim();
+    if !valid_text(name, MAX_NAME_BYTES) {
+        return Err(AuthError::InvalidName);
+    }
+    let role = match role {
+        "controller" => Role::Controller,
+        "reader" => Role::Reader,
+        _ => return Err(AuthError::InvalidRole),
+    };
+    if !valid_text(locale, MAX_LOCALE_BYTES) || locale.contains([' ', '/', '\\']) {
+        return Err(AuthError::InvalidLocale);
+    }
+    Ok((name.to_owned(), role, locale.to_owned()))
 }
 
 /// An invitation record — `invitationRecord`. `secret` is base64
@@ -95,6 +130,23 @@ pub struct CredentialRecord {
 impl Drop for Invitation {
     fn drop(&mut self) {
         zeroize::Zeroize::zeroize(&mut self.secret);
+    }
+}
+
+impl Invitation {
+    /// `invitationFromRecord` — the public shape `CreateInvitation`
+    /// returns; the attempt-limit and redemption bookkeeping stays
+    /// internal to the store.
+    pub fn issued(&self) -> IssuedInvitation {
+        IssuedInvitation {
+            invitation_id: self.invitation_id.clone(),
+            version: self.version,
+            secret: self.secret.clone(),
+            expires_at_ms: self.expires_at_ms,
+            name: self.name.clone(),
+            role: self.role,
+            locale: self.locale.clone(),
+        }
     }
 }
 
@@ -386,6 +438,143 @@ impl AuthState {
         Some(credential.clone())
     }
 
+    /// `ListCredentials` — every credential record, tombstones included.
+    fn list(&self) -> Vec<Credential> {
+        self.credentials
+            .iter()
+            .map(|r| r.credential.clone())
+            .collect()
+    }
+
+    /// `RenameCredential` — trim + `validateMetadata` the name, then update
+    /// the stored record and return it.
+    fn rename(&mut self, credential_id: &str, name: &str) -> (Result<Credential, AuthError>, bool) {
+        let name = name.trim();
+        if !valid_text(name, MAX_NAME_BYTES) {
+            return (Err(AuthError::InvalidName), false);
+        }
+        let Some(index) = self.credential_index(credential_id) else {
+            return (Err(AuthError::NotFound), false);
+        };
+        self.credentials[index].credential.name = name.to_owned();
+        (Ok(self.credentials[index].credential.clone()), true)
+    }
+
+    /// `RevokeCredential` — tombstone the credential (`revoked`,
+    /// `version++`, secret scrubbed) and drop an invitation still pending
+    /// on it. Refusing the last active controller keeps the hub
+    /// manageable; an already-revoked record is returned unchanged.
+    fn revoke(&mut self, credential_id: &str) -> (Result<Credential, AuthError>, bool) {
+        let Some(index) = self.credential_index(credential_id) else {
+            return (Err(AuthError::NotFound), false);
+        };
+        let credential = &self.credentials[index].credential;
+        if !credential.revoked
+            && credential.role == Role::Controller
+            && self.active_controllers() == 1
+        {
+            return (Err(AuthError::LastController), false);
+        }
+        let record = &mut self.credentials[index];
+        if !record.credential.revoked {
+            record.credential.revoked = true;
+            record.credential.version += 1;
+            record.secret.clear();
+        }
+        if self
+            .invitation
+            .as_ref()
+            .is_some_and(|i| i.pending_credential_id == credential_id)
+        {
+            self.invitation = None;
+        }
+        (Ok(self.credentials[index].credential.clone()), true)
+    }
+
+    /// `activeControllerCountLocked` — unrevoked controllers enrolled.
+    fn active_controllers(&self) -> usize {
+        self.credentials
+            .iter()
+            .filter(|r| !r.credential.revoked && r.credential.role == Role::Controller)
+            .count()
+    }
+
+    /// `CreateInvitation` — `validateMetadata` then mint id + 32-byte
+    /// secret + 10-minute expiry, replacing the invitation slot.
+    fn create(
+        &mut self,
+        name: &str,
+        role: &str,
+        locale: &str,
+        now_ms: i64,
+        fill: &mut dyn FnMut(&mut [u8]),
+    ) -> (Result<Invitation, AuthError>, bool) {
+        let (name, role, locale) = match validate_metadata(name, role, locale) {
+            Ok(valid) => valid,
+            Err(error) => return (Err(error), false),
+        };
+        let mut id = [0u8; IDENTIFIER_BYTES];
+        let mut secret = [0u8; SECRET_BYTES];
+        fill(&mut id);
+        fill(&mut secret);
+        let invitation = Invitation {
+            invitation_id: b64().encode(id),
+            version: 1,
+            secret: b64().encode(secret),
+            expires_at_ms: now_ms + INVITATION_LIFETIME_MS,
+            name,
+            role,
+            locale,
+            failed_attempts: 0,
+            next_attempt_at_ms: 0,
+            pending_credential_id: String::new(),
+        };
+        self.invitation = Some(invitation.clone());
+        (Ok(invitation), true)
+    }
+
+    /// `ResetWithBootstrap` — the document is replaced wholesale: every
+    /// credential gone, and with `rearm` configured a fresh `bootstrap`
+    /// record (the operator's setup token) keeps the printed link pairing.
+    /// `rearm_bootstrap` is a runtime flag, not document state — it
+    /// survives the reset like the Go `Store` field does.
+    fn reset(
+        &mut self,
+        rearm: Option<&BootstrapRearm>,
+        locale: &str,
+        now_ms: i64,
+    ) -> (Result<(), AuthError>, bool) {
+        let invitation = match rearm {
+            Some(rearm) => {
+                let (name, _, locale) = match validate_metadata(&rearm.name, "controller", locale) {
+                    Ok(valid) => valid,
+                    Err(error) => return (Err(error), false),
+                };
+                Some(Invitation {
+                    invitation_id: BOOTSTRAP_INVITATION_ID.to_owned(),
+                    version: 1,
+                    secret: b64().encode(rearm.secret),
+                    expires_at_ms: now_ms + INVITATION_LIFETIME_MS,
+                    name,
+                    role: Role::Controller,
+                    locale,
+                    failed_attempts: 0,
+                    next_attempt_at_ms: 0,
+                    pending_credential_id: String::new(),
+                })
+            }
+            None => None,
+        };
+        let rearm_bootstrap = self.rearm_bootstrap;
+        *self = AuthState {
+            schema_version: STORE_SCHEMA_VERSION,
+            invitation,
+            credentials: Vec::new(),
+            rearm_bootstrap,
+        };
+        (Ok(()), true)
+    }
+
     /// `randomValue` + uniqueness — b64 of `IDENTIFIER_BYTES` random bytes,
     /// retried 8 times like the Go loop.
     fn unique_id(&mut self, device: bool, fill: &mut dyn FnMut(&mut [u8])) -> Option<String> {
@@ -531,13 +720,7 @@ impl StoreCore {
     }
 
     fn credentials(&self) -> Vec<Credential> {
-        self.state
-            .lock()
-            .expect("store poisoned")
-            .credentials
-            .iter()
-            .map(|r| r.credential.clone())
-            .collect()
+        self.state.lock().expect("store poisoned").list()
     }
 
     fn invitation(&self) -> Option<Invitation> {
@@ -546,6 +729,44 @@ impl StoreCore {
             .expect("store poisoned")
             .invitation
             .clone()
+    }
+
+    /// `RenameCredential` — validated and persisted through [`transact`].
+    ///
+    /// [`transact`]: StoreCore::transact
+    fn rename_device(&self, credential_id: &str, name: &str) -> Result<Credential, AuthError> {
+        self.transact(|state, _, _| state.rename(credential_id, name))
+    }
+
+    /// `RevokeCredential` — validated and persisted through [`transact`].
+    ///
+    /// [`transact`]: StoreCore::transact
+    fn revoke_device(&self, credential_id: &str) -> Result<Credential, AuthError> {
+        self.transact(|state, _, _| state.revoke(credential_id))
+    }
+
+    /// `CreateInvitation` — validated, minted, and persisted through
+    /// [`transact`].
+    ///
+    /// [`transact`]: StoreCore::transact
+    fn create_invitation(
+        &self,
+        name: &str,
+        role: &str,
+        locale: &str,
+    ) -> Result<IssuedInvitation, AuthError> {
+        self.transact(|state, now, fill| {
+            let (result, mutated) = state.create(name, role, locale, now, fill);
+            (result.map(|i| i.issued()), mutated)
+        })
+    }
+
+    /// `ResetWithBootstrap` — the wholesale swap persists through
+    /// [`transact`].
+    ///
+    /// [`transact`]: StoreCore::transact
+    fn reset_devices(&self, rearm: Option<&BootstrapRearm>, locale: &str) -> Result<(), AuthError> {
+        self.transact(|state, now, _| state.reset(rearm, locale, now))
     }
 }
 
@@ -677,6 +898,31 @@ impl DeviceAuthStore for MemoryAuthStore {
             .expect("store poisoned")
             .authorize(credential_id, version)
     }
+
+    fn list_devices(&self) -> Result<Vec<Credential>, AuthError> {
+        Ok(self.core.credentials())
+    }
+
+    fn rename_device(&self, credential_id: &str, name: &str) -> Result<Credential, AuthError> {
+        self.core.rename_device(credential_id, name)
+    }
+
+    fn revoke_device(&self, credential_id: &str) -> Result<Credential, AuthError> {
+        self.core.revoke_device(credential_id)
+    }
+
+    fn create_invitation(
+        &self,
+        name: &str,
+        role: &str,
+        locale: &str,
+    ) -> Result<IssuedInvitation, AuthError> {
+        self.core.create_invitation(name, role, locale)
+    }
+
+    fn reset_devices(&self, rearm: Option<&BootstrapRearm>, locale: &str) -> Result<(), AuthError> {
+        self.core.reset_devices(rearm, locale)
+    }
 }
 
 /// JSON-file [`DeviceAuthStore`] — the production impl. Loads `devices.json`
@@ -793,6 +1039,31 @@ impl DeviceAuthStore for FileAuthStore {
             .lock()
             .expect("store poisoned")
             .authorize(credential_id, version)
+    }
+
+    fn list_devices(&self) -> Result<Vec<Credential>, AuthError> {
+        Ok(self.core.credentials())
+    }
+
+    fn rename_device(&self, credential_id: &str, name: &str) -> Result<Credential, AuthError> {
+        self.core.rename_device(credential_id, name)
+    }
+
+    fn revoke_device(&self, credential_id: &str) -> Result<Credential, AuthError> {
+        self.core.revoke_device(credential_id)
+    }
+
+    fn create_invitation(
+        &self,
+        name: &str,
+        role: &str,
+        locale: &str,
+    ) -> Result<IssuedInvitation, AuthError> {
+        self.core.create_invitation(name, role, locale)
+    }
+
+    fn reset_devices(&self, rearm: Option<&BootstrapRearm>, locale: &str) -> Result<(), AuthError> {
+        self.core.reset_devices(rearm, locale)
     }
 }
 
