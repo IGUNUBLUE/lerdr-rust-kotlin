@@ -370,6 +370,12 @@ async fn run(args: ServeArgs) -> Result<(), BoxError> {
         },
         relay.shutdown(),
     );
+    // Web Push delivery — VAPID key load-or-generate failures are fatal
+    // at startup (corrupt/mismatched key files), matching the oracle's
+    // `push.NewManager` error path. Dormant when no subscriptions exist.
+    router_factory
+        .spawn_push_worker(relay.shutdown())
+        .map_err(|e| -> BoxError { format!("initialize push manager: {e}").into() })?;
     // Tie the topology actor's token to the relay's real shutdown token.
     {
         let relay_shutdown = relay.shutdown();

@@ -138,6 +138,16 @@ impl HerdRouterFactory {
         });
     }
 
+    /// `Manager.Run` — the Web Push delivery worker: VAPID load-or-generate
+    /// under the push dir (fails startup on a bad key file like the
+    /// oracle), then the wake/tick drain loop until `cancel`.
+    pub fn spawn_push_worker(
+        &self,
+        cancel: CancellationToken,
+    ) -> std::io::Result<tokio::task::JoinHandle<()>> {
+        actions::push_delivery::spawn_push_worker(self.shared.push.clone(), cancel)
+    }
+
     /// `hub.Broadcast`/`broadcastToAll` — drains the shared notices
     /// channel: voice-catalog changes, `update_status`, any relay-wide
     /// frame a handler emits beside its response. `exclude_client` skips

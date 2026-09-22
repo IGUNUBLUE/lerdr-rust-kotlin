@@ -19,6 +19,10 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+p256 = { workspace = true }   # VAPID ES256 + RFC 8291 ECDH (ecdh/ecdsa/pem/pkcs8 via defaults+workspace)
+aes-gcm = { workspace = true } # aes128gcm content coding
+hkdf = { workspace = true }   # RFC 8291/8188 key derivation
+reqwest = { workspace = true } # push delivery POSTs (rustls-only, no redirects)
 
 # lerdr-relay binary (src/bin/lerdr-relay) — CLI/config/bootstrap deps.
 clap = { version = "4.5", features = ["derive"] }

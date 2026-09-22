@@ -43,12 +43,13 @@
 //! `queue.json`, `action_ref.key`, and VAPID keys under the runtime
 //! push directory. [`Push::new`] mirrors the three handler-facing
 //! files; `Push::default()` stays fully in-memory until the router
-//! wiring passes a directory (like `uploads_dir`). The delivery queue
-//! and the Web Push worker (`RunOnce`/`sendOne`/VAPID) are not part of
-//! this slice — queue bookkeeping is in-memory so the publish/migration
-//! semantics stay faithful.
+//! wiring passes a directory (like `uploads_dir`). The Web Push
+//! delivery worker (`RunOnce`/`sendOne`/VAPID) lives in
+//! [`super::push_delivery`] and drives the queue bookkeeping here
+//! through the `due_entries`/`finish_entry`/`recover_pruned` seams —
+//! `queue.json` stays in-memory like the rest of this slice.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -58,6 +59,7 @@ use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use base64::Engine;
 use serde::{Deserialize, Serialize, Serializer};
 use sha2::{Digest, Sha256};
+use tokio::sync::Notify;
 
 use lerdr_core::json::{de_default, MaybeNull, RawJson};
 use lerdr_core::protocol::{
@@ -158,6 +160,11 @@ impl Timestamp {
 
     pub(crate) fn is_zero(&self) -> bool {
         *self == Timestamp::default()
+    }
+
+    /// `t.Unix()` — whole seconds; the VAPID JWT `exp` claim uses it.
+    pub(crate) fn unix_seconds(&self) -> i64 {
+        self.secs
     }
 
     /// `t.Add(d)` — nanosecond arithmetic with carry; wraps neither
@@ -644,32 +651,34 @@ fn policy_response(policy: &DevicePolicy) -> serde_json::Value {
 
 /// `push.Subscription` — the wire parse shape; the handler overwrites
 /// every trust-bearing field after unmarshal like the oracle.
+/// `pub(crate)` fields are the delivery worker's read surface (endpoint
+/// + keys drive `sendOne`; `device_id`/`endpoint` key the terminal set).
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub(crate) struct Subscription {
     #[serde(default, deserialize_with = "de_default")]
-    endpoint: String,
+    pub(crate) endpoint: String,
     #[serde(default, deserialize_with = "de_default")]
-    keys: SubscriptionKeys,
+    pub(crate) keys: SubscriptionKeys,
     #[serde(default, deserialize_with = "de_default")]
-    device_id: String,
+    pub(crate) device_id: String,
     #[serde(default, deserialize_with = "de_default")]
-    locale: String,
+    pub(crate) locale: String,
     #[serde(default, deserialize_with = "de_default")]
-    platform: String,
+    pub(crate) platform: String,
     #[serde(default, deserialize_with = "de_default")]
-    user_agent: String,
+    pub(crate) user_agent: String,
     #[serde(default, deserialize_with = "de_default")]
-    notify_finished: bool,
+    pub(crate) notify_finished: bool,
     #[serde(default, deserialize_with = "de_default")]
-    client_id: String,
+    pub(crate) client_id: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-struct SubscriptionKeys {
+pub(crate) struct SubscriptionKeys {
     #[serde(default, deserialize_with = "de_default")]
-    p256dh: String,
+    pub(crate) p256dh: String,
     #[serde(default, deserialize_with = "de_default")]
-    auth: String,
+    pub(crate) auth: String,
 }
 
 /// `pythonFile`/`pythonSubscription` — the on-disk subscriptions
@@ -751,13 +760,12 @@ fn valid_push_endpoint(raw: &str) -> bool {
 
 /// `push.PushEvent` — one queued notification.
 #[derive(Debug, Clone, PartialEq)]
-struct PushEvent {
-    key: PushEventKey,
-    payload: Vec<u8>,
-    created_at: Timestamp,
-    expires_at: Timestamp,
-    #[allow(dead_code)] // read by the delivery worker port
-    retract: bool,
+pub(crate) struct PushEvent {
+    pub(crate) key: PushEventKey,
+    pub(crate) payload: Vec<u8>,
+    pub(crate) created_at: Timestamp,
+    pub(crate) expires_at: Timestamp,
+    pub(crate) retract: bool,
 }
 
 impl PushEvent {
@@ -780,16 +788,16 @@ impl PushEvent {
     }
 }
 
-/// `queueEntry` — a pending delivery.
-#[derive(Debug, Clone)]
-struct QueueEntry {
-    id: String,
-    event: PushEvent,
-    subscription: Subscription,
-    #[allow(dead_code)] // read by the delivery worker port
-    due_at: Timestamp,
-    #[allow(dead_code)] // consumed by the delivery worker port
-    attempts: u32,
+/// `queueEntry` — a pending delivery. `PartialEq` is the worker's
+/// `sameQueueEntry` guard: a snapshot raced by `resolve`/`subscribe`
+/// no longer matches and finish/reschedule declines.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct QueueEntry {
+    pub(crate) id: String,
+    pub(crate) event: PushEvent,
+    pub(crate) subscription: Subscription,
+    pub(crate) due_at: Timestamp,
+    pub(crate) attempts: u32,
 }
 
 /// `deliveredRecord` — an accepted delivery kept for retraction.
@@ -1142,8 +1150,10 @@ struct State {
     signer: ReferenceSigner,
     /// The durable queue's in-memory half: pending entries + delivered
     /// records + the manager's `active`/`retracting` key sets. No
-    /// `queue.json` and no delivery worker in this slice — the
-    /// bookkeeping is kept faithful so the worker port picks it up.
+    /// `queue.json` — like the oracle, entries survive only the
+    /// process lifetime (its `load`/`store` are no-ops past the first
+    /// slice's honesty too); the delivery worker in
+    /// `super::push_delivery` drives it.
     entries: HashMap<String, QueueEntry>,
     delivered: HashMap<String, DeliveredRecord>,
     active: HashSet<PushEventKey>,
@@ -1173,10 +1183,12 @@ impl State {
 
 /// Shared push state — one per relay (the oracle's push registry:
 /// policy, subscriptions, snooze, viewed-pane ledger, reference
-/// signer, delivery queue bookkeeping).
+/// signer, delivery queue bookkeeping). `wake` is `m.wake` — the
+/// buffered (single-permit) signal that kicks the delivery worker.
 #[derive(Clone)]
 pub(crate) struct Push {
     inner: Arc<Mutex<State>>,
+    wake: Arc<Notify>,
 }
 
 impl Default for Push {
@@ -1185,6 +1197,7 @@ impl Default for Push {
     fn default() -> Self {
         Push {
             inner: Arc::new(Mutex::new(State::in_memory())),
+            wake: Arc::new(Notify::new()),
         }
     }
 }
@@ -1196,8 +1209,9 @@ impl Push {
 
     /// `push.NewManager(pushDir)` — the handler-facing subset: creates
     /// the dir (`0700`), loads `subscriptions.json` + `policies.json`,
-    /// loads or creates `action_ref.key`. VAPID keys and `queue.json`
-    /// belong to the delivery worker, which is not part of this slice.
+    /// loads or creates `action_ref.key`. The VAPID key pair is loaded
+    /// or generated by `super::push_delivery::spawn_push_worker` at
+    /// worker start (the oracle's `loadOrGenerateVAPIDKeys`).
     #[allow(dead_code)] // wired once the router passes the runtime dir
     pub(crate) fn new(dir: &Path) -> io::Result<Self> {
         std::fs::create_dir_all(dir)?;
@@ -1212,7 +1226,16 @@ impl Push {
         state.signer = ReferenceSigner::load_or_create(&dir.join("action_ref.key"))?;
         Ok(Push {
             inner: Arc::new(Mutex::new(state)),
+            wake: Arc::new(Notify::new()),
         })
+    }
+
+    /// The `pushDir` this state persists under — the delivery worker
+    /// loads `vapid_private.pem`/`vapid_public.pem` from it. `None`
+    /// (in-memory `Push::default`) means an ephemeral VAPID pair.
+    #[allow(dead_code)] // consumed by push_delivery::spawn_push_worker
+    pub(crate) fn push_dir(&self) -> Option<PathBuf> {
+        self.lock().dir.clone()
     }
 
     /// `Manager.Subscriptions` — a copy of the registry.
@@ -1267,7 +1290,7 @@ impl Push {
     }
 
     /// `PolicyEngine.SetViewedPane` — `None` clears the marker.
-    fn set_viewed_pane(&self, device_id: &str, target: Option<TargetRef>) {
+    pub(crate) fn set_viewed_pane(&self, device_id: &str, target: Option<TargetRef>) {
         let mut state = self.lock();
         match target {
             Some(target) => {
@@ -1300,7 +1323,7 @@ impl Push {
     /// `Manager.Subscribe` — keys required, endpoint allowlist, same-
     /// endpoint device-mismatch rejection, replace-set pruning, and
     /// the queued-delivery migration.
-    fn subscribe(
+    pub(crate) fn subscribe(
         &self,
         sub: Subscription,
         replace_endpoints: &[String],
@@ -1471,6 +1494,12 @@ impl Push {
             state.active.insert(key);
             result.queued += 1;
         }
+        drop(state);
+        // `m.signal()` — kick the delivery worker only when something
+        // actually queued (the oracle gates the wake on Queued > 0).
+        if result.queued > 0 {
+            self.wake.notify_one();
+        }
         Ok(result)
     }
 
@@ -1513,6 +1542,8 @@ impl Push {
             };
             enqueue_locked(&mut state, event, record.subscription.clone(), now)?;
         }
+        drop(state);
+        self.wake.notify_one(); // `m.signal()` after queueing retractions
         Ok(())
     }
 
@@ -1577,6 +1608,7 @@ impl Push {
             self.resolve(&key)?;
         }
         self.lock().reconciled = true;
+        self.wake.notify_one(); // `m.signal()` — delivery opens once reconciled
         Ok(())
     }
 
@@ -1691,6 +1723,274 @@ impl Push {
     fn decide(&self, key: &PushEventKey, locale: &str, now: Timestamp) -> PolicyDecision {
         decide_locked(&self.lock(), key, locale, now)
     }
+
+    // -----------------------------------------------------------------------
+    // Delivery-worker seams — the `Manager.RunOnce`/`durableQueue.processDue`
+    // surface `push_delivery` drives. Snapshot-then-apply mirrors the oracle:
+    // `dueEntries` copies under `mu`, sends run unlocked, and every mutation
+    // re-checks the snapshot (`sameQueueEntry`) so a raced `resolve`/
+    // `subscribe`/`unsubscribe` never gets clobbered.
+    // -----------------------------------------------------------------------
+
+    /// `m.wake` — the single-permit notify `publish`/`resolve`/
+    /// `reconcile`/`recover_pruned` raise and the worker sleeps on
+    /// beside its 250ms tick.
+    pub(crate) fn delivery_wake(&self) -> Arc<Notify> {
+        self.wake.clone()
+    }
+
+    /// `Manager.reconciled` gate — `RunOnce` is a no-op until the
+    /// producer supplies the first authoritative inventory.
+    pub(crate) fn is_reconciled(&self) -> bool {
+        self.lock().reconciled
+    }
+
+    /// `durableQueue.dueEntries` — every entry with `due_at <= now`,
+    /// sorted `(due_at, id)` like the oracle's `sort.Slice`.
+    pub(crate) fn due_entries(&self, now: Timestamp) -> Vec<QueueEntry> {
+        let state = self.lock();
+        let mut entries: Vec<QueueEntry> = state
+            .entries
+            .values()
+            .filter(|e| e.due_at <= now)
+            .cloned()
+            .collect();
+        entries.sort_by(|a, b| a.due_at.cmp(&b.due_at).then_with(|| a.id.cmp(&b.id)));
+        entries
+    }
+
+    /// `RunOnce`'s `current` callback — a retracting key always
+    /// delivers; anything else must be `active` and still pass the
+    /// live policy gate (`PolicyEngine.Allows`, locale `"en"`).
+    pub(crate) fn entry_current(&self, key: &PushEventKey, now: Timestamp) -> bool {
+        let state = self.lock();
+        if state.retracting.contains(key) {
+            return true;
+        }
+        state.active.contains(key) && allows_locked(&state, key, "en", now)
+    }
+
+    /// `durableQueue.finishInMemory` — remove the entry if the queue
+    /// still holds this exact snapshot; `Accepted` non-retract events
+    /// move into `delivered` (the retraction ledger).
+    pub(crate) fn finish_entry(
+        &self,
+        snapshot: &QueueEntry,
+        disposition: Disposition,
+        now: Timestamp,
+    ) -> bool {
+        let mut state = self.lock();
+        if state.entries.get(&snapshot.id) != Some(snapshot) {
+            return false;
+        }
+        state.entries.remove(&snapshot.id);
+        if disposition == Disposition::Accepted && !snapshot.event.retract {
+            state.delivered.insert(
+                snapshot.id.clone(),
+                DeliveredRecord {
+                    key: snapshot.event.key.clone(),
+                    subscription: snapshot.subscription.clone(),
+                    tag: notification_tag(&snapshot.event.key),
+                    accepted_at: now,
+                },
+            );
+        }
+        true
+    }
+
+    /// `durableQueue.rescheduleInMemory` — bump `attempts`/`due_at` on
+    /// an unchanged snapshot.
+    pub(crate) fn reschedule_entry(
+        &self,
+        snapshot: &QueueEntry,
+        attempts: u32,
+        next: Timestamp,
+    ) -> bool {
+        let mut state = self.lock();
+        match state.entries.get_mut(&snapshot.id) {
+            Some(current) if *current == *snapshot => {
+                current.attempts = attempts;
+                current.due_at = next;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// `RunOnce`'s `accepted` callback — `PolicyEngine.MarkAccepted`
+    /// starts the cooldown slot unless the key is mid-retraction.
+    pub(crate) fn note_accepted(
+        &self,
+        key: &PushEventKey,
+        accepted_at: Timestamp,
+    ) -> Result<(), &'static str> {
+        if self.lock().retracting.contains(key) {
+            return Ok(());
+        }
+        self.mark_accepted(key, accepted_at)
+    }
+
+    /// `queue.hasEntriesFor` — `finish`'s sweep predicate; also the
+    /// worker-test seam for "still queued".
+    #[allow(dead_code)] // exercised by the push_delivery drain tests
+    pub(crate) fn has_entries_for(&self, key: &PushEventKey) -> bool {
+        self.lock().entries.values().any(|e| e.event.key == *key)
+    }
+
+    /// `Manager.recoverPrunedSubscriptionsWhileProcessing` — for each
+    /// device whose deliveries hit terminal endpoints: pick the
+    /// fallback subscription (latest registered that isn't pruned),
+    /// persist the pruned registry, then move those endpoints' pending
+    /// entries + the just-failed events onto the fallback and drop
+    /// their delivered records. Persist failure restores the pruned
+    /// entries with backoff (`restorePrunedWhileProcessing`) and
+    /// reports the error, exactly like `finish` in the oracle.
+    pub(crate) fn recover_pruned(
+        &self,
+        results: &[DeliveryResult],
+        now: Timestamp,
+    ) -> Result<(), &'static str> {
+        // Group pruned results by device (BTreeMap = the oracle's
+        // sorted deviceID iteration).
+        let mut pruned: BTreeMap<String, (BTreeSet<String>, Vec<&DeliveryResult>)> =
+            BTreeMap::new();
+        for result in results {
+            if result.disposition != Disposition::Pruned {
+                continue;
+            }
+            let device = pruned
+                .entry(result.subscription.device_id.clone())
+                .or_default();
+            device.0.insert(result.subscription.endpoint.clone());
+            device.1.push(result);
+        }
+        if pruned.is_empty() {
+            return Ok(());
+        }
+
+        let mut state = self.lock();
+        // `recoveries` — fallback selection happens before the
+        // registry write, against the pre-prune subscription list
+        // (the oracle scans `m.subscriptions` back-to-front under mu).
+        let mut recoveries = Vec::with_capacity(pruned.len());
+        let mut requeued = false;
+        for (device_id, (endpoints, device_results)) in &pruned {
+            let fallback = state
+                .subscriptions
+                .iter()
+                .rev()
+                .find(|s| s.device_id == *device_id && !endpoints.contains(&s.endpoint))
+                .cloned();
+            requeued = requeued || (fallback.is_some() && !device_results.is_empty());
+            recoveries.push((device_id, endpoints, fallback, device_results));
+        }
+
+        let filtered: Vec<Subscription> = state
+            .subscriptions
+            .iter()
+            .filter(|s| match pruned.get(&s.device_id) {
+                Some((endpoints, _)) => !endpoints.contains(&s.endpoint),
+                None => true,
+            })
+            .cloned()
+            .collect();
+        if let Err(code) = persist_subscriptions(&state.dir, &filtered) {
+            // `restorePrunedWhileProcessing` — put the pruned entries
+            // back with backoff so nothing is lost on persist failure.
+            restore_pruned_locked(&mut state, results, now);
+            return Err(code);
+        }
+
+        // `queue.recoverPrunedWhileProcessing` — pending entries and
+        // delivered records on pruned endpoints go away; with a
+        // fallback the entries migrate to it and the just-failed
+        // events requeue (fresh `DueAt=now`, `Attempts=0`).
+        for (device_id, endpoints, fallback, device_results) in &recoveries {
+            let migrated: Vec<QueueEntry> = state
+                .entries
+                .values()
+                .filter(|e| {
+                    e.subscription.device_id == **device_id
+                        && endpoints.contains(&e.subscription.endpoint)
+                })
+                .cloned()
+                .collect();
+            for mut entry in migrated {
+                state.entries.remove(&entry.id);
+                if let Some(fallback) = fallback {
+                    entry.subscription = fallback.clone();
+                    entry.id = delivery_id(&entry.event.key, &fallback.endpoint);
+                    state.entries.entry(entry.id.clone()).or_insert(entry);
+                }
+            }
+            let delivered_ids: Vec<String> = state
+                .delivered
+                .iter()
+                .filter(|(_, r)| {
+                    r.subscription.device_id == **device_id
+                        && endpoints.contains(&r.subscription.endpoint)
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in delivered_ids {
+                state.delivered.remove(&id);
+            }
+            let Some(fallback) = fallback else {
+                continue;
+            };
+            for result in device_results.iter() {
+                let id = delivery_id(&result.event.key, &fallback.endpoint);
+                state
+                    .entries
+                    .entry(id.clone())
+                    .or_insert_with(|| QueueEntry {
+                        id,
+                        event: result.event.clone(),
+                        subscription: fallback.clone(),
+                        due_at: now,
+                        attempts: 0,
+                    });
+            }
+        }
+        state.subscriptions = filtered;
+        if requeued {
+            self.wake.notify_one();
+        }
+        Ok(())
+    }
+
+    /// `RunOnce`'s epilogue — for every key that saw results this
+    /// pass: finished retractions clear `retracting` + delivered
+    /// records; terminal test/update keys forget delivered state;
+    /// keys with nothing left queued (and no delivered ledger for real
+    /// categories) leave `active`.
+    pub(crate) fn sweep_keys(&self, results: &[DeliveryResult]) {
+        let mut state = self.lock();
+        let mut seen = HashSet::new();
+        for result in results {
+            seen.insert(result.key.clone());
+        }
+        for key in seen {
+            let has_entries = state.entries.values().any(|e| e.event.key == key);
+            if state.retracting.contains(&key) && !has_entries {
+                state.delivered.retain(|_, r| r.key != key);
+                state.retracting.remove(&key);
+                continue;
+            }
+            if has_entries {
+                continue;
+            }
+            if key.category == CATEGORY_TEST || key.category == CATEGORY_UPDATE {
+                state.delivered.retain(|_, r| r.key != key);
+            }
+            if key.category == CATEGORY_TEST
+                || key.category == CATEGORY_UPDATE
+                || !state.delivered.values().any(|r| r.key == key)
+            {
+                state.active.remove(&key);
+            }
+        }
+    }
 }
 
 /// `PolicyEngine.Decide` over locked state.
@@ -1754,6 +2054,128 @@ fn decide_locked(
         deliver: true,
         due_at: due,
         code: "",
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Delivery results — `DeliveryDisposition`/`DeliveryResult`, the worker
+// pass vocabulary `recover_pruned`/`sweep_keys` consume.
+// ---------------------------------------------------------------------------
+
+/// `maxDeliveryAttempts` — a delivery retires after 6 send attempts.
+pub(crate) const MAX_DELIVERY_ATTEMPTS: u32 = 6;
+
+/// `push.DeliveryDisposition`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Disposition {
+    /// `service_accepted` — 2xx from the push service.
+    Accepted,
+    /// `queued_for_retry` — retryable failure, rescheduled.
+    Retrying,
+    /// `dropped` — terminal-per-message failure or attempts/TTL spent.
+    Dropped,
+    /// `subscription_pruned` — the endpoint is permanently gone (or a
+    /// sibling entry already proved it this pass).
+    Pruned,
+    /// `expired` — `now` reached `expires_at` before delivery.
+    Expired,
+    /// `stale` — the event is no longer `current` (resolved, or the
+    /// live policy now suppresses it).
+    Stale,
+}
+
+/// `push.DeliveryResult` — one processed queue entry. `event` +
+/// `subscription` are the oracle's `json:"-"` fields: only `Pruned`
+/// results need them (`recover_pruned` re-queues against a fallback).
+#[derive(Debug, Clone)]
+pub(crate) struct DeliveryResult {
+    pub(crate) key: PushEventKey,
+    pub(crate) endpoint: String,
+    pub(crate) disposition: Disposition,
+    pub(crate) attempts: u32,
+    /// `json:"next_attempt"` — kept for parity/reporting; the worker
+    /// tests assert the backoff schedule off it.
+    #[allow(dead_code)]
+    pub(crate) next_attempt: Option<Timestamp>,
+    pub(crate) event: PushEvent,
+    pub(crate) subscription: Subscription,
+}
+
+/// `retryDelay` — `1s << (attempts-1)` capped at one minute, in
+/// nanoseconds for `Timestamp::add_ns`.
+pub(crate) fn retry_delay_ns(attempts: u32) -> i64 {
+    let attempts = attempts.max(1);
+    // `time.Second << (attempts-1)`; attempts is bounded by
+    // MAX_DELIVERY_ATTEMPTS but saturate anyway — any overshoot lands
+    // on the one-minute cap.
+    NS_PER_SEC
+        .checked_shl(attempts - 1)
+        .unwrap_or(i64::MAX)
+        .min(60 * NS_PER_SEC)
+}
+
+/// `PolicyEngine.Allows` over locked state — the `current` predicate's
+/// policy half: category enabled, no snooze, pane not being viewed.
+fn allows_locked(state: &State, key: &PushEventKey, locale: &str, now: Timestamp) -> bool {
+    let policy = state
+        .policies
+        .get(&key.device_id)
+        .cloned()
+        .unwrap_or_else(|| default_device_policy(&key.device_id, locale));
+    let enabled = policy
+        .categories
+        .as_ref()
+        .map(|c| c.get(key.category.as_str()).copied().unwrap_or(false))
+        .unwrap_or(false);
+    if !enabled {
+        return false;
+    }
+    let timed_snooze = policy
+        .snooze_until
+        .is_some_and(|until| !until.is_zero() && now < until);
+    if (policy.snoozed && policy.snooze_until.is_none_or(|until| until.is_zero()))
+        || timed_snooze
+        || state.global_snooze_until.is_some_and(|until| now < until)
+    {
+        return false;
+    }
+    if state
+        .viewed_panes
+        .get(&key.device_id)
+        .is_some_and(|viewed| *viewed == key.target())
+    {
+        return false;
+    }
+    true
+}
+
+/// `queue.restorePrunedWhileProcessing` — on registry-persist failure,
+/// requeue each pruned result's entry with `retryDelay` backoff
+/// (capped below `expires_at`) when the delivery id isn't already
+/// back in the queue.
+fn restore_pruned_locked(state: &mut State, results: &[DeliveryResult], now: Timestamp) {
+    for result in results {
+        if result.disposition != Disposition::Pruned {
+            continue;
+        }
+        let id = delivery_id(&result.event.key, &result.subscription.endpoint);
+        if state.entries.contains_key(&id) {
+            continue;
+        }
+        let mut due_at = now.add_ns(retry_delay_ns(result.attempts));
+        if due_at >= result.event.expires_at {
+            due_at = now;
+        }
+        state.entries.insert(
+            id.clone(),
+            QueueEntry {
+                id,
+                event: result.event.clone(),
+                subscription: result.subscription.clone(),
+                due_at,
+                attempts: result.attempts,
+            },
+        );
     }
 }
 
@@ -2026,7 +2448,7 @@ fn persist_policies(state: &State) -> Result<(), &'static str> {
 }
 
 /// `atomicWrite` — sibling temp file + rename, mode applied.
-fn atomic_write(path: &Path, data: &[u8], mode: u32) -> io::Result<()> {
+pub(crate) fn atomic_write(path: &Path, data: &[u8], mode: u32) -> io::Result<()> {
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, data)?;
     set_mode(&tmp, mode)?;
@@ -2056,7 +2478,7 @@ fn set_dir_permissions(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn set_private_permissions(path: &Path) -> io::Result<()> {
+pub(crate) fn set_private_permissions(path: &Path) -> io::Result<()> {
     set_mode(path, 0o600)
 }
 
