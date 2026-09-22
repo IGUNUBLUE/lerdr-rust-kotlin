@@ -15,7 +15,10 @@
 use lerdr_core::protocol::Inbound;
 use serde::Serialize;
 
-use super::{topology_failure, ActionContext, Outcome, WORKSPACE_DEADLINE, WORKTREE_DEADLINE};
+use super::{
+    record_activity, topology_failure, ActionContext, Outcome, WORKSPACE_DEADLINE,
+    WORKTREE_DEADLINE,
+};
 use crate::actions::workspace::workspace_target;
 
 /// `worktreeValueMaxRunes`.
@@ -127,6 +130,14 @@ pub(crate) async fn worktree_create(
                     Err(err) => topology_failure("worktree_create", &err),
                     Ok(value) => {
                         ctx.handle.refresh().await;
+                        record_activity(
+                            &ctx,
+                            "worktree_create",
+                            "created",
+                            format!("Created worktree {branch}"),
+                            "",
+                            request_id,
+                        );
                         Outcome::completed("", Some(strip_type(value)))
                     }
                 }
@@ -173,6 +184,20 @@ pub(crate) async fn worktree_open(
                     Err(err) => topology_failure("worktree_open", &err),
                     Ok(value) => {
                         ctx.handle.refresh().await;
+                        // `"Opened worktree "+opened.Worktree.Label`.
+                        let opened_label = value
+                            .get("worktree")
+                            .and_then(|w| w.get("label"))
+                            .and_then(|l| l.as_str())
+                            .unwrap_or_default();
+                        record_activity(
+                            &ctx,
+                            "worktree_open",
+                            "opened",
+                            format!("Opened worktree {opened_label}"),
+                            "",
+                            request_id,
+                        );
                         Outcome::completed("", Some(strip_type(value)))
                     }
                 }
@@ -193,17 +218,21 @@ pub(crate) async fn worktree_remove(
     let outcome = match workspace_target(&ctx.topology, &message.workspace_id) {
         Err(outcome) => *outcome,
         Ok(workspace_id) => {
-            let linked = ctx
+            let workspace = ctx
                 .topology
                 .snapshot
                 .workspaces
                 .iter()
-                .find(|w| w.workspace_id == workspace_id)
+                .find(|w| w.workspace_id == workspace_id);
+            let linked = workspace
                 .and_then(|w| w.worktree.as_ref())
                 .is_some_and(|w| w.is_linked_worktree);
             if !linked {
                 Outcome::failed("", "Workspace is not a removable linked worktree")
             } else {
+                // `"Removed worktree "+workspace.Label` — captured before the
+                // remove mutates the projection.
+                let label = workspace.map(|w| w.label.clone()).unwrap_or_default();
                 match ctx
                     .client
                     .call_with_timeout(
@@ -219,6 +248,14 @@ pub(crate) async fn worktree_remove(
                     Err(err) => topology_failure("worktree_remove", &err),
                     Ok(value) => {
                         ctx.handle.refresh().await;
+                        record_activity(
+                            &ctx,
+                            "worktree_remove",
+                            "removed",
+                            format!("Removed worktree {label}"),
+                            "",
+                            request_id,
+                        );
                         Outcome::completed("", Some(strip_type(value)))
                     }
                 }

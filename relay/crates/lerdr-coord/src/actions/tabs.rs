@@ -16,7 +16,9 @@
 use lerdr_core::protocol::Inbound;
 use serde::Serialize;
 
-use super::{dispatch_failure, ActionContext, Outcome, COMMAND_DEADLINE, MAX_INSERT_INDEX};
+use super::{
+    dispatch_failure, record_activity, ActionContext, Outcome, COMMAND_DEADLINE, MAX_INSERT_INDEX,
+};
 
 #[derive(Serialize)]
 struct TabRenameParams<'a> {
@@ -71,6 +73,16 @@ pub(crate) async fn agent_rename(
             }
         }
     };
+    if outcome.ok {
+        record_activity(
+            &ctx,
+            "agent_rename",
+            "renamed",
+            format!("Renamed tab to {label}"),
+            pane_id,
+            request_id,
+        );
+    }
     outcome.frames(request_id, "agent_rename", action_id)
 }
 
@@ -116,6 +128,16 @@ pub(crate) async fn tab_reorder(
             _ => Outcome::failed(pane_id, "Tab position is invalid"),
         }
     };
+    if outcome.ok {
+        record_activity(
+            &ctx,
+            "tab_reorder",
+            "reordered",
+            "Reordered tab",
+            pane_id,
+            request_id,
+        );
+    }
     outcome.frames(request_id, "tab_reorder", action_id)
 }
 

@@ -34,8 +34,8 @@ use serde::Serialize;
 use tokio::time::Instant;
 
 use super::{
-    created_target, dispatch_failure, input, profiles::Profile, workspace, ActionContext, Outcome,
-    AGENT_START_DEADLINE, PROMPT_MAX_CHARS,
+    created_target, dispatch_failure, input, profiles::Profile, record_activity, workspace,
+    ActionContext, Outcome, AGENT_START_DEADLINE, PROMPT_MAX_CHARS,
 };
 
 /// `agentStartProcessTimeoutMS` — per-attempt `--timeout` ceiling.
@@ -104,11 +104,11 @@ pub(crate) async fn agent_start(
     action_id: &str,
     message: &Inbound,
 ) -> Vec<lerdr_core::protocol::Outbound> {
-    let outcome = start_inner(&ctx, message).await;
+    let outcome = start_inner(&ctx, request_id, message).await;
     outcome.frames(request_id, "agent_start", action_id)
 }
 
-async fn start_inner(ctx: &ActionContext, message: &Inbound) -> Outcome {
+async fn start_inner(ctx: &ActionContext, request_id: &str, message: &Inbound) -> Outcome {
     // The oracle checks the raw values — a whitespace name fails the name
     // pattern, not the required check.
     let profile_id = message.profile_id.as_str();
@@ -143,14 +143,17 @@ async fn start_inner(ctx: &ActionContext, message: &Inbound) -> Outcome {
         Ok(started) => {
             // `handleAgentStart`'s post-start prompt: a confirmed start with
             // an unconfirmed prompt degrades to completed_with_warning.
+            let mut outcome = Outcome::completed(&started.pane_id, Some(started.data()));
             if !message.prompt.is_empty() && !started.pane_id.is_empty() {
-                let prompt = input::prompt_inner(ctx, &started.pane_id, &message.prompt).await;
+                let prompt = input::prompt_inner(
+                    ctx,
+                    &started.pane_id,
+                    &message.prompt,
+                    &format!("{request_id}-initial"),
+                )
+                .await;
                 if !prompt.ok {
-                    // The oracle still publishes the topology on the warning
-                    // path (`MarkTopologyChanged` + `wake` run on every OK
-                    // result) — the new pane must reach the phone.
-                    ctx.handle.refresh().await;
-                    return Outcome::completed_with_warning(
+                    outcome = Outcome::completed_with_warning(
                         &started.pane_id,
                         serde_json::json!({
                             "pane_id": started.pane_id,
@@ -162,7 +165,17 @@ async fn start_inner(ctx: &ActionContext, message: &Inbound) -> Outcome {
                 }
             }
             ctx.handle.refresh().await;
-            Outcome::completed(&started.pane_id, Some(started.data()))
+            // The oracle records the start even when the initial prompt
+            // degraded the result to completed_with_warning.
+            record_activity(
+                ctx,
+                "agent_start",
+                "started",
+                format!("Started {name}"),
+                &started.pane_id,
+                request_id,
+            );
+            outcome
         }
     }
 }
@@ -176,11 +189,11 @@ pub(crate) async fn agent_clear(
     message: &Inbound,
     action: &'static str,
 ) -> Vec<lerdr_core::protocol::Outbound> {
-    let outcome = clear_inner(&ctx, message).await;
+    let outcome = clear_inner(&ctx, request_id, message).await;
     outcome.frames(request_id, action, action_id)
 }
 
-async fn clear_inner(ctx: &ActionContext, message: &Inbound) -> Outcome {
+async fn clear_inner(ctx: &ActionContext, request_id: &str, message: &Inbound) -> Outcome {
     let pane_id = message.pane_id.as_str();
     if pane_id.is_empty() {
         return Outcome::failed(pane_id, "Agent is required");
@@ -249,6 +262,18 @@ async fn clear_inner(ctx: &ActionContext, message: &Inbound) -> Outcome {
     // `MarkTopologyChanged` + `wake` on every OK result — the warning path
     // publishes too so the phone sees both panes.
     ctx.handle.refresh().await;
+    if outcome.ok {
+        // `agent_restart` flows through `handleClear` in the oracle and
+        // records the `agent_clear` kind — the same quirk applies here.
+        record_activity(
+            ctx,
+            "agent_clear",
+            "cleared",
+            "Cleared agent",
+            pane_id,
+            request_id,
+        );
+    }
     outcome
 }
 

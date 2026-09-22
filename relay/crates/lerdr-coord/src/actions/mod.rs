@@ -75,21 +75,89 @@ pub(crate) struct ActionContext {
     pub profiles: profiles::Resolver,
     /// Question/approval state store — `approval.go`'s per-pane pending
     /// interactions.
-    #[allow(dead_code)] // populated now; read once the state machine lands
     pub questions: questions::Questions,
     /// Attachment upload manager — `upload.Manager`'s staging surface.
-    #[allow(dead_code)] // populated now; read once uploads land
     pub uploads: uploads::Uploads,
     /// Relay-side activity journal — `activity.Journal`'s ring buffer.
-    #[allow(dead_code)] // populated now; read once the journal lands
     pub activities: activity::Journal,
     /// Push subsystem — policy, subscriptions, snooze, viewed-pane ledger.
-    #[allow(dead_code)] // populated now; read once push lands
     pub push: push::Push,
     /// Speech subsystem — engine handle + in-flight speech requests.
-    #[allow(dead_code)] // populated now; read once speech lands
     pub speech: speech::Speech,
     pub client_id: String,
+}
+
+/// `recordActivity` — commit one journal row with the pane attribution the
+/// oracle reads out of `d.state.Agent(paneID)`. Our topology projects the
+/// agent name and session reference but not project/host, so those fields
+/// stay empty.
+pub(crate) fn record_activity(
+    ctx: &ActionContext,
+    kind: &str,
+    status: &str,
+    summary: impl Into<String>,
+    pane_id: &str,
+    request_id: &str,
+) {
+    let mut entry = activity::NewEntry::action(kind, status, summary, pane_id, request_id);
+    if let Some(agent) = ctx.topology.pane_of(pane_id) {
+        let name = agent
+            .agent
+            .clone()
+            .or_else(|| agent.agent_session.as_ref().map(|s| s.agent.clone()))
+            .unwrap_or_default();
+        let session = agent
+            .agent_session
+            .as_ref()
+            .map(|s| s.value.clone())
+            .unwrap_or_default();
+        entry = entry.with_attribution(&name, "", "", &session);
+    }
+    ctx.activities.record(entry);
+}
+
+/// `recordActivityWithExtract` — same, carrying the `Extract` payload.
+pub(crate) fn record_activity_extract(
+    ctx: &ActionContext,
+    kind: &str,
+    status: &str,
+    summary: impl Into<String>,
+    extract: impl Into<String>,
+    pane_id: &str,
+    request_id: &str,
+) {
+    let mut entry = activity::NewEntry::action(kind, status, summary, pane_id, request_id)
+        .with_extract(extract);
+    if let Some(agent) = ctx.topology.pane_of(pane_id) {
+        let name = agent
+            .agent
+            .clone()
+            .or_else(|| agent.agent_session.as_ref().map(|s| s.agent.clone()))
+            .unwrap_or_default();
+        let session = agent
+            .agent_session
+            .as_ref()
+            .map(|s| s.value.clone())
+            .unwrap_or_default();
+        entry = entry.with_attribution(&name, "", "", &session);
+    }
+    ctx.activities.record(entry);
+}
+
+/// `d.fail`/`d.failErr`'s journal row — every routed failure records
+/// `<action> failed: <public error>` (action underscores become spaces).
+pub(crate) fn record_failure(
+    ctx: &ActionContext,
+    action: &str,
+    pane_id: &str,
+    request_id: &str,
+    error: &str,
+) {
+    if action.is_empty() {
+        return;
+    }
+    let summary = format!("{} failed: {}", action.replace('_', " "), error);
+    record_activity(ctx, action, "failed", summary, pane_id, request_id);
 }
 
 /// The acknowledgment ledger — `state.AcknowledgePane`'s local half.

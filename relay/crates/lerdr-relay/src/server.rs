@@ -21,7 +21,7 @@ use axum::http::{header, HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
-use lerdr_core::protocol::ENCRYPTED_WEBSOCKET_SUBPROTOCOL;
+use lerdr_core::protocol::{Outbound, ENCRYPTED_WEBSOCKET_SUBPROTOCOL};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -115,6 +115,16 @@ impl Relay {
     /// `Metrics.ConnectedClients`.
     pub fn connected_clients(&self) -> usize {
         self.shared.clients.lock().expect("clients poisoned").len()
+    }
+
+    /// `hub.broadcast` — push a frame to every live client. Sinks that
+    /// have fallen behind are skipped; the session's send-buffer contract
+    /// already evicts them.
+    pub fn broadcast(&self, message: &Outbound) {
+        let clients = self.shared.clients.lock().expect("clients poisoned");
+        for sink in clients.values() {
+            let _ = sink.try_send(message);
+        }
     }
 
     /// The axum router — `Router::new().route("/ws", …).route("/healthz", …)`.

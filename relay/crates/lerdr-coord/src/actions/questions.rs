@@ -48,7 +48,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 
-use super::{dispatch_failure, ActionContext, Outcome};
+use super::{dispatch_failure, record_activity, ActionContext, Outcome};
 
 /// `approvalDeadline` — the per-command effect budget for `respond`
 /// (the oracle's `9 * time.Second`; shared across the pane read, classify,
@@ -6099,6 +6099,15 @@ pub(crate) async fn respond(
         }
     };
     flight.mark_accepted(StoredResult::new(action, &accepted));
+    // `recordActivity("approval","approved",…)` — before the watcher arm.
+    record_activity(
+        &ctx,
+        "approval",
+        "approved",
+        format!("Approved option {}", payload.index + 1),
+        &pane_id,
+        request_id,
+    );
     drop(_guard);
 
     // ── watcher ───────────────────────────────────────────────────────
@@ -6421,6 +6430,21 @@ async fn run_question(
             // `commitAndBroadcastResult` — the terminal frame only goes
             // out when the ledger still owns this generation.
             if flight.finish(StoredResult::new(action, &outcome)) {
+                // The oracle records the committed navigation/answer.
+                let summary = match navigation.as_str() {
+                    "previous" => Some("Opened previous question"),
+                    "next" => Some("Opened next question"),
+                    _ if action == "answer_question" => Some("Answered question"),
+                    _ => None,
+                };
+                if let Some(summary) = summary {
+                    let status = if action == "answer_question" {
+                        "answered"
+                    } else {
+                        "navigated"
+                    };
+                    record_activity(&ctx, "question", status, summary, &pane_id, request_id);
+                }
                 return watched_frames(request_id, action, action_id, &accepted, &outcome);
             }
             vec![

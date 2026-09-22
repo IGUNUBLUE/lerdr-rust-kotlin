@@ -281,13 +281,13 @@ async fn run(args: ServeArgs) -> Result<(), BoxError> {
     };
     let shutdown = CancellationToken::new();
     let topology = TopologyActor::spawn(herdr, shutdown.clone());
-    let factory = HerdRouterFactory::new(
+    let router_factory = HerdRouterFactory::new(
         topology.clone(),
         sink_of,
         shutdown.clone(),
-        cfg.runtime_dir.join("uploads"),
-    )
-    .into_factory();
+        cfg.runtime_dir.clone(),
+    );
+    let factory = router_factory.clone().into_factory();
     let topology_for_snapshot = topology.clone();
     let relay = Relay::with_router_factory(auth, factory).with_session_config(SessionConfig {
         snapshot_fn: Some(SnapshotFn(Arc::new(move || {
@@ -310,6 +310,16 @@ async fn run(args: ServeArgs) -> Result<(), BoxError> {
         ..SessionConfig::default()
     });
     let _ = relay_cell.set(relay.clone());
+    // `d.broadcast` — journal events (`activity` rows, `activity_history`
+    // clears) fan out to every connected client, matching the oracle's
+    // live activity pushes.
+    router_factory.spawn_activity_broadcast(
+        {
+            let relay = relay.clone();
+            move |message| relay.broadcast(message)
+        },
+        relay.shutdown(),
+    );
     // Tie the topology actor's token to the relay's real shutdown token.
     {
         let relay_shutdown = relay.shutdown();

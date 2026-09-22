@@ -8,7 +8,10 @@ use lerdr_core::protocol::Inbound;
 use lerdr_herdr::Client;
 use serde::Serialize;
 
-use super::{dispatch_failure, ActionContext, Outcome, COMMAND_DEADLINE, PROMPT_MAX_CHARS};
+use super::{
+    dispatch_failure, record_activity, record_activity_extract, uploads, ActionContext, Outcome,
+    COMMAND_DEADLINE, PROMPT_MAX_CHARS,
+};
 
 /// `secretMaxRunes`.
 const SECRET_MAX_RUNES: usize = 256;
@@ -57,7 +60,27 @@ pub(crate) async fn send_text(
     action_id: &str,
     message: &Inbound,
 ) -> Vec<lerdr_core::protocol::Outbound> {
-    let outcome = send_text_inner(&ctx.client, &message.pane_id, &message.text).await;
+    // `expandPromptAttachmentReferences` — `Attachment: <ref>` lines resolve
+    // through the upload index before dispatch; unresolvable refs fail with
+    // the oracle's exact message.
+    let mut text = message.text.clone();
+    if let Err(error) =
+        uploads::expand_attachment_references(&ctx, message.target.as_ref(), &mut text).await
+    {
+        return Outcome::failed(&message.pane_id, error).frames(request_id, "send_text", action_id);
+    }
+    let outcome = send_text_inner(&ctx.client, &message.pane_id, &text).await;
+    if outcome.ok {
+        record_activity_extract(
+            &ctx,
+            "send_text",
+            "sent",
+            "Text inserted",
+            &text,
+            &message.pane_id,
+            request_id,
+        );
+    }
     outcome.frames(request_id, "send_text", action_id)
 }
 
@@ -133,6 +156,10 @@ pub(crate) async fn send_keys(
             Err(err) => dispatch_failure(pane_id, &err),
         }
     };
+    if outcome.ok {
+        let label = message.raw_str("activity_label").unwrap_or("keys");
+        record_activity(&ctx, "send_keys", "sent", label, pane_id, request_id);
+    }
     outcome.frames(request_id, "send_keys", action_id)
 }
 
@@ -175,6 +202,21 @@ pub(crate) async fn send_input(
         Ok(_) => Outcome::completed(pane_id, None),
         Err(err) => dispatch_failure(pane_id, &err),
     };
+    if outcome.ok {
+        let label = message
+            .raw_str("activity_label")
+            .unwrap_or("Terminal input sent");
+        // The oracle records this family under the `input` kind.
+        record_activity_extract(
+            &ctx,
+            "input",
+            "sent",
+            label,
+            &input.text,
+            pane_id,
+            request_id,
+        );
+    }
     outcome.frames(request_id, "send_input", action_id)
 }
 
@@ -232,6 +274,16 @@ pub(crate) async fn send_secret(
         Ok(_) => Outcome::completed(pane_id, None),
         Err(err) => dispatch_failure(pane_id, &err),
     };
+    if outcome.ok {
+        record_activity(
+            &ctx,
+            "send_secret",
+            "sent",
+            "Password entered",
+            pane_id,
+            request_id,
+        );
+    }
     outcome.frames(request_id, "send_secret", action_id)
 }
 
@@ -246,19 +298,30 @@ pub(crate) async fn submit_prompt(
     message: &Inbound,
 ) -> Vec<lerdr_core::protocol::Outbound> {
     let pane_id = message.pane_id.as_str();
-    let text = if message.text.is_empty() {
-        message.prompt.as_str()
+    let mut text = if message.text.is_empty() {
+        message.prompt.clone()
     } else {
-        message.text.as_str()
+        message.text.clone()
     };
-    let outcome = prompt_inner(&ctx, pane_id, text).await;
+    // `expandPromptAttachmentReferences` — same as send_text.
+    if let Err(error) =
+        uploads::expand_attachment_references(&ctx, message.target.as_ref(), &mut text).await
+    {
+        return Outcome::failed(pane_id, error).frames(request_id, "submit_prompt", action_id);
+    }
+    let outcome = prompt_inner(&ctx, pane_id, &text, request_id).await;
     outcome.frames(request_id, "submit_prompt", action_id)
 }
 
 /// `handlePrompt`'s effect — shared by the routed `submit_prompt` and the
 /// `agent_start` initial prompt (the oracle calls `handlePrompt` inline for
-/// the latter).
-pub(crate) async fn prompt_inner(ctx: &ActionContext, pane_id: &str, text: &str) -> Outcome {
+/// the latter, with the `"-initial"` request-id suffix).
+pub(crate) async fn prompt_inner(
+    ctx: &ActionContext,
+    pane_id: &str,
+    text: &str,
+    request_id: &str,
+) -> Outcome {
     if pane_id.is_empty() || text.is_empty() {
         return Outcome::failed(pane_id, "Text and agent are required");
     }
@@ -270,7 +333,7 @@ pub(crate) async fn prompt_inner(ctx: &ActionContext, pane_id: &str, text: &str)
         .pane_of(pane_id)
         .and_then(|agent| agent.agent.as_deref())
         .is_some_and(is_qoder_agent);
-    if requires_enter {
+    let outcome = if requires_enter {
         match ctx
             .client
             .call_with_timeout(
@@ -313,7 +376,19 @@ pub(crate) async fn prompt_inner(ctx: &ActionContext, pane_id: &str, text: &str)
             Ok(_) => Outcome::completed(pane_id, None),
             Err(err) => dispatch_failure(pane_id, &err),
         }
+    };
+    if outcome.ok {
+        record_activity_extract(
+            ctx,
+            "submit_prompt",
+            "sent",
+            "Prompt sent",
+            text,
+            pane_id,
+            request_id,
+        );
     }
+    outcome
 }
 
 /// `agent_stop` → `pane.close{pane_id}`.
@@ -350,6 +425,16 @@ pub(crate) async fn agent_stop(
         }
         Err(err) => dispatch_failure(pane_id, &err),
     };
+    if outcome.ok {
+        record_activity(
+            &ctx,
+            "agent_stop",
+            "sent",
+            "Stopped agent",
+            pane_id,
+            request_id,
+        );
+    }
     outcome.frames(request_id, "agent_stop", action_id)
 }
 

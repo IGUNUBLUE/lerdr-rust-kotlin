@@ -2811,10 +2811,25 @@ pub(crate) async fn upload_finish(
             BTreeMap::new(),
         )];
     }
-    // The oracle also records an `agent_upload_finish` activity row; the
-    // Rust journal has no write API yet, so that side-effect is omitted.
     match ctx.uploads.finish(&request) {
-        Ok(result) => vec![upload_result(request_id, ResultKind::Finish, &result)],
+        Ok(result) => {
+            // `RecordActivity("upload","completed",…)` — "Attached N files",
+            // or the single file's name.
+            let summary = if result.attachments.len() == 1 {
+                format!("Attached {}", result.attachments[0].name)
+            } else {
+                format!("Attached {} files", result.attachments.len())
+            };
+            super::record_activity(
+                &ctx,
+                "upload",
+                "completed",
+                summary,
+                &request.target.pane_id,
+                request_id,
+            );
+            vec![upload_result(request_id, ResultKind::Finish, &result)]
+        }
         Err(error) => vec![upload_error(
             request_id,
             ResultKind::Finish,

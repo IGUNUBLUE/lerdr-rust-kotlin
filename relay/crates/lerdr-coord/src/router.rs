@@ -69,11 +69,14 @@ impl HerdRouterFactory {
     /// typically `move |id| relay.client_sink(id)`; `cancel` should be the
     /// relay shutdown token (watches and the lease sweeper die with the
     /// relay).
+    /// `runtime_dir` roots the persisted subsystems — uploads stage under
+    /// `runtime_dir/uploads`, push state under `runtime_dir/push` (the
+    /// oracle's data-dir layout).
     pub fn new(
         handle: TopologyHandle,
         sink_of: ClientSinkLookup,
         cancel: CancellationToken,
-        uploads_dir: std::path::PathBuf,
+        runtime_dir: std::path::PathBuf,
     ) -> Self {
         let leases = actions::leases::Leases::new(handle.client.clone());
         leases.spawn_sweeper(cancel.clone());
@@ -86,12 +89,39 @@ impl HerdRouterFactory {
                 acks: actions::Acks::default(),
                 profiles: actions::profiles::Resolver::new(),
                 questions: actions::questions::Questions::default(),
-                uploads: actions::uploads::Uploads::new(uploads_dir),
+                uploads: actions::uploads::Uploads::new(runtime_dir.join("uploads")),
                 activities: actions::activity::Journal::default(),
-                push: actions::push::Push::default(),
+                push: actions::push::Push::new(&runtime_dir.join("push")).unwrap_or_else(|err| {
+                    tracing::warn!("push persistence unavailable ({err}); running in-memory");
+                    actions::push::Push::default()
+                }),
                 speech: actions::speech::Speech::default(),
             }),
         }
+    }
+
+    /// `d.broadcast` — forward journal events (`activity` rows,
+    /// `activity_history` clears) through `broadcast` until `cancel`
+    /// fires or the journal closes.
+    pub fn spawn_activity_broadcast(
+        &self,
+        broadcast: impl Fn(&Outbound) + Send + Sync + 'static,
+        cancel: CancellationToken,
+    ) {
+        let journal = self.shared.activities.clone();
+        tokio::spawn(async move {
+            let mut rx = journal.subscribe();
+            loop {
+                tokio::select! {
+                    () = cancel.cancelled() => break,
+                    event = rx.recv() => match event {
+                        Ok(event) => broadcast(&event.into_outbound()),
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    },
+                }
+            }
+        });
     }
 
     /// The closure `Relay::with_router_factory` expects.
@@ -262,7 +292,24 @@ macro_rules! spawn_action {
         let rid = $request_id.clone();
         let aid = $action_id.clone();
         let msg = $message.clone();
-        $router.push_later(async move { $handler(ctx, &rid, &aid, &msg).await });
+        $router.push_later(async move {
+            let frames = $handler(ctx.clone(), &rid, &aid, &msg).await;
+            // `d.fail`/`d.failErr` — every routed failure writes a journal row.
+            for frame in &frames {
+                if let Outbound::CommandResult(result) = frame {
+                    if result.ok == Some(false) {
+                        actions::record_failure(
+                            &ctx,
+                            result.action.as_deref().unwrap_or_default(),
+                            result.pane_id.as_deref().unwrap_or_default(),
+                            result.request_id.as_deref().unwrap_or(&rid),
+                            result.error.as_deref().unwrap_or_default(),
+                        );
+                    }
+                }
+            }
+            frames
+        });
         RouterReply::empty()
     }};
 }

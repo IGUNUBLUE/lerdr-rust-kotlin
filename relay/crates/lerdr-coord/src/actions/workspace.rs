@@ -15,7 +15,9 @@ use lerdr_core::protocol::Inbound;
 use lerdr_herdr::WorkspaceInfo;
 use serde::Serialize;
 
-use super::{topology_failure, ActionContext, Outcome, MAX_INSERT_INDEX, WORKSPACE_DEADLINE};
+use super::{
+    record_activity, topology_failure, ActionContext, Outcome, MAX_INSERT_INDEX, WORKSPACE_DEADLINE,
+};
 use crate::topology::Topology;
 
 /// `workspaceLabelMaxRunes`.
@@ -114,6 +116,16 @@ pub(crate) async fn workspace_create(
             }
         },
     };
+    if outcome.ok {
+        record_activity(
+            &ctx,
+            "workspace_create",
+            "created",
+            format!("Created workspace {label}"),
+            "",
+            request_id,
+        );
+    }
     outcome.frames(request_id, "workspace_create", action_id)
 }
 
@@ -159,6 +171,17 @@ pub(crate) async fn workspace_rename(
             }
         }
     };
+    if outcome.ok {
+        let label = message.label.trim();
+        record_activity(
+            &ctx,
+            "workspace_rename",
+            "renamed",
+            format!("Renamed workspace to {label}"),
+            "",
+            request_id,
+        );
+    }
     outcome.frames(request_id, "workspace_rename", action_id)
 }
 
@@ -170,11 +193,27 @@ pub(crate) async fn workspace_reorder(
     action_id: &str,
     message: &Inbound,
 ) -> Vec<lerdr_core::protocol::Outbound> {
-    let outcome = if !message.workspace_ids.is_empty() {
+    let block = !message.workspace_ids.is_empty();
+    let outcome = if block {
         reorder_block(&ctx, message).await
     } else {
         reorder_single(&ctx, message).await
     };
+    if outcome.ok {
+        let summary = if block {
+            "Reordered workspace group"
+        } else {
+            "Reordered workspace"
+        };
+        record_activity(
+            &ctx,
+            "workspace_reorder",
+            "reordered",
+            summary,
+            "",
+            request_id,
+        );
+    }
     outcome.frames(request_id, "workspace_reorder", action_id)
 }
 
@@ -360,6 +399,14 @@ pub(crate) async fn workspace_close(
                     Err(err) => topology_failure("workspace_close", &err),
                     Ok(_) => {
                         ctx.handle.refresh().await;
+                        record_activity(
+                            &ctx,
+                            "workspace_close",
+                            "closed",
+                            format!("Closed workspace {}", current.label),
+                            "",
+                            request_id,
+                        );
                         Outcome::completed(
                             "",
                             Some(serde_json::json!({
