@@ -32,5 +32,12 @@
                 <data android:scheme="lerdr" android:host="pair" />
             </intent-filter>
         </activity>
+
+        <!-- Pins live relay sessions while the app is backgrounded.
+             Started by AgentAttentionNotifier on first CONNECTED relay. -->
+        <service
+            android:name=".notify.RelaySyncService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 </manifest>
