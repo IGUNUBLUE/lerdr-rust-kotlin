@@ -338,6 +338,18 @@ none block Phase 1 continuation.
 - **Conversation history** — readers in flight (rs-conversation);
   `get_conversation_history` still returns the oracle's browserless
   failure until the router arm re-points.
+- **Shadow-diff harness** — in flight (rs-shadow-diff): `lerdr-shadow`
+  scripted client + scenario runner diffing normalized frame streams
+  across both relays on one Herdr socket; Phase-3 exit gate.
+- **Idle RSS baseline (release builds, same socket, 2026-09)** — Go
+  `lerdr` 0.27.1 ≈ 22.3 MB vs Rust `lerdr-relay` ≈ 10.4 MB at idle
+  (~2.1x lighter). Load comparison still owed by the shadow harness.
+- **Plugin packaging exercised** — `herdr plugin link` registers the
+  manifest (5 actions, 5 panes, build/startup/event hooks);
+  `plugin-on-event.sh`/`plugin-on-startup.sh` → `lerdr-relay
+  event-hook`/`startup-hook` → verified UDP datagrams. Still unproven:
+  `plugin-build.sh` end-to-end (needs a published GitHub release —
+  Phase-4 release pipeline).
 - **App never sends a web-push subscription** — Android notifications
   ride the socket + local notifier; `push_subscribe` UI is intentionally
   absent. The relay path exists for future web/desktop clients.
