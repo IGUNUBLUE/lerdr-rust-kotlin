@@ -995,6 +995,7 @@ mod tests {
             speech: crate::actions::speech::Speech::default(),
             notices: crate::actions::Notices::default(),
             audit: None,
+            device_id: "test-device".to_owned(),
             client_id: "test-client".to_owned(),
         }
     }

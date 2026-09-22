@@ -183,6 +183,8 @@ pub struct HerdRouter {
     shared: Arc<ActionShared>,
     /// Lazily captured from the first `ClientContext`.
     client_id: Option<String>,
+    /// `client.Identity().DeviceID` — captured alongside `client_id`.
+    device_id: Option<String>,
     watches: WatchSet,
     /// Forwards topology revisions to this client.
     forwarder: Option<tokio::task::JoinHandle<()>>,
@@ -201,6 +203,7 @@ impl HerdRouter {
             cancel,
             shared,
             client_id: None,
+            device_id: None,
             watches: WatchSet::default(),
             forwarder: None,
         }
@@ -212,6 +215,7 @@ impl HerdRouter {
             return;
         }
         self.client_id = Some(ctx.client_id.to_owned());
+        self.device_id = Some(ctx.identity.device_id.clone());
         let sink_of = self.sink_of.clone();
         let mut topo_rx = self.handle.topology.clone();
         let client_id = ctx.client_id.to_owned();
@@ -295,6 +299,7 @@ impl HerdRouter {
             notices: self.shared.notices.clone(),
             audit: self.shared.audit.clone(),
             client_id: self.client_id.clone().unwrap_or_default(),
+            device_id: self.device_id.clone().unwrap_or_default(),
         }
     }
 }

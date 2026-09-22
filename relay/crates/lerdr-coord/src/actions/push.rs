@@ -27,17 +27,15 @@
 //! ## Identity note
 //!
 //! The oracle keys device state by `identity.DeviceID` /
-//! `identity.Locale` from the authenticated session. `ActionContext`
-//! does not carry the authenticated identity today — only the relay
-//! connection label (`client-N`). Until the router forwards the
-//! identity, the device key is resolved from the wire `client_id` the
-//! client sends on push actions (`"<uuid>"` or `"<uuid>:<relayId>"`,
-//! normalized to the uuid head — stable across reconnects like the
-//! oracle's device id) and bound to the connection so `client_id`-less
-//! actions (`push_policy_get`, `push_test_device`, `push_viewed_pane`)
-//! resolve the same device. A connection that never sends `client_id`
-//! falls back to its connection label. Locale stands in as `"en"` —
-//! the oracle normalizes to its supported set anyway.
+//! `identity.Locale` from the authenticated session — `ActionContext`
+//! carries it as `device_id` and handlers use it directly
+//! (`pushM.Policy(identity.DeviceID, …)`, `sub.DeviceID = identity.DeviceID`,
+//! `SetViewedPane(identity.DeviceID, …)`). The wire `client_id` a client
+//! sends on push actions is *claimed* identity — it stays a
+//! per-subscription attribute (stored on the subscription, honored as a
+//! filter inside `push_unsubscribe`) and never keys device state.
+//! Locale stands in as `"en"` — the oracle normalizes to its supported
+//! set anyway.
 //!
 //! ## Persistence note
 //!
@@ -1141,10 +1139,6 @@ struct State {
     viewed_panes: HashMap<String, TargetRef>,
     /// `pushTestLast` — in-memory 10s test-notification rate limit.
     test_last: HashMap<String, Instant>,
-    /// Connection label (`client-N`) -> device key, learned from wire
-    /// `client_id` fields. The identity shim until `ActionContext`
-    /// carries `AuthenticatedIdentity` (see module doc).
-    bindings: HashMap<String, String>,
     signer: ReferenceSigner,
     /// The durable queue's in-memory half: pending entries + delivered
     /// records + the manager's `active`/`retracting` key sets. No
@@ -1167,7 +1161,6 @@ impl State {
             last_accepted: BTreeMap::new(),
             viewed_panes: HashMap::new(),
             test_last: HashMap::new(),
-            bindings: HashMap::new(),
             signer: ReferenceSigner::ephemeral(),
             entries: HashMap::new(),
             delivered: HashMap::new(),
@@ -1220,18 +1213,6 @@ impl Push {
         Ok(Push {
             inner: Arc::new(Mutex::new(state)),
         })
-    }
-
-    /// Associate this connection with a device key learned from a wire
-    /// `client_id` (identity shim — see module doc).
-    fn bind(&self, conn_id: &str, device_key: &str) {
-        self.lock()
-            .bindings
-            .insert(conn_id.to_owned(), device_key.to_owned());
-    }
-
-    fn bound(&self, conn_id: &str) -> Option<String> {
-        self.lock().bindings.get(conn_id).cloned()
     }
 
     /// `Manager.Subscriptions` — a copy of the registry.
@@ -2083,27 +2064,6 @@ fn set_private_permissions(path: &Path) -> io::Result<()> {
 // Handler helpers — caller identity, target currency, frame builders.
 // ---------------------------------------------------------------------------
 
-/// The device key for this call — see the module doc's identity note.
-/// Wire `client_id` (normalized uuid head) wins and binds to the
-/// connection; else the learned binding; else the connection label.
-fn caller_device_key(push: &Push, conn_id: &str, wire_client_id: &str) -> String {
-    if let Some(key) = normalized_wire_client_id(wire_client_id) {
-        push.bind(conn_id, &key);
-        return key;
-    }
-    if let Some(key) = push.bound(conn_id) {
-        return key;
-    }
-    conn_id.to_owned()
-}
-
-/// `"<uuid>"` or `"<uuid>:<relayId>"` -> `"<uuid>"` (the browser's
-/// stable client id; empty head -> `None`).
-fn normalized_wire_client_id(client_id: &str) -> Option<String> {
-    let head = client_id.split(':').next().unwrap_or_default().trim();
-    (!head.is_empty()).then(|| head.to_owned())
-}
-
 /// `pushTargetCurrent` — the claimed pane must still be the live
 /// agent: primary session, ids present, nonnegative generation, and
 /// the pane's current terminal/session/generation.
@@ -2235,9 +2195,9 @@ pub(crate) async fn policy_get(
     ctx: ActionContext,
     request_id: &str,
     action_id: &str,
-    message: &Inbound,
+    _message: &Inbound,
 ) -> Vec<Outbound> {
-    let device = caller_device_key(&ctx.push, &ctx.client_id, &message.client_id);
+    let device = ctx.device_id.clone();
     let policy = ctx.push.policy(&device, "en");
     vec![
         policy_frame(&policy_response(&policy)),
@@ -2255,7 +2215,7 @@ pub(crate) async fn policy_set(
     action_id: &str,
     message: &Inbound,
 ) -> Vec<Outbound> {
-    let device = caller_device_key(&ctx.push, &ctx.client_id, &message.client_id);
+    let device = ctx.device_id.clone();
     let current = ctx.push.policy(&device, "en");
     let applied = bound_push_policy(message.policy.as_ref(), &device, "en", current)
         .and_then(|policy| ctx.push.set_policy(policy.clone()).map(|_| policy));
@@ -2290,7 +2250,7 @@ pub(crate) async fn subscribe(
     action_id: &str,
     message: &Inbound,
 ) -> Vec<Outbound> {
-    let device = caller_device_key(&ctx.push, &ctx.client_id, &message.client_id);
+    let device = ctx.device_id.clone();
     let mut code: Option<&'static str> = Some("push_invalid_subscription");
     let mut ok = false;
     if let Some(raw) = &message.subscription {
@@ -2322,7 +2282,7 @@ pub(crate) async fn unsubscribe(
     action_id: &str,
     message: &Inbound,
 ) -> Vec<Outbound> {
-    let device = caller_device_key(&ctx.push, &ctx.client_id, &message.client_id);
+    let device = ctx.device_id.clone();
     let code = ctx
         .push
         .unsubscribe_device(&device, &message.endpoints, &message.client_id)
@@ -2340,9 +2300,9 @@ pub(crate) async fn test_device(
     ctx: ActionContext,
     request_id: &str,
     action_id: &str,
-    message: &Inbound,
+    _message: &Inbound,
 ) -> Vec<Outbound> {
-    let device = caller_device_key(&ctx.push, &ctx.client_id, &message.client_id);
+    let device = ctx.device_id.clone();
     if !ctx.push.reserve_test(&device, Instant::now()) {
         return vec![
             test_result_frame("rate_limited"),
@@ -2380,7 +2340,7 @@ pub(crate) async fn snooze(
     action_id: &str,
     message: &Inbound,
 ) -> Vec<Outbound> {
-    let device = caller_device_key(&ctx.push, &ctx.client_id, &message.client_id);
+    let device = ctx.device_id.clone();
     let applied = (|| -> Result<DevicePolicy, &'static str> {
         let mut policy = ctx.push.policy(&device, "en");
         policy.snoozed = message.snoozed;
@@ -2416,7 +2376,7 @@ pub(crate) async fn viewed_pane(
     action_id: &str,
     message: &Inbound,
 ) -> Vec<Outbound> {
-    let device = caller_device_key(&ctx.push, &ctx.client_id, &message.client_id);
+    let device = ctx.device_id.clone();
     let target = match &message.target {
         Some(target)
             if message.visible
@@ -2442,7 +2402,7 @@ pub(crate) async fn open_ref(
     action_id: &str,
     message: &Inbound,
 ) -> Vec<Outbound> {
-    let device = caller_device_key(&ctx.push, &ctx.client_id, &message.client_id);
+    let device = ctx.device_id.clone();
     let checked = ctx
         .push
         .verify_event_reference(&message.event_ref, Timestamp::now())
@@ -2503,6 +2463,7 @@ mod tests {
             speech: crate::actions::speech::Speech::default(),
             notices: crate::actions::Notices::default(),
             audit: None,
+            device_id: "test-device".to_owned(),
             client_id: client_id.to_owned(),
         }
     }
@@ -2580,7 +2541,7 @@ mod tests {
         };
         let policy: serde_json::Value =
             serde_json::from_str(m.policy.as_ref().unwrap().value().unwrap().get()).unwrap();
-        assert_eq!(policy["device_id"], "client-1");
+        assert_eq!(policy["device_id"], "test-device");
         assert_eq!(policy["locale"], "en");
         assert_eq!(policy["settle_ms"], 2000);
         assert_eq!(policy["cooldown_ms"], 30_000);
@@ -2619,7 +2580,7 @@ mod tests {
         assert_eq!(cr.ok, Some(true));
         assert_eq!(cr.phase.as_deref(), Some("completed"));
         assert_eq!(pr.ok, Some(true));
-        let stored = push.policy("client-1", "en");
+        let stored = push.policy("test-device", "en");
         assert_eq!(stored.settle, 500 * NS_PER_MS);
         assert_eq!(stored.cooldown, 10_000 * NS_PER_MS);
         // absent categories keys → the wire map replaces wholesale.
@@ -2747,7 +2708,7 @@ mod tests {
             serde_json::from_str(pr.policy.as_ref().unwrap().value().unwrap().get()).unwrap();
         assert_eq!(policy["snoozed"], true);
         assert_eq!(policy["snooze_until"], "2999-01-01T00:00:00Z");
-        assert!(push.policy("client-1", "en").snoozed);
+        assert!(push.policy("test-device", "en").snoozed);
     }
 
     #[tokio::test]
@@ -2793,13 +2754,16 @@ mod tests {
         assert_eq!(m.ok, Some(true));
         let subs = push.subscriptions();
         assert_eq!(subs.len(), 1);
-        assert_eq!(subs[0].device_id, "uuid-1");
+        assert_eq!(subs[0].device_id, "test-device");
         assert_eq!(subs[0].client_id, "uuid-1:relay");
         assert!(subs[0].notify_finished);
         assert_eq!(subs[0].platform, "other");
-        // A different device on the same endpoint mismatches.
+        // A different authenticated device on the same endpoint
+        // mismatches — the wire `client_id` claim is not the device key.
+        let mut other = ctx.clone();
+        other.device_id = "other-device".to_owned();
         let frames = subscribe(
-            ctx.clone(),
+            other,
             "r",
             "a",
             &inbound(serde_json::json!({
@@ -2936,7 +2900,7 @@ mod tests {
         // Same-target publish is suppressed by the viewed-pane ledger.
         let result = push
             .publish(PublishRequest {
-                key: question_key("uuid-1"),
+                key: question_key("test-device"),
                 preview: PREVIEW_QUESTION,
                 created_at: Some(Timestamp::now()),
                 expires_at: Some(Timestamp::now().add_ns(60 * NS_PER_SEC)),
@@ -2945,7 +2909,7 @@ mod tests {
         assert_eq!(result.queued, 0);
         assert_eq!(result.suppressed, 1);
         assert_eq!(
-            push.decide(&question_key("uuid-1"), "en", Timestamp::now())
+            push.decide(&question_key("test-device"), "en", Timestamp::now())
                 .code,
             "push_viewed_pane"
         );
@@ -2967,7 +2931,7 @@ mod tests {
         ));
         let result = push
             .publish(PublishRequest {
-                key: question_key("uuid-1"),
+                key: question_key("test-device"),
                 preview: PREVIEW_QUESTION,
                 created_at: Some(Timestamp::now()),
                 expires_at: Some(Timestamp::now().add_ns(60 * NS_PER_SEC)),
@@ -2991,7 +2955,7 @@ mod tests {
         )
         .await;
         // Queue the notification: the key becomes active.
-        let key = question_key("uuid-1");
+        let key = question_key("test-device");
         let result = push
             .publish(PublishRequest {
                 key: key.clone(),
@@ -3045,7 +3009,7 @@ mod tests {
     async fn open_ref_rejects_stale_expired_and_foreign_refs() {
         let push = Push::default();
         let ctx = test_context_with(agent_topology(), push.clone(), "client-1");
-        let key = question_key("client-1");
+        let key = question_key("test-device");
         // Not published → not active → stale.
         let stale = push
             .sign_event_reference(&key, Timestamp::now().add_ns(60 * NS_PER_SEC))
@@ -3097,7 +3061,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wire_client_id_binds_connection_to_device() {
+    async fn authenticated_device_keys_push_state() {
         let push = Push::default();
         let ctx = test_context(push.clone(), "client-9");
         let _ = subscribe(
@@ -3110,15 +3074,18 @@ mod tests {
             })),
         )
         .await;
-        // A client_id-less action on the same connection resolves the
-        // bound device.
+        // The wire `client_id` is a subscription claim — device state
+        // keys on the authenticated device id, not the claimed uuid.
+        let sub = &push.subscriptions()[0];
+        assert_eq!(sub.device_id, "test-device");
+        assert_eq!(sub.client_id, "uuid-1:relay");
         let frames = policy_get(ctx.clone(), "r", "a", &inbound(serde_json::json!({}))).await;
         let Some(Outbound::PushPolicy(m)) = frames.first() else {
             panic!("expected push_policy");
         };
         let policy: serde_json::Value =
             serde_json::from_str(m.policy.as_ref().unwrap().value().unwrap().get()).unwrap();
-        assert_eq!(policy["device_id"], "uuid-1");
+        assert_eq!(policy["device_id"], "test-device");
     }
 
     #[test]

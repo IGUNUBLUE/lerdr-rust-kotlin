@@ -2080,6 +2080,7 @@ mod tests {
             speech,
             notices: crate::actions::Notices::default(),
             audit: None,
+            device_id: "test-device".to_owned(),
             client,
             topology: Arc::new(topology),
             client_id: client_id.to_owned(),

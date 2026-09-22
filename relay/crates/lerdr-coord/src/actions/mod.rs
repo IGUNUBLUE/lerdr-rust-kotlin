@@ -94,7 +94,14 @@ pub(crate) struct ActionContext {
     /// their `result` rows here (the session writes `attempt` rows at
     /// admission and audits hub-owned admin replies itself).
     pub audit: Option<Arc<audit::AuditLog>>,
+    /// The transport connection label (`client-N`) — per-connection
+    /// bookkeeping only (leases, speech cancellation, broadcast
+    /// exclusion); never a device identity.
     pub client_id: String,
+    /// `client.Identity().DeviceID` — the authenticated device the oracle
+    /// keys push policy/subscriptions/viewed-pane by. Untrusted wire
+    /// `client_id` claims never substitute for it.
+    pub device_id: String,
 }
 
 /// A relay-wide frame — the `hub.Broadcast`/`broadcastToAll` payloads
