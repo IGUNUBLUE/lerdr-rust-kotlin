@@ -87,6 +87,7 @@ fun TerminalScreen(
     onOpenFeed: () -> Unit,
     onOpenFiles: () -> Unit,
     onBack: () -> Unit,
+    onSelectTab: (String) -> Unit = {},
 ) {
     val appContext = LocalContext.current.applicationContext
     val viewModel: TerminalViewModel = viewModel(key = "terminal:$paneId") {
@@ -99,6 +100,8 @@ fun TerminalScreen(
         onOpenFeed = onOpenFeed,
         onOpenFiles = onOpenFiles,
         onBack = onBack,
+        onSelectTab = onSelectTab,
+        tabsPaneId = paneId,
         onSendKeys = viewModel::sendKeys,
         onSendText = viewModel::sendLiteralText,
         onViewportMeasured = viewModel::onViewportMeasured,
@@ -113,6 +116,8 @@ fun TerminalContent(
     onOpenFeed: () -> Unit,
     onOpenFiles: () -> Unit,
     onBack: () -> Unit,
+    onSelectTab: (String) -> Unit = {},
+    tabsPaneId: String? = null,
     onSendKeys: (List<String>) -> Unit,
     onSendText: (String) -> Unit,
     onViewportMeasured: (columns: Int, rows: Int) -> Unit,
@@ -208,6 +213,8 @@ fun TerminalContent(
                     }
                 },
                 onBack = onBack,
+                tabsPaneId = tabsPaneId,
+                onSelectTab = { onSelectTab(it.paneId) },
                 trailing = {
                     IconButton(onClick = { findOpen = true }) {
                         Icon(

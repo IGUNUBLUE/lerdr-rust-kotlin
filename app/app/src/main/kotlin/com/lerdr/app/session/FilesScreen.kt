@@ -74,6 +74,7 @@ fun FilesScreen(
     onOpenFeed: () -> Unit,
     onOpenTerminal: () -> Unit,
     onBack: () -> Unit,
+    onSelectTab: (String) -> Unit = {},
 ) {
     val appContext = LocalContext.current.applicationContext
     val viewModel: FilesViewModel = viewModel(key = "files:$paneId") {
@@ -86,6 +87,8 @@ fun FilesScreen(
         onOpenFeed = onOpenFeed,
         onOpenTerminal = onOpenTerminal,
         onBack = onBack,
+        onSelectTab = onSelectTab,
+        tabsPaneId = paneId,
         onSelectSection = viewModel::selectSection,
         onOpenDir = viewModel::openDir,
         onShowFile = viewModel::showFile,
@@ -103,6 +106,8 @@ fun FilesContent(
     onOpenFeed: () -> Unit,
     onOpenTerminal: () -> Unit,
     onBack: () -> Unit,
+    onSelectTab: (String) -> Unit = {},
+    tabsPaneId: String? = null,
     onSelectSection: (FilesSection) -> Unit,
     onOpenDir: (String) -> Unit,
     onShowFile: (String) -> Unit,
@@ -135,6 +140,8 @@ fun FilesContent(
                     }
                 },
                 onBack = onBack,
+                tabsPaneId = tabsPaneId,
+                onSelectTab = { onSelectTab(it.paneId) },
                 trailing = {
                     TextButton(onClick = onRefresh) {
                         Text("Refresh", style = MaterialTheme.typography.labelMedium)

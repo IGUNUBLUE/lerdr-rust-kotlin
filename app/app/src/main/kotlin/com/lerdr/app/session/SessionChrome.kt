@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -20,11 +21,15 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lerdr.core.designsystem.components.LerdrSegmentedControl
 import com.lerdr.core.designsystem.theme.LerdrTheme
 
@@ -50,6 +55,13 @@ fun SessionTopBar(
     onSelectMode: (SessionMode) -> Unit,
     onBack: () -> Unit,
     trailing: (@Composable () -> Unit)? = null,
+    /**
+     * When set, the workspace tab strip renders under the mode switch and
+     * a worktrees entry joins the bar actions. The strip self-hides when
+     * the pane's workspace has a single tab.
+     */
+    tabsPaneId: String? = null,
+    onSelectTab: (lerdr.core.store.Agent) -> Unit = {},
 ) {
     val spacing = LerdrTheme.spacing
     Column {
@@ -78,6 +90,9 @@ fun SessionTopBar(
                 }
             },
             actions = {
+                if (tabsPaneId != null) {
+                    WorktreesEntryButton(tabsPaneId)
+                }
                 trailing?.invoke()
                 StatusChip(label = statusLabel, color = statusColor)
                 Spacer(Modifier.width(spacing.medium))
@@ -90,6 +105,44 @@ fun SessionTopBar(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = spacing.medium, vertical = spacing.small),
+        )
+        if (tabsPaneId != null) {
+            WorkspaceTabsStrip(paneId = tabsPaneId, onSelectTab = onSelectTab)
+        }
+    }
+}
+
+/**
+ * Worktrees entry for the session bar — resolves the pane's agent for
+ * its relay + workspace ids, then opens [WorktreesSheet]. Hidden when
+ * the agent row or its workspace is absent (e.g. inventory loading).
+ */
+@Composable
+private fun WorktreesEntryButton(paneId: String) {
+    val appContext = LocalContext.current.applicationContext
+    val entryPoint = androidx.compose.runtime.remember(appContext) {
+        dagger.hilt.android.EntryPointAccessors.fromApplication(
+            appContext,
+            WorktreesEntryPoint::class.java,
+        )
+    }
+    val agent by entryPoint.sessionRepository().agent(paneId)
+        .collectAsStateWithLifecycle(initialValue = null)
+    val workspaceId = agent?.workspaceId?.takeIf { it.isNotEmpty() } ?: return
+    val relayId = agent?.relayId ?: return
+    var showSheet by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    IconButton(onClick = { showSheet = true }) {
+        Icon(
+            Icons.Default.AccountTree,
+            contentDescription = "Manage worktrees",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    if (showSheet) {
+        WorktreesSheet(
+            relayId = relayId,
+            workspaceId = workspaceId,
+            onDismiss = { showSheet = false },
         )
     }
 }

@@ -124,6 +124,11 @@ fun SettingsScreen(
         },
         onAppLockChange = viewModel::setAppLockEnabled,
         onOpenNotificationSettings = { openNotificationSettings(context) },
+        relaySections = { relayId ->
+            PushPolicySection(relayId)
+            DevicesSection(relayId)
+            SpeechSection(relayId)
+        },
     )
 }
 
@@ -142,6 +147,12 @@ fun SettingsContent(
     onThemeMode: (ThemeMode) -> Unit,
     onAppLockChange: (Boolean) -> Unit,
     onOpenNotificationSettings: () -> Unit,
+    /**
+     * Per-relay feature sections (push policy, devices, speech) rendered
+     * under each relay card. Nullable so previews/tests — which can't
+     * resolve the sections' Hilt entry points — stay renderable.
+     */
+    relaySections: (@Composable (relayId: String) -> Unit)? = null,
 ) {
     val spacing = LerdrTheme.spacing
     var forgetTarget by remember { mutableStateOf<RelayRowUi?>(null) }
@@ -206,6 +217,7 @@ fun SettingsContent(
                     onForget = { forgetTarget = relay },
                     modifier = Modifier.padding(horizontal = spacing.medium),
                 )
+                relaySections?.invoke(relay.relayId)
             }
 
             item(key = "security-header") {
