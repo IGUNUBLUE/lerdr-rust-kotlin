@@ -51,6 +51,8 @@ struct ActionShared {
     questions: actions::questions::Questions,
     uploads: actions::uploads::Uploads,
     activities: actions::activity::Journal,
+    push: actions::push::Push,
+    speech: actions::speech::Speech,
 }
 
 /// Builds one [`HerdRouter`] per accepted session.
@@ -86,6 +88,8 @@ impl HerdRouterFactory {
                 questions: actions::questions::Questions::default(),
                 uploads: actions::uploads::Uploads::new(uploads_dir),
                 activities: actions::activity::Journal::default(),
+                push: actions::push::Push::default(),
+                speech: actions::speech::Speech::default(),
             }),
         }
     }
@@ -218,6 +222,8 @@ impl HerdRouter {
             questions: self.shared.questions.clone(),
             uploads: self.shared.uploads.clone(),
             activities: self.shared.activities.clone(),
+            push: self.shared.push.clone(),
+            speech: self.shared.speech.clone(),
             client_id: self.client_id.clone().unwrap_or_default(),
         }
     }
@@ -402,6 +408,148 @@ impl ActionRouter for HerdRouter {
                 action_id,
                 message,
                 actions::activity::clear_activities
+            ),
+
+            // --- push -------------------------------------------------------
+            "push_policy_get" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::push::policy_get
+            ),
+            "push_policy_set" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::push::policy_set
+            ),
+            "push_subscribe" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::push::subscribe
+            ),
+            "push_unsubscribe" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::push::unsubscribe
+            ),
+            "push_test_device" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::push::test_device
+            ),
+            "push_snooze" => {
+                spawn_action!(self, request_id, action_id, message, actions::push::snooze)
+            }
+            "push_viewed_pane" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::push::viewed_pane
+            ),
+            "push_open_ref" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::push::open_ref
+            ),
+
+            // --- speech -----------------------------------------------------
+            "speak_text" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::speech::speak_text
+            ),
+            "cancel_speech" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::speech::cancel_speech
+            ),
+            "speech_voices_list" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::speech::voices_list
+            ),
+            "speech_voice_install" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::speech::voice_install
+            ),
+            "speech_voice_remove" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::speech::voice_remove
+            ),
+
+            // --- misc -------------------------------------------------------
+            "check_update" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::misc::check_update
+            ),
+            "install_update" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::misc::install_update
+            ),
+            "get_conversation_history" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::misc::conversation_history
+            ),
+            "list_slash_commands" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::misc::slash_commands
+            ),
+            "inventory_status" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::misc::inventory_status
+            ),
+            "copy_agent_response" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::misc::copy_agent_response
+            ),
+            "register_app_origin" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::misc::register_app_origin
             ),
 
             // --- workspace -------------------------------------------------

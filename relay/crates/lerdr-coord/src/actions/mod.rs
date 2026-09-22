@@ -18,8 +18,11 @@ pub(crate) mod input;
 pub(crate) mod inspect;
 pub(crate) mod leases;
 pub(crate) mod local;
+pub(crate) mod misc;
 pub(crate) mod profiles;
+pub(crate) mod push;
 pub(crate) mod questions;
+pub(crate) mod speech;
 pub(crate) mod tabs;
 pub(crate) mod uploads;
 pub(crate) mod workspace;
@@ -80,6 +83,12 @@ pub(crate) struct ActionContext {
     /// Relay-side activity journal — `activity.Journal`'s ring buffer.
     #[allow(dead_code)] // populated now; read once the journal lands
     pub activities: activity::Journal,
+    /// Push subsystem — policy, subscriptions, snooze, viewed-pane ledger.
+    #[allow(dead_code)] // populated now; read once push lands
+    pub push: push::Push,
+    /// Speech subsystem — engine handle + in-flight speech requests.
+    #[allow(dead_code)] // populated now; read once speech lands
+    pub speech: speech::Speech,
     pub client_id: String,
 }
 
