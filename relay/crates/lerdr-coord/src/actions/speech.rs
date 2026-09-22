@@ -2079,6 +2079,7 @@ mod tests {
             push: crate::actions::push::Push::default(),
             speech,
             notices: crate::actions::Notices::default(),
+            audit: None,
             client,
             topology: Arc::new(topology),
             client_id: client_id.to_owned(),

@@ -3768,6 +3768,7 @@ mod tests {
             push: crate::actions::push::Push::default(),
             speech: crate::actions::speech::Speech::default(),
             notices: crate::actions::Notices::default(),
+            audit: None,
             client_id: "client-1".to_owned(),
         }
     }

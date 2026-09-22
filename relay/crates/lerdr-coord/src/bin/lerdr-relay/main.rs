@@ -17,9 +17,10 @@ use std::sync::Arc;
 
 use clap::{Args, Parser, Subcommand};
 use lerdr_coord::{ClientSinkLookup, HerdRouterFactory, TopologyActor};
+use lerdr_core::audit;
 use lerdr_herdr::Client;
 use lerdr_relay::auth::BootstrapRearm;
-use lerdr_relay::session::{SessionConfig, SnapshotFn};
+use lerdr_relay::session::{AttributionFn, AuditHook, SessionConfig, SnapshotFn};
 use lerdr_relay::store::FileAuthStore;
 use lerdr_relay::Relay;
 use tokio::net::TcpListener;
@@ -281,11 +282,46 @@ async fn run(args: ServeArgs) -> Result<(), BoxError> {
     };
     let shutdown = CancellationToken::new();
     let topology = TopologyActor::spawn(herdr, shutdown.clone());
+    // `audit.Open(cfg.CacheDir)` — one process-wide append-only log shared
+    // by the session layer (attempt + admin rows) and the router's spawned
+    // handlers (result rows). A failed open degrades to the no-op logger
+    // like the oracle's `s.auditLog == nil`.
+    let audit = Arc::new(
+        audit::AuditLog::open(&cfg.runtime_dir).unwrap_or_else(|error| {
+            warn!(%error, "remote write audit unavailable");
+            audit::AuditLog::noop()
+        }),
+    );
+    // `d.state.Agent(paneID)` — audit attribution off the live topology.
+    let attribution: Arc<AttributionFn> = {
+        let topology = topology.clone();
+        Arc::new(move |pane_id: &str| {
+            let snapshot = topology.topology.borrow();
+            let Some(agent) = snapshot.pane_of(pane_id) else {
+                return audit::Attribution::default();
+            };
+            audit::Attribution {
+                agent: agent
+                    .agent
+                    .clone()
+                    .or_else(|| agent.agent_session.as_ref().map(|s| s.agent.clone()))
+                    .unwrap_or_default(),
+                project: String::new(),
+                session: agent
+                    .agent_session
+                    .as_ref()
+                    .map(|s| s.value.clone())
+                    .unwrap_or_default(),
+                host: String::new(),
+            }
+        })
+    };
     let router_factory = HerdRouterFactory::new(
         topology.clone(),
         sink_of,
         shutdown.clone(),
         cfg.runtime_dir.clone(),
+        Some(audit.clone()),
     );
     let factory = router_factory.clone().into_factory();
     let topology_for_snapshot = topology.clone();
@@ -306,6 +342,10 @@ async fn run(args: ServeArgs) -> Result<(), BoxError> {
                     secret,
                     name: label.clone(),
                 })
+        }),
+        audit: Some(AuditHook {
+            log: audit.clone(),
+            attribution: Some(attribution),
         }),
         ..SessionConfig::default()
     });

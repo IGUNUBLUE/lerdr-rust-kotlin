@@ -20,6 +20,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use lerdr_core::audit;
 use lerdr_core::protocol::{
     action_receipt_response, error_codes, error_response, ActionReceipt, ActionReceiptPhase,
     ApiError, Inbound, Outbound, PaneContent, RequestScope,
@@ -54,6 +55,9 @@ struct ActionShared {
     push: actions::push::Push,
     speech: actions::speech::Speech,
     notices: actions::Notices,
+    /// `s.auditLog` — spawned handlers append `result` rows here; the
+    /// session layer owns `attempt` rows and admin results.
+    audit: Option<Arc<audit::AuditLog>>,
 }
 
 /// Builds one [`HerdRouter`] per accepted session.
@@ -71,13 +75,16 @@ impl HerdRouterFactory {
     /// relay shutdown token (watches and the lease sweeper die with the
     /// relay).
     /// `runtime_dir` roots the persisted subsystems — uploads stage under
-    /// `runtime_dir/uploads`, push state under `runtime_dir/push` (the
-    /// oracle's data-dir layout).
+    /// `runtime_dir/uploads`, push state under `runtime_dir/push`, the
+    /// activity journal under `runtime_dir/activity` (the oracle's
+    /// data-dir layout). `audit` is the process-wide write-audit log the
+    /// session layer also records into (`audit.Open(cfg.CacheDir)`).
     pub fn new(
         handle: TopologyHandle,
         sink_of: ClientSinkLookup,
         cancel: CancellationToken,
         runtime_dir: std::path::PathBuf,
+        audit: Option<Arc<audit::AuditLog>>,
     ) -> Self {
         let leases = actions::leases::Leases::new(handle.client.clone());
         leases.spawn_sweeper(cancel.clone());
@@ -91,13 +98,18 @@ impl HerdRouterFactory {
                 profiles: actions::profiles::Resolver::new(),
                 questions: actions::questions::Questions::default(),
                 uploads: actions::uploads::Uploads::new(runtime_dir.join("uploads")),
-                activities: actions::activity::Journal::default(),
+                activities: actions::activity::Journal::open(&runtime_dir.join("activity"))
+                    .unwrap_or_else(|err| {
+                        tracing::warn!("activity journal unavailable ({err}); running in-memory");
+                        actions::activity::Journal::default()
+                    }),
                 push: actions::push::Push::new(&runtime_dir.join("push")).unwrap_or_else(|err| {
                     tracing::warn!("push persistence unavailable ({err}); running in-memory");
                     actions::push::Push::default()
                 }),
                 speech: actions::speech::Speech::default(),
                 notices: actions::Notices::default(),
+                audit,
             }),
         }
     }
@@ -281,6 +293,7 @@ impl HerdRouter {
             push: self.shared.push.clone(),
             speech: self.shared.speech.clone(),
             notices: self.shared.notices.clone(),
+            audit: self.shared.audit.clone(),
             client_id: self.client_id.clone().unwrap_or_default(),
         }
     }
@@ -321,6 +334,19 @@ macro_rules! spawn_action {
         let msg = $message.clone();
         $router.push_later(async move {
             let frames = $handler(ctx.clone(), &rid, &aid, &msg).await;
+            // `sendAuditedCommandResult` — the result row for an audited
+            // write. The request context is rebuilt from `Inbound` (the
+            // admission-time `attempt` row already hashed the raw map);
+            // attribution reads live topology at result time, matching
+            // the oracle's `s.state.Agent` inside `recordWriteAudit`.
+            let audit_ctx = ctx.audit.as_ref().and_then(|log| {
+                audit::is_audited(&msg.r#type).then(|| {
+                    (
+                        log.clone(),
+                        audit::RequestContext::from_inbound(&msg, &ctx.client_id),
+                    )
+                })
+            });
             // `d.fail`/`d.failErr` — every routed failure writes a journal row.
             for frame in &frames {
                 if let Outbound::CommandResult(result) = frame {
@@ -332,6 +358,17 @@ macro_rules! spawn_action {
                             result.request_id.as_deref().unwrap_or(&rid),
                             result.error.as_deref().unwrap_or_default(),
                         );
+                    }
+                    if let Some((log, req)) = &audit_ctx {
+                        let attribution = actions::audit_attribution(
+                            &ctx.handle.topology.borrow(),
+                            &req.pane_id,
+                        );
+                        if let Err(error) =
+                            log.append(audit::result_record(req, result, attribution))
+                        {
+                            tracing::warn!(%error, "remote write audit append failed");
+                        }
                     }
                 }
             }
@@ -1269,5 +1306,121 @@ mod tests {
             watch_interval(msg.interval_ms()),
             crate::watches::MAX_WATCH_INTERVAL
         );
+    }
+
+    // -- write-audit result rows -----------------------------------------
+
+    /// `sendAuditedCommandResult` at the spawn seam: a routed audited
+    /// action's `command_result` appends a `result` row to the shared log.
+    /// The `attempt` row is the session's (admission), so only `result`
+    /// lands here — with no sink wired, frames drop but the audit append
+    /// already ran.
+    #[tokio::test]
+    async fn audited_spawned_action_appends_result_row() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = Arc::new(audit::AuditLog::open(dir.path()).expect("audit opens"));
+        let handle = crate::TopologyActor::spawn(
+            lerdr_herdr::Client::unix(std::path::PathBuf::from("/nonexistent-herdr.sock")),
+            CancellationToken::new(),
+        );
+        let factory = HerdRouterFactory::new(
+            handle,
+            Arc::new(|_: &str| None),
+            CancellationToken::new(),
+            dir.path().join("runtime"),
+            Some(log.clone()),
+        );
+        let mut router = factory.into_factory()();
+        let identity = lerdr_relay::auth::AuthenticatedIdentity {
+            device_id: "dev-1".to_owned(),
+            credential_id: "cred-1".to_owned(),
+            role: lerdr_relay::auth::Role::Controller,
+            locale: "en".to_owned(),
+            credential_version: 1,
+        };
+        let ctx = ClientContext {
+            client_id: "conn-9",
+            identity: &identity,
+            transport: "ws",
+        };
+        let message = inbound(
+            serde_json::json!({"type":"send_secret","protocol":3,"request_id":"r9","action_id":"a9","target":{"pane_id":"w:t:p"},"text":"x"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        let scope = RequestScope::for_message(&message).expect("send_secret scopes");
+        router.route(&ctx, &scope, &message);
+
+        // The audit append runs inside the spawned task — poll briefly.
+        let path = dir.path().join("audit").join("remote-writes.jsonl");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let row = loop {
+            let found = std::fs::read_to_string(&path)
+                .unwrap_or_default()
+                .lines()
+                .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+                .find(|v| v["stage"] == "result");
+            if let Some(row) = found {
+                break row;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "result row never landed"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert_eq!(row["action"], "send_secret");
+        assert_eq!(row["request_id"], "r9");
+        assert_eq!(row["pane_id"], "w:t:p");
+        assert_eq!(row["client_id"], "connection:conn-9");
+        assert_eq!(row["connection_id"], "conn-9");
+        assert_eq!(row["ok"], false, "no Herdr → failed result");
+        assert!(row.get("details").is_none(), "result rows carry no details");
+    }
+
+    /// A non-audited routed action emits no rows even when it fails.
+    #[tokio::test]
+    async fn non_audited_action_appends_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = Arc::new(audit::AuditLog::open(dir.path()).expect("audit opens"));
+        let handle = crate::TopologyActor::spawn(
+            lerdr_herdr::Client::unix(std::path::PathBuf::from("/nonexistent-herdr.sock")),
+            CancellationToken::new(),
+        );
+        let factory = HerdRouterFactory::new(
+            handle,
+            Arc::new(|_: &str| None),
+            CancellationToken::new(),
+            dir.path().join("runtime"),
+            Some(log.clone()),
+        );
+        let mut router = factory.into_factory()();
+        let identity = lerdr_relay::auth::AuthenticatedIdentity {
+            device_id: "dev-1".to_owned(),
+            credential_id: "cred-1".to_owned(),
+            role: lerdr_relay::auth::Role::Controller,
+            locale: "en".to_owned(),
+            credential_version: 1,
+        };
+        let ctx = ClientContext {
+            client_id: "conn-9",
+            identity: &identity,
+            transport: "ws",
+        };
+        // `get_settings` is a real routed read — never audited.
+        let message = inbound(
+            serde_json::json!({"type":"push_policy_get","protocol":3,"request_id":"r10","action_id":"a10"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        let scope = RequestScope::for_message(&message).expect("push_policy_get scopes");
+        router.route(&ctx, &scope, &message);
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let path = dir.path().join("audit").join("remote-writes.jsonl");
+        let contents = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(contents.is_empty(), "non-audited action wrote: {contents}");
     }
 }

@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use lerdr_core::audit;
 use lerdr_core::json::{MaybeNull, RawJson};
 use lerdr_core::protocol::{
     action_receipt_response, compatible, decode_failure_response, error_codes, error_response,
@@ -113,6 +114,55 @@ pub struct SessionConfig {
     ///
     /// [`Relay`]: crate::server::Relay
     pub disconnect_credentials: Option<DisconnectCredentials>,
+    /// `s.auditLog` — the secret-safe remote-write audit the oracle opens
+    /// with `audit.Open(cfg.CacheDir)` (`server.go:576`). When set, every
+    /// `Audited` action writes an `attempt` row at admission and a
+    /// `result` row per `command_result` — including the hub-owned
+    /// device-admin replies the router never sees. `None` disables the
+    /// log (`s.auditLog == nil` → `recordWriteAudit` no-ops).
+    pub audit: Option<AuditHook>,
+}
+
+/// The write-audit hook — `Arc`-wrapped so `SessionConfig` stays
+/// `Clone + Debug`. `attribution` is the `d.state.Agent(paneID)` lookup;
+/// lerdr-coord supplies the topology projection, a bare relay passes
+/// `None` and records go out attribution-free.
+#[derive(Clone)]
+pub struct AuditHook {
+    /// The shared append-only log (process-wide — one file).
+    pub log: Arc<audit::AuditLog>,
+    /// `d.state.Agent(paneID)` — pane → agent/project/session/host.
+    pub attribution: Option<Arc<AttributionFn>>,
+}
+
+/// Pane-attribution lookup for audit records — `d.state.Agent(paneID)`
+/// projected onto our topology snapshot. Missing panes yield the empty
+/// attribution.
+pub type AttributionFn = dyn Fn(&str) -> audit::Attribution + Send + Sync;
+
+impl std::fmt::Debug for AuditHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AuditHook(..)")
+    }
+}
+
+impl AuditHook {
+    /// The `d.state.Agent(paneID)` read — empty attribution when no lookup
+    /// is wired or the pane is unknown.
+    fn attribution(&self, pane_id: &str) -> audit::Attribution {
+        self.attribution
+            .as_ref()
+            .map(|lookup| lookup(pane_id))
+            .unwrap_or_default()
+    }
+
+    /// `recordWriteAudit` — one append, warn-and-continue on failure
+    /// (`server.go:3084`: a failed audit write never fails the request).
+    fn append(&self, record: audit::Record) {
+        if let Err(error) = self.log.append(record) {
+            warn!(%error, "remote write audit append failed");
+        }
+    }
 }
 
 /// Per-connection snapshot builder — wraps `Arc<dyn Fn>` so
@@ -171,6 +221,7 @@ impl Default for SessionConfig {
             snapshot_fn: None,
             reset_bootstrap: None,
             disconnect_credentials: None,
+            audit: None,
         }
     }
 }
@@ -700,12 +751,16 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
                 return self.enqueue(Outbound::Error(decode_failure_response(&raw_map)));
             }
         };
-        self.dispatch(inbound)
+        self.dispatch(inbound, &raw_map)
     }
 
     /// The `Hub.SetHandler` prologue: catalog lookup, protocol gate,
     /// `server_session_id` fence, authorization — then the router.
-    fn dispatch(&mut self, inbound: Inbound) -> Step {
+    fn dispatch(
+        &mut self,
+        inbound: Inbound,
+        raw_map: &serde_json::Map<String, serde_json::Value>,
+    ) -> Step {
         let Some(scope) = RequestScope::for_message(&inbound) else {
             return self.enqueue(Outbound::Error(error_response(
                 &inbound.request_id,
@@ -741,11 +796,35 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
         if let Some(error) = self.authorize(&scope.action, &inbound.device_id) {
             return self.enqueue(Outbound::Error(error_response(&inbound.request_id, error)));
         }
+        // `recordWriteAudit(client, msg, nil)` — audited writes log an
+        // `attempt` row at admission, before the action switch
+        // (`server.go:683-685`). The raw map carries fields `Inbound`
+        // drops; `send_secret` degrades to shape-only inside
+        // `write_details`.
+        let audit_ctx = match &self.config.audit {
+            Some(hook) if audit::is_audited(scope.action.operation) => {
+                let ctx = audit::RequestContext::from_message(raw_map, &self.client_id);
+                let attribution = hook.attribution(&ctx.pane_id);
+                hook.append(audit::attempt_record(&ctx, raw_map, attribution));
+                Some((ctx, hook.clone()))
+            }
+            _ => None,
+        };
         // Device administration is hub-owned in the oracle — the
         // `s.deviceAuth.*` arms of the action switch (`server.go:757-853`)
         // — so it resolves straight out of the auth store here; the router
         // never sees it.
         if let Some(reply) = self.device_admin(&scope, &inbound) {
+            // `sendAuditedCommandResult` — admin `command_result`s audit
+            // too, even though they never reach the router.
+            if let Some((ctx, hook)) = &audit_ctx {
+                for message in &reply {
+                    if let Outbound::CommandResult(result) = message {
+                        let attribution = hook.attribution(&ctx.pane_id);
+                        hook.append(audit::result_record(ctx, result, attribution));
+                    }
+                }
+            }
             for message in reply {
                 if self.enqueue(message) == STOP {
                     return STOP;
@@ -759,6 +838,16 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
             transport: self.transport,
         };
         let reply = self.router.route(&ctx, &scope, &inbound);
+        // Synchronously-emitted `command_result`s audit here; lerdr-coord's
+        // spawned handlers append their own result rows per frame.
+        if let Some((ctx, hook)) = &audit_ctx {
+            for message in &reply.outbound {
+                if let Outbound::CommandResult(result) = message {
+                    let attribution = hook.attribution(&ctx.pane_id);
+                    hook.append(audit::result_record(ctx, result, attribution));
+                }
+            }
+        }
         for message in reply.outbound {
             if self.enqueue(message) == STOP {
                 return STOP;

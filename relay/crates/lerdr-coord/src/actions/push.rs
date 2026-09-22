@@ -2502,6 +2502,7 @@ mod tests {
             push,
             speech: crate::actions::speech::Speech::default(),
             notices: crate::actions::Notices::default(),
+            audit: None,
             client_id: client_id.to_owned(),
         }
     }

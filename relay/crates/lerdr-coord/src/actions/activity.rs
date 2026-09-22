@@ -244,7 +244,6 @@ impl Journal {
     /// and replay it. Failure means the directory cannot serve the
     /// oracle's durability contract; the factory falls back to
     /// [`Journal::default`]'s in-memory ring.
-    #[allow(dead_code)] // consumed once the orchestrator wires the runtime dir
     pub(crate) fn open(dir: &Path) -> io::Result<Journal> {
         // `os.MkdirAll(cacheDir, 0o700)` + `os.Chmod` — create the
         // directory and repair its mode on every open.
@@ -995,6 +994,7 @@ mod tests {
             push: crate::actions::push::Push::default(),
             speech: crate::actions::speech::Speech::default(),
             notices: crate::actions::Notices::default(),
+            audit: None,
             client_id: "test-client".to_owned(),
         }
     }

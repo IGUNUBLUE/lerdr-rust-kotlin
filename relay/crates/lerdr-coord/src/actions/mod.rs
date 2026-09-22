@@ -32,6 +32,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use lerdr_core::audit;
 use lerdr_core::json::{MaybeNull, RawJson};
 use lerdr_core::protocol::{
     action_receipt_response, error_codes, ActionReceipt, ActionReceiptPhase, ApiError,
@@ -89,6 +90,10 @@ pub(crate) struct ActionContext {
     /// changes, `update_status` notices). The router's forwarder drains
     /// it through `Relay::broadcast_except`.
     pub notices: Notices,
+    /// `s.auditLog` — the shared write-audit sink; spawned handlers append
+    /// their `result` rows here (the session writes `attempt` rows at
+    /// admission and audits hub-owned admin replies itself).
+    pub audit: Option<Arc<audit::AuditLog>>,
     pub client_id: String,
 }
 
@@ -126,6 +131,30 @@ impl Notices {
 impl Default for Notices {
     fn default() -> Self {
         Self(broadcast::channel(64).0)
+    }
+}
+
+/// `d.state.Agent(paneID)` — the pane attribution `recordWriteAudit` reads
+/// into every audit record. Same projection as [`record_activity`]: agent
+/// name + session reference; project/host have no topology source and
+/// stay empty.
+pub(crate) fn audit_attribution(topology: &Topology, pane_id: &str) -> audit::Attribution {
+    let Some(agent) = topology.pane_of(pane_id) else {
+        return audit::Attribution::default();
+    };
+    audit::Attribution {
+        agent: agent
+            .agent
+            .clone()
+            .or_else(|| agent.agent_session.as_ref().map(|s| s.agent.clone()))
+            .unwrap_or_default(),
+        project: String::new(),
+        session: agent
+            .agent_session
+            .as_ref()
+            .map(|s| s.value.clone())
+            .unwrap_or_default(),
+        host: String::new(),
     }
 }
 
