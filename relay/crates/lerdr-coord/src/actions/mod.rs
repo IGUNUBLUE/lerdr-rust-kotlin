@@ -7,13 +7,12 @@
 //! the relay protocol layer adds on top (doc 08 rule 4). `Outcome::frames`
 //! emits the result message first and the receipt last.
 //!
-//! Actions whose backend the Go server implements through subsystems this
-//! crate does not have (conversation transcripts, activity journal, push,
-//! device auth, speech, updates, the question/approval state machine) are
-//! not routed here — they keep the router's honest `dispatched_unknown`.
+//! Actions without a routed handler keep the router's honest
+//! `dispatched_unknown` fallthrough.
 
 pub(crate) mod activity;
 pub(crate) mod agents;
+pub(crate) mod conversation;
 pub(crate) mod input;
 pub(crate) mod inspect;
 pub(crate) mod leases;

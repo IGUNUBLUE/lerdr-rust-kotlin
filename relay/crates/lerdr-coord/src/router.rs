@@ -647,7 +647,7 @@ impl ActionRouter for HerdRouter {
                 request_id,
                 action_id,
                 message,
-                actions::misc::conversation_history
+                actions::conversation::conversation_history
             ),
             "list_slash_commands" => spawn_action!(
                 self,

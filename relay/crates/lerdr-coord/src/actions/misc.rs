@@ -1,15 +1,11 @@
-//! Miscellaneous local actions — updates, conversation history, slash
-//! commands, inventory, copy, app-origin registration.
+//! Miscellaneous local actions — updates, slash commands, inventory,
+//! copy, app-origin registration.
 //!
 //! - `check_update`/`install_update`: the oracle's `update.Manager` port —
 //!   the persisted `update-state.json` machine, the GitHub release probe
 //!   (API → redirect/atom fallback) through `curl`, and the transient-unit
 //!   worker schedule. The `update_status` broadcasts Go fans out to every
 //!   client are emitted to the requester only.
-//! - `get_conversation_history`: the oracle fails "Conversation history
-//!   could not be read" whenever its transcript browser is unavailable;
-//!   this relay has no browser, so that is the honest answer once the pane
-//!   check passes.
 //! - `list_slash_commands`: provider builtins plus the INI `[skills]`/
 //!   `[commands]` escape hatch (`discoverGenericSkills`). Per-agent native
 //!   filesystem discovery (`.claude/commands`, provider settings, trust
@@ -1493,31 +1489,6 @@ pub(crate) async fn install_update(
             .frames(request_id, "install_update", action_id)
         }
     }
-}
-
-/// `get_conversation_history` — the oracle's browserless failure. The
-/// transcript browser (`conversation.Browser`) has no port yet, so once
-/// the pane resolves this answers exactly what the Go server answers when
-/// `s.conversationB` is unavailable.
-pub(crate) async fn conversation_history(
-    ctx: ActionContext,
-    request_id: &str,
-    action_id: &str,
-    message: &Inbound,
-) -> Vec<Outbound> {
-    let pane_id = message.pane_id.as_str();
-    if ctx.topology.pane_of(pane_id).is_none() {
-        return Outcome::failed(pane_id, "Agent is unavailable").frames(
-            request_id,
-            "get_conversation_history",
-            action_id,
-        );
-    }
-    Outcome::failed(pane_id, "Conversation history could not be read").frames(
-        request_id,
-        "get_conversation_history",
-        action_id,
-    )
 }
 
 /// `list_slash_commands` — the pane agent's slash-command catalog.

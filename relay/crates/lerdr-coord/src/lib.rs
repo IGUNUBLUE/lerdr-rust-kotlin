@@ -37,6 +37,7 @@
 
 mod actions;
 mod actor;
+pub mod conversation;
 mod fingerprint;
 mod router;
 mod snapshot;
