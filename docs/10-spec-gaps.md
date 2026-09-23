@@ -584,3 +584,60 @@ before implementation:
   and any future wire identity). Plain shells/absent metadata keep the
   neutral letter monogram. The badge appears in Home rows, attention
   cards, and the shared `SessionTopBar` title slot.
+
+## Round 14 — Wave-0 lifecycle/safety fixes (2026)
+
+Critical correctness/security pass ahead of the feature wave:
+
+- **Credential storage** — `AppModule` now uses `KeystoreCredentialStore.create`,
+  which lands the sealed credential blob under `noBackupFilesDir`
+  (`pairing/credentials.dat`) instead of backup-eligible `filesDir`. Auto
+  Backup must not restore device-bound identity material onto another
+  device. (Pre-existing installs re-pair once.)
+- **`paneSnapshot` observability** — was a one-shot cold flow that
+  resolved the pane runtime once: a collector racing `openPane` saw a
+  single `null` forever, and reconnect-side runtime replacement went
+  unseen. Now a `paneGeneration` counter (bumped on every `panes`
+  insert/remove) drives `flatMapLatest` re-resolution.
+- **Pane-size lease lifecycle** — `TerminalViewModel` renews the lease on
+  the oracle's 10 s cadence (`PANE_SIZE_LEASE_REFRESH_MS`), gates on the
+  oracle's 5 min hidden grace (`paneLeaseRenewalAllowed` /
+  `PANE_LEASE_HIDDEN_GRACE_MS`), re-leases instantly on the
+  resume edge (`sessions.hidden` collector), and releases before unwatch
+  in `onCleared`. The renewal loop rides `appScope` — a repeating `delay`
+  on `viewModelScope`/Dispatchers.Main spins `runTest`'s scheduler
+  forever.
+- **Hidden watch parity** — `SessionRepository.setHidden` now unwatches
+  open panes on background and re-arms read+watch on resume
+  (`visibilitychange` parity); `resyncPanes` skips watch traffic while
+  hidden so a reconnect doesn't leak watches. The `openPanes` intent set
+  is untouched.
+- **Bounded inbound queues** — `RelayConnection.frames` and
+  `RelaySession.incomingChannel` moved off `Channel.UNLIMITED` to
+  `ReconnectPolicy.FRAME_BUFFER_CAPACITY`/`INCOMING_BUFFER_CAPACITY`
+  (256). Overflow aborts the socket: pane/command frames can't be
+  skipped mid-stream, so redial + resync replays a consistent snapshot
+  instead of growing heap without bound.
+- **Feed auto-scroll** — was keyed on entry count and always yanked to
+  the bottom. Now follows the tail only while the user is pinned to the
+  bottom (derived `totalItemsCount` check), keyed on the last entry's
+  id + text length so streaming growth still follows and "Load older"
+  prepends keep the anchor via stable keys.
+- **`LerdrApp` scope** — uses the injected `@AppScope` CoroutineScope
+  instead of a private unowned one.
+- **`@Immutable`** on `FeedUiState`/`TerminalUiState`/`FilesUiState`/
+  `FilesBreadcrumb`.
+- **Repository wrappers** for the previously uncalled catalog actions
+  (oracle payloads mirrored): `send_secret` (cap `secret_input`),
+  `copy_agent_response` (15 s), `tab_reorder` (cap `tab_reorder`),
+  `agent_start` (45 s), `agent_rename`/`restart`/`stop`,
+  `agent_clear` (45 s), `workspace_create` (45 s) /`rename`/`close`
+  (30 s, `close_group` + `expected_workspace_ids` supported) /
+  `reorder` (block form when `workspace_reorder_block`, legacy
+  `insert_index` otherwise), `list_directories` (10 s) with a parsed
+  `DirectoryListing` model. `deviceRole`/`canControl` expose the
+  enrolled credential role for the oracle's `readOnlyRelayIds` UI gate
+  (fail-closed: READER unless proven CONTROLLER).
+- **Danger tokens** — `extendedColors.danger/onDanger/dangerContainer/
+  onDangerContainer` (muted maroon, not saturated `errorContainer`) for
+  deny/stop/destructive actions.
