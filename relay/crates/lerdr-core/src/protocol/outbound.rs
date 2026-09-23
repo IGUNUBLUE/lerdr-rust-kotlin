@@ -259,6 +259,20 @@ pub struct AgentState {
         skip_serializing_if = "is_zero"
     )]
     pub pane_revision: i64,
+    /// Herdr-reported display metadata (`pane.report_metadata`) — named
+    /// state labels and tokens; omitted until a hook reports them.
+    #[serde(
+        default,
+        deserialize_with = "de_default",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub state_labels: BTreeMap<String, String>,
+    #[serde(
+        default,
+        deserialize_with = "de_default",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub tokens: BTreeMap<String, String>,
 }
 
 /// `activity.Entry` — one journal row in `activity`/`activity_history`.
@@ -348,6 +362,13 @@ pub struct Workspace {
     pub cwd: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<WorkspaceWorktree>,
+    /// `workspace.report_metadata` tokens — sidebar row badges.
+    #[serde(
+        default,
+        deserialize_with = "de_default",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub tokens: BTreeMap<String, String>,
 }
 
 /// `herdr.WorkspaceWorktree`.

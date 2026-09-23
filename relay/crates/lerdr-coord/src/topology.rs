@@ -967,6 +967,10 @@ impl Topology {
             question_layout: cell.blocked.question_layout,
             conversation_history_available: history_available,
             pane_revision: cell.state_rev,
+            // `pane.report_metadata` overlays — herdr hooks report these;
+            // empty maps serialize absent (no wire drift until reported).
+            state_labels: info.state_labels.clone(),
+            tokens: info.tokens.clone(),
         }
     }
 
@@ -1011,6 +1015,7 @@ impl Topology {
             active_tab_id: info.active_tab_id.clone(),
             agent_status: info.agent_status.to_string(),
             cwd: String::new(),
+            tokens: info.tokens.clone(),
             worktree: info.worktree.as_ref().map(|w| WorkspaceWorktree {
                 repo_key: w.repo_key.clone(),
                 repo_name: w.repo_name.clone(),
@@ -1154,6 +1159,47 @@ mod tests {
         assert_eq!(t.generation_of("wE:p1"), 1);
         t.bump_generation("wE:p1");
         assert_eq!(t.generation_of("wE:p1"), 2);
+    }
+
+    /// `pane.report_metadata`/`workspace.report_metadata` overlays project
+    /// through `agents[]`/`workspaces[]` when reported and stay absent
+    /// (not empty) on the wire when they are not.
+    #[test]
+    fn reported_metadata_projects_and_omits_when_empty() {
+        let mut t = Topology::default();
+        let mut reported = agent("wE:p1", lerdr_herdr::AgentStatus::Working);
+        reported
+            .state_labels
+            .insert("build".into(), "failing".into());
+        reported.tokens.insert("ci".into(), "red".into());
+        let plain = agent("wE:p2", lerdr_herdr::AgentStatus::Working);
+        let ws = lerdr_herdr::WorkspaceInfo {
+            workspace_id: "wE".into(),
+            tokens: [("branch".into(), "main".into())].into_iter().collect(),
+            ..lerdr_herdr::WorkspaceInfo::default()
+        };
+        t.accept(SessionSnapshot {
+            agents: vec![reported, plain],
+            workspaces: vec![ws],
+            ..SessionSnapshot::default()
+        });
+
+        let agents = t.agents();
+        assert_eq!(agents[0].state_labels["build"], "failing");
+        assert_eq!(agents[0].tokens["ci"], "red");
+        assert!(agents[1].state_labels.is_empty() && agents[1].tokens.is_empty());
+        assert_eq!(t.workspaces()[0].tokens["branch"], "main");
+
+        // Absent-on-wire: empty maps must not serialize.
+        let json = serde_json::to_value(&agents[1]).unwrap();
+        assert!(json.get("state_labels").is_none());
+        assert!(json.get("tokens").is_none());
+        let ws_json = serde_json::to_value(&Workspace {
+            tokens: Default::default(),
+            ..Workspace::default()
+        })
+        .unwrap();
+        assert!(ws_json.get("tokens").is_none());
     }
 
     #[test]
