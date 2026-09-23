@@ -70,6 +70,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.PreviewLightDark
 import androidx.compose.ui.unit.dp
@@ -346,6 +347,20 @@ fun HomeContent(
                     }
                 }
             }
+
+            if (uiState.needsYou.isEmpty() &&
+                uiState.working.isEmpty() &&
+                uiState.idle.isEmpty()
+            ) {
+                item(key = "empty-state") {
+                    EmptyState(
+                        hasRelays = uiState.relays.isNotEmpty(),
+                        modifier = Modifier
+                            .fillParentMaxSize()
+                            .padding(horizontal = spacing.large),
+                    )
+                }
+            }
         }
     }
 
@@ -496,6 +511,47 @@ private fun StatusDot(color: Color) {
             .clip(CircleShape)
             .background(color),
     )
+}
+
+/**
+ * Empty Agents state — a quiet pointer to the launch FAB when computers are
+ * paired, or to the Computers tab when nothing is. `fillParentMaxSize`
+ * inside the LazyColumn centers it in the remaining viewport.
+ */
+@Composable
+private fun EmptyState(
+    hasRelays: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(
+            Icons.Default.Terminal,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+            modifier = Modifier.size(56.dp),
+        )
+        Spacer(Modifier.height(LerdrTheme.spacing.medium))
+        Text(
+            "No agents running",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Spacer(Modifier.height(LerdrTheme.spacing.extraSmall))
+        Text(
+            text = if (hasRelays) {
+                "Launch an agent or workspace with the + button."
+            } else {
+                "Pair a computer from the Computers tab to get started."
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+    }
 }
 
 @Composable
