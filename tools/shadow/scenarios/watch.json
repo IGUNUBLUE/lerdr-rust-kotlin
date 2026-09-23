@@ -1,5 +1,5 @@
 {
-  "name": "core",
+  "name": "watch",
   "vars": {
     "pane_id": "wE:p1",
     "workspace_id": "wE",
@@ -9,7 +9,9 @@
       "terminal_id": "term-1",
       "generation": 0,
       "agent_session_id": ""
-    }
+    },
+    "watch_base": "watch baseline line 01\nwatch baseline line 02\nwatch baseline line 03\nwatch baseline line 04\nwatch baseline line 05\nwatch baseline line 06\nwatch baseline line 07\nwatch baseline line 08\nwatch baseline line 09\nwatch baseline line 10\nwatch baseline line 11\nwatch baseline line 12\n",
+    "watch_next": "watch baseline line 01\nwatch baseline line 02\nwatch baseline line 03\nwatch baseline line 04\nwatch baseline line 05\nwatch baseline line 06\nwatch baseline line 07\nwatch baseline line 08\nwatch baseline line 09\nwatch baseline line 10\nwatch baseline line 11\nwatch baseline line 12\nappended line 13\n"
   },
   "compare": {
     "drop_types": [
@@ -49,6 +51,7 @@
       "last_active_at",
       "received_at_ms",
       "content_fingerprint",
+      "base_fingerprint",
       "last_seen_at",
       "target"
     ],
@@ -107,6 +110,15 @@
         "attention_kind",
         "command",
         "no_echo",
+        "no_echo_prompt",
+        "options",
+        "prompt"
+      ],
+      "pane_delta": [
+        "attention_kind",
+        "command",
+        "no_echo",
+        "no_echo_prompt",
         "options",
         "prompt"
       ]
@@ -132,14 +144,13 @@
     ],
     "async_dedupe": true,
     "notes": [
-      "action_receipt is Rust's v3 dispatch-evidence addition \u2014 Go has no counterpart; dropped (census still shows it).",
+      "action_receipt is Rust's v3 dispatch-evidence addition — Go has no counterpart; dropped (census still shows it).",
       "inventory_status is a Go-only inventory-poller frame; dropped.",
-      "push_config is compared on {type,protocol} only \u2014 capability lists, update/inventory/speech blocks are implementation-scoped.",
-      "agents/workspaces compare the common projection core plus server_session_id (both relays emit it); Go-only fields (activity_seq, pane_revision, project, raw_pane_id, tab_label/number/order, cwd) are declared deltas in type_drop_keys.",
-      "herdr_status compares health_check/server_protocol/server_version; per-probe feature maps and generation counters are per-implementation.",
-      "pane_content compares content/format/pane_id/truncated; Go's attention/prompt/layout fields are a wider projection.",
+      "Watch frames compare {type,pane_id,ack_required,content/segments,format,truncated,viewport_only/viewport_rows,resize_settling,interaction,question_layout,target}: fingerprints (content_fingerprint, base_fingerprint) are content-derived and dropped globally.",
+      "pane_content/pane_delta drop only Go's classification/no-echo projection keys (attention_kind, prompt, command, options, no_echo, no_echo_prompt) — Rust emits format, truncated, viewport_only/viewport_rows, resize_settling, interaction:null and question_layout:false on watch pushes like the oracle's unclassified seeds.",
+      "Go's watch is ticker-driven; Rust's is tick + invalidation-assisted — the pane_updated emit is a wake nudge, not a requirement, and arrival timing inside the collect window is scheduler-owned.",
       "Go pushes an empty activity_history at connect; drop_matches removes only the null-activities variant.",
-      "Go orders the startup burst push_config,agents,workspaces,activity_history,inventory_status; Rust sends push_config,herdr_status,workspaces,agents \u2014 unordered_types covers the interleaving."
+      "control.set seeds pane content before watch_pane so the shared fake is deterministic across both runs of a diff."
     ],
     "drop_matches": [
       {
@@ -197,186 +208,139 @@
       "label": "startup-done"
     },
     {
-      "op": "send",
-      "label": "list-directories",
-      "request_id": "req-dirs",
-      "frame": {
-        "type": "list_directories",
-        "protocol": 3,
-        "request_id": "{request_id}",
-        "path": ""
-      },
-      "until": {
-        "type": "command_result",
-        "request_id": "{request_id}"
-      }
-    },
-    {
-      "op": "send",
-      "label": "worktree-list",
-      "request_id": "req-wt",
-      "frame": {
-        "type": "worktree_list",
-        "protocol": 3,
-        "request_id": "{request_id}",
-        "workspace_id": "{workspace_id}"
-      },
-      "until": {
-        "type": "command_result",
-        "request_id": "{request_id}"
-      }
-    },
-    {
-      "op": "send",
-      "label": "push-policy-get",
-      "request_id": "req-pp",
-      "frame": {
-        "type": "push_policy_get",
-        "protocol": 3,
-        "request_id": "{request_id}"
-      },
-      "capture": [
-        "push_policy"
-      ],
-      "until": {
-        "type": "push_policy"
-      }
-    },
-    {
-      "op": "send",
-      "label": "send-input-text",
-      "request_id": "req-si",
-      "frame": {
-        "type": "send_input",
-        "protocol": 3,
-        "request_id": "{request_id}",
+      "op": "fake_call",
+      "label": "seed-content",
+      "method": "control.set",
+      "params": {
         "pane_id": "{pane_id}",
-        "text": "echo shadow\n",
-        "target": "{target}"
-      },
-      "until": {
-        "type": "command_result",
-        "request_id": "{request_id}",
-        "contains": {
-          "phase": "completed"
-        }
-      },
-      "timeout_ms": 10000
-    },
-    {
-      "op": "send",
-      "label": "send-input-keys",
-      "request_id": "req-sk",
-      "frame": {
-        "type": "send_input",
-        "protocol": 3,
-        "request_id": "{request_id}",
-        "pane_id": "{pane_id}",
-        "keys": [
-          "Enter"
-        ],
-        "target": "{target}"
-      },
-      "until": {
-        "type": "command_result",
-        "request_id": "{request_id}",
-        "contains": {
-          "phase": "completed"
-        }
+        "text": "{watch_base}"
       }
     },
     {
       "op": "send",
-      "label": "send-text",
-      "request_id": "req-st",
+      "label": "watch-pane",
+      "request_id": "req-wp",
       "frame": {
-        "type": "send_text",
-        "protocol": 3,
-        "request_id": "{request_id}",
-        "pane_id": "{pane_id}",
-        "text": "echo shadow text\n",
-        "target": "{target}"
-      },
-      "until": {
-        "type": "command_result",
-        "request_id": "{request_id}",
-        "contains": {
-          "phase": "completed"
-        }
-      }
-    },
-    {
-      "op": "send",
-      "label": "send-keys",
-      "request_id": "req-keys",
-      "frame": {
-        "type": "send_keys",
-        "protocol": 3,
-        "request_id": "{request_id}",
-        "pane_id": "{pane_id}",
-        "keys": [
-          "ctrl+c"
-        ],
-        "target": "{target}"
-      },
-      "until": {
-        "type": "command_result",
-        "request_id": "{request_id}",
-        "contains": {
-          "phase": "completed"
-        }
-      }
-    },
-    {
-      "op": "send",
-      "label": "read-pane",
-      "request_id": "req-rp",
-      "frame": {
-        "type": "read_pane",
+        "type": "watch_pane",
         "protocol": 3,
         "request_id": "{request_id}",
         "pane_id": "{pane_id}",
         "lines": 30,
+        "interval_ms": 250,
         "format": "text",
         "target": "{target}"
       },
       "capture": [
         "pane_content",
+        "pane_delta",
+        "pane_resync",
         "pane_unchanged"
       ],
       "until": {
-        "type": "pane_content"
+        "type": "pane_content",
+        "contains": {
+          "pane_id": "{pane_id}"
+        }
       },
-      "timeout_ms": 10000
+      "timeout_ms": 5000,
+      "quiesce_ms": 400
     },
     {
-      "op": "send",
-      "label": "get-activity",
-      "request_id": "req-ga",
-      "frame": {
-        "type": "get_activity",
-        "protocol": 3,
-        "request_id": "{request_id}",
-        "limit": 50
+      "op": "expect",
+      "label": "initial-pane-content",
+      "match": {
+        "type": "pane_content",
+        "contains": {
+          "pane_id": "{pane_id}",
+          "ack_required": true
+        }
       },
+      "timeout_ms": 3000
+    },
+    {
+      "op": "ack_pane",
+      "label": "ack-initial",
+      "pane_id": "{pane_id}",
+      "target": "{target}",
       "capture": [
-        "activity_history"
+        "pane_resync"
       ],
-      "until": {
-        "type": "activity_history"
+      "timeout_ms": 2000,
+      "quiesce_ms": 400
+    },
+    {
+      "op": "settle",
+      "label": "post-ack-settle",
+      "ms": 300
+    },
+    {
+      "op": "fake_call",
+      "label": "mutate-content",
+      "method": "control.set",
+      "params": {
+        "pane_id": "{pane_id}",
+        "text": "{watch_next}"
       }
     },
     {
-      "op": "send",
-      "label": "unknown-action",
-      "request_id": "req-zz",
-      "frame": {
-        "type": "zz_no_such_action",
-        "protocol": 3,
-        "request_id": "{request_id}"
+      "op": "fake_call",
+      "label": "emit-pane-updated",
+      "method": "control.emit",
+      "params": {
+        "name": "pane_updated",
+        "data": {
+          "pane_id": "{pane_id}"
+        }
+      }
+    },
+    {
+      "op": "collect",
+      "label": "watch-delta",
+      "capture": [
+        "pane_content",
+        "pane_delta",
+        "pane_resync"
+      ],
+      "until": {
+        "type": "pane_delta",
+        "contains": {
+          "pane_id": "{pane_id}"
+        }
       },
-      "timeout_ms": 2500,
+      "timeout_ms": 6000,
+      "quiesce_ms": 600
+    },
+    {
+      "op": "ack_pane",
+      "label": "ack-delta",
+      "pane_id": "{pane_id}",
+      "target": "{target}",
+      "capture": [
+        "pane_content",
+        "pane_delta",
+        "pane_resync"
+      ],
+      "timeout_ms": 2000,
       "quiesce_ms": 400
+    },
+    {
+      "op": "send",
+      "label": "unwatch-pane",
+      "request_id": "req-uw",
+      "frame": {
+        "type": "unwatch_pane",
+        "protocol": 3,
+        "request_id": "{request_id}",
+        "pane_id": "{pane_id}",
+        "target": "{target}"
+      },
+      "capture": [
+        "pane_content",
+        "pane_delta",
+        "pane_resync"
+      ],
+      "timeout_ms": 2000,
+      "quiesce_ms": 600
     },
     {
       "op": "collect",

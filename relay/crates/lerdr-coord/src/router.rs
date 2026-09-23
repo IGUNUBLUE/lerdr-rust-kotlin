@@ -23,9 +23,11 @@ use std::sync::Arc;
 use lerdr_core::audit;
 use lerdr_core::protocol::{
     action_receipt_response, error_codes, error_response, ActionReceipt, ActionReceiptPhase,
-    ApiError, Inbound, Outbound, PaneContent, RequestScope,
+    ApiError, Inbound, Outbound, PaneContent, RequestScope, TargetRef,
 };
-use lerdr_herdr::{DispatchPhase, HerdrError, PaneReadResult, ReadFormat, ReadSource};
+#[cfg(test)]
+use lerdr_herdr::{DispatchPhase, HerdrError};
+use lerdr_herdr::{PaneReadResult, ReadFormat};
 use lerdr_relay::router::{ActionRouter, ClientContext, RouterReply};
 use lerdr_relay::session::ClientSink;
 use tokio_util::sync::CancellationToken;
@@ -34,7 +36,10 @@ use tracing::Instrument;
 use crate::actions::{self, ActionContext};
 use crate::actor::TopologyHandle;
 use crate::snapshot::topology_broadcast;
-use crate::watches::{watch_interval, WatchSet, WatchSpec, DEFAULT_LINES};
+use crate::watches::{
+    display_source, format_wire, pane_lines, read_format, watch_interval, WatchDeps, WatchSet,
+    WatchSpec,
+};
 
 /// How a router resolves its own client's push endpoint. Wired to
 /// `Relay::client_sink` at construction — the lookup is lazy because the
@@ -394,6 +399,23 @@ macro_rules! spawn_action {
 }
 
 impl ActionRouter for HerdRouter {
+    /// `validateExactPaneTarget` (server.go:345) — the admission check the
+    /// session layer runs after `server_session_id` fencing and device
+    /// authorization, before `recordWriteAudit` (server.go:676): a stale
+    /// or absent `target` rejects the action with `invalid_request`
+    /// naming the offending field, and writes no audit row. Every routed
+    /// message is post-handshake, so `authenticated` is always true.
+    fn validate_pane_target(&self, inbound: &Inbound) -> Option<ApiError> {
+        let topology = self.handle.topology.borrow().clone();
+        actions::target::validate_exact_pane_target(
+            &topology,
+            &inbound.r#type,
+            &inbound.pane_id,
+            inbound.target.as_ref(),
+            true,
+        )
+    }
+
     fn route(
         &mut self,
         ctx: &ClientContext<'_>,
@@ -410,7 +432,11 @@ impl ActionRouter for HerdRouter {
             "watch_pane" => self.route_watch_pane(request_id, action_id, message),
             "unwatch_pane" => self.route_unwatch_pane(request_id, action_id, message),
             "pane_applied" => {
-                self.watches.ack(&message.pane_id);
+                // `handlePaneApplied` matches the wire fingerprint
+                // against pending/acknowledged — the watch sorts out
+                // foreign acks (`pane_resync`) itself.
+                self.watches
+                    .ack(&message.pane_id, message.content_fingerprint());
                 RouterReply::empty()
             }
             "pane_resync" => {
@@ -865,9 +891,18 @@ impl HerdRouter {
         action_id: String,
         message: &Inbound,
     ) -> RouterReply {
-        let Some(pane_id) = non_empty(&message.pane_id) else {
-            return invalid_request(&request_id, &action_id, "pane_id is required");
-        };
+        // `HandleReadPane` answers an empty `pane_id` with the four-key
+        // `pane_content` (`dispatch.go:1102-1104`), not an error.
+        if message.pane_id.is_empty() {
+            return RouterReply::send(vec![Outbound::PaneContent(Box::new(PaneContent {
+                r#type: "pane_content".to_owned(),
+                pane_id: Some(String::new()),
+                content: Some(String::new()),
+                format: Some("text".to_owned()),
+                ..PaneContent::default()
+            }))]);
+        }
+        let pane_id = message.pane_id.clone();
         if self.sink().is_none() {
             return refused(&request_id, &action_id, "session_not_ready");
         }
@@ -881,53 +916,91 @@ impl HerdRouter {
         }
         let client = self.handle.client.clone();
         let leases = self.shared.leases.clone();
-        let lines = u32::try_from(message.lines)
-            .ok()
-            .filter(|l| *l > 0)
-            .unwrap_or(DEFAULT_LINES);
+        let topology = self.handle.topology.clone();
+        // `HandleReadPane` — `intValue(message["lines"], 30)` clamped to
+        // `1..=10000` (`dispatch.go:1106-1112`).
+        let lines = pane_lines(message);
+        let format = read_format(message);
         let fingerprint = message.content_fingerprint().map(str::to_owned);
         let target = message.target.clone();
         let rid = request_id.clone();
         let aid = action_id.clone();
         self.push_later(async move {
             // `applyPaneReadLease` — an active size lease marks the read
-            // viewport-only (the pane was resized for this shape).
-            let viewport_columns = leases.active_columns(&pane_id).await;
-            let viewport_rows = leases.active_rows(&pane_id).await;
-            let settling = leases
-                .resized_within(&pane_id, actions::leases::RESIZE_SETTLE_WINDOW)
-                .await;
-            match client
-                .pane_read(
-                    &pane_id,
-                    ReadSource::RecentUnwrapped,
-                    lines,
-                    ReadFormat::Text,
+            // viewport-only (the pane was resized for this shape) and
+            // feeds `viewport_rows`; client-sent `terminal_*` fields are
+            // ignored (the oracle `delete`s them before the lease).
+            let viewport_only = leases.active_columns(&pane_id).await.is_some();
+            let viewport_rows = if viewport_only {
+                leases.active_rows(&pane_id).await
+            } else {
+                None
+            };
+            let (generation, agent) = {
+                let t = topology.borrow();
+                (
+                    t.generation_of(&pane_id),
+                    t.pane_of(&pane_id)
+                        .and_then(|a| a.agent.clone())
+                        .unwrap_or_default(),
                 )
-                .await
-            {
-                Ok(read) => vec![
-                    read_pane_frame(
+            };
+            let source = display_source(format, viewport_only, &agent);
+            match client.pane_read(&pane_id, source, lines, format).await {
+                Ok(read) => {
+                    // `HandleReadPane`'s mid-read fences — generation is
+                    // the portable half; the oracle's `ContentRevision`
+                    // leg has no Rust counterpart (doc 10).
+                    if topology.borrow().generation_of(&pane_id) != generation {
+                        return vec![
+                            pane_read_error_frame(
+                                &pane_id,
+                                format_wire(format),
+                                "The agent pane was replaced while it was being read",
+                                target.clone(),
+                            ),
+                            receipt(&rid, &aid, ActionReceiptPhase::CONFIRMED, None),
+                        ];
+                    }
+                    let settling = viewport_only
+                        && leases
+                            .resized_within(&pane_id, actions::leases::RESIZE_SETTLE_WINDOW)
+                            .await;
+                    vec![
+                        read_pane_frame(
+                            &pane_id,
+                            &read,
+                            format,
+                            lines,
+                            fingerprint.as_deref(),
+                            target,
+                            viewport_only,
+                            viewport_rows,
+                            settling,
+                        ),
+                        receipt(&rid, &aid, ActionReceiptPhase::CONFIRMED, None),
+                    ]
+                }
+                Err(_) => vec![
+                    pane_read_error_frame(
                         &pane_id,
-                        &read,
-                        fingerprint.as_deref(),
-                        target,
-                        viewport_columns.is_some(),
-                        viewport_rows,
-                        settling,
+                        format_wire(format),
+                        "Unable to read the agent pane",
+                        target.clone(),
                     ),
                     receipt(&rid, &aid, ActionReceiptPhase::CONFIRMED, None),
                 ],
-                Err(err) => vec![receipt_for_herdr_error(&rid, &aid, &err)],
             }
         });
         RouterReply::empty()
     }
 
-    /// `watch_pane` — start the event-driven watch task. `interval_ms`
-    /// becomes the watch's minimum read cadence (clamped), and a wire
-    /// `content_fingerprint` matching the first read adopts the current
-    /// frame instead of pushing a duplicate.
+    /// `watch_pane` — `startPaneWatch`. A re-issued watch on the same
+    /// pane replaces the previous one (`previous.cancel()`); `interval_ms`
+    /// resolves through the oracle's whitelist, `lines` through the
+    /// `30`/`1..=10000` default+clamp, `format` honors `"ansi"`, and a
+    /// wire `content_fingerprint` matching the first read adopts the
+    /// current frame instead of pushing a duplicate.
     fn route_watch_pane(
         &mut self,
         request_id: String,
@@ -940,24 +1013,32 @@ impl HerdRouter {
         let Some(sink) = self.sink() else {
             return refused(&request_id, &action_id, "session_not_ready");
         };
-        if !self.watches.watching(&pane_id) {
-            let spec = WatchSpec {
-                lines: u32::try_from(message.lines)
-                    .ok()
-                    .filter(|l| *l > 0)
-                    .unwrap_or(DEFAULT_LINES),
-                interval: watch_interval(message.interval_ms()),
-                known_fingerprint: message.content_fingerprint().map(str::to_owned),
-            };
-            self.watches.start(
-                pane_id,
-                spec,
-                self.handle.client.clone(),
-                Arc::new(sink),
-                self.handle.invalidations.clone(),
-                self.cancel.clone(),
-            );
-        }
+        let spec = WatchSpec {
+            lines: pane_lines(message),
+            format: read_format(message),
+            interval: watch_interval(message.interval_ms()),
+            known_fingerprint: message.content_fingerprint().map(str::to_owned),
+            // `pane_watch.go:71-74` — `TargetRef{"primary", paneID}`,
+            // overridden wholesale by the inbound `target` when present.
+            target: message.target.clone().unwrap_or(TargetRef {
+                server_session_id: "primary".to_owned(),
+                pane_id: pane_id.clone(),
+                ..TargetRef::default()
+            }),
+        };
+        self.watches.start(
+            pane_id,
+            spec,
+            WatchDeps {
+                leases: self.shared.leases.clone(),
+                topology: self.handle.topology.clone(),
+                acks: self.shared.acks.clone(),
+                client: self.handle.client.clone(),
+                sink: Arc::new(sink),
+                invalidations: self.handle.invalidations.clone(),
+                cancel: self.cancel.clone(),
+            },
+        );
         RouterReply::send(vec![receipt(
             &request_id,
             &action_id,
@@ -993,34 +1074,67 @@ fn non_empty(s: &str) -> Option<String> {
 /// equality against the canonical computed fingerprint is the entire
 /// validation. `target` echoes the request's when present (the oracle
 /// assigns `resp["target"]` only then; `pane_unchanged` emits the key
-/// either way — `null` when absent).
+/// either way — `null` when absent). `interaction`/`question_layout` ride
+/// as the oracle's un-classified seeds (`null`/`false` — the
+/// classification projection is a declared gap, doc 10).
+#[allow(clippy::too_many_arguments)]
 fn read_pane_frame(
     pane_id: &str,
     read: &PaneReadResult,
+    format: ReadFormat,
+    lines: u32,
     fingerprint: Option<&str>,
     target: Option<lerdr_core::protocol::TargetRef>,
     viewport_only: bool,
     viewport_rows: Option<i64>,
     resize_settling: bool,
 ) -> Outbound {
-    let computed = crate::content_fingerprint(&read.text);
+    // `capPaneContentLines` — Herdr's scrollback sources can over-read;
+    // the cap is what `content` AND the fingerprint both see.
+    let content = crate::watches::cap_pane_content_lines(&read.text, lines);
+    let computed = crate::content_fingerprint(content);
     if fingerprint == Some(computed.as_str()) {
         return crate::watches::pane_unchanged(pane_id, &computed, target);
     }
     Outbound::PaneContent(Box::new(PaneContent {
         r#type: "pane_content".to_owned(),
         pane_id: Some(pane_id.to_owned()),
-        content: Some(read.text.clone()),
+        content: Some(content.to_owned()),
         content_fingerprint: Some(computed),
-        format: Some("text".to_owned()),
+        format: Some(format_wire(format).to_owned()),
         truncated: Some(read.truncated),
         target: target.map(lerdr_core::json::MaybeNull::Value),
-        viewport_only: viewport_only.then_some(true),
+        // `HandleReadPane` emits `viewport_only` unconditionally
+        // (`terminalColumns > 0` — false included).
+        viewport_only: Some(viewport_only),
         viewport_rows: if viewport_only { viewport_rows } else { None },
         // The agent re-renders after a lease resize and can push redrawn
         // rows into scrollback — frames read inside the settle window
         // must not commit as history.
         resize_settling: (viewport_only && resize_settling).then_some(true),
+        interaction: Some(lerdr_core::json::MaybeNull::Null),
+        question_layout: Some(false),
+        ..PaneContent::default()
+    }))
+}
+
+/// `HandleReadPane`'s failure shape (`dispatch.go:1144-1155`) — a
+/// `pane_content` carrying `error` (content empty), not a bare receipt.
+/// `target` echoes the request's when present (server.go:741-743 applies
+/// it to every `read_pane` response, errors included).
+fn pane_read_error_frame(
+    pane_id: &str,
+    format: &'static str,
+    error: &str,
+    target: Option<lerdr_core::protocol::TargetRef>,
+) -> Outbound {
+    Outbound::PaneContent(Box::new(PaneContent {
+        r#type: "pane_content".to_owned(),
+        pane_id: Some(pane_id.to_owned()),
+        content: Some(String::new()),
+        format: Some(format.to_owned()),
+        error: Some(error.to_owned()),
+        target: target.map(lerdr_core::json::MaybeNull::Value),
         ..PaneContent::default()
     }))
 }
@@ -1041,46 +1155,30 @@ fn receipt(
     ))
 }
 
-/// Dispatch-boundary taxonomy → receipt (doc 08 rule 4).
+/// Dispatch-boundary taxonomy → receipt (doc 08 rule 4). Currently only
+/// exercised by tests — `read_pane`'s failures ride the `pane_content`
+/// error frame (`HandleReadPane` shape), not the receipt channel — kept
+/// for the next dispatch handler that reports through receipts.
+#[cfg(test)]
 fn receipt_for_herdr_error(request_id: &str, action_id: &str, err: &HerdrError) -> Outbound {
     let (phase, error) = match err.phase() {
         DispatchPhase::NotStarted => (
             ActionReceiptPhase::FAILED_BEFORE_DISPATCH,
-            Some(api_error("herdr_unreachable", err)),
+            Some(actions::api_error("herdr_unreachable", err)),
         ),
         DispatchPhase::DispatchedUnknown => (
             ActionReceiptPhase::DISPATCHED_UNKNOWN,
-            Some(api_error("dispatch_outcome_unknown", err)),
+            Some(actions::api_error("dispatch_outcome_unknown", err)),
         ),
         DispatchPhase::Refused => (
             ActionReceiptPhase::CONFIRMED,
             Some(ApiError::new(
                 err.refusal_code().unwrap_or("refused"),
-                refusal_args(err),
+                actions::refusal_args(err),
             )),
         ),
     };
     receipt(request_id, action_id, phase, error)
-}
-
-fn api_error(code: &str, err: &HerdrError) -> ApiError {
-    let mut args = BTreeMap::new();
-    args.insert(
-        "detail".to_owned(),
-        serde_json::Value::String(err.to_string()),
-    );
-    ApiError::new(code, args)
-}
-
-fn refusal_args(err: &HerdrError) -> BTreeMap<String, serde_json::Value> {
-    let mut args = BTreeMap::new();
-    if let HerdrError::Refused { message, .. } = err {
-        args.insert(
-            "message".to_owned(),
-            serde_json::Value::String(message.clone()),
-        );
-    }
-    args
 }
 
 fn invalid_request(request_id: &str, action_id: &str, detail: &str) -> RouterReply {
@@ -1175,6 +1273,8 @@ mod tests {
         let frame = read_pane_frame(
             "wE:pE",
             &pane_read("hello world\n"),
+            ReadFormat::Text,
+            30,
             Some("a948904f2f0f479b"),
             None,
             false,
@@ -1197,6 +1297,8 @@ mod tests {
         let frame = read_pane_frame(
             "wE:pE",
             &pane_read("hello world\n"),
+            ReadFormat::Text,
+            30,
             Some("0000000000000000"),
             None,
             false,
@@ -1215,6 +1317,8 @@ mod tests {
             read_pane_frame(
                 "wE:pE",
                 &pane_read("hello world\n"),
+                ReadFormat::Text,
+                30,
                 None,
                 None,
                 false,
@@ -1240,7 +1344,17 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    read_pane_frame("wE:pE", &read, Some(bad), None, false, None, false),
+                    read_pane_frame(
+                        "wE:pE",
+                        &read,
+                        ReadFormat::Text,
+                        30,
+                        Some(bad),
+                        None,
+                        false,
+                        None,
+                        false,
+                    ),
                     Outbound::PaneContent(_)
                 ),
                 "{bad:?} should be a fingerprint miss"
@@ -1262,6 +1376,8 @@ mod tests {
         match read_pane_frame(
             "wE:pE",
             &read,
+            ReadFormat::Text,
+            30,
             Some("a948904f2f0f479b"),
             target(),
             false,
@@ -1273,7 +1389,17 @@ mod tests {
             }
             other => panic!("expected pane_unchanged, got {other:?}"),
         }
-        match read_pane_frame("wE:pE", &read, None, target(), false, None, false) {
+        match read_pane_frame(
+            "wE:pE",
+            &read,
+            ReadFormat::Text,
+            30,
+            None,
+            target(),
+            false,
+            None,
+            false,
+        ) {
             Outbound::PaneContent(m) => {
                 assert!(matches!(m.target, Some(MaybeNull::Value(_))))
             }
@@ -1283,8 +1409,9 @@ mod tests {
 
     // -- watch_pane raw fields --------------------------------------------
 
-    /// `interval_ms` rides the raw seam into the clamped cadence;
-    /// `content_fingerprint` is the watch's initial-known fingerprint.
+    /// `interval_ms` rides the raw seam into the whitelist cadence;
+    /// `content_fingerprint` is the watch's initial-known fingerprint;
+    /// `lines` takes the `30`/`1..=10000` default+clamp.
     #[test]
     fn watch_pane_wire_fields_reach_the_spec() {
         let msg = inbound(
@@ -1298,28 +1425,32 @@ mod tests {
             Duration::from_millis(500)
         );
         assert_eq!(msg.content_fingerprint(), None);
+        assert_eq!(pane_lines(&msg), 30);
 
+        // Off-whitelist `interval_ms` — even in-range-feeling values like
+        // 2000 ms — snap to the oracle's 250 ms default.
         let msg = inbound(
-            serde_json::json!({"type":"watch_pane","pane_id":"wE:pE","interval_ms":10,"content_fingerprint":"a948904f2f0f479b"})
+            serde_json::json!({"type":"watch_pane","pane_id":"wE:pE","interval_ms":10,"content_fingerprint":"a948904f2f0f479b","lines":20000})
                 .as_object()
                 .unwrap()
                 .clone(),
         );
         assert_eq!(
             watch_interval(msg.interval_ms()),
-            crate::watches::MIN_WATCH_INTERVAL
+            Duration::from_millis(250)
         );
         assert_eq!(msg.content_fingerprint(), Some("a948904f2f0f479b"));
+        assert_eq!(pane_lines(&msg), 10_000);
 
         let msg = inbound(
-            serde_json::json!({"type":"watch_pane","pane_id":"wE:pE","interval_ms":120000})
+            serde_json::json!({"type":"watch_pane","pane_id":"wE:pE","interval_ms":2000})
                 .as_object()
                 .unwrap()
                 .clone(),
         );
         assert_eq!(
             watch_interval(msg.interval_ms()),
-            crate::watches::MAX_WATCH_INTERVAL
+            Duration::from_millis(250)
         );
     }
 

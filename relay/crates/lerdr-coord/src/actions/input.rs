@@ -416,9 +416,12 @@ pub(crate) async fn agent_stop(
         .await
     {
         Ok(_) => {
-            // The oracle drops the remembered profile and publishes the
-            // post-close topology (`profiles.Forget` + `MarkTopologyChanged`
-            // + `wake`).
+            // `d.state.BumpGeneration` (dispatch.go:543) — the close ended
+            // the pane's session; stale exact targets must stop
+            // validating. Then the oracle drops the remembered profile and
+            // publishes the post-close topology (`profiles.Forget` +
+            // `MarkTopologyChanged` + `wake`).
+            ctx.handle.bump_generation(pane_id.to_owned()).await;
             ctx.profiles.forget(pane_id);
             ctx.handle.refresh().await;
             Outcome::completed(pane_id, None)
@@ -560,5 +563,135 @@ mod tests {
         assert_eq!(normalize_semantic_input_key("meta+x"), None);
         assert_eq!(normalize_semantic_input_key(" enter"), None);
         assert_eq!(normalize_semantic_input_key(""), None);
+    }
+
+    /// Replies `{"type":"ok"}` (or the scripted `error`) to each request —
+    /// enough to drive `agent_stop` to its bump path.
+    struct OkTransport {
+        error: Option<serde_json::Value>,
+    }
+
+    impl lerdr_herdr::Transport for OkTransport {
+        fn dial(
+            &self,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = std::io::Result<lerdr_herdr::BoxIo>> + Send>,
+        > {
+            let error = self.error.clone();
+            Box::pin(async move {
+                let (client_end, mut server_end) = tokio::io::duplex(8192);
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    while let Ok(n) = server_end.read(&mut chunk).await {
+                        if n == 0 {
+                            return;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                        while let Some(pos) = buf.iter().position(|b| *b == b'\n') {
+                            let line: Vec<u8> = buf.drain(..=pos).collect();
+                            let request: serde_json::Value =
+                                serde_json::from_slice(&line).unwrap_or_default();
+                            let id = request["id"].clone();
+                            let reply = match &error {
+                                Some(error) => serde_json::json!({"id": id, "error": error}),
+                                None => serde_json::json!({"id": id, "result": {"type": "ok"}}),
+                            };
+                            if server_end
+                                .write_all(reply.to_string().as_bytes())
+                                .await
+                                .is_err()
+                                || server_end.write_all(b"\n").await.is_err()
+                            {
+                                return;
+                            }
+                        }
+                    }
+                });
+                Ok(Box::new(client_end) as lerdr_herdr::BoxIo)
+            })
+        }
+
+        fn describe(&self) -> String {
+            "ok".to_owned()
+        }
+    }
+
+    fn test_context(client: Client) -> ActionContext {
+        ActionContext {
+            handle: crate::TopologyActor::spawn(
+                client.clone(),
+                tokio_util::sync::CancellationToken::new(),
+            ),
+            leases: crate::actions::leases::Leases::new(client.clone()),
+            acks: crate::actions::Acks::default(),
+            profiles: crate::actions::profiles::Resolver::with_config_home(
+                tempfile::tempdir().expect("tempdir").keep(),
+            ),
+            questions: crate::actions::questions::Questions::default(),
+            uploads: crate::actions::uploads::Uploads::new(
+                tempfile::tempdir().expect("tempdir").keep(),
+            ),
+            activities: crate::actions::activity::Journal::default(),
+            push: crate::actions::push::Push::default(),
+            speech: crate::actions::speech::Speech::default(),
+            notices: crate::actions::Notices::default(),
+            audit: None,
+            device_id: "test-device".to_owned(),
+            client,
+            topology: std::sync::Arc::new(crate::topology::Topology::default()),
+            client_id: "test-client".to_owned(),
+        }
+    }
+
+    /// Wait until the actor publishes a topology whose pane generation
+    /// reaches `want` (the bump runs on the actor's command lane).
+    async fn await_generation(handle: &crate::actor::TopologyHandle, pane_id: &str, want: i64) {
+        let pane_id = pane_id.to_owned();
+        let mut rx = handle.topology.clone();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async move {
+            while rx.borrow().generation_of(&pane_id) < want {
+                rx.changed().await.expect("topology channel closed");
+            }
+        })
+        .await
+        .expect("generation bump was not published");
+    }
+
+    #[tokio::test]
+    async fn agent_stop_bumps_the_pane_generation() {
+        let client = Client::new(
+            std::sync::Arc::new(OkTransport { error: None }),
+            lerdr_herdr::ClientConfig::default(),
+        );
+        let ctx = test_context(client);
+        let mut message = Inbound::default();
+        message.pane_id = "wE:p1".into();
+        let frames = agent_stop(ctx.clone(), "r1", "a1", &message).await;
+        assert!(matches!(
+            frames.first(),
+            Some(lerdr_core::protocol::Outbound::CommandResult(m)) if m.ok == Some(true)
+        ));
+        // dispatch.go:543 — a successful close advances the pane epoch so
+        // stale exact targets stop validating.
+        await_generation(&ctx.handle, "wE:p1", 1).await;
+
+        // A refused close bumps nothing (dispatch.go:537-538 `failErr`).
+        let client = Client::new(
+            std::sync::Arc::new(OkTransport {
+                error: Some(serde_json::json!({"code": "pane_not_found", "message": "gone"})),
+            }),
+            lerdr_herdr::ClientConfig::default(),
+        );
+        let ctx = test_context(client);
+        message.pane_id = "wE:p2".into();
+        let frames = agent_stop(ctx.clone(), "r2", "a2", &message).await;
+        assert!(matches!(
+            frames.first(),
+            Some(lerdr_core::protocol::Outbound::CommandResult(m)) if m.ok == Some(false)
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(ctx.handle.topology.borrow().generation_of("wE:p2"), 0);
     }
 }

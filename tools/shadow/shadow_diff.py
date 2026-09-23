@@ -38,7 +38,8 @@ ROOT = Path(__file__).resolve().parents[2]
 RELAY_DIR = ROOT / "relay"
 ORACLE_DIR = Path(os.environ.get("LERDR_ORACLE", os.path.expanduser("~/Projects/lerdr")))
 TOOLS = ROOT / "tools" / "shadow"
-SCENARIO = TOOLS / "scenarios" / "core.json"
+SCENARIOS = TOOLS / "scenarios"
+DEFAULT_SCENARIO = SCENARIOS / "core.json"
 STATE = TOOLS / "herdr" / "state.json"
 
 # Deterministic relay key — exactly 32 bytes; doubles as the bootstrap
@@ -278,7 +279,7 @@ class Harness:
             )
         log(f"relay {side} ({kind}) up on :{port}")
 
-    def run_client(self, side: str, port: int) -> Path:
+    def run_client(self, side: str, port: int, scenario: Path) -> Path:
         trace = self.traces / f"{side}.jsonl"
         url = f"ws://127.0.0.1:{port}/ws"
         cmd = [
@@ -289,13 +290,17 @@ class Harness:
             "--token",
             TOKEN,
             "--scenario",
-            str(SCENARIO),
+            str(scenario),
             "--trace",
             str(trace),
             "--side",
             side,
             "--handshake-timeout-ms",
             HANDSHAKE_TIMEOUT_MS,
+            # `fake_call` steps (control.set/control.emit) drive server-side
+            # change through the same socket the relays attach to.
+            "--herdr-socket",
+            str(self.sock),
         ]
         log(f"running scenario against {side} …")
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
@@ -324,10 +329,30 @@ class Harness:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--mode", choices=["self", "go"], default="go")
+    ap.add_argument(
+        "--scenario",
+        type=Path,
+        default=DEFAULT_SCENARIO,
+        help="scenario JSON — a name under tools/shadow/scenarios/ or a path "
+        "(default: core.json)",
+    )
     ap.add_argument("--run-dir", type=Path, default=None, help="reuse/keep a run dir")
     ap.add_argument("--keep", action="store_true", help="keep the run dir (default when --run-dir given)")
     ap.add_argument("--skip-build", action="store_true", help="binaries already built")
     args = ap.parse_args()
+
+    scenario = args.scenario
+    if not scenario.exists():
+        # Bare names resolve under scenarios/ ("watch" → watch.json).
+        candidate = SCENARIOS / scenario.name
+        if candidate.suffix != ".json":
+            candidate = candidate.with_suffix(".json")
+        if candidate.exists():
+            scenario = candidate
+    if not scenario.exists():
+        raise SystemExit(f"scenario not found: {args.scenario}")
+    scenario = scenario.resolve()
+    log(f"scenario: {scenario}")
 
     run_dir = args.run_dir or Path(tempfile.mkdtemp(prefix="lerdr-shadow-"))
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -349,7 +374,7 @@ def main() -> int:
         for side, kind in sides:
             h.start_relay(side, kind, ports[side], plugin_ports[side])
 
-        traces = {side: h.run_client(side, ports[side]) for side, _ in sides}
+        traces = {side: h.run_client(side, ports[side], scenario) for side, _ in sides}
         rc = h.diff(traces[sides[0][0]], traces[sides[1][0]])
         return rc
     finally:

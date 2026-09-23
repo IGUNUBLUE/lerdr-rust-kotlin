@@ -6,6 +6,7 @@
 //!                   --trace run/rust.jsonl --side rust
 //!                   [--auth-id bootstrap] [--auth-version 1] [--locale en]
 //!                   [--handshake-timeout-ms 10000] [--drain-ms 600]
+//!                   [--herdr-socket PATH]   — enables `fake_call` steps
 //!
 //! lerdr-shadow diff --a run/go.jsonl --b run/rust.jsonl
 //!                   [--config scenario.json] [--out report.txt]
@@ -29,7 +30,7 @@ fn usage() -> ! {
         "usage:\n  \
          lerdr-shadow run --url URL --token KEY --scenario FILE --trace FILE --side NAME \\\n         \
              [--auth-id ID] [--auth-version N] [--locale LOCALE] \\\n         \
-             [--handshake-timeout-ms N] [--drain-ms N]\n  \
+             [--handshake-timeout-ms N] [--drain-ms N] [--herdr-socket PATH]\n  \
          lerdr-shadow diff --a FILE --b FILE [--config FILE] [--out FILE]"
     );
     std::process::exit(2);
@@ -116,6 +117,7 @@ fn cmd_run(args: &mut Args) -> Result<ExitCode> {
         .take("--drain-ms")
         .and_then(|v| v.parse().ok())
         .unwrap_or(600);
+    let herdr_socket = args.take("--herdr-socket").map(PathBuf::from);
     let (Some(url), Some(token), Some(scenario), Some(trace)) = (url, token, scenario, trace)
     else {
         usage();
@@ -140,6 +142,7 @@ fn cmd_run(args: &mut Args) -> Result<ExitCode> {
         trace_path: PathBuf::from(trace),
         handshake_timeout: Duration::from_millis(handshake_timeout_ms),
         drain_ms,
+        herdr_socket,
     };
     tokio::runtime::Builder::new_current_thread()
         .enable_all()

@@ -20,6 +20,12 @@
 //! (`request_id`) then `vars`. A string that is exactly `{name}` substitutes
 //! the raw JSON value; a `{name}` embedded in a longer string interpolates
 //! the value's string form.
+//!
+//! Step vocabulary: `fence`/`settle` order the trace, `expect` gates on an
+//! already-arrived frame, `send`/`collect` drive the relay, `fake_call`
+//! pokes the fake-herdr socket (`control.set`, `control.emit`), and
+//! `ack_pane` answers `pane_content`/`pane_delta` with a `pane_applied`
+//! echoing the observed `content_fingerprint`.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -236,6 +242,46 @@ pub enum Step {
         #[serde(default = "default_quiesce")]
         quiesce_ms: u64,
     },
+    /// One NDJSON request on the fake-herdr socket — the scenario's
+    /// server-side lever (`control.set`, `control.emit`; see
+    /// [`crate::fake`]). Opens a short connection, waits for the single
+    /// response line, fails the step on an `error` reply. The call is
+    /// recorded as a `note`, not `tx` — it never reaches the relay.
+    /// Requires `--herdr-socket`.
+    FakeCall {
+        label: String,
+        /// Method name — `{placeholders}` resolve like frame fields.
+        method: String,
+        /// Params object — rendered before send; default `{}`.
+        #[serde(default)]
+        params: Value,
+        #[serde(default = "default_timeout")]
+        timeout_ms: u64,
+    },
+    /// `pane_applied` — ack the most recent `pane_content`/`pane_delta`
+    /// observed for `pane_id`, echoing that frame's `content_fingerprint`
+    /// (the oracle's `handlePaneApplied` matches it against `pending`).
+    /// Fails the step when no pane frame has been seen — ack before the
+    /// first `expect` is a scenario bug.
+    AckPane {
+        label: String,
+        /// `pane_id` — `{placeholders}` resolve like frame fields.
+        pane_id: String,
+        /// Optional `target` object — rendered like a frame; its
+        /// `server_session_id` also rides top-level (`putTarget` parity).
+        #[serde(default)]
+        target: Option<Value>,
+        #[serde(default)]
+        request_id: Option<String>,
+        /// Frame types that belong to this step's bucket even when pooled
+        /// (e.g. a stray `pane_resync` on a fingerprint mismatch).
+        #[serde(default)]
+        capture: Vec<String>,
+        #[serde(default = "default_timeout")]
+        timeout_ms: u64,
+        #[serde(default = "default_quiesce")]
+        quiesce_ms: u64,
+    },
 }
 
 impl Step {
@@ -245,7 +291,9 @@ impl Step {
             | Step::Settle { label, .. }
             | Step::Expect { label, .. }
             | Step::Send { label, .. }
-            | Step::Collect { label, .. } => label,
+            | Step::Collect { label, .. }
+            | Step::FakeCall { label, .. }
+            | Step::AckPane { label, .. } => label,
         }
     }
 
@@ -256,13 +304,15 @@ impl Step {
             Step::Expect { .. } => "expect",
             Step::Send { .. } => "send",
             Step::Collect { .. } => "collect",
+            Step::FakeCall { .. } => "fake_call",
+            Step::AckPane { .. } => "ack_pane",
         }
     }
 
     /// The request id this step sends under (`req-<index>` when unset).
     pub fn request_id(&self, index: usize) -> Option<String> {
         match self {
-            Step::Send { request_id, .. } => {
+            Step::Send { request_id, .. } | Step::AckPane { request_id, .. } => {
                 Some(request_id.clone().unwrap_or_else(|| format!("req-{index}")))
             }
             _ => None,
@@ -271,7 +321,9 @@ impl Step {
 
     pub fn capture(&self) -> &[String] {
         match self {
-            Step::Send { capture, .. } | Step::Collect { capture, .. } => capture,
+            Step::Send { capture, .. }
+            | Step::Collect { capture, .. }
+            | Step::AckPane { capture, .. } => capture,
             _ => &[],
         }
     }

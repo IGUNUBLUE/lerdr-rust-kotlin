@@ -22,11 +22,34 @@
 //! | `worktree.list`           | `{"type":"worktree_list",…}` per workspace  |
 //! | `workspace.move_block`    | `workspace_move_block_failed` (probe → supported) |
 //! | `tab.move`                | `tab_not_found` (probe → supported)         |
+//! | `control.set`             | `{"type":"ok"}` — sets `content[pane_id]`   |
+//! | `control.emit`            | `{"type":"ok","delivered":N}` — broadcasts  |
+//! |                           | `{"event":name,"data":…}` to subscribers    |
 //! | anything else             | `unknown_method` error                      |
 //!
 //! `socket.errors`/`socket.methods` in the state file override per method —
 //! `"errors": {"pane.send_input": {"code": "pane_not_found", "message": …}}`
 //! scripts a failure without rebuilding.
+//!
+//! ## `control.*` — the fake's scenario lever
+//!
+//! `control.*` methods are a fake-internal extension the relays never call;
+//! the shadow *scenario client* issues them on a normal (non-subscribe)
+//! connection to drive server-side change mid-run:
+//!
+//! - `control.set {pane_id, text}` — replaces the `pane.read` text for the
+//!   pane. The next read observes the new text, which is what lets a watch
+//!   emit a delta. Reset content to a known baseline at the top of a
+//!   scenario: the socket fake is shared across both runs of a diff.
+//! - `control.emit {name, data}` — pushes one NDJSON event frame,
+//!   `{"event":"<name>","data":<data>}` (the exact envelope both relays'
+//!   event clients decode — Go `herdr.Event`, Rust `lerdr_herdr::Event`),
+//!   to every held `events.subscribe` connection. Names are written
+//!   verbatim; subscribers canonicalize snake_case → dotted themselves.
+//!   Emission to zero subscribers is an error — that's a scenario bug.
+//!
+//! The broadcast does not filter by each connection's `subscriptions`
+//! list — scenarios emit only names the relays subscribe to.
 
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -36,6 +59,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::broadcast;
 
 use crate::{Result, ShadowError};
 
@@ -148,10 +172,34 @@ impl StateFile {
     }
 }
 
+/// The mutable runtime — everything `control.*` calls touch. `StateFile`
+/// stays the immutable seed; `Live` is seeded from it at startup.
+pub struct Live {
+    /// `pane_id` → current `pane.read` text — `control.set` writes,
+    /// `pane.read` reads.
+    content: Mutex<BTreeMap<String, String>>,
+    /// Raw event frames (`{"event":…,"data":…}`) broadcast to every held
+    /// `events.subscribe` connection — `control.emit` sends.
+    events: broadcast::Sender<Value>,
+}
+
+/// Event-channel capacity per subscriber — a burst buffer, not a queue of
+/// record; a lagging subscriber skips (watchers re-read on the next event).
+const EVENT_CHANNEL: usize = 64;
+
+impl Live {
+    fn new(state: &StateFile) -> Self {
+        Self {
+            content: Mutex::new(state.content.clone()),
+            events: broadcast::channel(EVENT_CHANNEL).0,
+        }
+    }
+}
+
 /// A method call outcome: `Ok(result)` or `Err((code, message))`.
 type Dispatch = std::result::Result<Value, (String, String)>;
 
-fn dispatch(state: &StateFile, method: &str, params: &Map<String, Value>) -> Dispatch {
+fn dispatch(state: &StateFile, live: &Live, method: &str, params: &Map<String, Value>) -> Dispatch {
     if let Some(err) = state.socket.errors.get(method) {
         let code = err
             .get("code")
@@ -195,8 +243,10 @@ fn dispatch(state: &StateFile, method: &str, params: &Map<String, Value>) -> Dis
             };
             Ok(json!({"type": "tab_list", "tabs": tabs}))
         }
-        "pane.read" => pane_read(state, params),
+        "pane.read" => pane_read(state, live, params),
         "pane.send_input" | "pane.send_text" | "pane.send_keys" => Ok(json!({"type": "ok"})),
+        "control.set" => control_set(live, params),
+        "control.emit" => control_emit(live, params),
         "worktree.list" => worktree_list(state, params),
         // Capability probes (the Go client interprets these codes as
         // "method supported, arguments refused" — keep them stable).
@@ -212,7 +262,60 @@ fn dispatch(state: &StateFile, method: &str, params: &Map<String, Value>) -> Dis
     }
 }
 
-fn pane_read(state: &StateFile, params: &Map<String, Value>) -> Dispatch {
+/// `control.set {pane_id, text}` — mutate the `pane.read` text so a later
+/// read (a watch tick/probe) observes new content.
+fn control_set(live: &Live, params: &Map<String, Value>) -> Dispatch {
+    let pane_id = params.get("pane_id").and_then(Value::as_str).unwrap_or("");
+    let Some(text) = params.get("text").and_then(Value::as_str) else {
+        return Err((
+            "invalid_params".to_owned(),
+            "control.set requires pane_id and text".to_owned(),
+        ));
+    };
+    if pane_id.is_empty() {
+        return Err((
+            "invalid_params".to_owned(),
+            "control.set requires pane_id".to_owned(),
+        ));
+    }
+    live.content
+        .lock()
+        .expect("content mutex")
+        .insert(pane_id.to_owned(), text.to_owned());
+    Ok(json!({"type": "ok"}))
+}
+
+/// `control.emit {name, data}` — push one event frame onto every held
+/// `events.subscribe` connection. The wire shape is the exact envelope the
+/// relays' event clients decode: `{"event":"<name>","data":<data>}`.
+fn control_emit(live: &Live, params: &Map<String, Value>) -> Dispatch {
+    let name = params
+        .get("name")
+        .or_else(|| params.get("event"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if name.is_empty() {
+        return Err((
+            "invalid_params".to_owned(),
+            "control.emit requires name".to_owned(),
+        ));
+    }
+    let frame = json!({
+        "event": name,
+        "data": params.get("data").cloned().unwrap_or_else(|| json!({})),
+    });
+    // `send` fails only with zero receivers — an emit that reaches no
+    // relay is a scenario-ordering bug, so report it as an error.
+    match live.events.send(frame) {
+        Ok(delivered) => Ok(json!({"type": "ok", "delivered": delivered})),
+        Err(_) => Err((
+            "no_subscribers".to_owned(),
+            format!("control.emit {name}: no events.subscribe connection is held"),
+        )),
+    }
+}
+
+fn pane_read(state: &StateFile, live: &Live, params: &Map<String, Value>) -> Dispatch {
     let pane_id = params.get("pane_id").and_then(Value::as_str).unwrap_or("");
     if pane_id.is_empty() {
         return Err(("pane_not_found".to_owned(), "pane is required".to_owned()));
@@ -230,8 +333,10 @@ fn pane_read(state: &StateFile, params: &Map<String, Value>) -> Dispatch {
             format!("pane {pane_id} not found"),
         ));
     };
-    let text = state
+    let text = live
         .content
+        .lock()
+        .expect("content mutex")
         .get(pane_id)
         .cloned()
         .unwrap_or_else(|| format!("fake terminal content for pane {pane_id}"));
@@ -338,6 +443,7 @@ impl OpsLog {
 /// Serve the socket API until killed.
 pub async fn serve(socket: &Path, state: &Path, ops_log: Option<PathBuf>) -> Result<()> {
     let state = Arc::new(StateFile::load(state)?);
+    let live = Arc::new(Live::new(&state));
     if let Some(dir) = socket.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -359,13 +465,64 @@ pub async fn serve(socket: &Path, state: &Path, ops_log: Option<PathBuf>) -> Res
         tokio::spawn(serve_conn(
             stream,
             Arc::clone(&state),
+            Arc::clone(&live),
             Arc::clone(&ops),
             next_conn,
         ));
     }
 }
 
-async fn serve_conn(stream: UnixStream, state: Arc<StateFile>, ops: Arc<OpsLog>, conn: u64) {
+/// Serialize + write one NDJSON value; `false` = the peer is gone.
+async fn write_line(write: &mut tokio::net::unix::OwnedWriteHalf, value: &Value) -> bool {
+    let mut buf = Vec::new();
+    if serde_json::to_writer(&mut buf, value).is_err() {
+        return false;
+    }
+    buf.push(b'\n');
+    write.write_all(&buf).await.is_ok()
+}
+
+/// The held-open `events.subscribe` tail: the handshake reply already went
+/// out; now forward `control.emit` broadcasts while discarding inbound
+/// lines until the relay drops the connection.
+async fn pump_events(
+    lines: &mut tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+    write: &mut tokio::net::unix::OwnedWriteHalf,
+    events: &broadcast::Sender<Value>,
+) {
+    let mut rx = events.subscribe();
+    loop {
+        tokio::select! {
+            line = lines.next_line() => {
+                match line {
+                    Ok(Some(_)) => {}
+                    // EOF or decode error — the relay hung up.
+                    _ => return,
+                }
+            }
+            event = rx.recv() => {
+                match event {
+                    Ok(frame) => {
+                        if !write_line(write, &frame).await {
+                            return;
+                        }
+                    }
+                    // Lagged receivers skip; the next event re-reads state.
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        }
+    }
+}
+
+async fn serve_conn(
+    stream: UnixStream,
+    state: Arc<StateFile>,
+    live: Arc<Live>,
+    ops: Arc<OpsLog>,
+    conn: u64,
+) {
     let (read, mut write) = stream.into_split();
     let mut lines = BufReader::new(read).lines();
     loop {
@@ -382,7 +539,7 @@ async fn serve_conn(stream: UnixStream, state: Arc<StateFile>, ops: Arc<OpsLog>,
             }),
             Ok(req) => {
                 let subscribed = req.method == "events.subscribe";
-                let response = match dispatch(&state, &req.method, &req.params) {
+                let response = match dispatch(&state, &live, &req.method, &req.params) {
                     Ok(result) => {
                         ops.log(conn, &req.method, &req.params, "ok");
                         json!({"id": req.id, "result": result})
@@ -394,24 +551,23 @@ async fn serve_conn(stream: UnixStream, state: Arc<StateFile>, ops: Arc<OpsLog>,
                 };
                 if subscribed {
                     // The subscription handshake is the only reply on this
-                    // connection — keep reading (and discarding) so the
-                    // stream stays open until the relay drops it.
-                    let mut buf = Vec::new();
-                    let _ = serde_json::to_writer(&mut buf, &response);
-                    buf.push(b'\n');
-                    if write.write_all(&buf).await.is_err() {
+                    // connection — then the pump forwards `control.emit`
+                    // frames until the relay drops it. A refused subscribe
+                    // (injected error) holds the conn without broadcasts.
+                    if !write_line(&mut write, &response).await {
                         return;
                     }
-                    while let Ok(Some(_)) = lines.next_line().await {}
+                    if response.get("result").is_some() {
+                        pump_events(&mut lines, &mut write, &live.events).await;
+                    } else {
+                        while let Ok(Some(_)) = lines.next_line().await {}
+                    }
                     return;
                 }
                 response
             }
         };
-        let mut buf = Vec::new();
-        let _ = serde_json::to_writer(&mut buf, &response);
-        buf.push(b'\n');
-        if write.write_all(&buf).await.is_err() {
+        if !write_line(&mut write, &response).await {
             return;
         }
     }
@@ -420,6 +576,10 @@ async fn serve_conn(stream: UnixStream, state: Arc<StateFile>, ops: Arc<OpsLog>,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn live(state: &StateFile) -> Live {
+        Live::new(state)
+    }
 
     fn state() -> StateFile {
         serde_json::from_value(json!({
@@ -443,7 +603,8 @@ mod tests {
     #[test]
     fn ping_pong() {
         let s = state();
-        let r = dispatch(&s, "ping", &Map::new()).unwrap();
+        let l = live(&s);
+        let r = dispatch(&s, &l, "ping", &Map::new()).unwrap();
         assert_eq!(r["type"], "pong");
         assert_eq!(r["version"], "9.9.9");
         assert_eq!(r["protocol"], 42);
@@ -452,7 +613,8 @@ mod tests {
     #[test]
     fn snapshot_shape() {
         let s = state();
-        let r = dispatch(&s, "session.snapshot", &Map::new()).unwrap();
+        let l = live(&s);
+        let r = dispatch(&s, &l, "session.snapshot", &Map::new()).unwrap();
         assert_eq!(r["type"], "session_snapshot");
         assert_eq!(r["snapshot"]["focused_workspace_id"], "wE");
         assert_eq!(r["snapshot"]["agents"][0]["agent"], "claude");
@@ -461,12 +623,14 @@ mod tests {
     #[test]
     fn lists_and_reads() {
         let s = state();
+        let l = live(&s);
         assert_eq!(
-            dispatch(&s, "agent.list", &Map::new()).unwrap()["type"],
+            dispatch(&s, &l, "agent.list", &Map::new()).unwrap()["type"],
             "agent_list"
         );
         let read = dispatch(
             &s,
+            &l,
             "pane.read",
             &Map::from_iter([("pane_id".into(), json!("wE:p1"))]),
         )
@@ -475,6 +639,7 @@ mod tests {
         assert_eq!(read["read"]["revision"], 7);
         assert!(dispatch(
             &s,
+            &l,
             "pane.read",
             &Map::from_iter([("pane_id".into(), json!("nope"))])
         )
@@ -484,15 +649,18 @@ mod tests {
     #[test]
     fn send_input_injected_error() {
         let s = state();
-        let err = dispatch(&s, "pane.send_input", &Map::new()).unwrap_err();
+        let l = live(&s);
+        let err = dispatch(&s, &l, "pane.send_input", &Map::new()).unwrap_err();
         assert_eq!(err.0, "pane_not_found");
     }
 
     #[test]
     fn worktree_lookup() {
         let s = state();
+        let l = live(&s);
         let ok = dispatch(
             &s,
+            &l,
             "worktree.list",
             &Map::from_iter([("workspace_id".into(), json!("wE"))]),
         )
@@ -501,6 +669,7 @@ mod tests {
         assert_eq!(ok["source"]["repo_key"], "k");
         assert!(dispatch(
             &s,
+            &l,
             "worktree.list",
             &Map::from_iter([("workspace_id".into(), json!("nope"))])
         )
@@ -510,19 +679,132 @@ mod tests {
     #[test]
     fn probes_report_supported() {
         let s = state();
+        let l = live(&s);
         assert_eq!(
-            dispatch(&s, "workspace.move_block", &Map::new())
+            dispatch(&s, &l, "workspace.move_block", &Map::new())
                 .unwrap_err()
                 .0,
             "workspace_move_block_failed"
         );
         assert_eq!(
-            dispatch(&s, "tab.move", &Map::new()).unwrap_err().0,
+            dispatch(&s, &l, "tab.move", &Map::new()).unwrap_err().0,
             "tab_not_found"
         );
         assert_eq!(
-            dispatch(&s, "no.such", &Map::new()).unwrap_err().0,
+            dispatch(&s, &l, "no.such", &Map::new()).unwrap_err().0,
             "unknown_method"
         );
+    }
+
+    #[test]
+    fn control_set_mutates_pane_read() {
+        let s = state();
+        let l = live(&s);
+        let set = |text: &str| {
+            dispatch(
+                &s,
+                &l,
+                "control.set",
+                &Map::from_iter([
+                    ("pane_id".into(), json!("wE:p1")),
+                    ("text".into(), json!(text)),
+                ]),
+            )
+            .unwrap()
+        };
+        set("v1\n");
+        let read = dispatch(
+            &s,
+            &l,
+            "pane.read",
+            &Map::from_iter([("pane_id".into(), json!("wE:p1"))]),
+        )
+        .unwrap();
+        assert_eq!(read["read"]["text"], "v1\n");
+        set("v1\nappended\n");
+        let read = dispatch(
+            &s,
+            &l,
+            "pane.read",
+            &Map::from_iter([("pane_id".into(), json!("wE:p1"))]),
+        )
+        .unwrap();
+        assert_eq!(read["read"]["text"], "v1\nappended\n");
+        // Missing args are errors, not silent mutations.
+        assert!(dispatch(&s, &l, "control.set", &Map::new()).is_err());
+        assert!(dispatch(
+            &s,
+            &l,
+            "control.set",
+            &Map::from_iter([("pane_id".into(), json!("wE:p1"))])
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn control_emit_broadcasts_event_envelope() {
+        let s = state();
+        let l = live(&s);
+        // No subscribers → the emit is a scenario bug, reported as an error.
+        assert_eq!(
+            dispatch(
+                &s,
+                &l,
+                "control.emit",
+                &Map::from_iter([("name".into(), json!("pane.updated"))]),
+            )
+            .unwrap_err()
+            .0,
+            "no_subscribers"
+        );
+        let mut rx = l.events.subscribe();
+        let ok = dispatch(
+            &s,
+            &l,
+            "control.emit",
+            &Map::from_iter([
+                ("name".into(), json!("pane.updated")),
+                ("data".into(), json!({"pane_id": "wE:p1"})),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(ok["delivered"], 1);
+        let frame = rx.try_recv().unwrap();
+        assert_eq!(
+            frame,
+            json!({"event": "pane.updated", "data": {"pane_id": "wE:p1"}})
+        );
+        // `data` defaults to an empty object.
+        let mut rx = l.events.subscribe();
+        dispatch(
+            &s,
+            &l,
+            "control.emit",
+            &Map::from_iter([("name".into(), json!("workspace.updated"))]),
+        )
+        .unwrap();
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            json!({"event": "workspace.updated", "data": {}})
+        );
+        assert!(dispatch(&s, &l, "control.emit", &Map::new()).is_err());
+    }
+
+    #[test]
+    fn socket_overrides_apply_to_control_methods() {
+        let mut s = state();
+        s.socket.errors.insert(
+            "control.emit".into(),
+            json!({"code": "emit_blocked", "message": "scripted"}),
+        );
+        let l = live(&s);
+        let err = dispatch(
+            &s,
+            &l,
+            "control.emit",
+            &Map::from_iter([("name".into(), json!("pane.updated"))]),
+        )
+        .unwrap_err();
+        assert_eq!(err.0, "emit_blocked");
     }
 }

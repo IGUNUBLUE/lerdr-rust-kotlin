@@ -24,6 +24,7 @@ pub(crate) mod push_delivery;
 pub(crate) mod questions;
 pub(crate) mod speech;
 pub(crate) mod tabs;
+pub(crate) mod target;
 pub(crate) mod uploads;
 pub(crate) mod workspace;
 pub(crate) mod worktree;
@@ -613,7 +614,7 @@ pub(crate) fn api_error_plain(code: &str, detail: &str) -> ApiError {
     ApiError::new(code, args)
 }
 
-fn refusal_args(err: &HerdrError) -> BTreeMap<String, serde_json::Value> {
+pub(crate) fn refusal_args(err: &HerdrError) -> BTreeMap<String, serde_json::Value> {
     let mut args = BTreeMap::new();
     if let HerdrError::Refused { message, .. } = err {
         args.insert(

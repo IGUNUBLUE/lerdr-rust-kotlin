@@ -366,3 +366,92 @@ none block Phase 1 continuation.
   section hides; oracle parity).
 - **Multi-relay settings are per-card** — sections render under each
   relay card; no global rollup (oracle parity: per-connection).
+
+## Phase-1 round-11 findings (watch/target reconciliation, 2025)
+
+The pane-watch + exact-target review rejection burned down; the shadow
+harness now drives a dedicated `watch` scenario and both `core` and
+`watch` report `IDENTICAL` against the Go oracle with the tightened
+compare surface (`server_session_id`, `session`, `session_name`,
+`format`, `truncated`, `viewport_*`, `resize_settling`, `interaction`,
+`question_layout`, `target` all compared).
+
+### Resolved this round
+
+- **Exact-target admission ported** — `validate_exact_pane_target`
+  (`actions/target.rs`) runs in session dispatch between authorization
+  and the audit-attempt write, matching the oracle's order. Missing
+  target / mismatched `target.pane_id` / stale tuple (`server_session_id`,
+  `terminal_id`, `generation`, `agent_session_id`) reject with the
+  oracle's `invalid_request` shapes; `unwatch_pane`/`release_pane_size`/
+  `cancel_speech` are exempt like the oracle.
+- **`agents` frames carry the full target tuple** — `server_session_id:
+  "primary"`, `generation`, `terminal_id`, `agent_session_id`
+  (trimmed `agent_session.value`) are projected, sorted by `pane_id`.
+  Without them Kotlin's `wireTarget()` refused to build targets and the
+  app could not send any pane-directed frame against the Rust relay.
+- **Per-pane generation tracking** — `Topology` keeps generation across
+  accepted snapshots; `agent_stop`/`agent_clear` bump it on non-replayed
+  effects (scheduler `slot.generation` is a separate counter, as in the
+  oracle).
+- **Watch loop parity** — interval ticker (100/250/500/1000 whitelist,
+  250 default) + invalidation fast path, so an update arriving inside
+  the ack gate is picked up by the next tick instead of being lost
+  forever (the review's stale-terminal defect). `watch_pane` re-issue
+  replaces the watch. `pane_applied` matches the wire fingerprint
+  against pending/acknowledged and foreign fingerprints push
+  `pane_resync`; the 4 s ack deadline clears pending+acknowledged and
+  forces a fresh full frame. `pane_delta` never carries `ack_required`.
+  The ctl channel is bounded (`try_send`; acks coalesce).
+- **Two-tier poll** — each tick runs the oracle's `HandleProbePane`
+  cheap `visible`-source probe (500 lines) and full-reads only when the
+  probe fingerprint moved or the committed frame was `resize_settling`.
+- **`readPaneForDisplay` source/format matrix** — `format:"ansi"` is
+  honored on `read_pane`/`watch_pane`; non-ansi reads stay on `visible`
+  so text reads never trigger Herdr's mouse-scroll harvest on the
+  operator's pane; ansi reads use `recent` (`recent-unwrapped` for
+  Claude when not lease-resized). Frames emit `format` on both
+  `pane_content` and `pane_delta`.
+- **`pane_content`/`pane_delta` metadata** — frames now carry
+  `truncated`, `viewport_only` (always), `viewport_rows` (lease-only),
+  `resize_settling` (3 s window — corrected from 4 s),
+  `interaction: null`, `question_layout: false`, and the `target` echo.
+  The unchanged-skip hashes a frame fingerprint over content+metadata
+  so metadata-only flips emit the copy-everything delta.
+- **`read_pane` response shape** — failures push `pane_content{content:"",
+  format, error, target}` (no receipt); empty-pane and fingerprint-hit
+  paths match the oracle; `capPaneContentLines` tail-caps content before
+  fingerprinting.
+- **`agent_state` projection** — `session` is `agent_session.value` (the
+  oracle's raw `SessionRaw.Value`), `session_name` is `""` — Rust has no
+  title resolver (the oracle's `Session` is rewritten to the resolved
+  title only when one exists; Kotlin merges `session_name` verbatim).
+- **`pane_unchanged` always echoes `target`** (`null` when absent), and
+  `HandleReadPane`'s `handleAcknowledge` half is ported — every direct
+  read and every watch frame read records `pane_id → state_change_seq`
+  in the ack ledger.
+
+### Still open (declared deltas)
+
+- **Classification projection** — `attention_kind`, `prompt`, `command`,
+  `options`, `no_echo`, `no_echo_prompt` and the real `interaction`/
+  `question_layout` values remain Go-only; Rust emits the oracle's
+  unclassified seeds (`null`/`false`). Shadow drops exactly that key
+  set. Feeding it requires the classify+no-echo port, which also
+  unlocks the ack ledger's consumer (`Acks` records, nothing projects).
+- **Mid-read `ContentRevision` fence** — the oracle rechecks Herdr's
+  content revision after a read; Rust fences on the pane's generation
+  only (the portable half — fake Herdr carries no revision counter).
+- **Read single-flight** — the oracle dedupes concurrent `read_pane`
+  calls per pane in `d.reads`; Rust always reads. Internal RPC economy,
+  not a wire difference.
+- **Title resolver** — `session_name` stays `""` until a title source
+  exists (the oracle resolves tab titles through Herdr state that the
+  fake/fixture path doesn't populate).
+- **Go-only agent projection keys** — `activity_seq`, `pane_revision`,
+  `project`, `raw_pane_id`, `tab_label`/`tab_number`/`tab_order`,
+  `cwd`, `tokens`, `state_labels`, `updated_at` remain declared
+  deltas in `type_drop_keys`.
+- **`acknowledged.classificationAgent` probe leg** — the third
+  `paneWatchNeedsFrameRead` trigger has no counterpart until the
+  classification projection exists.

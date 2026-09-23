@@ -259,8 +259,13 @@ async fn clear_inner(ctx: &ActionContext, request_id: &str, message: &Inbound) -
             Outcome::completed_with_warning(pane_id, data)
         }
     };
-    // `MarkTopologyChanged` + `wake` on every OK result — the warning path
-    // publishes too so the phone sees both panes.
+    // `d.state.BumpGeneration` + `MarkTopologyChanged` + `wake` on every
+    // OK result (dispatch.go:789) — the `completed_with_warning` path
+    // bumps too: the replacement exists, so the old pane's stale exact
+    // targets must stop validating.
+    if outcome.ok {
+        ctx.handle.bump_generation(pane_id.to_owned()).await;
+    }
     ctx.handle.refresh().await;
     if outcome.ok {
         // `agent_restart` flows through `handleClear` in the oracle and
@@ -850,5 +855,298 @@ mod tests {
         // `~` is outside the oracle's safe set → single-quoted like the
         // shell requires.
         assert_eq!(shell_join(&["~/x".into()]), "'~/x'");
+    }
+
+    /// One scripted reply to a request.
+    enum Step {
+        /// `{"id":…,"result":<value>}`.
+        Result(serde_json::Value),
+        /// `{"id":…,"error":{"code","message"}}` — a confirmed refusal.
+        Refuse(&'static str, &'static str),
+    }
+
+    /// Per-method FIFO replies; a drained or unscripted method answers
+    /// `{"type":"ok"}`.
+    struct ScriptTransport {
+        replies: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<Step>>>>,
+    }
+
+    impl ScriptTransport {
+        fn new(steps: Vec<(&'static str, Step)>) -> Self {
+            let mut replies = std::collections::HashMap::new();
+            for (method, reply) in steps {
+                replies
+                    .entry(method.to_owned())
+                    .or_insert_with(Vec::new)
+                    .push(reply);
+            }
+            ScriptTransport {
+                replies: std::sync::Arc::new(std::sync::Mutex::new(replies)),
+            }
+        }
+    }
+
+    impl lerdr_herdr::Transport for ScriptTransport {
+        fn dial(
+            &self,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = std::io::Result<lerdr_herdr::BoxIo>> + Send>,
+        > {
+            let replies = self.replies.clone();
+            Box::pin(async move {
+                let (client_end, mut server_end) = tokio::io::duplex(8192);
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    while let Ok(n) = server_end.read(&mut chunk).await {
+                        if n == 0 {
+                            return;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                        while let Some(pos) = buf.iter().position(|b| *b == b'\n') {
+                            let line: Vec<u8> = buf.drain(..=pos).collect();
+                            let request: serde_json::Value =
+                                serde_json::from_slice(&line).unwrap_or_default();
+                            let method = request["method"].as_str().unwrap_or_default().to_owned();
+                            let step = replies
+                                .lock()
+                                .unwrap()
+                                .get_mut(&method)
+                                .and_then(|queue| {
+                                    if queue.is_empty() {
+                                        None
+                                    } else {
+                                        Some(queue.remove(0))
+                                    }
+                                })
+                                .unwrap_or(Step::Result(serde_json::json!({"type": "ok"})));
+                            let reply = match step {
+                                Step::Result(result) => {
+                                    serde_json::json!({"id": request["id"], "result": result})
+                                }
+                                Step::Refuse(code, message) => serde_json::json!({
+                                    "id": request["id"],
+                                    "error": {"code": code, "message": message},
+                                }),
+                            };
+                            if server_end
+                                .write_all(reply.to_string().as_bytes())
+                                .await
+                                .is_err()
+                                || server_end.write_all(b"\n").await.is_err()
+                            {
+                                return;
+                            }
+                        }
+                    }
+                });
+                Ok(Box::new(client_end) as lerdr_herdr::BoxIo)
+            })
+        }
+
+        fn describe(&self) -> String {
+            "script".to_owned()
+        }
+    }
+
+    fn test_context(
+        client: lerdr_herdr::Client,
+        topology: crate::topology::Topology,
+        config_home: &Path,
+    ) -> ActionContext {
+        ActionContext {
+            handle: crate::TopologyActor::spawn(
+                client.clone(),
+                tokio_util::sync::CancellationToken::new(),
+            ),
+            leases: crate::actions::leases::Leases::new(client.clone()),
+            acks: crate::actions::Acks::default(),
+            profiles: crate::actions::profiles::Resolver::with_config_home(config_home.to_owned()),
+            questions: crate::actions::questions::Questions::default(),
+            uploads: crate::actions::uploads::Uploads::new(
+                tempfile::tempdir().expect("tempdir").keep(),
+            ),
+            activities: crate::actions::activity::Journal::default(),
+            push: crate::actions::push::Push::default(),
+            speech: crate::actions::speech::Speech::default(),
+            notices: crate::actions::Notices::default(),
+            audit: None,
+            device_id: "test-device".to_owned(),
+            client,
+            topology: std::sync::Arc::new(topology),
+            client_id: "test-client".to_owned(),
+        }
+    }
+
+    /// Wait until the actor publishes a topology whose pane generation
+    /// reaches `want` (the bump runs on the actor's command lane).
+    async fn await_generation(handle: &crate::actor::TopologyHandle, pane_id: &str, want: i64) {
+        let pane_id = pane_id.to_owned();
+        let mut rx = handle.topology.clone();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async move {
+            while rx.borrow().generation_of(&pane_id) < want {
+                rx.changed().await.expect("topology channel closed");
+            }
+        })
+        .await
+        .expect("generation bump was not published");
+    }
+
+    /// `agent_clear` through the full replacement lifecycle (argv path,
+    /// `sh` profile). `close_ok=false` scripts a refused `pane.close` —
+    /// the `completed_with_warning` branch.
+    async fn run_clear(
+        close_ok: bool,
+    ) -> (
+        Vec<lerdr_core::protocol::Outbound>,
+        crate::actor::TopologyHandle,
+    ) {
+        let home = workspace::home_dir().expect("home");
+        let cwd = tempfile::tempdir_in(&home).expect("tempdir in home");
+        let resolved = std::fs::canonicalize(cwd.path()).expect("canonical");
+
+        let config_home = tempfile::tempdir().expect("config tempdir");
+        std::fs::create_dir_all(config_home.path().join("herdr")).unwrap();
+        std::fs::write(
+            config_home.path().join("herdr/agent-profiles.ini"),
+            "[config]\nreplace_profiles = true\n[profiles]\nsh = Shell\n",
+        )
+        .unwrap();
+
+        let close_step = if close_ok {
+            Step::Result(serde_json::json!({"type": "ok"}))
+        } else {
+            Step::Refuse("pane_not_found", "gone")
+        };
+        // `call_result` asserts the result's `type` tag — inventory reads
+        // carry `agent_list`/`workspace_list`; raw `call_with_timeout`
+        // replies only need the payload fields the handler reads.
+        let transport = ScriptTransport::new(vec![
+            (
+                "agent.list",
+                Step::Result(serde_json::json!({"type": "agent_list", "agents": []})),
+            ),
+            (
+                "agent.list",
+                Step::Result(serde_json::json!({"type": "agent_list", "agents": []})),
+            ),
+            (
+                "workspace.list",
+                Step::Result(serde_json::json!({"type": "workspace_list", "workspaces": []})),
+            ),
+            (
+                "workspace.create",
+                Step::Result(serde_json::json!({
+                    "workspace": {"workspace_id": "wT"},
+                    "tab": {"tab_id": "wT:t1"},
+                    "root_pane": {"pane_id": "wT:p9"},
+                })),
+            ),
+            (
+                "tab.rename",
+                Step::Result(serde_json::json!({"type": "ok"})),
+            ),
+            (
+                "pane.send_input",
+                Step::Result(serde_json::json!({"type": "ok"})),
+            ),
+            (
+                "agent.get",
+                Step::Result(serde_json::json!({"agent": {"agent": "sh", "agent_status": "idle"}})),
+            ),
+            (
+                "agent.rename",
+                Step::Result(serde_json::json!({"type": "ok"})),
+            ),
+            ("pane.close", close_step),
+        ]);
+        let client = lerdr_herdr::Client::new(
+            std::sync::Arc::new(transport),
+            lerdr_herdr::ClientConfig::default(),
+        );
+        let mut topology = crate::topology::Topology::default();
+        topology.accept(lerdr_herdr::SessionSnapshot {
+            agents: vec![AgentInfo {
+                pane_id: "wE:p1".into(),
+                terminal_id: "term-1".into(),
+                agent: Some("sh".into()),
+                cwd: Some(resolved.to_string_lossy().into_owned()),
+                ..AgentInfo::default()
+            }],
+            ..lerdr_herdr::SessionSnapshot::default()
+        });
+        let ctx = test_context(client, topology, config_home.path());
+        let handle = ctx.handle.clone();
+        let mut message = Inbound::default();
+        message.pane_id = "wE:p1".into();
+        let frames = agent_clear(ctx, "r1", "a1", &message, "agent_clear").await;
+        (frames, handle)
+    }
+
+    /// The `command_result` frame of an `Outcome::frames` pair.
+    fn command_result(
+        frames: &[lerdr_core::protocol::Outbound],
+    ) -> &lerdr_core::protocol::CommandResultMessage {
+        frames
+            .iter()
+            .find_map(|frame| match frame {
+                lerdr_core::protocol::Outbound::CommandResult(message) => Some(message),
+                _ => None,
+            })
+            .expect("no command_result frame")
+    }
+
+    #[tokio::test]
+    async fn agent_clear_success_bumps_generation() {
+        let (frames, handle) = run_clear(true).await;
+        let result = command_result(&frames);
+        assert_eq!(result.phase.as_deref(), Some("completed"), "{frames:?}");
+        // The oracle bumps the generation for `result.OK` even while the
+        // lifecycle refresh is still running.
+        await_generation(&handle, "wE:p1", 1).await;
+    }
+
+    #[tokio::test]
+    async fn agent_clear_completed_with_warning_bumps_generation() {
+        let (frames, handle) = run_clear(false).await;
+        let result = command_result(&frames);
+        assert_eq!(
+            result.phase.as_deref(),
+            Some("completed_with_warning"),
+            "{frames:?}"
+        );
+        // dispatch.go:730-795 — the replacement exists; a refused close is
+        // still a successful result, so the generation bumps.
+        await_generation(&handle, "wE:p1", 1).await;
+    }
+
+    #[tokio::test]
+    async fn agent_clear_failure_does_not_bump() {
+        // A pane whose agent matches no launch profile fails before any
+        // lifecycle work — no bump, matching `result.OK == false`.
+        let client = lerdr_herdr::Client::new(
+            std::sync::Arc::new(ScriptTransport::new(vec![])),
+            lerdr_herdr::ClientConfig::default(),
+        );
+        let config_home = tempfile::tempdir().expect("config tempdir");
+        let mut topology = crate::topology::Topology::default();
+        topology.accept(lerdr_herdr::SessionSnapshot {
+            agents: vec![AgentInfo {
+                pane_id: "wE:p1".into(),
+                terminal_id: "term-1".into(),
+                agent: Some("zzz-nonexistent".into()),
+                ..AgentInfo::default()
+            }],
+            ..lerdr_herdr::SessionSnapshot::default()
+        });
+        let ctx = test_context(client, topology, config_home.path());
+        let handle = ctx.handle.clone();
+        let mut message = Inbound::default();
+        message.pane_id = "wE:p1".into();
+        let frames = agent_clear(ctx, "r1", "a1", &message, "agent_clear").await;
+        let result = command_result(&frames);
+        assert_eq!(result.phase.as_deref(), Some("failed"), "{frames:?}");
+        assert_eq!(handle.topology.borrow().generation_of("wE:p1"), 0);
     }
 }

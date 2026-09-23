@@ -796,6 +796,12 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
         if let Some(error) = self.authorize(&scope.action, &inbound.device_id) {
             return self.enqueue(Outbound::Error(error_response(&inbound.request_id, error)));
         }
+        // `validateExactPaneTarget` (server.go:676) — after the
+        // `server_session_id` fence and authorization, before
+        // `recordWriteAudit`: a rejected target writes no audit row.
+        if let Some(error) = self.router.validate_pane_target(&inbound) {
+            return self.enqueue(Outbound::Error(error_response(&inbound.request_id, error)));
+        }
         // `recordWriteAudit(client, msg, nil)` — audited writes log an
         // `attempt` row at admission, before the action switch
         // (`server.go:683-685`). The raw map carries fields `Inbound`

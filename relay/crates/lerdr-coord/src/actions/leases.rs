@@ -43,8 +43,9 @@ const RELEASE_GRACE: Duration = Duration::from_secs(10);
 const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
 /// `commandTimeout` — every `ps`/`stty` exec.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
-/// `paneResizeSettleWindow` — `read_pane` flags `resize_settling` inside it.
-pub(crate) const RESIZE_SETTLE_WINDOW: Duration = Duration::from_secs(4);
+/// `paneResizeSettleWindow` — `read_pane` flags `resize_settling` inside it
+/// (`pane_watch.go:29` — 3 s; observed up to ~2 s for omp under load).
+pub(crate) const RESIZE_SETTLE_WINDOW: Duration = Duration::from_secs(3);
 
 const ERR_INVALID_COLUMNS: &str = "Columns must be between 40 and 240";
 const ERR_INVALID_ROWS: &str = "Rows must be between 10 and 120";

@@ -6,7 +6,7 @@
 //! invitation secret, `Session::client` after the server hello), because the
 //! test-support module is not importable from a binary.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -22,12 +22,13 @@ use p256::elliptic_curve::sec1::ToSec1Point;
 use p256::elliptic_curve::Generate;
 use p256::SecretKey;
 use serde_json::Value;
-use tokio::net::TcpStream;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{TcpStream, UnixStream};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::scenario::{render, step_scope, Match, Scenario, Step};
+use crate::scenario::{render, render_str, step_scope, Match, Scenario, Step, PROTOCOL_VERSION};
 use crate::trace::{now_ms, Record, TraceWriter};
 use crate::{Result, ShadowError};
 
@@ -54,6 +55,9 @@ pub struct RunParams {
     pub handshake_timeout: Duration,
     /// Tail capture after the last step (ms).
     pub drain_ms: u64,
+    /// Fake-herdr socket for `fake_call` steps — `None` makes them fail
+    /// fast with a setup error.
+    pub herdr_socket: Option<PathBuf>,
 }
 
 /// One received frame: millisecond timestamp relative to run start plus the
@@ -207,6 +211,7 @@ pub async fn run(params: &RunParams) -> Result<()> {
         trace: &mut trace,
         session: &session,
         start,
+        herdr_socket: params.herdr_socket.as_deref(),
     };
     let mut run_err: Option<ShadowError> = None;
     for (index, step) in params.scenario.steps.iter().enumerate() {
@@ -315,6 +320,8 @@ struct Executor<'a> {
     /// Shared with the reader task: `seal` here, `open` there.
     session: &'a Arc<Mutex<Session>>,
     start: Instant,
+    /// Fake-herdr socket for `fake_call` steps.
+    herdr_socket: Option<&'a Path>,
 }
 
 type Sink = futures_util::stream::SplitSink<
@@ -400,23 +407,7 @@ impl Executor<'_> {
                     map.entry("request_id".to_owned())
                         .or_insert(Value::String(id));
                 }
-                self.trace.write(&Record::Tx {
-                    t_ms: elapsed_ms(self.start),
-                    step: Some(index),
-                    frame: outbound.clone(),
-                })?;
-                let plaintext = serde_json::to_vec(&outbound)?;
-                let sealed = self
-                    .session
-                    .lock()
-                    .expect("session mutex")
-                    .seal(&plaintext)?;
-                sink.send(Message::Text(
-                    String::from_utf8(sealed)
-                        .map_err(|e| ShadowError::msg(format!("sealed frame not utf8: {e}")))?
-                        .into(),
-                ))
-                .await?;
+                self.send_frame(index, &outbound, sink).await?;
                 let base = self.frames.len();
                 let want = match until {
                     Some(m) => Some(m.render(&scenario.vars, &scope)?),
@@ -454,7 +445,115 @@ impl Executor<'_> {
                 )
                 .await?;
             }
+            Step::FakeCall {
+                label,
+                method,
+                params,
+                timeout_ms,
+            } => {
+                let Some(socket) = self.herdr_socket else {
+                    return Err(ShadowError::msg(format!(
+                        "step {label:?}: fake_call requires --herdr-socket"
+                    )));
+                };
+                // Drain first so a relay push mid-call stays attributed to
+                // this step's window.
+                self.drain(Some(index))?;
+                let scope = step_scope(None);
+                let method = render_str(method, &scenario.vars, &scope)?;
+                let params = render(params, &scenario.vars, &scope)?;
+                let result = fake_call(
+                    socket,
+                    index,
+                    &method,
+                    &params,
+                    Duration::from_millis(*timeout_ms),
+                )
+                .await?;
+                self.note(format!(
+                    "fake_call {method} → {}",
+                    crate::normalize::canonical(&result)
+                ))?;
+            }
+            Step::AckPane {
+                label,
+                pane_id,
+                target,
+                timeout_ms,
+                quiesce_ms,
+                ..
+            } => {
+                let scope = step_scope(request_id.as_deref());
+                let pane_id = render_str(pane_id, &scenario.vars, &scope)?;
+                let Some(fingerprint) = last_pane_fingerprint(&self.frames, &pane_id) else {
+                    return Err(ShadowError::msg(format!(
+                        "ack_pane {label:?}: no pane_content/pane_delta seen for {pane_id:?}"
+                    )));
+                };
+                let mut outbound = serde_json::json!({
+                    "type": "pane_applied",
+                    "protocol": PROTOCOL_VERSION,
+                    "pane_id": pane_id,
+                    "content_fingerprint": fingerprint,
+                });
+                if let Value::Object(map) = &mut outbound {
+                    // Same `request_id` the Step record advertised — keeps
+                    // the tx frame self-describing in the trace.
+                    if let Some(id) = &request_id {
+                        map.insert("request_id".to_owned(), Value::String(id.clone()));
+                    }
+                    if let Some(target) = target {
+                        let target = render(target, &scenario.vars, &scope)?;
+                        // `putTarget` parity — `server_session_id` also rides
+                        // top-level on target-bearing actions.
+                        if let Some(ssid) = target
+                            .get("server_session_id")
+                            .and_then(Value::as_str)
+                            .filter(|s| !s.is_empty())
+                        {
+                            map.insert(
+                                "server_session_id".to_owned(),
+                                Value::String(ssid.to_owned()),
+                            );
+                        }
+                        map.insert("target".to_owned(), target);
+                    }
+                }
+                self.send_frame(index, &outbound, sink).await?;
+                let base = self.frames.len();
+                self.collect(
+                    None,
+                    base,
+                    Some(index),
+                    Duration::from_millis(*timeout_ms),
+                    Duration::from_millis(*quiesce_ms),
+                    label,
+                )
+                .await?;
+            }
         }
+        Ok(())
+    }
+
+    /// Trace `tx`, seal, send — shared by `send` and `ack_pane`.
+    async fn send_frame(&mut self, index: usize, outbound: &Value, sink: &mut Sink) -> Result<()> {
+        self.trace.write(&Record::Tx {
+            t_ms: elapsed_ms(self.start),
+            step: Some(index),
+            frame: outbound.clone(),
+        })?;
+        let plaintext = serde_json::to_vec(outbound)?;
+        let sealed = self
+            .session
+            .lock()
+            .expect("session mutex")
+            .seal(&plaintext)?;
+        sink.send(Message::Text(
+            String::from_utf8(sealed)
+                .map_err(|e| ShadowError::msg(format!("sealed frame not utf8: {e}")))?
+                .into(),
+        ))
+        .await?;
         Ok(())
     }
 
@@ -576,4 +675,70 @@ impl Executor<'_> {
             }
         }
     }
+}
+
+/// One NDJSON round-trip on the fake-herdr socket — `control.*` methods
+/// mutate fake state (`control.set`) or push events (`control.emit`). A
+/// fresh connection per call matches how the relays themselves use the
+/// socket for reads; the relay's `events.subscribe` conn stays held by the
+/// fake and receives emitted frames.
+async fn fake_call(
+    socket: &Path,
+    index: usize,
+    method: &str,
+    params: &Value,
+    timeout: Duration,
+) -> Result<Value> {
+    let stream = tokio::time::timeout(timeout, UnixStream::connect(socket))
+        .await
+        .map_err(|_| ShadowError::msg(format!("fake_call {method}: connect timed out")))??;
+    let (read, mut write) = stream.into_split();
+    let mut buf = serde_json::to_vec(&serde_json::json!({
+        "id": format!("shadow-ctl-{index}"),
+        "method": method,
+        "params": params,
+    }))?;
+    buf.push(b'\n');
+    tokio::time::timeout(timeout, write.write_all(&buf))
+        .await
+        .map_err(|_| ShadowError::msg(format!("fake_call {method}: write timed out")))??;
+    let mut lines = BufReader::new(read).lines();
+    let line = tokio::time::timeout(timeout, lines.next_line())
+        .await
+        .map_err(|_| ShadowError::msg(format!("fake_call {method}: response timed out")))?
+        .map_err(ShadowError::Io)?
+        .ok_or_else(|| {
+            ShadowError::msg(format!(
+                "fake_call {method}: socket closed without a response"
+            ))
+        })?;
+    let reply: Value = serde_json::from_str(&line)?;
+    if let Some(error) = reply.get("error") {
+        return Err(ShadowError::msg(format!(
+            "fake_call {method} refused: {}",
+            crate::normalize::canonical(error)
+        )));
+    }
+    Ok(reply.get("result").cloned().unwrap_or(Value::Null))
+}
+
+/// The newest `content_fingerprint` observed for `pane_id` — `pane_applied`
+/// acks echo it (`handlePaneApplied` matches it against `pending`). The
+/// delta path fingerprints the post-image, so a `pane_delta` carries the
+/// value its own ack must repeat.
+fn last_pane_fingerprint(frames: &[Value], pane_id: &str) -> Option<String> {
+    frames.iter().rev().find_map(|frame| {
+        let ty = frame.get("type").and_then(Value::as_str)?;
+        if ty != "pane_content" && ty != "pane_delta" {
+            return None;
+        }
+        if frame.get("pane_id").and_then(Value::as_str) != Some(pane_id) {
+            return None;
+        }
+        frame
+            .get("content_fingerprint")
+            .and_then(Value::as_str)
+            .filter(|fp| !fp.is_empty())
+            .map(str::to_owned)
+    })
 }

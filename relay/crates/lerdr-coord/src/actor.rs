@@ -58,6 +58,10 @@ enum TopologyCommand {
     /// Re-read `session.snapshot` unconditionally — the UDP event hook and
     /// the Herdr `[[startup]]` hook use this as their poke.
     Refresh,
+    /// `d.state.BumpGeneration` — a lifecycle mutation replaced the pane's
+    /// session; advance its epoch and republish so stale exact targets
+    /// stop validating.
+    BumpGeneration(String),
 }
 
 impl TopologyHandle {
@@ -66,6 +70,18 @@ impl TopologyHandle {
     pub async fn refresh(&self) {
         // Full inbox = a refresh is already queued; dropping is correct.
         let _ = self.commands.try_send(TopologyCommand::Refresh);
+    }
+
+    /// `d.state.BumpGeneration(paneID)` after a successful lifecycle
+    /// mutation (`agent_stop`, `agent_clear`/`agent_restart`). Unlike
+    /// [`refresh`](Self::refresh) this waits on the bounded inbox — a
+    /// dropped bump would leave a stale exact target validating against
+    /// the replaced session.
+    pub async fn bump_generation(&self, pane_id: String) {
+        let _ = self
+            .commands
+            .send(TopologyCommand::BumpGeneration(pane_id))
+            .await;
     }
 }
 
@@ -156,6 +172,11 @@ impl TopologyActor {
                                         }
                                     }
                                 }
+                                Some(TopologyCommand::BumpGeneration(pane_id)) => {
+                                    state.bump_generation(&pane_id);
+                                    let _ = topology_tx
+                                        .send(Arc::new(clone_topology(&state)));
+                                }
                                 None => break,
                             }
                         }
@@ -178,6 +199,9 @@ fn clone_topology(state: &Topology) -> Topology {
         snapshot: state.snapshot.clone(),
         revision: state.revision,
         stale: state.stale,
+        generations: state.generations.clone(),
+        agent_times: state.agent_times.clone(),
+        accepted_at: state.accepted_at,
     }
 }
 
@@ -217,5 +241,56 @@ mod tests {
             Some("wE:p2".into())
         );
         assert_eq!(pane_id_of(&event(serde_json::json!({}))), None);
+    }
+
+    /// Accepts the socket then holds it silent — the supervisor never
+    /// finishes subscribing, so only the command lane drives the actor.
+    struct SilentTransport;
+
+    impl lerdr_herdr::Transport for SilentTransport {
+        fn dial(
+            &self,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = std::io::Result<lerdr_herdr::BoxIo>> + Send>,
+        > {
+            Box::pin(async {
+                let (client_end, mut server_end) = tokio::io::duplex(1024);
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    while tokio::io::AsyncReadExt::read(&mut server_end, &mut buf)
+                        .await
+                        .unwrap_or(0)
+                        > 0
+                    {}
+                });
+                Ok(Box::new(client_end) as lerdr_herdr::BoxIo)
+            })
+        }
+
+        fn describe(&self) -> String {
+            "silent".to_owned()
+        }
+    }
+
+    #[tokio::test]
+    async fn bump_generation_reaches_the_published_topology() {
+        let client = Client::new(
+            Arc::new(SilentTransport),
+            lerdr_herdr::ClientConfig::default(),
+        );
+        let cancel = CancellationToken::new();
+        let handle = TopologyActor::spawn(client, cancel.clone());
+        let mut rx = handle.topology.clone();
+
+        handle.bump_generation("wE:p1".to_owned()).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while rx.borrow().generation_of("wE:p1") == 0 {
+                rx.changed().await.expect("topology channel closed");
+            }
+        })
+        .await
+        .expect("generation bump was not published");
+        assert_eq!(rx.borrow().generation_of("wE:p1"), 1);
+        cancel.cancel();
     }
 }

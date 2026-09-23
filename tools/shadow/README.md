@@ -9,7 +9,8 @@ each, and diffs the normalized outbound frame streams.
 ```
 tools/shadow/
   shadow_diff.py        orchestrator: builds binaries, runs both relays, diffs
-  scenarios/core.json   client script + normalization/compare policy
+  scenarios/core.json   startup + common actions (default scenario)
+  scenarios/watch.json  watch_pane → ack → mutate → pane_delta → unwatch
   herdr/state.json      fake-Herdr seed (Go CLI-fake Scenario + `socket` ext)
 relay/crates/lerdr-shadow/
   src/scenario.rs       scenario/compare config parsing
@@ -33,6 +34,9 @@ python3 tools/shadow/shadow_diff.py --mode go
 
 # keep the run dir (logs/, traces/, report.txt)
 python3 tools/shadow/shadow_diff.py --mode go --keep --run-dir /tmp/shadow
+
+# a different scenario — bare name or path
+python3 tools/shadow/shadow_diff.py --mode self --scenario watch
 ```
 
 Exit codes: `0` identical, `1` normalized streams differ, `2` infra failure.
@@ -85,6 +89,17 @@ freely). `request_id` attribution works across step windows.
   seal+send, collect until `until` matches then quiet for `quiesce_ms`.
 - `collect` — drain without sending (post-burst quiescence).
 - `settle {ms}`, `fence` — pacing / ordering markers.
+- `fake_call {method, params?}` — one NDJSON round-trip on the fake-Herdr
+  socket (requires `--herdr-socket`, which the driver always passes). This is
+  the scenario's server-side lever: `control.set {pane_id, text}` rewrites
+  the `pane.read` content, `control.emit {name, data}` broadcasts
+  `{"event":name,"data":…}` to every held `events.subscribe` connection —
+  the exact envelope both relays decode (Go `herdr.Event`, Rust
+  `decode_stream_line`, snake_case names canonicalized to dotted).
+- `ack_pane {pane_id, target?, capture?}` — sends `pane_applied` echoing the
+  newest observed `pane_content`/`pane_delta` `content_fingerprint` for the
+  pane (the oracle's `handlePaneApplied` matches it against `pending`).
+  Fails the step when no pane frame has been seen yet.
 
 `{name}` placeholders resolve from step scope (`request_id`) then `vars`.
 Pane-targeted actions carry `vars.target` because Go validates
@@ -94,13 +109,22 @@ these actions.
 
 ## Current result
 
-`--mode go` → **IDENTICAL** (30 vs 23 raw frames; all step buckets and the
-async pool match after declared normalization). Documented deltas:
+`core` — `--mode self` → **IDENTICAL**; `--mode go` → DIFFERs on exactly one
+declared line: `agents[*].server_session_id` (`"primary"` on Go, absent on
+Rust — `topology.rs` does not fill it yet). Everything else identical.
+
+`watch` — `--mode self` and `--mode go` → **IDENTICAL**: the full
+`watch_pane` → `pane_content{ack_required}` → `pane_applied` → mutate →
+`pane_delta` → ack → `unwatch_pane` lifecycle matches, including identical
+`segments` (`[{copy_lines:12},{text:"appended line 13\n"}]`).
+
+Documented deltas:
 
 - `action_receipt` — Rust-only v3 dispatch evidence (dropped, still censused).
 - `inventory_status` — Go-only poller frame (dropped).
 - `push_config`/`herdr_status`/`agents`/`workspaces`/`pane_content`/`activity*`
   — per-type field deltas via `type_drop_keys` (see notes in `core.json`).
+- `pane_delta.format` — Go's `paneDeltaResponse` copies it; Rust omits it.
 - Go emits an empty `activity_history` at connect (predicate-dropped).
 - Startup burst order differs (push_config first vs unordered set) — the pool.
 
@@ -108,7 +132,12 @@ async pool match after declared normalization). Documented deltas:
 
 - `lerdr-relay` must build cleanly; if a sibling workstream is mid-edit on
   `lerdr-coord`, `--skip-build` reuses the last good `target/debug` binaries.
-- The fake socket is shared between relays — state reads are identical and no
-  scenario step mutates inventory, so cross-talk is impossible for `core`.
-  Scenarios that mutate (workspace_create etc.) should give each side its own
-  fake or accept the shared mutations.
+- The fake socket is shared between relays *and* runs sequentially — both
+  relays' `events.subscribe` connections see every `control.emit`
+  (`delivered` counts subscribers, typically 2). A `control.set` during one
+  side's run persists into the other's: mutation scenarios must seed the
+  pane to a fixed baseline with `control.set` before the behaviour under
+  test (`watch.json` does this). Other fake state stays immutable.
+- Deltas need real deltas: `panedelta` requires a ≥3-line copy anchor
+  (`MINIMUM_COPY_LINES`) and charges 64 B/segment in `efficient` — small or
+  scattered edits legitimately produce a full `pane_content` on both relays.

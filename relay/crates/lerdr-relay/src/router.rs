@@ -14,7 +14,8 @@
 //! [`route`]: ActionRouter::route
 
 use lerdr_core::protocol::{
-    action_receipt_response, ActionReceipt, ActionReceiptPhase, Inbound, Outbound, RequestScope,
+    action_receipt_response, ActionReceipt, ActionReceiptPhase, ApiError, Inbound, Outbound,
+    RequestScope,
 };
 
 use crate::auth::AuthenticatedIdentity;
@@ -66,6 +67,16 @@ pub trait ActionRouter: Send {
         scope: &RequestScope,
         message: &Inbound,
     ) -> RouterReply;
+
+    /// `validateExactPaneTarget` (server.go:676) — the session runs this
+    /// after `server_session_id` fencing and `authorize`, before the
+    /// write-audit attempt: a stale or absent `target` rejects a
+    /// pane-directed action with `invalid_request`, and no audit row is
+    /// written. Routers without live topology (the stub, test doubles)
+    /// admit everything.
+    fn validate_pane_target(&self, _message: &Inbound) -> Option<ApiError> {
+        None
+    }
 }
 
 /// Routers behind `Box<dyn ActionRouter>` keep object-safety useful.
@@ -77,6 +88,10 @@ impl ActionRouter for Box<dyn ActionRouter> {
         message: &Inbound,
     ) -> RouterReply {
         (**self).route(ctx, scope, message)
+    }
+
+    fn validate_pane_target(&self, message: &Inbound) -> Option<ApiError> {
+        (**self).validate_pane_target(message)
     }
 }
 
