@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -275,17 +276,18 @@ fun TerminalContent(
                 active = uiState.connected,
                 tabsPaneId = tabsPaneId,
                 onSelectTab = { onSelectTab(it.paneId) },
-                trailing = {
-                    IconButton(onClick = { findOpen = true }) {
-                        Icon(
-                            Icons.Default.Search,
-                            contentDescription = "Find in terminal",
-                        )
-                    }
-                    TextButton(onClick = onRefresh) {
-                        Text("Refresh", style = MaterialTheme.typography.labelMedium)
-                    }
-                },
+                actions = listOf(
+                    SessionBarAction(
+                        label = "Find in terminal",
+                        icon = Icons.Default.Search,
+                        onClick = { findOpen = true },
+                    ),
+                    SessionBarAction(
+                        label = "Refresh",
+                        icon = Icons.Default.Refresh,
+                        onClick = onRefresh,
+                    ),
+                ),
             )
         },
         bottomBar = {

@@ -27,6 +27,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -153,11 +154,13 @@ fun FilesContent(
                 active = uiState.connected,
                 tabsPaneId = tabsPaneId,
                 onSelectTab = { onSelectTab(it.paneId) },
-                trailing = {
-                    TextButton(onClick = onRefresh) {
-                        Text("Refresh", style = MaterialTheme.typography.labelMedium)
-                    }
-                },
+                actions = listOf(
+                    SessionBarAction(
+                        label = "Refresh",
+                        icon = Icons.Default.Refresh,
+                        onClick = onRefresh,
+                    ),
+                ),
             )
         },
     ) { innerPadding ->

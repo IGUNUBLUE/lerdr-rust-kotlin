@@ -85,7 +85,8 @@ class TerminalFindScreenshotTest {
                 )
             }
         }
-        composeRule.onNodeWithContentDescription("Find in terminal").performClick()
+        composeRule.onNodeWithContentDescription("Session actions").performClick()
+        composeRule.onNodeWithText("Find in terminal").performClick()
         composeRule.onNodeWithTag("terminalFindField").performTextInput("ok")
         composeRule.waitForIdle()
         composeRule.onNodeWithText("1 of 4").assertExists()
@@ -145,7 +146,8 @@ class TerminalFindScreenshotTest {
                 )
             }
         }
-        composeRule.onNodeWithContentDescription("Find in terminal").performClick()
+        composeRule.onNodeWithContentDescription("Session actions").performClick()
+        composeRule.onNodeWithText("Find in terminal").performClick()
         composeRule.onNodeWithTag("terminalFindField").performTextInput("zzz")
         composeRule.waitForIdle()
         composeRule.onNodeWithText("No matches").assertExists()

@@ -371,20 +371,15 @@ fun AgentFeedContent(
                 onBack = onBack,
                 provider = uiState.provider,
                 active = uiState.working,
-                trailing = {
-                    IconButton(onClick = {
-                        if (findOpen) closeFind() else findOpen = true
-                    }) {
-                        Icon(
-                            Icons.Default.Search,
-                            contentDescription = if (findOpen) {
-                                "Close find"
-                            } else {
-                                "Find in conversation"
-                            },
-                        )
-                    }
-                },
+                actions = listOf(
+                    SessionBarAction(
+                        label = if (findOpen) "Close find" else "Find in conversation",
+                        icon = Icons.Default.Search,
+                        onClick = {
+                            if (findOpen) closeFind() else findOpen = true
+                        },
+                    ),
+                ),
                 tabsPaneId = tabsPaneId,
                 onSelectTab = { onSelectTab(it.paneId) },
             )

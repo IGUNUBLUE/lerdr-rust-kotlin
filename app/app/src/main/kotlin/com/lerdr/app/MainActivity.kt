@@ -149,13 +149,13 @@ private fun EntryProviderScope<LerdrKey>.lerdrEntries(
             onOpenTerminal = { navigator.openTerminal(key.paneId) },
             onOpenFiles = { navigator.openFiles(key.paneId) },
             onBack = navigator::goBack,
-            onSelectTab = { navigator.openAgent(it) },
+            onSelectTab = { navigator.openFeed(it) },
         )
     }
     entry<LerdrKey.Terminal> { key ->
         TerminalScreen(
             paneId = key.paneId,
-            onOpenFeed = { navigator.openAgent(key.paneId) },
+            onOpenFeed = { navigator.openFeed(key.paneId) },
             onOpenFiles = { navigator.openFiles(key.paneId) },
             onBack = navigator::goBack,
             onSelectTab = { navigator.openTerminal(it) },
@@ -164,7 +164,7 @@ private fun EntryProviderScope<LerdrKey>.lerdrEntries(
     entry<LerdrKey.Files> { key ->
         FilesScreen(
             paneId = key.paneId,
-            onOpenFeed = { navigator.openAgent(key.paneId) },
+            onOpenFeed = { navigator.openFeed(key.paneId) },
             onOpenTerminal = { navigator.openTerminal(key.paneId) },
             onBack = navigator::goBack,
             onSelectTab = { navigator.openFiles(it) },

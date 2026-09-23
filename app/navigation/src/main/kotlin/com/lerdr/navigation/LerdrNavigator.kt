@@ -70,8 +70,12 @@ class LerdrNavigator(val backStack: NavBackStack<LerdrKey>) {
         navigate(LerdrKey.Pairing(setupLink))
     }
 
-    /** Feed is the default agent-session mode. */
+    /** Terminal is the default agent-session mode — the live pane lands first. */
     fun openAgent(paneId: String) {
+        navigateAgentMode(LerdrKey.Terminal(paneId))
+    }
+
+    fun openFeed(paneId: String) {
         navigateAgentMode(LerdrKey.AgentFeed(paneId))
     }
 
