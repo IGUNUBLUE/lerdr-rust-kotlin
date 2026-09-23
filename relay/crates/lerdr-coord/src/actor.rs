@@ -43,6 +43,10 @@ pub struct Invalidation {
     pub name: String,
     /// Pane id when the event payload carries one.
     pub pane_id: Option<String>,
+    /// The pane's upstream output revision — `pane.output_changed`'s
+    /// `data.revision`; `None` on every other event. Watchers dedupe on
+    /// it: at or below the served watermark the wake is already covered.
+    pub output_revision: Option<u64>,
     /// Raw event for consumers needing fields beyond the id.
     pub event: Event,
 }
@@ -326,9 +330,32 @@ impl TopologyActor {
                                         }
                                     }
                                     if event.is_pane() {
+                                        let pane_id = pane_id_of(&event);
+                                        // `pane.output_changed` carries
+                                        // the pane's upstream output
+                                        // revision — fold it into the
+                                        // shared watermark before the
+                                        // wake goes out so a mid-flight
+                                        // read's post-check observes it.
+                                        let output_revision = if event.name
+                                            == "pane.output_changed"
+                                        {
+                                            event
+                                                .data
+                                                .get("revision")
+                                                .and_then(|v| v.as_u64())
+                                        } else {
+                                            None
+                                        };
+                                        if let (Some(id), Some(rev)) =
+                                            (pane_id.as_deref(), output_revision)
+                                        {
+                                            state.note_upstream_rev(id, rev);
+                                        }
                                         let _ = inv_tx.send(Invalidation {
                                             name: event.name.clone(),
-                                            pane_id: pane_id_of(&event),
+                                            pane_id,
+                                            output_revision,
                                             event,
                                         });
                                     }
@@ -807,18 +834,34 @@ mod tests {
     /// stream, `session.snapshot`, `ping`, `agent.view.set`, and the probe
     /// methods (validation-refused). Counts `agent.view.set` and
     /// `session.snapshot` requests so re-assertion is observable.
+    /// `events` are written onto the subscription socket right after the
+    /// handshake — the `control.emit`-style injection path.
     struct MiniHerdr {
         view_sets: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         snapshots: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        events: std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+        /// Pane rows every `session.snapshot` replies with.
+        snapshot_panes: std::sync::Arc<Vec<serde_json::Value>>,
     }
 
     impl MiniHerdr {
         fn new() -> Self {
+            Self::with_events(Vec::new())
+        }
+
+        fn with_events(events: Vec<Vec<u8>>) -> Self {
+            Self::with_parts(events, Vec::new())
+        }
+
+        fn with_parts(events: Vec<Vec<u8>>, snapshot_panes: Vec<serde_json::Value>) -> Self {
             Self {
                 view_sets: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 snapshots: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                events: std::sync::Arc::new(std::sync::Mutex::new(events)),
+                snapshot_panes: std::sync::Arc::new(snapshot_panes),
             }
         }
+
         fn view_sets(&self) -> usize {
             self.view_sets.load(std::sync::atomic::Ordering::SeqCst)
         }
@@ -835,9 +878,17 @@ mod tests {
         > {
             let view_sets = self.view_sets.clone();
             let snapshots = self.snapshots.clone();
+            let events = self.events.clone();
+            let snapshot_panes = self.snapshot_panes.clone();
             Box::pin(async move {
                 let (client_end, server_end) = tokio::io::duplex(64 * 1024);
-                tokio::spawn(serve_conn(server_end, view_sets, snapshots));
+                tokio::spawn(serve_conn(
+                    server_end,
+                    view_sets,
+                    snapshots,
+                    events,
+                    snapshot_panes,
+                ));
                 Ok(Box::new(client_end) as lerdr_herdr::BoxIo)
             })
         }
@@ -851,6 +902,8 @@ mod tests {
         mut conn: tokio::io::DuplexStream,
         view_sets: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         snapshots: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        events: std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+        snapshot_panes: std::sync::Arc<Vec<serde_json::Value>>,
     ) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         // One NDJSON request line per connection.
@@ -885,6 +938,18 @@ mod tests {
                     )
                     .await;
                 let _ = conn.write_all(b"\n").await;
+                // Scripted event lines land right after the handshake —
+                // a resubscribe drains nothing (the queue is one-shot).
+                let pending: Vec<Vec<u8>> =
+                    events.lock().expect("events poisoned").drain(..).collect();
+                for line in pending {
+                    if conn.write_all(&line).await.is_err() {
+                        return;
+                    }
+                    if conn.write_all(b"\n").await.is_err() {
+                        return;
+                    }
+                }
                 // Hold the subscription open until the client drops it.
                 let mut sink = [0u8; 256];
                 while conn.read(&mut sink).await.map(|n| n > 0).unwrap_or(false) {}
@@ -897,7 +962,8 @@ mod tests {
                             "type": "session_snapshot",
                             "snapshot": {
                                 "version": "0.9.1", "protocol": 22,
-                                "workspaces": [], "tabs": [], "panes": [],
+                                "workspaces": [], "tabs": [],
+                                "panes": *snapshot_panes,
                                 "layouts": [], "agents": []
                             }
                         }))
@@ -1048,6 +1114,68 @@ mod tests {
         })
         .await;
         until(5, "startup-hook view re-assert", || server.view_sets() >= 2).await;
+        cancel.cancel();
+    }
+
+    /// `pane_output_changed{pane_id,revision}` is a pure watch nudge: the
+    /// actor folds `data.revision` into the shared upstream watermark and
+    /// forwards the revision on the invalidation — no snapshot refresh
+    /// (unlike `pane.updated`, which re-reads topology). The snapshot
+    /// keeps `wE:pE` at revision 3, so the refresh also proves the fold
+    /// max-merges instead of being reseeded down.
+    #[tokio::test]
+    async fn pane_output_changed_folds_revision_and_broadcasts() {
+        let server = Arc::new(MiniHerdr::with_parts(
+            vec![
+                br#"{"event":"pane_output_changed","data":{"pane_id":"wE:pE","revision":7}}"#
+                    .to_vec(),
+                // A lifecycle event too — it must trigger the snapshot
+                // refresh `pane_output_changed` does not.
+                br#"{"event":"pane_updated","data":{"pane_id":"wE:pE"}}"#.to_vec(),
+            ],
+            vec![serde_json::json!({
+                "pane_id": "wE:pE", "terminal_id": "term_E",
+                "workspace_id": "wE", "tab_id": "wE:t1",
+                "focused": false, "agent_status": "unknown",
+                "revision": 3
+            })],
+        ));
+        let client = mini_client(&server);
+        let cancel = CancellationToken::new();
+        let handle = TopologyActor::spawn(client, cancel.clone());
+        // Subscribe before the event can land: the invalidation send is
+        // the last step of the Invalidated arm, so a receiver created
+        // before the observable watermark fold always sees it.
+        let mut inv_rx = handle.invalidations.subscribe();
+
+        // The event path's fold lands on the shared ledger — visible
+        // through the last published topology immediately.
+        until(5, "upstream revision folded", || {
+            handle.topology.borrow().upstream_rev_of("wE:pE") == 7
+        })
+        .await;
+
+        let inv = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match inv_rx.recv().await {
+                    Ok(inv) if inv.name == "pane.output_changed" => break inv,
+                    Ok(_) => continue,
+                    Err(e) => panic!("invalidation feed: {e}"),
+                }
+            }
+        })
+        .await
+        .expect("pane.output_changed invalidation");
+        assert_eq!(inv.pane_id.as_deref(), Some("wE:pE"));
+        assert_eq!(inv.output_revision, Some(7));
+
+        // `pane_output_changed` itself is not a topology trigger — the
+        // only snapshot re-read is the `pane_updated` lifecycle one
+        // (bootstrap's snapshot plus that refresh).
+        until(5, "pane.updated snapshot refresh", || {
+            server.snapshots() >= 2
+        })
+        .await;
         cancel.cancel();
     }
 }

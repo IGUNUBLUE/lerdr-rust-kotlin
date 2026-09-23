@@ -952,7 +952,7 @@ impl HerdRouter {
             &pane_id,
             &request_id,
         );
-        let client = self.handle.client.clone();
+        let handle = self.handle.clone();
         let leases = self.shared.leases.clone();
         let topology = self.handle.topology.clone();
         let questions = self.shared.questions.clone();
@@ -987,7 +987,10 @@ impl HerdRouter {
                 )
             };
             let source = display_source(format, viewport_only, &agent);
-            match client.pane_read(&pane_id, source, lines, format).await {
+            // `pane_read_fresh` fences the read on the upstream output
+            // revision (re-read once when it raced an in-flight write) —
+            // the generation/`content_rev` pair below is unchanged.
+            match crate::watches::pane_read_fresh(&handle, &pane_id, source, lines, format).await {
                 Ok(read) => {
                     // `HandleReadPane`'s mid-read fences — `Generation`
                     // (`replaced`) then `ContentRevision` (`changed`),

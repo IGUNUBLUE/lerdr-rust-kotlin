@@ -217,16 +217,29 @@ pub(crate) enum CommitKind {
 /// this projection, so it can never differ across the keyed lookup; the
 /// terminal/tab/workspace legs carry the check.
 fn pane_session_replaced(existing: &AgentInfo, incoming: &AgentInfo) -> bool {
-    for (left, right) in [
-        (&existing.terminal_id, &incoming.terminal_id),
-        (&existing.tab_id, &incoming.tab_id),
-        (&existing.workspace_id, &incoming.workspace_id),
-    ] {
-        if !left.is_empty() && !right.is_empty() && left != right {
-            return true;
-        }
-    }
-    false
+    pane_identity_moved(
+        [
+            &existing.terminal_id,
+            &existing.tab_id,
+            &existing.workspace_id,
+        ],
+        [
+            &incoming.terminal_id,
+            &incoming.tab_id,
+            &incoming.workspace_id,
+        ],
+    )
+}
+
+/// The field rule `paneSessionReplaced` compares — a changed non-empty
+/// stable identity (terminal, tab, or workspace) means the pane session
+/// was replaced even though the pane id survived. Shared with the
+/// `PaneInfo` pass so plain panes get the same reset semantics.
+fn pane_identity_moved(existing: [&String; 3], incoming: [&String; 3]) -> bool {
+    existing
+        .into_iter()
+        .zip(incoming)
+        .any(|(left, right)| !left.is_empty() && !right.is_empty() && left != right)
 }
 
 impl Topology {
@@ -328,16 +341,20 @@ impl Topology {
         for incoming in &snapshot.agents {
             let pane_id = incoming.pane_id.as_str();
             let mut existing = old.get(pane_id).copied();
-            let cell = ledger.cell_mut(pane_id);
 
             // `paneSessionReplaced` — the replaced pane's ledgers wipe and
             // its row counts as fresh (`existing = nil` downstream).
             let replaced = existing.is_some_and(|e| pane_session_replaced(e, incoming));
             if replaced {
                 *self.generations.entry(pane_id.to_owned()).or_insert(0) += 1;
-                cell.reset_on_replacement();
+                // The upstream output counter restarted with the pane
+                // session — drop the old epoch's watermark before the
+                // seed pass folds the fresh revision.
+                ledger.reset_upstream_rev(pane_id);
+                ledger.cell_mut(pane_id).reset_on_replacement();
                 existing = None;
             }
+            let cell = ledger.cell_mut(pane_id);
             if existing.is_none()
                 && !replaced
                 && !initial
@@ -475,6 +492,10 @@ impl Topology {
                     observed_at: now,
                 });
             }
+            // `AgentInfo.revision` — the pane's upstream output counter —
+            // seeds the shared watermark here so agent rows without a
+            // `panes` row still seed (the pane pass below folds the rest).
+            ledger.note_upstream_rev(pane_id, incoming.revision);
         }
 
         // The `!seen` removal pass (state.go:566-579): every per-pane
@@ -494,6 +515,48 @@ impl Topology {
             self.agent_times.remove(*pane_id);
             outcome.removed.push((*pane_id).to_owned());
         }
+
+        // `PaneInfo.revision` — Herdr's upstream output counter — seeds
+        // the shared watermark for every pane, agent-rowed or not. An
+        // identity move means the pane respawned: its counter restarted,
+        // so the watermark resets before folding rather than suppressing
+        // the new epoch's events. Runs on every commit — event-path
+        // accepts carry the same revision table, and the fold is a
+        // max-merge so replayed commits cannot move it backwards.
+        let old_panes: BTreeMap<&str, &lerdr_herdr::PaneInfo> = self
+            .snapshot
+            .panes
+            .iter()
+            .map(|pane| (pane.pane_id.as_str(), pane))
+            .collect();
+        for pane in &snapshot.panes {
+            let respawned = old_panes
+                .get(pane.pane_id.as_str())
+                .is_some_and(|existing| {
+                    pane_identity_moved(
+                        [
+                            &existing.terminal_id,
+                            &existing.tab_id,
+                            &existing.workspace_id,
+                        ],
+                        [&pane.terminal_id, &pane.tab_id, &pane.workspace_id],
+                    )
+                });
+            if respawned {
+                ledger.reset_upstream_rev(&pane.pane_id);
+            }
+            ledger.note_upstream_rev(&pane.pane_id, pane.revision);
+        }
+        // Watermarks die with the pane — `live` (agent rows) plus every
+        // `panes` row is the membership set; anything else is a leftover
+        // from an event/read observation on a now-gone pane.
+        let live_panes: BTreeSet<&str> = snapshot
+            .panes
+            .iter()
+            .map(|pane| pane.pane_id.as_str())
+            .chain(live.iter().copied())
+            .collect();
+        ledger.retain_upstream(|pane_id| live_panes.contains(pane_id));
         drop(ledger);
         drop(old);
 
@@ -609,6 +672,13 @@ impl Topology {
     /// moves too rather than waiting for Herdr's `state_change_seq`.
     pub(crate) fn bump_generation(&mut self, pane_id: &str) {
         *self.generations.entry(pane_id.to_owned()).or_insert(0) += 1;
+        // The upstream output counter restarted with the pane session —
+        // the old epoch's watermark must not suppress the replacement's
+        // `pane.output_changed` events or reads as stale.
+        self.attention
+            .lock()
+            .expect("attention ledger poisoned")
+            .reset_upstream_rev(pane_id);
         let times = self.agent_times.entry(pane_id.to_owned()).or_default();
         times.updated_at = now_millis();
         times.seen = true;
@@ -634,6 +704,32 @@ impl Topology {
     /// `State.ContentRevision` (state.go:1144) — the mid-read fence leg.
     pub(crate) fn content_rev_of(&self, pane_id: &str) -> i64 {
         self.attention_cell(pane_id).content_rev
+    }
+
+    /// The newest upstream output revision observed for the pane —
+    /// Herdr's `content_revision` folded in from snapshot seeds,
+    /// `pane_output_changed` events, and `pane.read` results. This is the
+    /// *shared observed* watermark (not the coordinator's `content_rev`
+    /// and not a watch's *served* mark): `0` means unobserved or
+    /// unsupported — Herdr 0.9.1 stubs `pane.read`'s revision at 0 — so
+    /// callers must treat `0` as "no upstream fence", never "revision
+    /// zero".
+    pub(crate) fn upstream_rev_of(&self, pane_id: &str) -> u64 {
+        self.attention
+            .lock()
+            .expect("attention ledger poisoned")
+            .upstream_rev(pane_id)
+    }
+
+    /// Fold one observed upstream revision into the shared watermark —
+    /// the `pane_output_changed` event path and verified `pane.read`
+    /// results both land here so a read in flight sees a mid-flight
+    /// event's bump on its post-read check.
+    pub(crate) fn note_upstream_rev(&self, pane_id: &str, revision: u64) {
+        self.attention
+            .lock()
+            .expect("attention ledger poisoned")
+            .note_upstream_rev(pane_id, revision);
     }
 
     /// `State.AttentionRevision` (state.go:1150) — the push key's
@@ -1486,5 +1582,85 @@ mod tests {
             .expect("fresh pane projected");
         assert_eq!(projected.status, "blocked");
         assert_eq!(projected.attention_kind, "approval");
+    }
+
+    /// The shared upstream-revision watermark: seeded from `PaneInfo` /
+    /// `AgentInfo` `revision`, max-folded by `pane_output_changed`
+    /// events and verified `pane.read` results, reset when the pane
+    /// session is replaced, and swept when the pane leaves the topology.
+    #[test]
+    fn upstream_revisions_seed_reset_and_sweep() {
+        let pane = |pane_id: &str, terminal_id: &str, revision: u64| lerdr_herdr::PaneInfo {
+            pane_id: pane_id.into(),
+            terminal_id: terminal_id.into(),
+            workspace_id: "wE".into(),
+            tab_id: "wE:t1".into(),
+            revision,
+            ..lerdr_herdr::PaneInfo::default()
+        };
+
+        let mut t = Topology::default();
+        t.accept(SessionSnapshot {
+            panes: vec![pane("wE:p1", "term_1", 12)],
+            ..SessionSnapshot::default()
+        });
+        assert_eq!(t.upstream_rev_of("wE:p1"), 12);
+
+        // Max-merge — out-of-order and stale observations never move the
+        // watermark backwards; `0` (the unreported stub) never stores.
+        t.note_upstream_rev("wE:p1", 9);
+        assert_eq!(t.upstream_rev_of("wE:p1"), 12);
+        t.note_upstream_rev("wE:p1", 0);
+        assert_eq!(t.upstream_rev_of("wE:p1"), 12);
+        t.note_upstream_rev("wE:p1", 15);
+        assert_eq!(t.upstream_rev_of("wE:p1"), 15);
+
+        // A replayed/older commit can't lower it either.
+        t.accept(SessionSnapshot {
+            panes: vec![pane("wE:p1", "term_1", 13)],
+            ..SessionSnapshot::default()
+        });
+        assert_eq!(t.upstream_rev_of("wE:p1"), 15);
+
+        // Session-identity move = respawn: the upstream counter restarted,
+        // so the new epoch's smaller revision must seed cleanly.
+        t.accept(SessionSnapshot {
+            panes: vec![pane("wE:p1", "term_2", 3)],
+            ..SessionSnapshot::default()
+        });
+        assert_eq!(t.upstream_rev_of("wE:p1"), 3);
+
+        // An explicit generation bump (lifecycle mutation) resets it too.
+        t.bump_generation("wE:p1");
+        assert_eq!(t.upstream_rev_of("wE:p1"), 0);
+
+        // Observations keep folding while the pane is in the topology;
+        // the per-commit membership sweep drops the watermark once it is
+        // gone entirely.
+        t.note_upstream_rev("wE:p1", 20);
+        assert_eq!(t.upstream_rev_of("wE:p1"), 20);
+        t.accept(SessionSnapshot::default());
+        assert_eq!(t.upstream_rev_of("wE:p1"), 0);
+    }
+
+    /// `AgentInfo.revision` seeds the same watermark for agent rows —
+    /// the same upstream counter the pane row would carry.
+    #[test]
+    fn upstream_revisions_seed_from_agent_rows() {
+        let mut t = Topology::default();
+        t.accept(SessionSnapshot {
+            agents: vec![AgentInfo {
+                pane_id: "wE:p1".into(),
+                terminal_id: "term_1".into(),
+                workspace_id: "wE".into(),
+                tab_id: "wE:t1".into(),
+                agent_status: lerdr_herdr::AgentStatus::Working,
+                agent: Some("devin".into()),
+                revision: 21,
+                ..AgentInfo::default()
+            }],
+            ..SessionSnapshot::default()
+        });
+        assert_eq!(t.upstream_rev_of("wE:p1"), 21);
     }
 }

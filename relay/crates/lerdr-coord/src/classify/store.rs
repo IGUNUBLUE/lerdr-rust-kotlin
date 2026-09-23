@@ -372,6 +372,15 @@ pub(crate) struct PaneTransition {
 #[derive(Debug, Default)]
 pub(crate) struct AttentionLedger {
     cells: BTreeMap<String, AttentionCell>,
+    /// The newest upstream output revision observed per pane — Herdr's
+    /// seqlock-style `content_revision`, folded in from
+    /// `PaneInfo`/`AgentInfo` `revision`, `pane_output_changed` event
+    /// payloads, and `pane.read` results. Not an attention field: it
+    /// lives on the shared ledger so every published `Topology` clone —
+    /// and every mid-read fence holding one — sees event folds the
+    /// instant they land. `0` means absent/unreported (Herdr 0.9.1 stubs
+    /// `pane.read`'s revision at 0) and is never stored.
+    upstream_revs: BTreeMap<String, u64>,
 }
 
 /// Shared ownership: the actor's `Topology` and every published clone
@@ -396,9 +405,44 @@ impl AttentionLedger {
     /// The removal pass (`commitInventoryLocked`'s `!seen` loop):
     /// everything keyed by the pane goes except `generation` (which lives
     /// on `Topology`) — including the custom-answer keys the caller
-    /// forwards to `Questions::forget_pane`.
+    /// forwards to `Questions::forget_pane`. The upstream watermark is
+    /// *not* dropped here: `!seen` covers agent rows, and a pane that
+    /// left `agents` but still appears in `panes` keeps its counter —
+    /// the per-commit [`Self::retain_upstream`] sweep removes watermarks
+    /// only once the pane is gone from the topology entirely.
     pub(crate) fn remove(&mut self, pane_id: &str) {
         self.cells.remove(pane_id);
+    }
+
+    /// Fold one observed upstream output revision into the pane's
+    /// watermark — max-merge so out-of-order deliveries can never move it
+    /// backwards, and `0` ignored (the stub value carries no
+    /// information).
+    pub(crate) fn note_upstream_rev(&mut self, pane_id: &str, revision: u64) {
+        if revision == 0 {
+            return;
+        }
+        let slot = self.upstream_revs.entry(pane_id.to_owned()).or_insert(0);
+        *slot = (*slot).max(revision);
+    }
+
+    /// The newest observed upstream output revision — `0` when none is
+    /// known (unobserved pane, or a Herdr that does not report one).
+    pub(crate) fn upstream_rev(&self, pane_id: &str) -> u64 {
+        self.upstream_revs.get(pane_id).copied().unwrap_or(0)
+    }
+
+    /// The pane session was replaced — its upstream counter restarted at
+    /// the new epoch, so the old watermark must not suppress the
+    /// replacement's events as stale.
+    pub(crate) fn reset_upstream_rev(&mut self, pane_id: &str) {
+        self.upstream_revs.remove(pane_id);
+    }
+
+    /// Drop watermarks whose pane is no longer in the topology — `keep`
+    /// is the commit's live-pane membership test.
+    pub(crate) fn retain_upstream(&mut self, mut keep: impl FnMut(&str) -> bool) {
+        self.upstream_revs.retain(|pane_id, _| keep(pane_id));
     }
 }
 

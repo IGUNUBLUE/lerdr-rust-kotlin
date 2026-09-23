@@ -169,6 +169,38 @@ async fn pane_read_never_retries_refused() {
     assert_eq!(server.accept_count(), 1, "Refused must not be retried");
 }
 
+/// `stale_content` is the one refusal worth retrying: the fenced revision
+/// raced an in-flight write (Herdr's seqlock contract), so the retry lands
+/// on the settled buffer. One retry — a persistent stale read errors out.
+#[tokio::test]
+async fn pane_read_retries_stale_content_once() {
+    let server = FakeHerdr::start(Action::Reply(json!({
+        "type": "pane_read",
+        "read": {"pane_id": "wE:pE", "workspace_id": "wE", "tab_id": "wE:t1",
+                 "source": "visible", "format": "text", "text": "settled",
+                 "revision": 8, "truncated": false}
+    })))
+    .await;
+    server.push(Action::Refuse("stale_content", "revision mismatch"));
+    let client = client_for(&server);
+    let read = client
+        .pane_read("wE:pE", ReadSource::Visible, 10, ReadFormat::Text)
+        .await
+        .unwrap();
+    assert_eq!(read.text, "settled");
+    assert_eq!(read.revision, 8);
+    assert_eq!(server.accept_count(), 2, "one stale_content retry");
+
+    // A second stale refusal surfaces the error — no unbounded spinning.
+    let server = FakeHerdr::start(Action::Refuse("stale_content", "still racing")).await;
+    let err = client_for(&server)
+        .pane_read("wE:pE", ReadSource::Visible, 10, ReadFormat::Text)
+        .await
+        .unwrap_err();
+    assert_eq!(err.refusal_code(), Some("stale_content"));
+    assert_eq!(server.accept_count(), 2, "first + one retry, then give up");
+}
+
 #[tokio::test]
 async fn singleflight_dedupes_identical_reads() {
     // Slow scripted reply: the leader's request stays in flight long enough

@@ -68,6 +68,17 @@ async fn subscribe_handshake_and_events() {
     );
 }
 
+/// The `subscriptions` entries of request `i` (0-indexed in accept
+/// order) as plain type names.
+fn subscription_types(req: &support::RecordedRequest) -> Vec<&str> {
+    req.params["subscriptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["type"].as_str())
+        .collect()
+}
+
 #[tokio::test]
 async fn subscribe_refused_unknown_variant() {
     // Older herdr rejects `workspace.reordered` with a pre-dispatch refusal —
@@ -94,6 +105,93 @@ async fn subscribe_refused_unknown_variant() {
         "fallback resubscribe must dial again"
     );
     assert_eq!(client.workspace_reordered_supported(), Some(false));
+    // `pane.output_changed` was never named — it rode the retry and was
+    // accepted.
+    assert_eq!(client.pane_output_changed_supported(), Some(true));
+    let reqs = server.requests();
+    assert!(subscription_types(&reqs[0]).contains(&"workspace.reordered"));
+    let retried = subscription_types(&reqs[1]);
+    assert!(!retried.contains(&"workspace.reordered"));
+    assert!(retried.contains(&"pane.output_changed"));
+    drop(stream);
+}
+
+/// A build that knows `workspace.reordered` but not `pane.output_changed`
+/// (Herdr 0.9.1's actual shape — the event payload exists but the
+/// `Subscription` variant does not) rejects the whole handshake naming it;
+/// the retry drops just that entry.
+#[tokio::test]
+async fn subscribe_refused_output_changed_variant() {
+    let server = FakeHerdr::start(Action::Stream(vec![subscription_started_line()])).await;
+    server.push(Action::Custom(|conn, _req| {
+        Box::pin(async move {
+            use tokio::io::AsyncWriteExt;
+            let mut conn = conn;
+            let _ = conn
+                .write_all(
+                    br#"{"id":"","error":{"code":"invalid_request","message":"invalid request: unknown variant `pane.output_changed`"}}
+"#
+                    .as_slice(),
+                )
+                .await;
+        })
+    }));
+    let client = client_for(&server);
+    let stream = client.subscribe_topology().await.unwrap();
+    assert_eq!(server.accept_count(), 2);
+    assert_eq!(client.pane_output_changed_supported(), Some(false));
+    // `workspace.reordered` stayed in the retry and was acknowledged.
+    assert_eq!(client.workspace_reordered_supported(), Some(true));
+    let reqs = server.requests();
+    let retried = subscription_types(&reqs[1]);
+    assert!(retried.contains(&"workspace.reordered"));
+    assert!(!retried.contains(&"pane.output_changed"));
+    drop(stream);
+}
+
+/// Both optional entries unknown — the handshake degrades one named
+/// variant per round-trip until the bare lifecycle set lands.
+#[tokio::test]
+async fn subscribe_both_optionals_rejected() {
+    // `Action::Custom` is a plain `fn`, so each rejection is its own
+    // non-capturing closure — the retry order is `workspace.reordered`
+    // first (declared first in `topology_subscriptions`).
+    let server = FakeHerdr::start(Action::Stream(vec![subscription_started_line()])).await;
+    server.push(Action::Custom(|conn, _req| {
+        Box::pin(async move {
+            use tokio::io::AsyncWriteExt;
+            let mut conn = conn;
+            let _ = conn
+                .write_all(
+                    br#"{"id":"","error":{"code":"invalid_request","message":"invalid request: unknown variant `workspace.reordered`"}}
+"#
+                    .as_slice(),
+                )
+                .await;
+        })
+    }));
+    server.push(Action::Custom(|conn, _req| {
+        Box::pin(async move {
+            use tokio::io::AsyncWriteExt;
+            let mut conn = conn;
+            let _ = conn
+                .write_all(
+                    br#"{"id":"","error":{"code":"invalid_request","message":"invalid request: unknown variant `pane.output_changed`"}}
+"#
+                    .as_slice(),
+                )
+                .await;
+        })
+    }));
+    let client = client_for(&server);
+    let stream = client.subscribe_topology().await.unwrap();
+    assert_eq!(server.accept_count(), 3, "two drop-and-retry rounds");
+    assert_eq!(client.workspace_reordered_supported(), Some(false));
+    assert_eq!(client.pane_output_changed_supported(), Some(false));
+    // The final request is the bare 20-name lifecycle set.
+    let reqs = server.requests();
+    let landed = subscription_types(&reqs[2]);
+    assert_eq!(landed.len(), 20);
     drop(stream);
 }
 
@@ -104,6 +202,7 @@ async fn subscribe_reordered_supported_when_accepted() {
     let _stream = client.subscribe_topology().await.unwrap();
     assert_eq!(server.accept_count(), 1);
     assert_eq!(client.workspace_reordered_supported(), Some(true));
+    assert_eq!(client.pane_output_changed_supported(), Some(true));
 }
 
 #[tokio::test]

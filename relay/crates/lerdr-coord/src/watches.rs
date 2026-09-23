@@ -14,7 +14,17 @@
 //!   was shut is picked up by the first tick after it opens.
 //! - **Invalidation fast path** — a `pane.*` event at or past
 //!   `next_read` polls immediately; inside the freshness window or gated
-//!   it does nothing — the tick covers it.
+//!   it does nothing — the tick covers it. `pane.output_changed` (only
+//!   present on Herdr builds whose schema exposes the subscription)
+//!   dedupes on the watch's served upstream revision: duplicates and
+//!   out-of-order deliveries at or below the last verified read never
+//!   wake the loop.
+//! - **Upstream read fence** — every `pane.read` goes through
+//!   [`pane_read_fresh`]: a verified read folds its `revision` into the
+//!   shared watermark, and a read that raced a mid-flight output write
+//!   (odd revision, below the watermark, or a mid-read bump) re-reads
+//!   once instead of serving stale content. On 0.9.1 `pane.read`
+//!   stubs `revision` at 0 and the axis is dormant.
 //! - **Format + source** — `format: "ansi"` rides the spec end to end
 //!   (`watchMessage` carries it); [`display_source`] is
 //!   `readPaneForDisplay`: text reads stay on `visible` (any other source
@@ -53,7 +63,7 @@ use lerdr_core::json::MaybeNull;
 use lerdr_core::protocol::{
     Inbound, Outbound, PaneContent, PaneDelta, PaneResync, PaneUnchanged, TargetRef,
 };
-use lerdr_herdr::{ReadFormat, ReadSource};
+use lerdr_herdr::{HerdrError, PaneReadResult, ReadFormat, ReadSource};
 use lerdr_relay::session::ClientSink;
 use sha2::{Digest, Sha256};
 use tokio::sync::{broadcast, mpsc};
@@ -474,6 +484,17 @@ struct WatchState {
     /// After a gate timeout the next frame must be full (`ack_required`
     /// fresh chain), not a delta against a possibly-lost base.
     force_full: bool,
+    /// The newest upstream output revision this watch has verified at a
+    /// read — the `pane.output_changed` *served* watermark (distinct from
+    /// the topology's shared *observed* watermark): an event at or below
+    /// it is already covered, above it wakes the loop. `0` = nothing
+    /// observed — Herdr 0.9.1 stubs `pane.read`'s `revision` at 0, so the
+    /// whole axis stays dormant there.
+    upstream_rev: u64,
+    /// The pane generation `upstream_rev` belongs to — a respawned pane
+    /// restarts its upstream counter, so the watermark resets with the
+    /// epoch rather than suppressing the replacement's events as stale.
+    upstream_rev_generation: i64,
 }
 
 impl WatchState {
@@ -489,7 +510,20 @@ impl WatchState {
             pending_ack: false,
             ack_deadline: None,
             force_full: false,
+            upstream_rev: 0,
+            upstream_rev_generation: -1,
         }
+    }
+
+    /// Fold a verified-read upstream revision into the served watermark —
+    /// a generation change resets it first (the respawned pane's counter
+    /// restarted at its own epoch).
+    fn fold_upstream(&mut self, generation: i64, revision: u64) {
+        if generation != self.upstream_rev_generation {
+            self.upstream_rev = 0;
+            self.upstream_rev_generation = generation;
+        }
+        self.upstream_rev = self.upstream_rev.max(revision);
     }
 
     /// `watch.pending = frame` + the bookkeeping the frame's metadata
@@ -538,7 +572,7 @@ async fn watch_loop(
     // A failed read emits nothing — the oracle sleeps and retries the nil
     // frame every interval; the first tick does the same here (the empty
     // `probe_fingerprint` forces the full read).
-    if let Some(frame) = read_watch_frame(&pane_id, &spec, &deps).await {
+    if let Some(frame) = read_watch_frame(&pane_id, &spec, &deps, &mut state).await {
         if spec.known_fingerprint.as_deref() == Some(frame.content_fingerprint.as_str()) {
             // `paneWatchUpdate`'s same-fingerprint branch:
             // `CopyLines: strings.Count(content, "\n") + 1`.
@@ -625,7 +659,7 @@ async fn watch_loop(
                         // AND the probe tier: `force_full` answers with
                         // the full frame whatever the probe would say.
                         if let Some(frame) =
-                            read_watch_frame(&pane_id, &spec, &deps).await
+                            read_watch_frame(&pane_id, &spec, &deps, &mut state).await
                         {
                             send_frame(&pane_id, &spec, sink.as_ref(), &mut state, frame);
                         }
@@ -659,8 +693,23 @@ async fn watch_loop(
             inv = invalidations.recv() => {
                 let triggered = match inv {
                     Ok(inv) => {
-                        inv.pane_id.as_deref() == Some(pane_id.as_str())
-                            || inv.pane_id.is_none()
+                        let for_pane = inv.pane_id.as_deref()
+                            == Some(pane_id.as_str())
+                            || inv.pane_id.is_none();
+                        // `pane.output_changed` dedupes on the served
+                        // watermark — an event at or below it was already
+                        // covered by a verified read, so duplicates and
+                        // out-of-order deliveries coalesce here instead
+                        // of re-reading.
+                        for_pane
+                            && match inv.output_revision {
+                                Some(revision)
+                                    if inv.name == "pane.output_changed" =>
+                                {
+                                    revision > state.upstream_rev
+                                }
+                                _ => true,
+                            }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         // Lag is correctness-safe: re-read covers the gap.
@@ -684,6 +733,76 @@ async fn watch_loop(
     debug!("watch stopped");
 }
 
+/// `pane.read` fenced on the upstream output revision — Herdr's
+/// seqlock-flavored `content_revision`, the third revision axis beside
+/// the generation/`content_rev` pair:
+///
+/// - **Mid-read drift** — the shared watermark landing above the max of
+///   (its pre-read value, the read's own revision) means a
+///   `pane_output_changed` event or a snapshot seed observed newer
+///   output while this read was in flight: the result may predate it,
+///   so re-read once rather than serve.
+/// - **Odd revision** — Herdr's seqlock marks a write in flight with an
+///   odd counter; a read that sampled one re-reads once for the settled
+///   value.
+/// - **Behind the watermark** — a returned revision below the shared
+///   watermark means the read predates already-observed output; re-read
+///   once.
+///
+/// Verified reads fold their revision back into the shared watermark.
+/// All legs are inert on Herdr 0.9.1, which stubs `pane.read`'s
+/// `revision` at 0 — `0` folds to nothing and satisfies no revision
+/// leg; only the topology-seeded mid-read drift leg can still fire (a
+/// commit landing inside the read window — rare, and strictly fresher
+/// on retry). At most one re-read per call; a still-dirty result serves
+/// — the periodic tick is the final fallback, matching the oracle's
+/// poll-always posture.
+pub(crate) async fn pane_read_fresh(
+    handle: &TopologyHandle,
+    pane_id: &str,
+    source: ReadSource,
+    lines: u32,
+    format: ReadFormat,
+) -> Result<PaneReadResult, HerdrError> {
+    for attempt in 0..2u8 {
+        let (generation, watermark) = {
+            let topology = handle.topology.borrow();
+            (
+                topology.generation_of(pane_id),
+                topology.upstream_rev_of(pane_id),
+            )
+        };
+        let read = handle
+            .client
+            .pane_read(pane_id, source, lines, format)
+            .await?;
+        let (observed, generation_now) = {
+            let topology = handle.topology.borrow();
+            let observed = topology.upstream_rev_of(pane_id);
+            // The fold counts only when the read stayed inside the pane
+            // epoch it started in — a replaced pane's counter restarted
+            // (the caller's generation fence rejects the frame anyway).
+            if topology.generation_of(pane_id) == generation {
+                topology.note_upstream_rev(pane_id, read.revision);
+            }
+            (observed, topology.generation_of(pane_id))
+        };
+        let stale = observed > watermark.max(read.revision)
+            || (read.revision != 0 && (read.revision % 2 == 1 || read.revision < watermark));
+        if !stale || attempt == 1 || generation_now != generation {
+            return Ok(read);
+        }
+        debug!(
+            pane_id,
+            revision = read.revision,
+            watermark,
+            observed,
+            "pane.read raced upstream output — re-reading"
+        );
+    }
+    unreachable!("loop returns or iterates twice")
+}
+
 /// `pollPaneWatch` (pane_watch.go:165-223) — the tick: a cheap
 /// `visible`-source probe first (`HandleProbePane`), a full
 /// `HandleReadPane` read only when `paneWatchNeedsFrameRead` says the
@@ -694,34 +813,51 @@ async fn poll(pane_id: &str, spec: &WatchSpec, deps: &WatchDeps, state: &mut Wat
     // `visible` source at a fixed 500 lines in the watch's format,
     // fenced on the pane's generation *and* content revision mid-read
     // (the oracle checks both: a committed state change under the probe
-    // must not let stale content steer the needs-read decision).
-    let (generation, content_rev) = {
+    // must not let stale content steer the needs-read decision) plus the
+    // upstream output watermark (`pane_read_fresh`).
+    let (generation, content_rev, observed_before) = {
         let topology = deps.handle.topology.borrow();
         (
             topology.generation_of(pane_id),
             topology.content_rev_of(pane_id),
+            topology.upstream_rev_of(pane_id),
         )
     };
-    let Ok(probe) = deps
-        .handle
-        .client
-        .pane_read(pane_id, ReadSource::Visible, PROBE_LINES, spec.format)
-        .await
+    let Ok(probe) = pane_read_fresh(
+        &deps.handle,
+        pane_id,
+        ReadSource::Visible,
+        PROBE_LINES,
+        spec.format,
+    )
+    .await
     else {
         return;
     };
-    let (generation_now, content_rev_now, classification_agent) = {
+    let (generation_now, content_rev_now, classification_agent, observed_now) = {
         let topology = deps.handle.topology.borrow();
         (
             topology.generation_of(pane_id),
             topology.content_rev_of(pane_id),
             topology.classification_agent(pane_id),
+            topology.upstream_rev_of(pane_id),
         )
     };
     if generation_now != generation || content_rev_now != content_rev {
         return;
     }
     let probe_fingerprint = content_fingerprint(&probe.text);
+    // The upstream output axis: a `pane_output_changed` event or a
+    // snapshot seed folded mid-probe means the probe may predate the
+    // latest output; `probe.revision` past the served watermark means
+    // output moved even when the visible fingerprint held (scrollback /
+    // ANSI-only churn). Either way the fingerprint can't vouch — read
+    // in full. Inert on 0.9.1, where `pane.read` stubs `revision` at 0.
+    let upstream_moved =
+        observed_now > observed_before.max(probe.revision) || probe.revision > state.upstream_rev;
+    // The probe verified the pane at `probe.revision` — the served
+    // watermark folds it whether or not the full read runs.
+    state.fold_upstream(generation, probe.revision);
     // `paneWatchNeedsFrameRead` (pane_watch.go:248-259): an empty or
     // moved probe reads; a committed `resize_settling` frame or a
     // `classificationAgent` change keeps reading until both clear.
@@ -729,11 +865,12 @@ async fn poll(pane_id: &str, spec: &WatchSpec, deps: &WatchDeps, state: &mut Wat
         || probe_fingerprint != state.probe_fingerprint
         || state.sent_resize_settling
         || (!state.sent_frame_fingerprint.is_empty()
-            && state.sent_classification_agent != classification_agent);
+            && state.sent_classification_agent != classification_agent)
+        || upstream_moved;
     if !needs_read {
         return;
     }
-    let Some(frame) = read_watch_frame(pane_id, spec, deps).await else {
+    let Some(frame) = read_watch_frame(pane_id, spec, deps, state).await else {
         // `frame == nil` → the probe fingerprint stays stale, so the next
         // tick retries the full read.
         return;
@@ -746,11 +883,18 @@ async fn poll(pane_id: &str, spec: &WatchSpec, deps: &WatchDeps, state: &mut Wat
 /// read behind every pushed frame: `handleAcknowledge`, the
 /// `applyPaneReadLease` viewport flags, the `readPaneForDisplay`
 /// source/format matrix, `capPaneContentLines`, and the mid-read
-/// generation fence. `None` = read failed or the pane was replaced
-/// under the read — the caller emits nothing (the oracle's `frame ==
-/// nil` paths send nothing either: the initial loop retries, the poll
-/// just ends).
-async fn read_watch_frame(pane_id: &str, spec: &WatchSpec, deps: &WatchDeps) -> Option<WatchFrame> {
+/// generation fence. The upstream revision fences inside
+/// [`pane_read_fresh`]; a verified read's revision folds into the
+/// watch's served watermark. `None` = read failed or the pane was
+/// replaced under the read — the caller emits nothing (the oracle's
+/// `frame == nil` paths send nothing either: the initial loop retries,
+/// the poll just ends).
+async fn read_watch_frame(
+    pane_id: &str,
+    spec: &WatchSpec,
+    deps: &WatchDeps,
+    state: &mut WatchState,
+) -> Option<WatchFrame> {
     let (generation, content_rev, agent, classification_agent) = {
         let topology = deps.handle.topology.borrow();
         (
@@ -785,17 +929,15 @@ async fn read_watch_frame(pane_id: &str, spec: &WatchSpec, deps: &WatchDeps) -> 
     } else {
         None
     };
-    let read = deps
-        .handle
-        .client
-        .pane_read(
-            pane_id,
-            display_source(spec.format, viewport_only, &agent),
-            spec.lines,
-            spec.format,
-        )
-        .await
-        .ok()?;
+    let read = pane_read_fresh(
+        &deps.handle,
+        pane_id,
+        display_source(spec.format, viewport_only, &agent),
+        spec.lines,
+        spec.format,
+    )
+    .await
+    .ok()?;
     // `HandleReadPane`'s mid-read fences — generation (`replaced`) and
     // `ContentRevision` (`changed`).
     {
@@ -806,6 +948,9 @@ async fn read_watch_frame(pane_id: &str, spec: &WatchSpec, deps: &WatchDeps) -> 
             return None;
         }
     }
+    // Verified under this generation — the read's upstream revision
+    // joins the served watermark (`0` folds to nothing on 0.9.1).
+    state.fold_upstream(generation, read.revision);
     // `classifyPaneResponse`'s settle flag — viewport reads inside the
     // window are flagged so the app won't commit possibly-redrawn rows.
     let resize_settling = viewport_only
@@ -1146,7 +1291,14 @@ pub(crate) mod test_support {
     }
 
     /// `{"type":"pane_read","read":{…}}` — a `pane.read` result body.
+    /// `revision: 2` — an even (settled) upstream revision, so
+    /// `pane_read_fresh`'s seqlock legs stay inert in canned responses.
     pub(crate) fn pane_read_result(pane_id: &str, text: &str) -> Value {
+        pane_read_result_rev(pane_id, text, 2)
+    }
+
+    /// `pane_read_result` with an explicit upstream `revision`.
+    pub(crate) fn pane_read_result_rev(pane_id: &str, text: &str, revision: u64) -> Value {
         json!({
             "type": "pane_read",
             "read": {
@@ -1156,7 +1308,7 @@ pub(crate) mod test_support {
                 "source": "recent_unwrapped",
                 "format": "text",
                 "text": text,
-                "revision": 1,
+                "revision": revision,
                 "truncated": false,
             }
         })
@@ -1167,9 +1319,24 @@ pub(crate) mod test_support {
         Invalidation {
             name: "pane.updated".to_owned(),
             pane_id: pane_id.map(str::to_owned),
+            output_revision: None,
             event: Event {
                 name: "pane.updated".to_owned(),
                 data: json!({}),
+            },
+        }
+    }
+
+    /// A `pane.output_changed` invalidation carrying the pane's upstream
+    /// `revision` — what the actor folds out of `data.revision`.
+    pub(crate) fn invalidate_output(pane_id: &str, revision: u64) -> Invalidation {
+        Invalidation {
+            name: "pane.output_changed".to_owned(),
+            pane_id: Some(pane_id.to_owned()),
+            output_revision: Some(revision),
+            event: Event {
+                name: "pane.output_changed".to_owned(),
+                data: json!({"pane_id": pane_id, "revision": revision}),
             },
         }
     }
@@ -2125,5 +2292,185 @@ mod tests {
             }
             other => panic!("expected pane_unchanged, got {other:?}"),
         }
+    }
+
+    /// `pane.output_changed` wakes the watch like any `pane.*`
+    /// invalidation past `next_read` — but revisions at or below the
+    /// served watermark coalesce to nothing instead of re-reading.
+    #[tokio::test(start_paused = true)]
+    async fn output_changed_invalidation_wakes_and_coalesces() {
+        let herdr = FakeHerdr::serving(vec![
+            pane_read_result_rev("wE:pE", "v1\n", 10),
+            pane_read_result_rev("wE:pE", "v2\n", 12),
+        ]);
+        let (sink, mut rx) = recording_sink();
+        let (invalidations, _) = broadcast::channel(16);
+        let cancel = CancellationToken::new();
+        let mut watches = WatchSet::default();
+        watches.start(
+            "wE:pE".to_owned(),
+            spec(400, Duration::from_millis(250), None),
+            deps(&herdr.client(), sink, &invalidations, cancel.clone()),
+        );
+
+        let _initial = rx.recv().await.expect("initial frame");
+
+        // Stay gated through the t0+250 tick so only the event path can
+        // poll, then open the gate past `next_read`.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        watches.ack("wE:pE", Some(content_fingerprint("v1\n").as_str()));
+        tokio::task::yield_now().await;
+
+        // At/below the served watermark (10): the event is already
+        // covered — no poll, no dial.
+        let _ = invalidations.send(invalidate_output("wE:pE", 8));
+        let _ = invalidations.send(invalidate_output("wE:pE", 10));
+        tokio::task::yield_now().await;
+        assert_eq!(herdr.dials.load(Ordering::Relaxed), 1);
+
+        // Above it: an immediate probe+read, ahead of the t0+500 tick.
+        let _ = invalidations.send(invalidate_output("wE:pE", 12));
+        let frame = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("output_changed refresh frame")
+            .expect("channel open");
+        assert!(matches!(
+            frame,
+            Outbound::PaneContent(_) | Outbound::PaneDelta(_)
+        ));
+        assert_eq!(herdr.dials.load(Ordering::Relaxed), 3);
+
+        // Served watermark is now 12 — out-of-order and duplicate events
+        // at or below it still coalesce.
+        let _ = invalidations.send(invalidate_output("wE:pE", 9));
+        let _ = invalidations.send(invalidate_output("wE:pE", 12));
+        tokio::task::yield_now().await;
+        assert_eq!(herdr.dials.load(Ordering::Relaxed), 3);
+        assert!(rx.try_recv().is_err(), "stale revisions must not send");
+        watches.stop("wE:pE");
+        cancel.cancel();
+    }
+
+    /// `pane_read_fresh` — the shared watermark advancing past the read's
+    /// own revision while the request was in flight (a `pane.output_changed`
+    /// event or snapshot seed landed mid-read) re-reads once and serves
+    /// the fresh result.
+    #[tokio::test(start_paused = true)]
+    async fn pane_read_fresh_rereads_on_mid_read_watermark_bump() {
+        use crate::topology::Topology;
+        use lerdr_herdr::{PaneInfo, SessionSnapshot};
+        use std::sync::atomic::AtomicBool;
+
+        fn topo_with_rev(revision: u64) -> Topology {
+            let mut t = Topology::default();
+            t.accept(SessionSnapshot {
+                panes: vec![PaneInfo {
+                    pane_id: "wE:pE".into(),
+                    terminal_id: "term_E".into(),
+                    workspace_id: "wE".into(),
+                    tab_id: "wE:tE".into(),
+                    revision,
+                    ..PaneInfo::default()
+                }],
+                ..SessionSnapshot::default()
+            });
+            t
+        }
+
+        let herdr = FakeHerdr::serving(vec![
+            pane_read_result_rev("wE:pE", "old\n", 10),
+            pane_read_result_rev("wE:pE", "fresh\n", 12),
+        ]);
+        let (invalidations, _) = broadcast::channel(4);
+        let (handle, topology_tx) =
+            TopologyHandle::for_test(herdr.client(), Arc::new(topo_with_rev(10)), invalidations);
+
+        // Mid-read mutation: publish a topology whose pane revision moved
+        // (same pane identity — generation/content_rev unchanged) before
+        // the response is written.
+        let swapped = std::sync::Arc::new(AtomicBool::new(false));
+        *herdr.on_request.lock().expect("on_request poisoned") = {
+            let swapped = swapped.clone();
+            Some(Box::new(move |request: &Value| {
+                if request.get("method").and_then(Value::as_str) == Some("pane.read")
+                    && !swapped.swap(true, Ordering::Relaxed)
+                {
+                    let _ = topology_tx.send(Arc::new(topo_with_rev(12)));
+                }
+            }))
+        };
+
+        let read = pane_read_fresh(&handle, "wE:pE", ReadSource::Visible, 500, ReadFormat::Text)
+            .await
+            .expect("read");
+        assert_eq!(read.text, "fresh\n", "the retried read wins");
+        assert_eq!(herdr.dials.load(Ordering::Relaxed), 2, "one reread");
+        assert_eq!(handle.topology.borrow().upstream_rev_of("wE:pE"), 12);
+    }
+
+    /// `pane_read_fresh`'s seqlock legs: an odd revision (write in
+    /// flight) and a revision behind the shared watermark both re-read
+    /// once; a settled/ahead result serves immediately.
+    #[tokio::test(start_paused = true)]
+    async fn pane_read_fresh_rereads_odd_and_behind_watermark() {
+        use crate::topology::Topology;
+        use lerdr_herdr::{PaneInfo, SessionSnapshot};
+
+        // Odd revision → re-read once → the settled value serves.
+        let herdr = FakeHerdr::serving(vec![
+            pane_read_result_rev("wE:pE", "mid-write\n", 11),
+            pane_read_result_rev("wE:pE", "settled\n", 12),
+        ]);
+        let (invalidations, _) = broadcast::channel(4);
+        let (handle, _tx) =
+            TopologyHandle::for_test(herdr.client(), Arc::new(Topology::default()), invalidations);
+        let read = pane_read_fresh(&handle, "wE:pE", ReadSource::Visible, 500, ReadFormat::Text)
+            .await
+            .expect("read");
+        assert_eq!(read.text, "settled\n");
+        assert_eq!(herdr.dials.load(Ordering::Relaxed), 2);
+
+        // Below the seeded watermark → re-read once.
+        let mut seeded = Topology::default();
+        seeded.accept(SessionSnapshot {
+            panes: vec![PaneInfo {
+                pane_id: "wE:pE".into(),
+                revision: 14,
+                ..PaneInfo::default()
+            }],
+            ..SessionSnapshot::default()
+        });
+        let herdr = FakeHerdr::serving(vec![
+            pane_read_result_rev("wE:pE", "stale\n", 10),
+            pane_read_result_rev("wE:pE", "current\n", 14),
+        ]);
+        let (invalidations, _) = broadcast::channel(4);
+        let (handle, _tx) =
+            TopologyHandle::for_test(herdr.client(), Arc::new(seeded), invalidations);
+        let read = pane_read_fresh(&handle, "wE:pE", ReadSource::Visible, 500, ReadFormat::Text)
+            .await
+            .expect("read");
+        assert_eq!(read.text, "current\n");
+        assert_eq!(herdr.dials.load(Ordering::Relaxed), 2);
+    }
+
+    /// The retry is bounded: a second stale-looking read serves anyway —
+    /// the periodic tick remains the final fallback.
+    #[tokio::test(start_paused = true)]
+    async fn pane_read_fresh_serves_after_one_retry() {
+        use crate::topology::Topology;
+
+        let herdr = FakeHerdr::serving(vec![
+            pane_read_result_rev("wE:pE", "odd-1\n", 11),
+            pane_read_result_rev("wE:pE", "odd-2\n", 13),
+        ]);
+        let (invalidations, _) = broadcast::channel(4);
+        let (handle, _tx) =
+            TopologyHandle::for_test(herdr.client(), Arc::new(Topology::default()), invalidations);
+        let read = pane_read_fresh(&handle, "wE:pE", ReadSource::Visible, 500, ReadFormat::Text)
+            .await
+            .expect("read");
+        assert_eq!(read.text, "odd-2\n", "the retry result serves as-is");
+        assert_eq!(herdr.dials.load(Ordering::Relaxed), 2);
     }
 }
