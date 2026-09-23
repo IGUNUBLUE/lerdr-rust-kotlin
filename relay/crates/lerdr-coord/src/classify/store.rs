@@ -105,6 +105,12 @@ pub(crate) struct AttentionCell {
     /// `LastSeenAt` — `AcknowledgePane` writes `max(now, last_active_at)`;
     /// `AgentTimes` keeps the observation-time half.
     pub last_seen_at: i64,
+    /// `agent.SessionName` (server.go:509-534) — the title the
+    /// `session.Resolver` resolved for the committed row's
+    /// `agent_session`; `""` while unresolved. Lives on the cell (not the
+    /// snapshot) so published clones project it through the shared
+    /// ledger and the `!seen` removal pass reclaims it with the row.
+    pub session_name: String,
 }
 
 impl AttentionCell {
@@ -127,6 +133,7 @@ impl AttentionCell {
         self.ack_done = false;
         self.finished_notif = false;
         self.completion_rev = 0;
+        self.session_name.clear();
     }
 
     /// `applyBlockedCycleLocked` (state.go:687-708) — entering blocked

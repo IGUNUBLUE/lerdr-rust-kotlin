@@ -109,6 +109,12 @@ pub struct Topology {
     /// writes and `AcknowledgePane` acks land here; `agent_state` overlays
     /// it onto the snapshot row. Shared across published clones.
     pub(crate) attention: SharedLedger,
+    /// `s.sessions` (server.go) — the session-title resolver
+    /// `resolveAgentSessionName` consults in the pre-commit enrich pass.
+    /// An `Option` slot installed by the projector so commits before the
+    /// install (and `Topology::default()` tests) project `session_name`
+    /// empty.
+    pub(crate) resolver: crate::actor::ResolverSlot,
     /// Wall-clock of the last accepted snapshot — `last_success_at` on the
     /// `inventory_status` projection (the snapshot poll *is* the inventory).
     pub(crate) accepted_at: i64,
@@ -158,6 +164,7 @@ impl Default for Topology {
             generations: BTreeMap::new(),
             agent_times: BTreeMap::new(),
             attention: crate::classify::AttentionLedger::shared(),
+            resolver: Default::default(),
             accepted_at: 0,
             attempted_at: 0,
             inventory_ready: false,
@@ -309,6 +316,13 @@ impl Topology {
             .iter()
             .map(|pane| (pane.pane_id.as_str(), pane))
             .collect();
+        // `resolveAgentSessionName` (server.go:505-534) — the enrich pass's
+        // title half runs on every incoming row before the commit, so the
+        // resolver's file I/O never executes under the ledger lock. The
+        // committed row's `SessionName` lives on the cell; `agent_state`
+        // projects it and rewrites `session` like the oracle's
+        // `agent.Session = title`.
+        let titles = self.session_titles(&snapshot.agents);
         let mut ledger = self.attention.lock().expect("attention ledger poisoned");
 
         for incoming in &snapshot.agents {
@@ -409,6 +423,11 @@ impl Topology {
                 cell.attention_rev += 1;
             }
 
+            // `agent.SessionName = title` — the enrich pass resolved it
+            // unconditionally, so an unresolved row lands `""` and a stale
+            // title never survives a session change.
+            cell.session_name = titles.get(pane_id).cloned().unwrap_or_default();
+
             cell.state_rev = epoch;
             cell.prev_status.clone_from(&status);
 
@@ -488,6 +507,43 @@ impl Topology {
         self.inventory_error_code.clear();
         self.inventory_message.clear();
         outcome
+    }
+
+    /// `resolveAgentSessionName`'s resolver call (server.go:529) run for
+    /// every incoming agent: `SessionNameWithProject(agent.Agent,
+    /// {cwd, foreground_cwd}, TrimSpace(agent.Session))`. Returns the
+    /// pane→title map; `""` titles are kept out — the commit loop's
+    /// `unwrap_or_default` writes them anyway. `None` resolver (never
+    /// installed) yields an empty map — the pre-resolver shape.
+    fn session_titles(&self, agents: &[AgentInfo]) -> BTreeMap<String, String> {
+        let resolver = self
+            .resolver
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let Some(resolver) = resolver else {
+            return BTreeMap::new();
+        };
+        agents
+            .iter()
+            .map(|agent| {
+                let project = crate::conversation::ProjectContext {
+                    cwd: agent.cwd.clone().unwrap_or_default(),
+                    foreground_cwd: agent.foreground_cwd.clone().unwrap_or_default(),
+                };
+                let title = resolver.session_name_with_project(
+                    agent.agent.as_deref().unwrap_or_default(),
+                    &project,
+                    agent
+                        .agent_session
+                        .as_ref()
+                        .map(|s| s.value.as_str())
+                        .unwrap_or_default(),
+                );
+                (agent.pane_id.clone(), title)
+            })
+            .filter(|(_, title)| !title.is_empty())
+            .collect()
     }
 
     /// Install the capability evidence the actor collected. Returns
@@ -731,10 +787,11 @@ impl Topology {
     ///   `TrimSpace(agent_session.value)` (`resolveAgentSessionName`,
     ///   server.go:518-524) — the Go client flattens `agent_session` into
     ///   `Pane.Session` without consulting `kind` (client.go:382).
-    ///   `session` is that raw value verbatim (the oracle rewrites it to
-    ///   the resolved *title* only when its sessions store has one — this
-    ///   relay has no title resolver, so `session_name` stays empty;
-    ///   doc 10). `conversation_history_available` =
+    ///   `session_name` is the committed row's resolved title
+    ///   (`resolveAgentSessionName`'s `agent.SessionName`); a resolved
+    ///   title also replaces `session` verbatim (server.go:534), matching
+    ///   the oracle's wire rewrite.
+    ///   `conversation_history_available` =
     ///   `SessionID != "" && conversation.Supported(agent)`.
     /// - `status` is `DisplayedStatus` — an acked done reads `idle`, an
     ///   unacknowledged idle completion reads `done`.
@@ -748,9 +805,9 @@ impl Topology {
     /// - The attention fields (`event_id`…`question_layout`) overlay the
     ///   committed cell — empty unless the pane is in a blocked cycle.
     pub(crate) fn agent_state(&self, info: &AgentInfo) -> AgentState {
-        let (session, agent_session_id, session_name) = match &info.agent_session {
-            Some(s) => (s.value.clone(), s.value.trim().to_owned(), String::new()),
-            None => (String::new(), String::new(), String::new()),
+        let (raw_session, agent_session_id) = match &info.agent_session {
+            Some(s) => (s.value.clone(), s.value.trim().to_owned()),
+            None => (String::new(), String::new()),
         };
         let times = self
             .agent_times
@@ -758,6 +815,15 @@ impl Topology {
             .cloned()
             .unwrap_or_default();
         let cell = self.attention_cell(&info.pane_id);
+        let session_name = cell.session_name.clone();
+        // `agent.Session = title` (server.go:534) — a resolved title
+        // replaces the wire `session` display string while
+        // `agent_session_id` keeps the trimmed raw id.
+        let session = if session_name.is_empty() {
+            raw_session
+        } else {
+            session_name.clone()
+        };
         let (tab_label, tab_number, tab_order) = self.tab_context(info);
         let status = info.agent_status.to_string();
         let cwd = info.cwd.clone().unwrap_or_default();
@@ -1042,6 +1108,83 @@ mod tests {
         // `conversation_history_available` = trimmed session + supported agent.
         assert!(agents[1].conversation_history_available);
         assert!(!agents[0].conversation_history_available);
+    }
+
+    /// `resolveAgentSessionName` end to end (server.go:505-534): the
+    /// resolver's title lands on `session_name` and rewrites `session`
+    /// verbatim while `agent_session_id` keeps the trimmed raw id; an
+    /// unresolved or whitespace-only session projects the pre-resolver
+    /// shape.
+    #[test]
+    fn session_name_projects_resolved_title() {
+        let home = tempfile::TempDir::new().expect("temp HOME");
+        // Claude transcripts live under `~/.claude/projects/<dir>/<id>.jsonl`
+        // where `<dir>` is the cwd with every non-alphanumeric mapped to `-`.
+        let transcript = home.path().join(".claude/projects/-work-repo/sess-1.jsonl");
+        std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        std::fs::write(
+            &transcript,
+            "{\"type\":\"custom-title\",\"customTitle\":\"Claude Title\"}\n",
+        )
+        .unwrap();
+
+        let reader = std::sync::Arc::new(crate::conversation::Reader::new_with_env(
+            home.path().to_path_buf(),
+            Box::new(|_: &str| None),
+        ));
+        let mut t = Topology::default();
+        *t.resolver.lock().expect("resolver slot poisoned") = Some(std::sync::Arc::new(
+            crate::conversation::Resolver::with_reader(reader),
+        ));
+
+        let mut pane = agent("wE:p1", lerdr_herdr::AgentStatus::Working);
+        pane.cwd = Some("/work/repo".into());
+        pane.agent_session = Some(lerdr_herdr::AgentSessionInfo {
+            source: "sess".into(),
+            agent: "claude".into(),
+            kind: lerdr_herdr::AgentSessionRefKind::Id,
+            value: " sess-1 ".into(),
+        });
+        let mut blank = agent("wE:p2", lerdr_herdr::AgentStatus::Working);
+        blank.cwd = Some("/work/repo".into());
+        blank.agent_session = Some(lerdr_herdr::AgentSessionInfo {
+            source: "sess".into(),
+            agent: "claude".into(),
+            kind: lerdr_herdr::AgentSessionRefKind::Id,
+            value: "   ".into(),
+        });
+        let mut missing = agent("wE:p3", lerdr_herdr::AgentStatus::Working);
+        missing.cwd = Some("/work/repo".into());
+        missing.agent_session = Some(lerdr_herdr::AgentSessionInfo {
+            source: "sess".into(),
+            agent: "claude".into(),
+            kind: lerdr_herdr::AgentSessionRefKind::Id,
+            value: "no-transcript".into(),
+        });
+        t.accept(SessionSnapshot {
+            agents: vec![pane, blank, missing],
+            ..SessionSnapshot::default()
+        });
+
+        let agents = t.agents();
+        // `agent.Session = title` + `SessionName`/`SessionID` (server.go:518-534).
+        assert_eq!(agents[0].session_name, "Claude Title");
+        assert_eq!(agents[0].session, "Claude Title");
+        assert_eq!(agents[0].agent_session_id, "sess-1");
+        assert!(agents[0].conversation_history_available);
+        // Whitespace-only session: `TrimSpace` empties the id, no title.
+        assert_eq!(agents[1].session_name, "");
+        assert_eq!(agents[1].session, "   ");
+        assert_eq!(agents[1].agent_session_id, "");
+        assert!(!agents[1].conversation_history_available);
+        // No transcript: the raw session id stays on `session`.
+        assert_eq!(agents[2].session_name, "");
+        assert_eq!(agents[2].session, "no-transcript");
+        assert_eq!(agents[2].agent_session_id, "no-transcript");
+
+        // The committed row drops → the title ledger entry drops with it.
+        t.accept(SessionSnapshot::default());
+        assert!(t.agents().is_empty());
     }
 
     fn agent(pane_id: &str, status: lerdr_herdr::AgentStatus) -> AgentInfo {

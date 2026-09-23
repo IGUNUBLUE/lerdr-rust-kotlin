@@ -692,8 +692,16 @@ async fn watch_loop(
 async fn poll(pane_id: &str, spec: &WatchSpec, deps: &WatchDeps, state: &mut WatchState) {
     // `HandleProbePane` (dispatch.go:1169-1191) — `pane.read` on the
     // `visible` source at a fixed 500 lines in the watch's format,
-    // fenced on the pane's generation mid-read.
-    let generation = deps.handle.topology.borrow().generation_of(pane_id);
+    // fenced on the pane's generation *and* content revision mid-read
+    // (the oracle checks both: a committed state change under the probe
+    // must not let stale content steer the needs-read decision).
+    let (generation, content_rev) = {
+        let topology = deps.handle.topology.borrow();
+        (
+            topology.generation_of(pane_id),
+            topology.content_rev_of(pane_id),
+        )
+    };
     let Ok(probe) = deps
         .handle
         .client
@@ -702,14 +710,15 @@ async fn poll(pane_id: &str, spec: &WatchSpec, deps: &WatchDeps, state: &mut Wat
     else {
         return;
     };
-    let (generation_now, classification_agent) = {
+    let (generation_now, content_rev_now, classification_agent) = {
         let topology = deps.handle.topology.borrow();
         (
             topology.generation_of(pane_id),
+            topology.content_rev_of(pane_id),
             topology.classification_agent(pane_id),
         )
     };
-    if generation_now != generation {
+    if generation_now != generation || content_rev_now != content_rev {
         return;
     }
     let probe_fingerprint = content_fingerprint(&probe.text);
@@ -1018,6 +1027,10 @@ pub(crate) mod test_support {
     use std::sync::Mutex;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+    /// The mid-request hook type — fence tests install a closure that
+    /// mutates shared state inside the responder task.
+    pub(crate) type OnRequestHook = Arc<Mutex<Option<Box<dyn Fn(&Value) + Send + Sync>>>>;
+
     /// Canned Herdr: each `dial` pops the next `result` body (the last one
     /// replays once the queue drains) and answers `{"id":<req>,"result":…}`
     /// — enough NDJSON for `Client::pane_read`/`call`. Every request body
@@ -1029,6 +1042,10 @@ pub(crate) mod test_support {
         pub(crate) dials: AtomicUsize,
         /// Every request received, in order.
         pub(crate) requests: Arc<Mutex<Vec<Value>>>,
+        /// Fires inside the responder task for every request — after the
+        /// request is recorded, before the result is written. Fence tests
+        /// mutate shared state here to land a change mid-read.
+        pub(crate) on_request: OnRequestHook,
     }
 
     impl FakeHerdr {
@@ -1038,6 +1055,7 @@ pub(crate) mod test_support {
                 last: Mutex::new(None),
                 dials: AtomicUsize::new(0),
                 requests: Arc::new(Mutex::new(Vec::new())),
+                on_request: Arc::new(Mutex::new(None)),
             })
         }
 
@@ -1067,6 +1085,7 @@ pub(crate) mod test_support {
         fn dial(&self) -> Pin<Box<dyn Future<Output = io::Result<BoxIo>> + Send>> {
             self.dials.fetch_add(1, Ordering::Relaxed);
             let requests = self.requests.clone();
+            let on_request = self.on_request.clone();
             let result = {
                 let mut queue = self.responses.lock().expect("responses poisoned");
                 let mut last = self.last.lock().expect("last poisoned");
@@ -1089,6 +1108,9 @@ pub(crate) mod test_support {
                         .lock()
                         .expect("requests poisoned")
                         .push(request.clone());
+                    if let Some(hook) = on_request.lock().expect("on_request poisoned").as_ref() {
+                        hook(&request);
+                    }
                     let id = request
                         .get("id")
                         .and_then(|v| v.as_str().map(str::to_owned))
@@ -1175,20 +1197,34 @@ pub(crate) mod test_support {
         invalidations: &broadcast::Sender<Invalidation>,
         cancel: CancellationToken,
     ) -> WatchDeps {
-        WatchDeps {
-            handle: TopologyHandle::for_test(
-                client.clone(),
-                Arc::new(Topology::default()),
-                invalidations.clone(),
-            ),
-            leases: Leases::new(client.clone()),
-            questions: Questions::default(),
-            history: HistoryManager::in_memory(),
-            activities: crate::actions::activity::Journal::default(),
-            notices: Notices::default(),
-            sink,
-            cancel,
-        }
+        deps_with_topology(client, sink, invalidations, cancel, Topology::default()).0
+    }
+
+    /// `deps` over a caller-built topology; the returned sender publishes
+    /// a replacement `Arc<Topology>` into the watch's view — the mid-read
+    /// fence tests swap it inside a `pane_read` hook.
+    pub(crate) fn deps_with_topology(
+        client: &Client,
+        sink: Arc<dyn FrameSink>,
+        invalidations: &broadcast::Sender<Invalidation>,
+        cancel: CancellationToken,
+        topology: Topology,
+    ) -> (WatchDeps, tokio::sync::watch::Sender<Arc<Topology>>) {
+        let (handle, topology_tx) =
+            TopologyHandle::for_test(client.clone(), Arc::new(topology), invalidations.clone());
+        (
+            WatchDeps {
+                handle,
+                leases: Leases::new(client.clone()),
+                questions: Questions::default(),
+                history: HistoryManager::in_memory(),
+                activities: crate::actions::activity::Journal::default(),
+                notices: Notices::default(),
+                sink,
+                cancel,
+            },
+            topology_tx,
+        )
     }
 }
 
@@ -1450,6 +1486,109 @@ mod tests {
         );
         // Probe (visible, 500) + the conditional full read.
         assert_eq!(herdr.dials.load(Ordering::Relaxed), 3);
+        watches.stop("wE:pE");
+        cancel.cancel();
+    }
+
+    /// `HandleProbePane`'s mid-read fence is generation AND content
+    /// revision (dispatch.go:1181-1187): a committed topology change
+    /// landing while the `visible` probe is in flight suppresses that
+    /// tick's frame — the stale probe fingerprint cannot steer the
+    /// needs-read decision. The next tick re-probes the now-stable
+    /// topology and ships the frame, so suppression is never loss.
+    #[tokio::test(start_paused = true)]
+    async fn content_rev_bump_during_probe_suppresses_the_frame() {
+        use lerdr_herdr::{AgentInfo, AgentStatus, SessionSnapshot};
+        use std::sync::atomic::AtomicBool;
+
+        fn snapshot(cwd: &str) -> SessionSnapshot {
+            SessionSnapshot {
+                agents: vec![AgentInfo {
+                    pane_id: "wE:pE".into(),
+                    terminal_id: "term_E".into(),
+                    workspace_id: "wE".into(),
+                    tab_id: "wE:tE".into(),
+                    agent_status: AgentStatus::Working,
+                    agent: Some("devin".into()),
+                    cwd: Some(cwd.into()),
+                    ..AgentInfo::default()
+                }],
+                ..SessionSnapshot::default()
+            }
+        }
+
+        let herdr = FakeHerdr::serving(vec![
+            pane_read_result("wE:pE", "v1\n"),
+            pane_read_result("wE:pE", "v2\n"),
+        ]);
+        // Committed pane — `content_rev` is real state the fence reads.
+        let mut topology = crate::topology::Topology::default();
+        topology.accept(snapshot("/one"));
+
+        let (sink, mut rx) = recording_sink();
+        let (invalidations, _) = broadcast::channel(16);
+        let cancel = CancellationToken::new();
+        let (deps, topology_tx) = deps_with_topology(
+            &herdr.client(),
+            sink,
+            &invalidations,
+            cancel.clone(),
+            topology,
+        );
+
+        // Mid-probe mutation: the 500-line `visible` request is the probe
+        // — committing a cwd change under it advances the pane's
+        // `content_rev` before `poll`'s post-read fence samples it.
+        let swapped = std::sync::Arc::new(AtomicBool::new(false));
+        *herdr.on_request.lock().expect("on_request poisoned") = {
+            let swapped = swapped.clone();
+            Some(Box::new(move |request: &Value| {
+                let is_probe = request.get("method").and_then(Value::as_str) == Some("pane.read")
+                    && request.pointer("/params/lines").and_then(Value::as_u64)
+                        == Some(u64::from(PROBE_LINES));
+                if is_probe && !swapped.swap(true, Ordering::Relaxed) {
+                    let mut bumped = crate::topology::Topology::default();
+                    bumped.accept(snapshot("/one"));
+                    bumped.accept(snapshot("/two"));
+                    let _ = topology_tx.send(Arc::new(bumped));
+                }
+            }))
+        };
+
+        let mut watches = WatchSet::default();
+        watches.start(
+            "wE:pE".to_owned(),
+            spec(30, Duration::from_millis(250), None),
+            deps,
+        );
+
+        let _initial = rx.recv().await.expect("initial frame");
+        watches.ack("wE:pE", Some(content_fingerprint("v1\n").as_str()));
+
+        // The first tick after the ack probes, trips the revision fence,
+        // and must NOT take the conditional full read — no third dial,
+        // no frame.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(swapped.load(Ordering::Relaxed), "probe must have run");
+        assert!(
+            rx.try_recv().is_err(),
+            "a mid-probe content_rev bump must suppress the frame"
+        );
+        assert_eq!(herdr.dials.load(Ordering::Relaxed), 2);
+
+        // The next tick re-probes a stable topology and ships normally.
+        let frame = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("post-bump tick frame")
+            .expect("channel open");
+        match frame {
+            Outbound::PaneContent(content) => {
+                assert_eq!(content.content.as_deref(), Some("v2\n"));
+            }
+            other => panic!("expected pane_content, got {other:?}"),
+        }
+        // Initial read + 2 probes + the retried full read.
+        assert_eq!(herdr.dials.load(Ordering::Relaxed), 4);
         watches.stop("wE:pE");
         cancel.cancel();
     }

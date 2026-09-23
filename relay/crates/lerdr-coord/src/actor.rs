@@ -65,6 +65,11 @@ pub(crate) type EnrichHook = Arc<
 >;
 type EnrichSlot = Arc<std::sync::Mutex<Option<EnrichHook>>>;
 
+/// The session-title resolver `resolveAgentSessionName` consults — one
+/// `conversation::Resolver` shared with the projector's reader. `None`
+/// means commits project `session_name = ""` (the pre-resolver shape).
+pub(crate) type ResolverSlot = Arc<std::sync::Mutex<Option<Arc<crate::conversation::Resolver>>>>;
+
 /// Handle every consumer holds: the projected topology plus the pane
 /// invalidation feed.
 #[derive(Clone)]
@@ -85,6 +90,9 @@ pub struct TopologyHandle {
     /// The classification hook `SetEnrich` installs — consulted once per
     /// blocked incoming agent ahead of every `accept`.
     enrich: EnrichSlot,
+    /// The title resolver the semantic projector installs — consulted once
+    /// per incoming agent ahead of every `accept`.
+    resolver: ResolverSlot,
 }
 
 /// External triggers the actor honors beside the event stream.
@@ -137,6 +145,14 @@ impl TopologyHandle {
         *self.enrich.lock().expect("enrich hook poisoned") = Some(hook);
     }
 
+    /// `NewResolverWithReader` wiring — install the session-title resolver
+    /// each snapshot commit consults (`resolveAgentSessionName`,
+    /// server.go:1237). Shares the projector's `conversation::Reader` so
+    /// title and history consumers agree on transcript locations.
+    pub(crate) fn set_resolver(&self, resolver: Arc<crate::conversation::Resolver>) {
+        *self.resolver.lock().expect("resolver slot poisoned") = Some(resolver);
+    }
+
     /// `d.state.BumpGeneration(paneID)` after a successful lifecycle
     /// mutation (`agent_stop`, `agent_clear`/`agent_restart`). Unlike
     /// [`refresh`](Self::refresh) this waits on the bounded inbox — a
@@ -153,23 +169,29 @@ impl TopologyHandle {
     /// commands and the transition sink are inert (the command queue's
     /// receiver is dropped, so `try_send`/`send` fail silently like a
     /// stopped actor). Tests that drive `WatchDeps`/`ProjectorDeps` build
-    /// through this.
+    /// through this. The returned sender lets a test publish a fresh
+    /// `Arc<Topology>` mid-flight — the mid-read fence tests race a
+    /// content-revision bump against an in-flight `pane_read` with it.
     #[cfg(test)]
     pub(crate) fn for_test(
         client: Client,
         topology: Arc<Topology>,
         invalidations: broadcast::Sender<Invalidation>,
-    ) -> TopologyHandle {
-        let (_topology_tx, topology_rx) = watch::channel(topology);
+    ) -> (TopologyHandle, watch::Sender<Arc<Topology>>) {
+        let (topology_tx, topology_rx) = watch::channel(topology);
         let (commands, _commands_rx) = mpsc::channel(16);
-        TopologyHandle {
-            topology: topology_rx,
-            invalidations,
-            client,
-            commands,
-            transitions: Default::default(),
-            enrich: Default::default(),
-        }
+        (
+            TopologyHandle {
+                topology: topology_rx,
+                invalidations,
+                client,
+                commands,
+                transitions: Default::default(),
+                enrich: Default::default(),
+                resolver: Default::default(),
+            },
+            topology_tx,
+        )
     }
 
     /// Herdr `[[startup]]` hook datagram (`lerdr-relay startup-hook`,
@@ -197,6 +219,7 @@ impl TopologyActor {
         let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
         let transitions: TransitionSink = Default::default();
         let enrich: EnrichSlot = Default::default();
+        let resolver: ResolverSlot = Default::default();
         let handle = TopologyHandle {
             topology: topology_rx,
             invalidations: inv_tx.clone(),
@@ -204,11 +227,15 @@ impl TopologyActor {
             commands: cmd_tx.clone(),
             transitions: transitions.clone(),
             enrich: enrich.clone(),
+            resolver: resolver.clone(),
         };
 
         tokio::spawn(
             async move {
-                let mut state = Topology::default();
+                let mut state = Topology {
+                    resolver,
+                    ..Topology::default()
+                };
                 let mut stream =
                     client.supervise_events(EventSupervisor::topology());
                 let mut published = PublishedView::default();
@@ -616,6 +643,9 @@ fn clone_topology(state: &Topology) -> Topology {
         // The attention ledger is shared, not copied — projector commits
         // must be visible to every already-published clone.
         attention: state.attention.clone(),
+        // The resolver slot is shared too — installs land on the live
+        // state's slot and clones only ever read it inside `accept`.
+        resolver: state.resolver.clone(),
         accepted_at: state.accepted_at,
         attempted_at: state.attempted_at,
         inventory_ready: state.inventory_ready,

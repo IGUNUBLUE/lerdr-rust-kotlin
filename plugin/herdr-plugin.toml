@@ -72,6 +72,16 @@ id = "status"
 title = "Lerdr: Status"
 command = ["bash", "scripts/open-plugin-pane.sh", "status"]
 
+# open-on-phone — the [[link_handlers]] target: herdr invokes it for a
+# modified-click on a matched URL with HERDR_PLUGIN_CLICKED_URL and
+# HERDR_PLUGIN_LINK_HANDLER_ID set. It forwards the URL into the open-link
+# pane, which renders it as a QR for the phone to scan. There is no wire
+# action that opens a URL on a device — the QR is the deep-link transport.
+[[actions]]
+id = "open-on-phone"
+title = "Lerdr: Open Link on Phone"
+command = ["bash", "scripts/plugin-open-link.sh"]
+
 # The interactive halves of the actions above. herdr opens each in a managed
 # pane, runs the script, and tears the pane down when it exits.
 [[panes]]
@@ -104,6 +114,14 @@ title = "Lerdr: Status"
 placement = "overlay"
 command = ["bash", "scripts/plugin-status.sh"]
 
+# open-link — transient overlay that renders LERDR_CLICKED_URL as a terminal
+# QR the phone scans to open the link. Opened by the open-on-phone action.
+[[panes]]
+id = "open-link"
+title = "Lerdr: Open Link on Phone"
+placement = "overlay"
+command = ["bash", "scripts/plugin-open-link-pane.sh"]
+
 # herdr fires pane.agent_status_changed whenever a local agent's status
 # changes; the hook forwards it over UDP to the local relay so phones see
 # blocked/finished transitions instantly instead of on the next poll. herdr
@@ -112,3 +130,14 @@ command = ["bash", "scripts/plugin-status.sh"]
 [[events]]
 on = "pane.agent_status_changed"
 command = ["sh", "scripts/plugin-on-event.sh"]
+
+# Regex URL patterns route a modified-click (Ctrl on every platform) inside a
+# pane to an existing action; handlers run in manifest order and the first
+# match wins. Spec-only per docs/09-plugin-distribution.md — the oracle never
+# shipped handlers, and no protocol action opens a URL on a phone yet, so the
+# canonical GitHub issue/PR pattern lands on the QR deep-link pane above.
+[[link_handlers]]
+id = "github-issue-or-pr"
+title = "Lerdr: Open Link on Phone"
+pattern = "^https://github\\.com/[^/]+/[^/]+/(issues|pull)/[0-9]+$"
+action = "open-on-phone"
