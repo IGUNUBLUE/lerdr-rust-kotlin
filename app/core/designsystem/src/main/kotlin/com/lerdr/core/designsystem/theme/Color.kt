@@ -192,6 +192,15 @@ data class LerdrExtendedColors(
     val onChatContainer: Color,
     /** Idle agent / dimmed affordance. */
     val idle: Color,
+    /**
+     * Muted destructive/deny accent — triage "Deny", stop/close actions.
+     * Deliberately quieter than [ColorScheme.error]: the mockup's deny chip
+     * is maroon, not the saturated alert red.
+     */
+    val danger: Color,
+    val onDanger: Color,
+    val dangerContainer: Color,
+    val onDangerContainer: Color,
     /** Live-connection dot and chip. */
     val live: Color,
     /** Terminal surface — darker than [ColorScheme.surface]. */
@@ -213,6 +222,10 @@ val LerdrDarkExtendedColors = LerdrExtendedColors(
     chatContainer = Color(0xFF232B52),
     onChatContainer = Color(0xFFC9D2FF),
     idle = Color(0xFF8A94A6),
+    danger = Color(0xFFE88C8C),
+    onDanger = Color(0xFF4A0B0B),
+    dangerContainer = Color(0xFF3A1414),
+    onDangerContainer = Color(0xFFF5B8B8),
     live = Color(0xFF5BD99A),
     terminalSurface = Color(0xFF06080D),
     terminalText = Color(0xFFA8D8B9),
@@ -232,6 +245,10 @@ val LerdrLightExtendedColors = LerdrExtendedColors(
     chatContainer = Color(0xFFDCE1FF),
     onChatContainer = Color(0xFF00105C),
     idle = Color(0xFF5B6170),
+    danger = Color(0xFFA33B3B),
+    onDanger = Color(0xFFFFFFFF),
+    dangerContainer = Color(0xFFF5D5D5),
+    onDangerContainer = Color(0xFF3E0B0B),
     live = Color(0xFF18794C),
     terminalSurface = Color(0xFF10131C),
     terminalText = Color(0xFFA8D8B9),
