@@ -243,7 +243,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: android-apk
-          path: dist
+          path: dist/release
       - name: Merge per-target checksums
         run: |
           cat dist/release/checksums-*.txt > dist/release/checksums.txt
