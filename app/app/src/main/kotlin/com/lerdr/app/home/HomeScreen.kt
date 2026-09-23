@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.shape.CircleShape
@@ -127,6 +128,7 @@ fun HomeScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val refreshing by viewModel.inventoryRefreshing.collectAsStateWithLifecycle()
     var sheet by rememberSaveable { mutableStateOf<HomeSheet?>(null) }
+    var homeReselects by remember { mutableStateOf(0) }
     val messages = remember(viewModel, launchViewModel) {
         merge(viewModel.messages, launchViewModel.messages)
     }
@@ -144,7 +146,12 @@ fun HomeScreen(
     HomeContent(
         uiState = uiState,
         onOpenAgent = onOpenAgent,
-        onSelectTopLevel = onSelectTopLevel,
+        onSelectTopLevel = { key ->
+            // Re-tapping Agents while on Home scrolls the list back to top.
+            if (key == LerdrKey.Home) homeReselects++
+            onSelectTopLevel(key)
+        },
+        homeReselects = homeReselects,
         badges = rememberLerdrNavBadges(),
         onRespond = viewModel::respond,
         onAnswerOption = viewModel::answerQuestion,
@@ -183,6 +190,7 @@ fun HomeContent(
     uiState: HomeUiState,
     onOpenAgent: (String) -> Unit,
     onSelectTopLevel: (LerdrKey) -> Unit,
+    homeReselects: Int = 0,
     onRespond: (AttentionCardUi, Int) -> Unit = { _, _ -> },
     onAnswerOption: (AttentionCardUi, Int) -> Unit = { _, _ -> },
     onStopAgent: (AgentListItemUi) -> Unit = {},
@@ -271,7 +279,23 @@ fun HomeContent(
                 )
             },
         ) {
+            val listState = rememberLazyListState()
+            // A newly-blocked agent must surface even when the user scrolled
+            // the rail out of view — scroll back to the top on new arrivals
+            // and when the Agents tab is re-selected.
+            var seenAttention by remember { mutableStateOf(setOf<String>()) }
+            LaunchedEffect(uiState.needsYou) {
+                val current = uiState.needsYou.mapTo(HashSet()) { it.paneId }
+                if (current.any { it !in seenAttention }) {
+                    listState.animateScrollToItem(0)
+                }
+                seenAttention = current
+            }
+            LaunchedEffect(homeReselects) {
+                if (homeReselects > 0) listState.animateScrollToItem(0)
+            }
             LazyColumn(
+                state = listState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(
                     top = innerPadding.calculateTopPadding(),
