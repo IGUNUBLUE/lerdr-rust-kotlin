@@ -785,3 +785,81 @@ no frontend consumer even in the oracle (appears only in its
 CHANGELOG/tests); the deploy source is relay-side. Plus product-level
 items the oracle never shipped (voice, OSC-52, hardware keys,
 pane-swipe).
+
+## Round 14 — relay wave: semantic layer, Herdr boundary, durable push (2026)
+
+Three stations, orchestrator-integrated. Post-merge: `cargo test
+--workspace` all green (coord 314), fmt/clippy clean, shadow
+`core`/`watch`/`semantic` × self/go = 6/6 IDENTICAL.
+
+### Resolved this round
+
+- **Classification projection (the round-12 "still open" headliner)** —
+  `lerdr-coord/src/classify/` ports `internal/question`: attention
+  kinds, matchers, no-echo prompts, parse, projector, store. Shadow
+  `semantic.json` compares `attention_kind`/`prompt`/`command`/
+  `options`/`approval_fingerprint`/`interaction`/`interaction_id`/
+  `question_layout` on `agents`+`blocked`+`pane_content` for real
+  (event_id/pane_revision/transition_at stay per-commit volatile).
+  `history.rs` ports the read-merge the classifier consumes. The ack
+  ledger has its consumer; drop-keys for the now-real fields are gone
+  from all scenarios.
+- **Event-vs-poll commit split** — `CommitKind::{Event,Poll}` mirrors
+  `commitTopologyLocked`'s preserve-committed-status rule on the event
+  path (the emit-blocked finding): pane/tab/workspace events never let
+  a sampled status overwrite committed blocked details; polls do.
+  Verified against the oracle by the semantic scenario.
+- **`inventory_status` full projection** — six keys emit for real
+  (`state`/`error_code`/`message`/`stale` + both timestamps);
+  `mark_inventory_failure` ports `MarkInventoryFailure`. Removed the
+  blanket `inventory_status` drop; only wall-clock timestamps are
+  key-dropped.
+- **Runtime `SchemaRegistry` + capability ledger** — `lerdr-herdr`
+  gains `capabilities.rs`/`schema.rs`/`cli.rs`/`view.rs`:
+  `herdr api schema --json` introspection, epoch-tagged probe notes
+  (untracked probes adjudicated by the refresh, not the previous
+  server identity), `RunCapabilityRefresh(30s)` equivalent, and the
+  full `herdrStatusPayload` projected field-for-field into
+  `herdr_status` (`Topology::herdr_status` + `set_herdr_status`
+  whole-struct dedup).
+- **Canonical `agent.view.set`** — installed post-bootstrap and
+  re-asserted on `[[startup]]` hook / live handoff with bounded
+  retries; `KnownUnsupported` is a quiet skip. Wire shape pinned by
+  test.
+- **Durable push queue** — `actions/push_queue.rs` persists
+  `queue.json` (0600, atomic temp+rename, indent+newline, 1024
+  entries/4 MiB caps). Recovered entries gate behind
+  `reconcile_recovered_push` (server.go:1467-1516 port) — first
+  authoritative inventory after restart opens delivery; finished keys
+  survive only while their completion is current. **Deliberate delta:**
+  a corrupt queue file is salvaged member-wise and quarantined as
+  `queue.invalid-<nanos>.json` instead of failing manager
+  construction — the repo's existing durable-file convention; Go
+  hard-fails.
+- **Release version** — `lerdr_core::release_version()` owns the
+  `LERDR_VERSION` → `CARGO_PKG_VERSION` → `0.0.0-dev` chain; every
+  surface shares it, including `lerdr-relay`'s fallback snapshot (moved
+  to `-core` to break the dependency direction).
+
+### Deliberate semantic decisions
+
+- **`health_check` is the server-advertised value**, not derived from
+  event-stream staleness (matches the oracle's `*bool` — omitted until
+  evidence exists). Transport staleness stays on `Topology.stale`; a
+  reconnect with no capability change republishes no `herdr_status`.
+
+### Still open (unchanged deltas + deferred waves)
+
+- `agents[*].{pane_revision,tokens,state_labels}`, workspaces'
+  `{cwd,tokens,worktree}` — commit-epoch counter + Go-only fields;
+  declared deltas, drop-keys remain.
+- `action_receipt`/`push_config` — Rust-only v3 dispatch evidence and
+  implementation-scoped payloads (census-visible, not compared).
+- Startup-burst frame order — unordered pool comparison; the oracle's
+  fixed order is `push_config,agents,workspaces,activity_history,
+  inventory_status` vs Rust's `push_config,herdr_status,workspaces,
+  agents`.
+- Mid-read `ContentRevision` fence — unchanged (fake Herdr carries no
+  revision counter; generation fence is the portable half).
+- **Deferred waves**: `webrtc_*`/`herdr-dc-v1`, `lerdr-gateway`,
+  `deploy_app_update`, portmap/UPnP, release pipeline.
