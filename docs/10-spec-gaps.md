@@ -998,3 +998,33 @@ against.
 
 Verification: 358 coord tests + 4 health integration tests green,
 fmt/clippy clean, live smoke of all three endpoints.
+
+## Round 17 — S10: upstream output-revision consumption + metadata projection (2026)
+
+- **Capability audit basis** — `docs/11` now maps all 129 schema methods
+  of herdr 0.9.1 (66 used, 63 classified). Headline: upstream Discussion
+  #1277 landed — `content_revision` (seqlock: even=stable, odd=mid-write,
+  `stale_content` on mismatch), `pane_output_changed{revision}` event,
+  `min_revision` wait filters.
+- **Consumed this round** (`lerdr-herdr` + `lerdr-coord`): topology
+  subscription set attempts `pane_output_changed`; a shared
+  `upstream_revs` watermark map lives on the attention ledger (max-merge,
+  generation-scoped, swept on pane loss); every `pane.read` goes through
+  `pane_read_fresh` — one re-read on `stale_content`, mid-read watermark
+  drift, odd revision, or below-watermark result; watches wake on
+  revisions newer than the served watermark and skip covered ones.
+  **Declared inert path:** herdr 0.9.1's `Subscription` enum lacks the
+  `pane_output_changed` variant (it exists in `EventData`/`EventMatch`
+  only), so the subscription is refused today and every leg degrades to
+  the existing tick — the capability adjudication (`supports_subscription`
+  only) lights the path automatically once upstream ships the variant.
+- **`tokens`/`state_labels` correction** — previously filed as Go-only
+  projection deltas; they are herdr-reported (`pane.report_metadata` /
+  `workspace.report_metadata`) and already deserialized upstream-side.
+  Now projected onto `agents[]` (`state_labels`, `tokens`) and
+  `workspaces[]` (`tokens`), additive-only (absent when unreported).
+  Remaining honest delta: workspace `cwd`/`worktree` stay as before
+  (`worktree` already projected; `cwd` has no upstream source).
+
+Verification: 366+ coord tests green incl. fake-driven event folds and
+watch coalescing, fmt/clippy clean, shadow self-mode IDENTICAL.
