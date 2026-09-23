@@ -21,12 +21,15 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      # The runner image ships the Android SDK + cmdline-tools/latest;
-      # setup-android@v3 asks for the removed 'tools' package and fails.
+      # The runner image ships the Android SDK under $ANDROID_HOME;
+      # setup-android@v3 asks for the removed 'tools' package and fails,
+      # and sdkmanager is not on PATH — resolve it under cmdline-tools/*.
       - name: Install platform + build tools
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager 'platforms;android-37.2' 'build-tools;37.0.0'
+          SDKMGR="$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | sort -V | tail -1)"
+          test -x "$SDKMGR" || { echo "sdkmanager not found under $ANDROID_HOME"; exit 1; }
+          yes | "$SDKMGR" --licenses >/dev/null || true
+          "$SDKMGR" --sdk_root="$ANDROID_HOME" 'platforms;android-37.2' 'build-tools;37.0.0'
       - uses: gradle/actions/setup-gradle@v4
       # JVM modules use :test; Android-library modules and :app use
       # testDebugUnitTest (AGENTS.md task floors). assembleDebug keeps the
