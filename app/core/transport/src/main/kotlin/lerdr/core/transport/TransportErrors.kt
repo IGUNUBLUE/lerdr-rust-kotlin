@@ -57,4 +57,10 @@ class CommandException(
     val apiError: lerdr.core.model.ApiError? = null,
     /** `dispatched_unknown` — outcome unknowable; the frame may have landed. */
     val dispatchedUnknown: Boolean = false,
+    /**
+     * Refusal payloads still carry structured state (e.g. `update` on a
+     * declined `install_update`); the oracle folds it into connection state
+     * even on failure, so it must survive the throw.
+     */
+    val data: kotlinx.serialization.json.JsonElement? = null,
 ) : Exception(message)

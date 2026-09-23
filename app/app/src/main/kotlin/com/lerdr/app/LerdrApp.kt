@@ -31,5 +31,10 @@ class LerdrApp : Application() {
             lockState.awaitUnlocked()
             sessions.start()
         }
+        // push_viewed_pane's `unlocked` input — lock transitions clear the
+        // viewed pane, unlocks republish it (the oracle's App-level effect).
+        appScope.launch {
+            lockState.locked.collect { sessions.setLocked(it) }
+        }
     }
 }

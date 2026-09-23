@@ -3,22 +3,29 @@ package com.lerdr.app.session
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import com.google.common.truth.Truth.assertThat
 import java.io.File
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import lerdr.core.data.RelayEndpoint
 import lerdr.core.data.RelayRegistry
 import lerdr.core.protocol.LerdrJson
+import lerdr.core.protocol.Protocol
 import lerdr.core.store.AgentStore
 import lerdr.core.store.ConnectionStore
 import lerdr.core.store.RelayStatus
 import lerdr.core.store.WorkspaceStore
 import lerdr.core.store.clientPaneId
+import lerdr.core.transport.CommandException
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -92,17 +99,50 @@ class SessionRepositoryTest {
         fun handle(): FakeRelaySessionHandle =
             factory.handleFor(origin) ?: error("no session for $origin")
 
-        suspend fun connectReady() {
+        suspend fun connectReady(
+            caps: List<String> = listOf(
+                "pane_realtime_delta",
+                "pane_size_lease",
+                "attention_classification",
+            ),
+        ) {
             repository.connect(endpoint)
             val handle = handle()
             handle.connect()
-            handle.emit(json("""{"type":"push_config","capabilities":["pane_realtime_delta","pane_size_lease","attention_classification"],"inventory":{"state":"ready"}}"""))
+            val capList = caps.joinToString(",") { "\"$it\"" }
+            handle.emit(json("""{"type":"push_config","capabilities":[$capList],"inventory":{"state":"ready"}}"""))
             handle.emit(json(agentRow("%1")))
             pump()
         }
 
-        fun agentRow(rawPaneId: String): String =
-            """{"type":"agents","agents":[{"pane_id":"$rawPaneId","raw_pane_id":"$rawPaneId","terminal_id":"t1","server_session_id":"ss1","generation":3,"agent":"claude","name":"claude","status":"working","cwd":"/home/u/lerdr","project":"lerdr","workspace_id":"w1","updated_at":100}]}"""
+        fun agentRow(
+            rawPaneId: String,
+            serverSessionId: String = "ss1",
+            generation: Int = 3,
+        ): String =
+            """{"type":"agents","agents":[{"pane_id":"$rawPaneId","raw_pane_id":"$rawPaneId","terminal_id":"t1","server_session_id":"$serverSessionId","generation":$generation,"agent":"claude","name":"claude","status":"working","cwd":"/home/u/lerdr","project":"lerdr","workspace_id":"w1","updated_at":100}]}"""
+
+        suspend fun connectPrimaryAgent() {
+            connectReady()
+            handle().emit(json(agentRow("%1", serverSessionId = "primary")))
+            pump()
+        }
+
+        /** Seeds `connection.update` the way a `check_update` reply does. */
+        suspend fun seedInstallableUpdate() {
+            connectReady(caps = listOf("self_update"))
+            val pending = scope.async { repository.checkUpdate("r1") }
+            pump()
+            val sent = sentFrames(handle())
+                .single { it["type"]?.jsonPrimitive?.content == "check_update" }
+            val requestId = sent["request_id"]!!.jsonPrimitive.content
+            handle().emit(
+                json(
+                    """{"type":"command_result","request_id":"$requestId","action":"check_update","ok":true,"phase":"completed","data":{"update":{"state":"available","available_version":"1.4.0","available_revision":"abc123","target_version":"1.4.0","target_revision":"abc123","can_install":true}}}""",
+                ),
+            )
+            pending.await()
+        }
     }
 
     @Test
@@ -293,5 +333,207 @@ class SessionRepositoryTest {
         )
         h.pump()
         assertThat(h.repository.activities.value.map { it.key }).contains("r1:a1")
+    }
+
+    // ── viewed pane (push_viewed_pane) ─────────────────────────────
+
+    private fun viewedFrames(h: FakeRelaySessionHandle) = sentFrames(h)
+        .filter { it["type"]?.jsonPrimitive?.content == "push_viewed_pane" }
+
+    @Test
+    fun `viewed pane pushes the exact target for a primary-session pane`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectPrimaryAgent()
+        h.repository.setViewedPane(clientPaneId("r1", "%1"))
+        val pushed = viewedFrames(h.handle())
+        assertThat(pushed).hasSize(1)
+        val set = pushed.single()
+        assertThat(set["visible"]!!.jsonPrimitive.boolean).isTrue()
+        assertThat(set["unlocked"]!!.jsonPrimitive.boolean).isTrue()
+        assertThat(set["protocol"]!!.jsonPrimitive.int).isEqualTo(Protocol.VERSION)
+        val target = set["target"] as JsonObject
+        assertThat(target["pane_id"]!!.jsonPrimitive.content).isEqualTo("%1")
+        assertThat(target["terminal_id"]!!.jsonPrimitive.content).isEqualTo("t1")
+        assertThat(target["server_session_id"]!!.jsonPrimitive.content).isEqualTo("primary")
+        assertThat(target["generation"]!!.jsonPrimitive.long).isEqualTo(3)
+    }
+
+    @Test
+    fun `viewed pane dedupes an unchanged signature`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectPrimaryAgent()
+        h.repository.setViewedPane(clientPaneId("r1", "%1"))
+        h.repository.setViewedPane(clientPaneId("r1", "%1"))
+        assertThat(viewedFrames(h.handle())).hasSize(1)
+    }
+
+    @Test
+    fun `leaving the session clears the viewed relay`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectPrimaryAgent()
+        h.repository.setViewedPane(clientPaneId("r1", "%1"))
+        h.repository.setViewedPane(null)
+        val pushed = viewedFrames(h.handle())
+        assertThat(pushed).hasSize(2)
+        val clear = pushed[1]
+        assertThat(clear["visible"]!!.jsonPrimitive.boolean).isFalse()
+        // The clear frame reports the real lock state; the app is unlocked.
+        assertThat(clear["unlocked"]!!.jsonPrimitive.boolean).isTrue()
+        assertThat(clear["target"]).isNull()
+    }
+
+    @Test
+    fun `locking clears the viewed pane and unlocking republishes it`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectPrimaryAgent()
+        h.repository.setViewedPane(clientPaneId("r1", "%1"))
+        h.repository.setLocked(true)
+        h.repository.setLocked(false)
+        val pushed = viewedFrames(h.handle())
+        assertThat(pushed).hasSize(3)
+        val clear = pushed[1]
+        assertThat(clear["visible"]!!.jsonPrimitive.boolean).isFalse()
+        assertThat(clear["unlocked"]!!.jsonPrimitive.boolean).isFalse()
+        val republished = pushed[2]
+        assertThat(republished["visible"]!!.jsonPrimitive.boolean).isTrue()
+        assertThat(republished["unlocked"]!!.jsonPrimitive.boolean).isTrue()
+        assertThat(republished["target"]).isNotNull()
+    }
+
+    @Test
+    fun `a non-primary agent never publishes a viewed pane`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady() // fixture agent rides server_session_id "ss1"
+        h.repository.setViewedPane(clientPaneId("r1", "%1"))
+        assertThat(viewedFrames(h.handle())).isEmpty()
+    }
+
+    @Test
+    fun `hiding the app clears the viewed pane`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectPrimaryAgent()
+        h.repository.setViewedPane(clientPaneId("r1", "%1"))
+        h.repository.setHidden(true)
+        val pushed = viewedFrames(h.handle())
+        assertThat(pushed).hasSize(2)
+        assertThat(pushed[1]["visible"]!!.jsonPrimitive.boolean).isFalse()
+    }
+
+    @Test
+    fun `agent regeneration repushes the new signature`() = runTest {
+        val h = Harness(this, tmp.root)
+        // With start() the registry owns session membership — an unregistered
+        // endpoint would be torn down by reconcile before the agent lands.
+        h.registry.upsert(h.endpoint)
+        h.repository.start()
+        h.connectPrimaryAgent()
+        h.repository.setViewedPane(clientPaneId("r1", "%1"))
+        h.handle().emit(json(h.agentRow("%1", serverSessionId = "primary", generation = 4)))
+        h.pump()
+        val pushed = viewedFrames(h.handle())
+        // set(gen 3) → clear → set(gen 4); the store may emit an
+        // intermediate removal first, so assert the tail, not the count.
+        val last = pushed.last()
+        assertThat(last["visible"]!!.jsonPrimitive.boolean).isTrue()
+        val target = last["target"] as JsonObject
+        assertThat(target["generation"]!!.jsonPrimitive.long).isEqualTo(4)
+        assertThat(pushed[pushed.size - 2]["visible"]!!.jsonPrimitive.boolean).isFalse()
+    }
+
+    // ── relay self-update ──────────────────────────────────────────
+
+    @Test
+    fun `checkUpdate refuses a relay without the self_update capability`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        try {
+            h.repository.checkUpdate("r1")
+            org.junit.Assert.fail("expected CommandException")
+        } catch (expected: CommandException) {
+            assertThat(expected).hasMessageThat().contains("does not support")
+        }
+    }
+
+    @Test
+    fun `checkUpdate sends check_update and folds the update payload`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady(caps = listOf("self_update"))
+        val pending = backgroundScope.async { h.repository.checkUpdate("r1") }
+        h.pump()
+        val sent = sentFrames(h.handle())
+            .single { it["type"]?.jsonPrimitive?.content == "check_update" }
+        val requestId = sent["request_id"]!!.jsonPrimitive.content
+        h.handle().emit(
+            json(
+                """{"type":"command_result","request_id":"$requestId","action":"check_update","ok":true,"phase":"completed","data":{"update":{"state":"available","available_version":"1.4.0","available_revision":"abc123","target_version":"1.4.0","target_revision":"abc123","can_install":true}}}""",
+            ),
+        )
+        assertThat(pending.await().ok).isTrue()
+        val update = h.connections.connectionNow("r1")?.update
+        assertThat(update?.state).isEqualTo("available")
+        assertThat(update?.availableVersion).isEqualTo("1.4.0")
+        assertThat(update?.canInstall).isTrue()
+    }
+
+    @Test
+    fun `installUpdate refuses when no installable update is checked`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady(caps = listOf("self_update"))
+        try {
+            h.repository.installUpdate("r1")
+            org.junit.Assert.fail("expected CommandException")
+        } catch (expected: CommandException) {
+            assertThat(expected).hasMessageThat().contains("No installable update")
+        }
+    }
+
+    @Test
+    fun `installUpdate sends the checked target as expected version and revision`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.seedInstallableUpdate()
+        val pending = backgroundScope.async {
+            h.repository.installUpdate("r1")
+        }
+        h.pump()
+        val sent = sentFrames(h.handle())
+            .single { it["type"]?.jsonPrimitive?.content == "install_update" }
+        assertThat(sent["expected_version"]!!.jsonPrimitive.content).isEqualTo("1.4.0")
+        assertThat(sent["expected_revision"]!!.jsonPrimitive.content).isEqualTo("abc123")
+        val requestId = sent["request_id"]!!.jsonPrimitive.content
+        h.handle().emit(
+            json(
+                """{"type":"command_result","request_id":"$requestId","action":"install_update","ok":true,"phase":"completed","data":{"update":{"state":"installing","target_version":"1.4.0","target_revision":"abc123"}}}""",
+            ),
+        )
+        assertThat(pending.await().ok).isTrue()
+        assertThat(h.connections.connectionNow("r1")?.update?.state).isEqualTo("installing")
+    }
+
+    @Test
+    fun `installUpdate applies the update payload carried by a refusal`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.seedInstallableUpdate()
+        // async's failed deferred is also reported to backgroundScope — keep
+        // the expected refusal inside a launch and hand it back explicitly.
+        val caught = CompletableDeferred<CommandException>()
+        backgroundScope.launch {
+            try {
+                h.repository.installUpdate("r1")
+                caught.completeExceptionally(AssertionError("expected CommandException"))
+            } catch (expected: CommandException) {
+                caught.complete(expected)
+            }
+        }
+        h.pump()
+        val frame = sentFrames(h.handle())
+            .single { it["type"]?.jsonPrimitive?.content == "install_update" }
+        val requestId = frame["request_id"]!!.jsonPrimitive.content
+        h.handle().emit(
+            json(
+                """{"type":"command_result","request_id":"$requestId","action":"install_update","ok":false,"error":"upstream moved","phase":"completed","data":{"update":{"state":"blocked","reason":"upstream moved"}}}""",
+            ),
+        )
+        assertThat(caught.await()).hasMessageThat().contains("upstream moved")
+        assertThat(h.connections.connectionNow("r1")?.update?.state).isEqualTo("blocked")
     }
 }

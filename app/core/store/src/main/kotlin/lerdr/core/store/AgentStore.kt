@@ -225,6 +225,24 @@ class AgentStore(
         synchronized(lock) { removeRespondingLocked(paneId) }
     }
 
+    /**
+     * `acknowledgePane`'s optimistic flip — a finished pane renders `idle`
+     * before the relay's next snapshot confirms (the oracle's
+     * `agentsValue.map` write inside `acknowledgePane`).
+     */
+    fun acknowledgeDone(paneId: String) {
+        synchronized(lock) {
+            val index = _agents.value.indexOfFirst { it.paneId == paneId }
+            if (index < 0) return
+            val agent = _agents.value[index]
+            if (agentStatusGroup(agent) != AgentStatusGroup.DONE) return
+            _agents.value = _agents.value.toMutableList().apply {
+                set(index, agent.copy(status = "idle"))
+            }
+            publishLocked()
+        }
+    }
+
     /** Drops everything (relay config reset). */
     fun clear() {
         synchronized(lock) {

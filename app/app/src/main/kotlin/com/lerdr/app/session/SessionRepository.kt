@@ -50,7 +50,10 @@ import lerdr.core.model.ErrorMessage
 import lerdr.core.model.Inbound
 import lerdr.core.model.Interaction
 import lerdr.core.model.ServerMessage
+import lerdr.core.model.TargetRef
 import lerdr.core.model.UnknownServerMessage
+import lerdr.core.model.UpdateState
+import lerdr.core.model.UpdateStatusMessage
 import lerdr.core.model.UploadBeginResult
 import lerdr.core.model.UploadBeginResultMessage
 import lerdr.core.model.UploadCancelResultMessage
@@ -58,12 +61,14 @@ import lerdr.core.model.UploadChunkResult
 import lerdr.core.model.UploadChunkResultMessage
 import lerdr.core.model.UploadFinishResult
 import lerdr.core.model.UploadFinishResultMessage
+import lerdr.core.protocol.LerdrJson
 import lerdr.core.protocol.Protocol
 import lerdr.core.protocol.ServerMessageCodec
 import lerdr.core.store.Agent
 import lerdr.core.store.AgentStore
 import lerdr.core.store.ConnectionStore
 import lerdr.core.store.RelayConnection
+import lerdr.core.store.RelayStatus
 import lerdr.core.store.StoreReducer
 import lerdr.core.store.TransportKind
 import lerdr.core.store.TransportStatus
@@ -183,6 +188,17 @@ class SessionRepository @Inject constructor(
                 reconcileSessions(endpoints)
             }
         }
+        // Oracle parity: the viewed-pane effect re-derives when the agent
+        // projection (regeneration/respawn) or a relay's connection status
+        // moves, not only when the screen changes.
+        scope.launch { agents.collect { repushViewedPane() } }
+        scope.launch {
+            connectionStore.connections.collect {
+                repushViewedPane()
+                reconcilePendingUpdates()
+                maybeAutoCheckUpdates()
+            }
+        }
     }
 
     /**
@@ -196,6 +212,7 @@ class SessionRepository @Inject constructor(
         if (_hidden.value == hidden) return
         _hidden.value = hidden
         synchronized(lock) { hiddenSince = if (hidden) System.currentTimeMillis() else 0L }
+        repushViewedPane()
         scope.launch {
             val paneIds = synchronized(lock) { openPanes.toList() }
             for (paneId in paneIds) {
@@ -243,6 +260,248 @@ class SessionRepository @Inject constructor(
      * when the enrolled role is proven CONTROLLER.
      */
     fun canControl(relayId: String): Boolean = deviceRole(relayId) == DeviceRole.CONTROLLER
+
+    // ── viewed pane (push_viewed_pane) ─────────────────────────────
+
+    private val _locked = MutableStateFlow(false)
+
+    /** The pane the UI is showing; [repushViewedPane] derives the wire state. */
+    @Volatile
+    private var viewedPaneId: String? = null
+
+    @Volatile
+    private var viewedRelayId: String? = null
+
+    @Volatile
+    private var viewedSignature: String = ""
+
+    /**
+     * The oracle's `$securityState.locked` input — `LerdrApp` feeds
+     * `lockState.locked`. A transition re-derives the signature: locking
+     * clears the viewed pane (`unlocked: false`), unlocking re-publishes it.
+     */
+    fun setLocked(locked: Boolean) {
+        if (_locked.value == locked) return
+        _locked.value = locked
+        repushViewedPane()
+    }
+
+    /**
+     * `push_viewed_pane` — tells each relay which pane this device is
+     * viewing so push delivery suppresses it (the oracle's App-level
+     * `$effect`). Deduped by the `relay:pane:terminal:session:generation`
+     * signature; a change clears the previous relay's view before
+     * publishing the new one. Session screens call this on enter/leave;
+     * agent regeneration, reconnect, lock, and hide re-push reactively.
+     */
+    fun setViewedPane(paneId: String?) {
+        viewedPaneId = paneId
+        repushViewedPane()
+    }
+
+    /**
+     * The oracle's reactive core: the signature is non-empty only while the
+     * app is visible + unlocked, the agent is a `primary`-session pane with
+     * a complete target tuple, and its relay is `connected`.
+     */
+    private fun repushViewedPane() {
+        synchronized(lock) {
+            val agent = viewedPaneId?.let { id ->
+                agents.value.firstOrNull { it.paneId == id }
+            }
+            val viewed = agent
+                ?.takeIf {
+                    !_hidden.value && !_locked.value && it.serverSessionId == "primary"
+                }
+                ?.let { a -> a.wireTarget()?.let { t -> a to t } }
+                ?.takeIf { (a, _) ->
+                    connectionStore.connectionNow(a.relayId)?.status == RelayStatus.CONNECTED
+                }
+            val signature = viewed?.let { (a, t) ->
+                "${a.relayId}:${t.paneId}:${t.terminalId}:" +
+                    "${t.agentSessionId}:${t.generation}"
+            }.orEmpty()
+            if (signature == viewedSignature) return
+            viewedRelayId?.let { previous ->
+                sendViewedFrame(previous, visible = false, target = null)
+            }
+            viewedRelayId = viewed?.first?.relayId
+            viewedSignature = signature
+            viewed?.let { (a, t) ->
+                sendViewedFrame(a.relayId, visible = true, target = t)
+            }
+        }
+    }
+
+    private fun sendViewedFrame(
+        relayId: String,
+        visible: Boolean,
+        target: TargetRef?,
+    ) {
+        val session = sessionFor(relayId) ?: return
+        session.sendRaw(
+            buildJsonObject {
+                put("type", "push_viewed_pane")
+                put("protocol", Protocol.VERSION)
+                put("visible", visible)
+                // Oracle parity: the set frame reports `unlocked: true`
+                // outright (a locked app yields an empty signature, never a
+                // set frame); only the clear frame reports the real state.
+                put("unlocked", if (visible) true else !_locked.value)
+                target?.let {
+                    put("target", LerdrJson.encodeToJsonElement(TargetRef.serializer(), it))
+                }
+            }.toString(),
+        )
+    }
+
+    // ── relay self-update (check_update / install_update) ──────────
+
+    /**
+     * `check_update` — `self_update`-gated (the oracle's checkRelayUpdate).
+     * The reply's `data.update` folds into the connection row like the
+     * oracle's connection.update assignment.
+     */
+    suspend fun checkUpdate(relayId: String): CommandResultMessage {
+        if (connectionStore.connectionNow(relayId)
+                ?.capabilities?.contains(SELF_UPDATE_CAPABILITY) != true
+        ) {
+            throw CommandException("This relay does not support phone-driven updates yet")
+        }
+        val result = try {
+            request(
+                relayId,
+                Inbound(type = "check_update"),
+                timeoutMs = UPDATE_COMMAND_TIMEOUT_MS,
+            )
+        } catch (error: CommandException) {
+            applyUpdatePayload(relayId, error.data)
+            throw error
+        }
+        applyUpdatePayload(relayId, result.data)
+        return result
+    }
+
+    /**
+     * `install_update` — deploys the checked candidate (the oracle's
+     * `installRelayUpdate`). Only an `available` + `can_install` update
+     * with a `target_revision` is installable; the expected version and
+     * revision ride the request so a mid-flight upstream move refuses
+     * instead of installing the wrong build. A refusal's `data.update`
+     * still refreshes the row and clears the pending marker.
+     */
+    suspend fun installUpdate(relayId: String): CommandResultMessage {
+        val connection = connectionStore.connectionNow(relayId)
+        if (connection?.capabilities?.contains(SELF_UPDATE_CAPABILITY) != true) {
+            throw CommandException("This relay does not support phone-driven updates yet")
+        }
+        val update = connection.update
+        val expectedRevision = update?.targetRevision.orEmpty()
+        if (update?.state != "available" || update.canInstall != true ||
+            expectedRevision.isEmpty()
+        ) {
+            throw CommandException(update?.reason ?: "No installable update is available")
+        }
+        val expectedVersion = update.availableVersion.orEmpty()
+        pendingUpdates[relayId] = PendingUpdate(expectedVersion, expectedRevision)
+        val result = try {
+            request(
+                relayId,
+                Inbound(type = "install_update"),
+                extras = mapOf(
+                    "expected_version" to JsonPrimitive(expectedVersion),
+                    "expected_revision" to JsonPrimitive(expectedRevision),
+                ),
+                timeoutMs = UPDATE_COMMAND_TIMEOUT_MS,
+            )
+        } catch (error: CommandException) {
+            pendingUpdates.remove(relayId)
+            applyUpdatePayload(relayId, error.data)
+            throw error
+        }
+        applyUpdatePayload(relayId, result.data)
+        return result
+    }
+
+    /**
+     * A `install_update` we dispatched whose relay restarted mid-install —
+     * kept until the reconnect reports `releaseVersion`/`revision` matching
+     * the target (the oracle's `pendingRelayUpdates`, process-scoped here:
+     * the restart lands within seconds while the app stays alive).
+     */
+    /** A dispatched `install_update` awaiting post-restart confirmation. */
+    data class PendingUpdate(val version: String, val revision: String)
+
+    private val pendingUpdates = java.util.concurrent.ConcurrentHashMap<String, PendingUpdate>()
+
+    /** `pendingRelayUpdate` consumers: relays that just came back updated. */
+    private val _completedUpdates = MutableStateFlow<Map<String, PendingUpdate>>(emptyMap())
+
+    /** One-shot events keyed by relay id — UI shows "updated to vX". */
+    val completedUpdates: StateFlow<Map<String, PendingUpdate>> = _completedUpdates
+
+    fun consumeCompletedUpdate(relayId: String) {
+        _completedUpdates.value = _completedUpdates.value - relayId
+    }
+
+    /**
+     * The oracle's `$connections` effect: on reconnect a pending install
+     * whose `releaseVersion`/`revision` (modulo `-dirty`) now matches the
+     * target is declared complete — the restart dropped the session before
+     * `command_result` could land.
+     */
+    private fun reconcilePendingUpdates() {
+        for ((relayId, pending) in pendingUpdates) {
+            val connection = connectionStore.connectionNow(relayId) ?: continue
+            if (connection.status != RelayStatus.CONNECTED) continue
+            if (connection.releaseVersion != pending.version) continue
+            val revision = connection.revision.removeSuffix("-dirty")
+            if (revision.isEmpty() || !pending.revision.startsWith(revision)) continue
+            if (pendingUpdates.remove(relayId, pending)) {
+                _completedUpdates.value = _completedUpdates.value + (relayId to pending)
+            }
+        }
+    }
+
+    /**
+     * The oracle's auto-check effect (App.svelte): once per
+     * `relay:releaseVersion:revision:appVersion` identity, a connected
+     * `self_update`-capable relay gets a `check_update` — a failed check
+     * releases the identity so the next reconnect retries.
+     */
+    private val autoCheckedUpdates = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    private fun maybeAutoCheckUpdates() {
+        for ((relayId, connection) in connectionStore.connections.value) {
+            if (connection.status != RelayStatus.CONNECTED) continue
+            if (!connection.capabilities.contains(SELF_UPDATE_CAPABILITY)) continue
+            val identity = "$relayId:${connection.releaseVersion}:" +
+                "${connection.revision}:${com.lerdr.app.BuildConfig.VERSION_NAME}"
+            if (!autoCheckedUpdates.add(identity)) continue
+            scope.launch {
+                try {
+                    checkUpdate(relayId)
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    autoCheckedUpdates.remove(identity)
+                    throw cancelled
+                } catch (_: Exception) {
+                    autoCheckedUpdates.remove(identity)
+                }
+            }
+        }
+    }
+
+    private fun applyUpdatePayload(relayId: String, data: JsonElement?) {
+        val update = (data as? JsonObject)?.get("update") as? JsonObject ?: return
+        runCatching {
+            connectionStore.applyUpdateStatus(
+                relayId,
+                UpdateStatusMessage(
+                    update = LerdrJson.decodeFromJsonElement(UpdateState.serializer(), update),
+                ),
+            )
+        }
+    }
 
     /** `revalidateConnections` — foreground/wake/network-restore probe. */
     fun revalidateAll() {
@@ -658,9 +917,15 @@ class SessionRepository @Inject constructor(
         }
     }
 
-    /** `acknowledge_pane` — dismiss a finished pane's attention state. */
+    /**
+     * `acknowledge_pane` — dismiss a finished pane's attention state. Like
+     * the oracle, a `done` pane flips to `idle` optimistically before the
+     * command lands; readers never reach this (callers gate on
+     * [canControl]).
+     */
     suspend fun acknowledgePane(paneId: String): CommandResultMessage {
         val agent = requireAgent(paneId)
+        agentStore.acknowledgeDone(paneId)
         return sendToAgent(agent, Inbound(type = "acknowledge_pane"))
     }
 
@@ -1442,6 +1707,7 @@ class SessionRepository @Inject constructor(
                     message = message.error ?: "Command failed",
                     phase = message.phase,
                     dispatchedUnknown = message.phase == "dispatched_unknown",
+                    data = message.data,
                 ),
             )
         }
@@ -1596,6 +1862,8 @@ class SessionRepository @Inject constructor(
         /** `PANE_LEASE_HIDDEN_GRACE_MS` — hidden renewals stop past this. */
         const val PANE_LEASE_HIDDEN_GRACE_MS = 5 * 60_000L
         const val WORKSPACE_CLOSE_TIMEOUT_MS = 30_000L
+        const val SELF_UPDATE_CAPABILITY = "self_update"
+        const val UPDATE_COMMAND_TIMEOUT_MS = 30_000L
         const val COPY_RESPONSE_TIMEOUT_MS = 15_000L
         const val LIST_DIRECTORIES_TIMEOUT_MS = 10_000L
         /** `ATTACHMENT_UPLOAD_TIMEOUT_MS` — per-request, chunks included. */

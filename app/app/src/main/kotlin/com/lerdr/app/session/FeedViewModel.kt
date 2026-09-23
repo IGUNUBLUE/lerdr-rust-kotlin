@@ -251,6 +251,17 @@ class FeedViewModel(
                     maybeLoadSlashCatalog(agent, connection)
                 }
         }
+        // The oracle's `openAgent`: opening an agent acknowledges the pane
+        // (optimistic done→idle + `acknowledge_pane`) — readers skip it.
+        viewModelScope.launch {
+            if (!sessions.canControl(relayId)) return@launch
+            try {
+                sessions.acknowledgePane(paneId)
+            } catch (_: Exception) {
+                // Fire-and-forget like the oracle's void-call — the relay's
+                // next agents snapshot owns the truth either way.
+            }
+        }
         loadHistory()
     }
 

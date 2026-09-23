@@ -160,6 +160,9 @@ class TerminalViewModel(
     private var reLeaseJob: Job? = null
 
     init {
+        // push_viewed_pane: the terminal view is the oracle's "viewed"
+        // signal — entering publishes it, leaving clears it.
+        sessions.setViewedPane(paneId)
         viewModelScope.launch { sessions.openPane(paneId) }
         leaseLoopJob = appScope.launch {
             while (true) {
@@ -197,6 +200,7 @@ class TerminalViewModel(
     override fun onCleared() {
         leaseLoopJob?.cancel()
         reLeaseJob?.cancel()
+        sessions.setViewedPane(null)
         // viewModelScope is already cancelled here — release + unwatch ride
         // the app scope, in order, so the lease drops before the runtime.
         appScope.launch {
