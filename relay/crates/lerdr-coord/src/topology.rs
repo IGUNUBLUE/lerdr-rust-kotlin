@@ -1054,6 +1054,21 @@ impl Topology {
         self.snapshot.agents.iter().find(|a| a.pane_id == pane_id)
     }
 
+    /// The pane hosting an agent session — `focus_agent`'s
+    /// `agent_session_id` resolution. Matches the trimmed raw id the wire
+    /// `agent_session_id` carries (`agent_state`'s projection); empty ids
+    /// resolve nothing.
+    pub(crate) fn pane_for_session(&self, agent_session_id: &str) -> Option<&AgentInfo> {
+        if agent_session_id.is_empty() {
+            return None;
+        }
+        self.snapshot.agents.iter().find(|a| {
+            a.agent_session
+                .as_ref()
+                .is_some_and(|s| s.value.trim() == agent_session_id)
+        })
+    }
+
     /// `s.state.Agent(paneID)` — the committed row projection (`None`
     /// when the pane is gone). The projector reads this fresh per fence.
     pub(crate) fn agent_state_of(&self, pane_id: &str) -> Option<AgentState> {

@@ -16,9 +16,9 @@ mod types;
 pub use inbound::{DecodeError, Inbound, TargetRef};
 pub use outbound::*;
 pub use types::{
-    bounded_utf8, classify_action, compatible, error_codes, requires_protocol, ActionClass,
-    ActionMetadata, ActionReceipt, ActionReceiptPhase, ApiError, DeviceContext, DeviceRole,
-    OpaquePage, RequestScope, AGENT_RESPONSE_COPY_CAPABILITY, CAPABILITIES,
+    bounded_utf8, classify_action, compatible, error_codes, required_capability, requires_protocol,
+    ActionClass, ActionMetadata, ActionReceipt, ActionReceiptPhase, ApiError, DeviceContext,
+    DeviceRole, OpaquePage, RequestScope, AGENT_RESPONSE_COPY_CAPABILITY, CAPABILITIES,
     ENCRYPTED_WEBSOCKET_SUBPROTOCOL, HYBRID_TRANSPORT_CAPABILITY, SPEECH_SYNTHESIS_CAPABILITY,
     SPEECH_VOICE_MANAGEMENT_CAPABILITY, VERSION,
 };

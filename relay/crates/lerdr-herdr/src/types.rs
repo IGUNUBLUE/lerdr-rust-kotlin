@@ -574,6 +574,32 @@ pub struct AgentWaitParams {
     pub timeout_ms: Option<u64>,
 }
 
+/// `pane.focus` params — raise the pane's tab and window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PaneFocusParams {
+    pub pane_id: String,
+}
+
+/// `tab.focus` params — activate the tab (and its workspace).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TabFocusParams {
+    pub tab_id: String,
+}
+
+/// `workspace.focus` params — activate the workspace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WorkspaceFocusParams {
+    pub workspace_id: String,
+}
+
+/// `agent.focus` params — `target` resolves like `agent.wait`'s: agent
+/// names and pane ids, NOT agent session references (the relay maps
+/// `agent_session_id` → hosting pane upstream).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AgentFocusParams {
+    pub target: String,
+}
+
 /// `events.wait` match clause. Event names on this wire use the legacy
 /// snake_case spellings (`pane_agent_status_changed`) — [`EventMatch::named`]
 /// accepts canonical dotted names and converts.

@@ -1380,6 +1380,7 @@ mod tests {
                 terminal_id: key.terminal_id.clone(),
                 generation: key.generation,
                 agent_session_id: key.agent_session_id.clone(),
+                ..lerdr_core::protocol::TargetRef::default()
             }),
         );
         let results = drain_once(&push, &sender, due, &cancel()).await.unwrap();

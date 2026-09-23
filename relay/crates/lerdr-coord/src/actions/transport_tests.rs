@@ -979,3 +979,245 @@ async fn workspace_close_dispatches_close_params_and_affected_ids() {
     assert_eq!(data["workspace_id"], json!("wE"));
     assert_eq!(data["workspace_ids"], json!(["wE"]));
 }
+
+// ── focus actions (Phase-5 §1.1) -------------------------------------------
+
+#[tokio::test]
+async fn focus_pane_dispatches_pane_focus() {
+    let script = Script::new([(
+        "pane.focus",
+        Step::Reply(json!({
+            "type": "pane_info",
+            "pane": {
+                "pane_id": "wE:p1", "terminal_id": "term-1",
+                "workspace_id": "wE", "tab_id": "wE:t1",
+                "focused": true, "agent_status": "idle"
+            }
+        })),
+    )]);
+    let ctx = context(&script, vec![]);
+    let msg = message(serde_json::Map::from_iter([
+        ("type".into(), json!("focus_pane")),
+        ("pane_id".into(), json!("wE:p1")),
+        ("target".into(), json!({"pane_id": "wE:p1"})),
+    ]));
+    let frames = frames_of(super::focus::focus_pane(ctx, "r1", "a1", &msg).await);
+    assert!(frames.ok);
+    assert_eq!(frames.phase, "completed");
+    assert_eq!(frames.receipt_phase, "confirmed");
+    let requests = script.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].0, "pane.focus");
+    assert_eq!(requests[0].1, json!({ "pane_id": "wE:p1" }));
+}
+
+#[tokio::test]
+async fn focus_tab_dispatches_tab_focus() {
+    let script = Script::new([(
+        "tab.focus",
+        Step::Reply(json!({
+            "type": "tab_info",
+            "tab": {
+                "tab_id": "wE:p1:t2", "workspace_id": "wE", "number": 2,
+                "label": "build", "focused": true, "pane_count": 1,
+                "agent_status": "idle"
+            }
+        })),
+    )]);
+    let ctx = context(&script, vec![]);
+    let msg = message(serde_json::Map::from_iter([
+        ("type".into(), json!("focus_tab")),
+        (
+            "target".into(),
+            json!({"pane_id": "wE:p1", "tab_id": "wE:p1:t2"}),
+        ),
+    ]));
+    let frames = frames_of(super::focus::focus_tab(ctx, "r1", "a1", &msg).await);
+    assert!(frames.ok);
+    assert_eq!(frames.phase, "completed");
+    let requests = script.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].0, "tab.focus");
+    assert_eq!(requests[0].1, json!({ "tab_id": "wE:p1:t2" }));
+}
+
+#[tokio::test]
+async fn focus_workspace_dispatches_workspace_focus() {
+    let script = Script::new([(
+        "workspace.focus",
+        Step::Reply(json!({
+            "type": "workspace_info",
+            "workspace": {
+                "workspace_id": "wE", "number": 1, "label": "main",
+                "focused": true, "pane_count": 2, "tab_count": 3,
+                "active_tab_id": "wE:t2", "agent_status": "idle"
+            }
+        })),
+    )]);
+    let ctx = context(&script, vec![]);
+    let msg = message(serde_json::Map::from_iter([
+        ("type".into(), json!("focus_workspace")),
+        ("target".into(), json!({"workspace_id": "wE"})),
+    ]));
+    let frames = frames_of(super::focus::focus_workspace(ctx, "r1", "a1", &msg).await);
+    assert!(frames.ok);
+    assert_eq!(frames.phase, "completed");
+    let requests = script.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].0, "workspace.focus");
+    assert_eq!(requests[0].1, json!({ "workspace_id": "wE" }));
+}
+
+#[tokio::test]
+async fn focus_agent_resolves_session_to_hosting_pane() {
+    let script = Script::new([(
+        "agent.focus",
+        Step::Reply(json!({
+            "type": "agent_info",
+            "agent": {
+                "pane_id": "wE:p1", "terminal_id": "term-1",
+                "workspace_id": "wE", "tab_id": "wE:t1",
+                "focused": true, "agent_status": "idle"
+            }
+        })),
+    )]);
+    let ctx = context(
+        &script,
+        vec![AgentInfo {
+            pane_id: "wE:p1".into(),
+            agent_session: Some(lerdr_herdr::AgentSessionInfo {
+                source: "sess".into(),
+                agent: "devin".into(),
+                kind: lerdr_herdr::AgentSessionRefKind::Id,
+                value: "wE:a3".into(),
+            }),
+            ..AgentInfo::default()
+        }],
+    );
+    let msg = message(serde_json::Map::from_iter([
+        ("type".into(), json!("focus_agent")),
+        ("target".into(), json!({"agent_session_id": "wE:a3"})),
+    ]));
+    let frames = frames_of(super::focus::focus_agent(ctx, "r1", "a1", &msg).await);
+    assert!(frames.ok);
+    assert_eq!(frames.phase, "completed");
+    let requests = script.requests();
+    assert_eq!(requests.len(), 1);
+    // `agent.focus` targets the hosting pane — session references do not
+    // resolve on the Herdr side.
+    assert_eq!(requests[0].0, "agent.focus");
+    assert_eq!(requests[0].1, json!({ "target": "wE:p1" }));
+}
+
+#[tokio::test]
+async fn focus_agent_unknown_session_fails_before_dispatch() {
+    let script = Script::new([]);
+    let ctx = context(&script, vec![]);
+    let msg = message(serde_json::Map::from_iter([
+        ("type".into(), json!("focus_agent")),
+        ("target".into(), json!({"agent_session_id": "wE:a9"})),
+    ]));
+    let frames = frames_of(super::focus::focus_agent(ctx, "r1", "a1", &msg).await);
+    assert!(!frames.ok);
+    assert_eq!(frames.phase, "failed");
+    assert_eq!(frames.receipt_phase, "failed_before_dispatch");
+    assert!(script.requests().is_empty(), "no socket traffic");
+}
+
+#[tokio::test]
+async fn focus_pane_refusal_maps_through_dispatch_failure() {
+    let script = Script::new([(
+        "pane.focus",
+        Step::Refuse("unknown_method", "no such method"),
+    )]);
+    let ctx = context(&script, vec![]);
+    let msg = message(serde_json::Map::from_iter([
+        ("type".into(), json!("focus_pane")),
+        ("pane_id".into(), json!("wE:p1")),
+        ("target".into(), json!({"pane_id": "wE:p1"})),
+    ]));
+    let frames = frames_of(super::focus::focus_pane(ctx, "r1", "a1", &msg).await);
+    assert!(!frames.ok);
+    // A structured refusal reaches Herdr and back — `confirmed` with the
+    // upstream code (docs/13: `herdr_error` with upstream message).
+    assert_eq!(frames.receipt_phase, "confirmed");
+    assert_eq!(frames.receipt_code.as_deref(), Some("unknown_method"));
+    assert_eq!(frames.data, Some(json!({ "code": "unknown_method" })));
+    assert_eq!(script.requests().len(), 1);
+}
+
+/// Live evidence that `workspace.focus` is unsupported must refuse
+/// `focus_workspace` without a socket call — while the rest of the
+/// family keeps dispatching (partial families stay advertised).
+#[tokio::test]
+async fn refuted_method_gaps_without_socket_call() {
+    let script = Script::new([(
+        "pane.focus",
+        Step::Reply(json!({
+            "type": "pane_info",
+            "pane": {
+                "pane_id": "wE:p1", "terminal_id": "term-1",
+                "workspace_id": "wE", "tab_id": "wE:t1",
+                "focused": true, "agent_status": "idle"
+            }
+        })),
+    )]);
+    let mut ctx = context(&script, vec![]);
+    let features = std::collections::BTreeMap::from([(
+        "workspace.focus".to_owned(),
+        lerdr_core::protocol::HerdrFeatureStatus {
+            state: "unsupported".to_owned(),
+            reason: "schema_absent".to_owned(),
+            generation: 1,
+        },
+    )]);
+    Arc::get_mut(&mut ctx.topology)
+        .expect("single topology reference")
+        .herdr_status
+        .features = lerdr_core::json::MaybeNull::Value(features);
+
+    let msg = message(serde_json::Map::from_iter([
+        ("type".into(), json!("focus_workspace")),
+        ("target".into(), json!({"workspace_id": "wE"})),
+    ]));
+    let frames = frames_of(super::focus::focus_workspace(ctx.clone(), "r1", "a1", &msg).await);
+    assert!(!frames.ok);
+    assert_eq!(frames.phase, "not_started");
+    assert_eq!(frames.receipt_phase, "failed_before_dispatch");
+    assert_eq!(
+        frames.receipt_code.as_deref(),
+        Some("capability_unsupported")
+    );
+    assert_eq!(
+        frames.data,
+        Some(json!({ "code": "capability_unsupported" }))
+    );
+    assert!(
+        script.requests().is_empty(),
+        "gap refuses before the socket"
+    );
+
+    // The rest of the family still dispatches on this Herdr build.
+    let msg = message(serde_json::Map::from_iter([
+        ("type".into(), json!("focus_pane")),
+        ("pane_id".into(), json!("wE:p1")),
+        ("target".into(), json!({"pane_id": "wE:p1"})),
+    ]));
+    let frames = frames_of(super::focus::focus_pane(ctx, "r2", "a2", &msg).await);
+    assert!(frames.ok);
+    assert_eq!(script.requests()[0].0, "pane.focus");
+}
+
+#[tokio::test]
+async fn focus_workspace_requires_a_workspace_id() {
+    let script = Script::new([]);
+    let ctx = context(&script, vec![]);
+    let msg = message(serde_json::Map::from_iter([
+        ("type".into(), json!("focus_workspace")),
+        ("target".into(), json!({})),
+    ]));
+    let frames = frames_of(super::focus::focus_workspace(ctx, "r1", "a1", &msg).await);
+    assert!(!frames.ok);
+    assert_eq!(frames.phase, "failed");
+    assert!(script.requests().is_empty());
+}

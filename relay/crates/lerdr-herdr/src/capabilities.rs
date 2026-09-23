@@ -70,6 +70,19 @@ pub mod features {
     /// `agent.view.set` — the declarative agent projection the relay
     /// re-asserts after bootstrap/handoff.
     pub const AGENT_VIEW_SET: &str = "agent.view.set";
+    /// `pane.focus` method — Phase-5 `focus_pane`.
+    pub const PANE_FOCUS: &str = "pane.focus";
+    /// `tab.focus` method — Phase-5 `focus_tab`.
+    pub const TAB_FOCUS: &str = "tab.focus";
+    /// `workspace.focus` method — Phase-5 `focus_workspace`.
+    pub const WORKSPACE_FOCUS: &str = "workspace.focus";
+    /// `agent.focus` method — Phase-5 `focus_agent`.
+    pub const AGENT_FOCUS: &str = "agent.focus";
+    /// The four methods behind the Phase-5 `focus` wire capability —
+    /// lerdr-coord refutes the capability only once EVERY member reads
+    /// `unsupported` (a partial family still serves the members Herdr
+    /// ships).
+    pub const FOCUS_METHODS: &[&str] = &[PANE_FOCUS, TAB_FOCUS, WORKSPACE_FOCUS, AGENT_FOCUS];
 }
 
 /// Refusal codes that mean "the server does not implement this method" —
@@ -90,7 +103,9 @@ const BASE_FEATURES: &[&str] = &[
 
 /// The socket-observed features a bootstrap invalidates —
 /// `InvalidateLiveCapabilities`'s set (everything in [`BASE_FEATURES`]
-/// except `direct_terminal`, which is never probed).
+/// except `direct_terminal`, which is never probed), plus the focus
+/// methods: their `operation_succeeded`/`method_not_supported` notes are
+/// socket evidence and must not survive a handoff to a different build.
 const LIVE_FEATURES: &[&str] = &[
     features::ORDINARY_JSON,
     features::WORKSPACE_MOVE_BLOCK,
@@ -98,6 +113,10 @@ const LIVE_FEATURES: &[&str] = &[
     features::PANE_READ,
     features::TAB_MOVE,
     features::CLIENT_SHELL_ENDPOINT,
+    features::PANE_FOCUS,
+    features::TAB_FOCUS,
+    features::WORKSPACE_FOCUS,
+    features::AGENT_FOCUS,
 ];
 
 /// Methods beyond the oracle's three probes that get a schema verdict —
@@ -106,6 +125,7 @@ const LIVE_FEATURES: &[&str] = &[
 /// plus `lerdr-herdr`'s typed wrappers.
 const TRACKED_METHODS: &[&str] = &[
     "agent.explain",
+    "agent.focus",
     "agent.get",
     "agent.list",
     "agent.prompt",
@@ -122,6 +142,7 @@ const TRACKED_METHODS: &[&str] = &[
     "layout.apply",
     "notification.show",
     "pane.close",
+    "pane.focus",
     "pane.list",
     "pane.process_info",
     "pane.read",
@@ -132,11 +153,13 @@ const TRACKED_METHODS: &[&str] = &[
     "plugin.action.invoke",
     "session.snapshot",
     "tab.create",
+    "tab.focus",
     "tab.list",
     "tab.move",
     "tab.rename",
     "workspace.close",
     "workspace.create",
+    "workspace.focus",
     "workspace.list",
     "workspace.move",
     "workspace.move_block",
@@ -149,12 +172,18 @@ const TRACKED_METHODS: &[&str] = &[
 
 /// Methods whose call outcomes are recorded as observed evidence —
 /// `noteSocketFeature`'s call sites (`workspace.move_block`, `tab.move`,
-/// `pane.read`) plus `agent.view.set`, the projection the relay owns.
+/// `pane.read`) plus `agent.view.set`, the projection the relay owns, and
+/// the Phase-5 focus family: an `unknown_method` refusal there retracts the
+/// advertised `focus` capability through `caps_update`.
 pub(crate) const NOTED_METHODS: &[&str] = &[
     "workspace.move_block",
     "tab.move",
     "pane.read",
     "agent.view.set",
+    "agent.focus",
+    "pane.focus",
+    "tab.focus",
+    "workspace.focus",
 ];
 
 /// `supported` / `unsupported` / `unknown` — the wire strings verbatim.

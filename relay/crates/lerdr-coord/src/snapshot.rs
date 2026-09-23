@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use lerdr_core::json::MaybeNull;
 use lerdr_core::protocol::{
-    AgentsMessage, HerdrStatus, HerdrStatusMessage, InventoryStatusMessage, Outbound, PushConfig,
-    WorkspacesMessage, CAPABILITIES, VERSION,
+    AgentsMessage, CapsUpdateMessage, HerdrStatus, HerdrStatusMessage, InventoryStatusMessage,
+    Outbound, PushConfig, WorkspacesMessage, CAPABILITIES, VERSION,
 };
 
 use crate::topology::Topology;
@@ -33,7 +33,7 @@ pub fn compose_snapshot(topology: &Topology) -> Vec<Outbound> {
             protocol: VERSION,
             version: crate::release_version().to_owned(),
             release_version: crate::release_version().to_owned(),
-            capabilities: MaybeNull::Value(CAPABILITIES.iter().map(|s| s.to_string()).collect()),
+            capabilities: MaybeNull::Value(effective_capabilities(topology)),
             herdr_status: status.clone(),
             ..PushConfig::default()
         })),
@@ -52,6 +52,29 @@ pub fn compose_snapshot(topology: &Topology) -> Vec<Outbound> {
         }),
         Outbound::InventoryStatus(inventory_status(topology)),
     ]
+}
+
+/// The advertised capability set for one committed topology —
+/// `CAPABILITIES` minus any family whose Herdr methods are ALL refuted by
+/// live evidence (docs/13 §0). `focus` drops only once every `*.focus`
+/// method reads `unsupported` — a partial family still serves the methods
+/// the installed Herdr ships, so `unknown`/`supported` both keep it
+/// advertised. The same list rides `push_config` at connect and
+/// `caps_update` mid-session (the session gate sniffs both).
+pub fn effective_capabilities(topology: &Topology) -> Vec<String> {
+    let features = topology.herdr_status.features.value();
+    let focus_refuted = lerdr_herdr::capabilities::features::FOCUS_METHODS
+        .iter()
+        .all(|method| {
+            features
+                .and_then(|map| map.get(*method))
+                .is_some_and(|status| status.state == "unsupported")
+        });
+    CAPABILITIES
+        .iter()
+        .filter(|cap| **cap != "focus" || !focus_refuted)
+        .map(|cap| (*cap).to_owned())
+        .collect()
 }
 
 /// `inventoryStatusLocked` + `inventoryStatusMessage` (state.go:247-269,
@@ -127,6 +150,9 @@ pub(crate) struct PublishedView {
     /// through the capability-change callback; payload-diff dedup is the
     /// equivalent gate here.
     herdr_status: Vec<u8>,
+    /// Serialized advertised capability list — a flip emits `caps_update`
+    /// (docs/13 §0: each side announces when its supported set changes).
+    capabilities: Vec<u8>,
 }
 
 /// `publishCurrentInventory` (server.go:3435-3514): diff the committed
@@ -155,6 +181,8 @@ pub(crate) fn broadcast_diff(topology: &Topology, view: &mut PublishedView) -> V
     let workspaces_json = serde_json::to_vec(&workspaces).unwrap_or_default();
     let herdr = herdr_status(topology);
     let herdr_json = serde_json::to_vec(&herdr).unwrap_or_default();
+    let capabilities = effective_capabilities(topology);
+    let capabilities_json = serde_json::to_vec(&capabilities).unwrap_or_default();
 
     let status_changed = view.inventory != inventory_key;
     let ready_recovery =
@@ -162,8 +190,12 @@ pub(crate) fn broadcast_diff(topology: &Topology, view: &mut PublishedView) -> V
     let send_agents = view.agents != agents_json || ready_recovery;
     let send_workspaces = view.workspaces != workspaces_json || ready_recovery;
     let send_herdr = view.herdr_status != herdr_json;
+    // First publish seeds the view silently — the connecting client's
+    // snapshot already carries `push_config.capabilities`; `caps_update`
+    // is for the mid-session flips after that.
+    let send_caps = !view.capabilities.is_empty() && view.capabilities != capabilities_json;
 
-    let mut frames = Vec::with_capacity(4);
+    let mut frames = Vec::with_capacity(5);
     if status_changed {
         frames.push(Outbound::InventoryStatus(status));
     }
@@ -186,6 +218,12 @@ pub(crate) fn broadcast_diff(topology: &Topology, view: &mut PublishedView) -> V
             ..HerdrStatusMessage::default()
         }));
     }
+    if send_caps {
+        frames.push(Outbound::CapsUpdate(CapsUpdateMessage {
+            capabilities: Some(MaybeNull::Value(capabilities)),
+            r#type: "caps_update".to_owned(),
+        }));
+    }
 
     // The oracle's `commit` closure: the inventory view always refreshes;
     // the row views advance with their (possibly forced) publishes.
@@ -199,6 +237,7 @@ pub(crate) fn broadcast_diff(topology: &Topology, view: &mut PublishedView) -> V
     if send_herdr {
         view.herdr_status = herdr_json;
     }
+    view.capabilities = capabilities_json;
     frames
 }
 
@@ -348,5 +387,101 @@ mod tests {
         assert_eq!(status.stale, Some(false));
         assert_eq!(status.error_code.as_deref(), Some(""));
         assert_eq!(status.last_success_at, Some(0));
+    }
+
+    /// Feature evidence for `method` at `state` — one ledger row.
+    fn feature(state: &str) -> lerdr_core::protocol::HerdrFeatureStatus {
+        lerdr_core::protocol::HerdrFeatureStatus {
+            state: state.to_owned(),
+            reason: "schema_absent".to_owned(),
+            generation: 1,
+        }
+    }
+
+    fn set_features(topology: &mut Topology, rows: &[(&str, &str)]) {
+        topology.herdr_status.features = MaybeNull::Value(
+            rows.iter()
+                .map(|(name, state)| ((*name).to_owned(), feature(state)))
+                .collect(),
+        );
+    }
+
+    #[test]
+    fn effective_capabilities_keep_focus_until_every_method_is_refuted() {
+        let mut topology = Topology::default();
+        // No evidence yet — `focus` stays advertised (advertise while not
+        // refuted, docs/13 §0).
+        assert!(effective_capabilities(&topology).contains(&"focus".to_owned()));
+        // Partial family: three methods refuted, `tab.focus` unknown —
+        // still advertised.
+        set_features(
+            &mut topology,
+            &[
+                ("pane.focus", "unsupported"),
+                ("workspace.focus", "unsupported"),
+                ("agent.focus", "unsupported"),
+            ],
+        );
+        assert!(effective_capabilities(&topology).contains(&"focus".to_owned()));
+        // All four refuted — the family drops.
+        set_features(
+            &mut topology,
+            &[
+                ("pane.focus", "unsupported"),
+                ("tab.focus", "unsupported"),
+                ("workspace.focus", "unsupported"),
+                ("agent.focus", "unsupported"),
+            ],
+        );
+        let capabilities = effective_capabilities(&topology);
+        assert!(!capabilities.contains(&"focus".to_owned()));
+        // Everything else stays — the drop is surgical.
+        assert!(capabilities.contains(&"workspace_management".to_owned()));
+        assert_eq!(capabilities.len(), CAPABILITIES.len() - 1);
+    }
+
+    #[test]
+    fn capability_flip_emits_caps_update_once() {
+        let mut topology = Topology::default();
+        let mut view = PublishedView::default();
+        topology.accept(snapshot_with(AgentStatus::Idle, true));
+        // First publish seeds the view — the connecting client got
+        // `push_config.capabilities` in its snapshot, so no `caps_update`.
+        let _ = broadcast_diff(&topology, &mut view);
+        // Same-set republish stays silent.
+        assert!(broadcast_diff(&topology, &mut view).is_empty());
+
+        // The family refutes — the next publish announces the narrowed set.
+        set_features(
+            &mut topology,
+            &[
+                ("pane.focus", "unsupported"),
+                ("tab.focus", "unsupported"),
+                ("workspace.focus", "unsupported"),
+                ("agent.focus", "unsupported"),
+            ],
+        );
+        let batch = broadcast_diff(&topology, &mut view);
+        let updates: Vec<_> = batch
+            .iter()
+            .filter(|frame| matches!(frame, Outbound::CapsUpdate(_)))
+            .collect();
+        assert_eq!(updates.len(), 1, "batch: {}", types(&batch));
+        let Outbound::CapsUpdate(message) = updates[0] else {
+            unreachable!()
+        };
+        let list = message
+            .capabilities
+            .as_ref()
+            .and_then(MaybeNull::value)
+            .expect("list present");
+        assert!(!list.contains(&"focus".to_owned()));
+        // The flip is announced exactly once — the view now holds it.
+        let batch = broadcast_diff(&topology, &mut view);
+        assert!(
+            !batch.iter().any(|f| matches!(f, Outbound::CapsUpdate(_))),
+            "batch: {}",
+            types(&batch)
+        );
     }
 }

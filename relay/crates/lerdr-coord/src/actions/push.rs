@@ -479,6 +479,7 @@ impl PushEventKey {
             terminal_id: self.terminal_id.clone(),
             generation: self.generation,
             agent_session_id: self.agent_session_id.clone(),
+            ..TargetRef::default()
         }
     }
 }
@@ -3172,6 +3173,7 @@ mod tests {
             terminal_id: "term-1".into(),
             generation: 0,
             agent_session_id: "sess-1".into(),
+            ..TargetRef::default()
         }
     }
 

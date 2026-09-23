@@ -663,6 +663,101 @@ impl Client {
 
     // -- mutations ----------------------------------------------------------
 
+    /// `pane.focus` → `pane_info` — raise the pane's tab and window.
+    /// `timeout` is the caller's deadline (`None` waits indefinitely).
+    pub async fn pane_focus(
+        &self,
+        pane_id: &str,
+        timeout: Option<Duration>,
+    ) -> Result<PaneInfo, HerdrError> {
+        #[derive(serde::Deserialize)]
+        struct R {
+            pane: PaneInfo,
+        }
+        Ok(self
+            .call_result_opts::<_, R>(
+                "pane.focus",
+                &PaneFocusParams {
+                    pane_id: pane_id.to_owned(),
+                },
+                "pane_info",
+                timeout,
+            )
+            .await?
+            .pane)
+    }
+
+    /// `tab.focus` → `tab_info` — activate the tab and its workspace.
+    pub async fn tab_focus(
+        &self,
+        tab_id: &str,
+        timeout: Option<Duration>,
+    ) -> Result<TabInfo, HerdrError> {
+        #[derive(serde::Deserialize)]
+        struct R {
+            tab: TabInfo,
+        }
+        Ok(self
+            .call_result_opts::<_, R>(
+                "tab.focus",
+                &TabFocusParams {
+                    tab_id: tab_id.to_owned(),
+                },
+                "tab_info",
+                timeout,
+            )
+            .await?
+            .tab)
+    }
+
+    /// `workspace.focus` → `workspace_info` — activate the workspace.
+    pub async fn workspace_focus(
+        &self,
+        workspace_id: &str,
+        timeout: Option<Duration>,
+    ) -> Result<WorkspaceInfo, HerdrError> {
+        #[derive(serde::Deserialize)]
+        struct R {
+            workspace: WorkspaceInfo,
+        }
+        Ok(self
+            .call_result_opts::<_, R>(
+                "workspace.focus",
+                &WorkspaceFocusParams {
+                    workspace_id: workspace_id.to_owned(),
+                },
+                "workspace_info",
+                timeout,
+            )
+            .await?
+            .workspace)
+    }
+
+    /// `agent.focus` → `agent_info` — focus the agent's pane. `target`
+    /// resolves agent names and pane ids, not agent session references —
+    /// callers holding `agent_session_id` map it through topology first.
+    pub async fn agent_focus(
+        &self,
+        target: &str,
+        timeout: Option<Duration>,
+    ) -> Result<AgentInfo, HerdrError> {
+        #[derive(serde::Deserialize)]
+        struct R {
+            agent: AgentInfo,
+        }
+        Ok(self
+            .call_result_opts::<_, R>(
+                "agent.focus",
+                &AgentFocusParams {
+                    target: target.to_owned(),
+                },
+                "agent_info",
+                timeout,
+            )
+            .await?
+            .agent)
+    }
+
     /// `agent.view.set` — install the transient declarative projection that
     /// drives Herdr's sidebar and its mobile Agents list.
     pub async fn agent_view_set(

@@ -365,3 +365,110 @@ async fn semaphore_bounds_concurrent_dials() {
         server.max_concurrent()
     );
 }
+
+// ── Phase-5 focus family ---------------------------------------------------
+
+#[tokio::test]
+async fn pane_focus_round_trip_and_params() {
+    let server = FakeHerdr::start(Action::Reply(json!({
+        "type": "pane_info",
+        "pane": {
+            "pane_id": "wE:p1", "terminal_id": "t1", "workspace_id": "wE",
+            "tab_id": "wE:t1", "focused": true, "agent_status": "idle"
+        }
+    })))
+    .await;
+    let pane = client_for(&server).pane_focus("wE:p1", None).await.unwrap();
+    assert_eq!(pane.pane_id, "wE:p1");
+    let reqs = server.requests();
+    assert_eq!(reqs[0].method, "pane.focus");
+    assert_eq!(reqs[0].params, json!({ "pane_id": "wE:p1" }));
+}
+
+#[tokio::test]
+async fn tab_focus_round_trip_and_params() {
+    let server = FakeHerdr::start(Action::Reply(json!({
+        "type": "tab_info",
+        "tab": {
+            "tab_id": "wE:p1:t2", "workspace_id": "wE", "number": 2,
+            "label": "build", "focused": true, "pane_count": 1,
+            "agent_status": "idle"
+        }
+    })))
+    .await;
+    let tab = client_for(&server)
+        .tab_focus("wE:p1:t2", None)
+        .await
+        .unwrap();
+    assert_eq!(tab.tab_id, "wE:p1:t2");
+    let reqs = server.requests();
+    assert_eq!(reqs[0].method, "tab.focus");
+    assert_eq!(reqs[0].params, json!({ "tab_id": "wE:p1:t2" }));
+}
+
+#[tokio::test]
+async fn workspace_focus_round_trip_and_params() {
+    let server = FakeHerdr::start(Action::Reply(json!({
+        "type": "workspace_info",
+        "workspace": {
+            "workspace_id": "wE", "number": 1, "label": "main",
+            "focused": true, "pane_count": 2, "tab_count": 3,
+            "active_tab_id": "wE:t2", "agent_status": "idle"
+        }
+    })))
+    .await;
+    let workspace = client_for(&server)
+        .workspace_focus("wE", None)
+        .await
+        .unwrap();
+    assert_eq!(workspace.workspace_id, "wE");
+    let reqs = server.requests();
+    assert_eq!(reqs[0].method, "workspace.focus");
+    assert_eq!(reqs[0].params, json!({ "workspace_id": "wE" }));
+}
+
+#[tokio::test]
+async fn agent_focus_round_trip_and_params() {
+    let server = FakeHerdr::start(Action::Reply(json!({
+        "type": "agent_info",
+        "agent": {
+            "pane_id": "wE:p1", "terminal_id": "t1", "workspace_id": "wE",
+            "tab_id": "wE:t1", "focused": true, "agent_status": "idle"
+        }
+    })))
+    .await;
+    let agent = client_for(&server)
+        .agent_focus("wE:p1", None)
+        .await
+        .unwrap();
+    assert_eq!(agent.pane_id, "wE:p1");
+    let reqs = server.requests();
+    assert_eq!(reqs[0].method, "agent.focus");
+    assert_eq!(reqs[0].params, json!({ "target": "wE:p1" }));
+}
+
+/// A definitive `unknown_method` refusal is a `Refused` outcome the
+/// capability ledger records as `unsupported` — the Phase-5 gate reads
+/// that evidence through `collect_capabilities`.
+#[tokio::test]
+async fn focus_refusal_is_refused_not_unknown() {
+    let server = FakeHerdr::start(Action::Refuse("unknown_method", "no such method")).await;
+    let client = client_for(&server);
+    let err = client.pane_focus("wE:p1", None).await.unwrap_err();
+    assert_eq!(err.phase(), DispatchPhase::Refused);
+    assert_eq!(err.refusal_code(), Some("unknown_method"));
+    assert!(!err.may_have_applied());
+    assert_eq!(server.accept_count(), 1, "Refused must not be retried");
+}
+
+/// A wrong result `type` cannot be trusted — `DispatchedUnknown` like the
+/// other typed decoders.
+#[tokio::test]
+async fn focus_result_type_mismatch_is_dispatched_unknown() {
+    let server = FakeHerdr::start(Action::Reply(json!({"type": "ok"}))).await;
+    let err = client_for(&server)
+        .workspace_focus("wE", None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.phase(), DispatchPhase::DispatchedUnknown);
+}

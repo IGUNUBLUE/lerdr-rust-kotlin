@@ -15,7 +15,7 @@
 //! (`sendbuffer.go`, `Hub.Send`). The actor owns the [`Session`]: sealing
 //! runs inside the actor so the writer pump never touches key state.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -23,9 +23,9 @@ use lerdr_core::audit;
 use lerdr_core::json::{MaybeNull, RawJson};
 use lerdr_core::protocol::{
     action_receipt_response, compatible, decode_failure_response, error_codes, error_response,
-    incompatible_response, ActionClass, ActionMetadata, ActionReceipt, ActionReceiptPhase,
-    ApiError, CommandResultMessage, HerdrStatus, Inbound, Outbound, PushConfig, RequestScope,
-    CAPABILITIES, VERSION,
+    incompatible_response, required_capability, ActionClass, ActionMetadata, ActionReceipt,
+    ActionReceiptPhase, ApiError, CommandResultMessage, HerdrStatus, Inbound, Outbound, PushConfig,
+    RequestScope, CAPABILITIES, VERSION,
 };
 use lerdr_core::sendbuffer::{is_replaceable, PushResult, RejectReason, SendBuffer};
 use lerdr_e2ee::Session;
@@ -599,6 +599,7 @@ where
         revoked_at: None,
         pending_disconnects: Vec::new(),
         self_disconnect: false,
+        caps: NegotiatedCaps::default(),
     };
 
     // The actor runs inline — it IS the supervisor's payload. Producers
@@ -627,6 +628,82 @@ where
     }
 }
 
+/// Phase-5 §0 per-session capability state — the negotiated intersection
+/// of what the server advertises and what the client announced. The
+/// server half is learned by observing the capability frames the actor
+/// enqueues (`push_config` at snapshot time, `caps_update` mid-session),
+/// so lerdr-coord's evidence-filtered list is the gate's source with no
+/// separate channel duplicating it.
+#[derive(Debug)]
+struct NegotiatedCaps {
+    /// The server's currently advertised set — `CAPABILITIES` until an
+    /// enqueued `push_config`/`caps_update` payload replaces it wholesale.
+    server: BTreeSet<String>,
+    /// The client's announced set — `client_caps` first, the client's own
+    /// `caps_update` after that. `None` until the first announcement: a
+    /// pre-Phase-5 client has no list, so no gated capability is live.
+    client: Option<BTreeSet<String>>,
+    /// `preferred_inner_codec` off `client_caps` — kept for the deferred
+    /// Track-B negotiation; this build only ever serves JSON.
+    preferred_codec: String,
+}
+
+impl Default for NegotiatedCaps {
+    fn default() -> Self {
+        Self {
+            server: CAPABILITIES.iter().map(|cap| (*cap).to_owned()).collect(),
+            client: None,
+            preferred_codec: String::new(),
+        }
+    }
+}
+
+impl NegotiatedCaps {
+    /// A capability is live only while present on BOTH lists (§0).
+    fn live(&self, capability: &str) -> bool {
+        self.server.contains(capability)
+            && self
+                .client
+                .as_ref()
+                .is_some_and(|set| set.contains(capability))
+    }
+
+    /// `client_caps` / inbound `caps_update` absorb — record the client's
+    /// announced set wholesale (and its codec preference on `client_caps`).
+    /// Silent by contract: an old relay answers `unknown_action`, which the
+    /// app ignores; this one simply records and moves on.
+    fn announce(&mut self, inbound: &Inbound) {
+        self.client = Some(inbound.capabilities.iter().cloned().collect());
+        if inbound.r#type == "client_caps" && !inbound.preferred_inner_codec.is_empty() {
+            self.preferred_codec = inbound.preferred_inner_codec.clone();
+            debug!(
+                codec = %self.preferred_codec,
+                "client codec preference noted (binary negotiation deferred)"
+            );
+        }
+    }
+
+    /// Observe an outbound capability frame — `push_config` and
+    /// `caps_update` carry the advertised set wholesale, so the gate
+    /// follows exactly what the client was told.
+    fn observe(&mut self, push: &OutboundPush) {
+        if push.kind != "push_config" && push.kind != "caps_update" {
+            return;
+        }
+        #[derive(serde::Deserialize)]
+        struct CapsFields {
+            #[serde(default)]
+            capabilities: Option<Vec<String>>,
+        }
+        // Absent/null both read `None` — only a present list replaces.
+        if let Ok(fields) = serde_json::from_slice::<CapsFields>(&push.data) {
+            if let Some(list) = fields.capabilities {
+                self.server = list.into_iter().collect();
+            }
+        }
+    }
+}
+
 /// The actor body: owns the sealed session, the send buffer, the router —
 /// everything the Go `ClientConn` mutexes protected. Synchronous decisions;
 /// the pumps own I/O.
@@ -652,6 +729,9 @@ struct Actor<'a, A: DeviceAuthStore + ?Sized, R: ActionRouter> {
     pending_disconnects: Vec<(String, u64)>,
     /// This connection's own credential is among `pending_disconnects`.
     self_disconnect: bool,
+    /// Phase-5 §0 negotiated capabilities — announced client set ×
+    /// advertised server set; gates the `focus_*` family.
+    caps: NegotiatedCaps,
 }
 
 /// Loop control — `false` stops the actor.
@@ -775,6 +855,37 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
         };
         if !compatible(&inbound) {
             return self.enqueue(Outbound::ActionReceipt(incompatible_response(&inbound)));
+        }
+        // Phase-5 §0 negotiation legs are absorbed here — `client_caps`
+        // and a client's own `caps_update` announce the client's set;
+        // they answer nothing and never reach the router. (An old relay
+        // answers `unknown_action`, which the app ignores; this one
+        // records the announcement and moves on.)
+        if matches!(scope.action.operation, "client_caps" | "caps_update") {
+            self.caps.announce(&inbound);
+            return CONTINUE;
+        }
+        // Capability gate — a gated action is live only while its
+        // capability sits on BOTH lists: the server's advertised set
+        // (`push_config`/`caps_update`, observed at enqueue) and the
+        // client's announced set (`client_caps`). Absent from either →
+        // `capability_unsupported` (docs/13 §0).
+        if let Some(capability) = required_capability(scope.action.operation) {
+            if !self.caps.live(capability) {
+                return self.enqueue(Outbound::Error(error_response(
+                    &inbound.request_id,
+                    ApiError::new(
+                        error_codes::CAPABILITY_UNSUPPORTED,
+                        BTreeMap::from([
+                            (
+                                "operation".to_owned(),
+                                serde_json::Value::from(scope.action.operation),
+                            ),
+                            ("capability".to_owned(), serde_json::Value::from(capability)),
+                        ]),
+                    ),
+                )));
+            }
         }
         // `server_session_id` fence: target and field must agree, and only
         // "primary" is a real destination.
@@ -1114,6 +1225,10 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
 
     /// One buffer push (both the response path and the `ClientSink` inbox).
     fn handle_push(&mut self, push: OutboundPush) -> Step {
+        // `caps_update`/`push_config` carry the advertised set the gate
+        // consults — observe before buffering so the next inbound is gated
+        // by the same list the client is about to see.
+        self.caps.observe(&push);
         match self
             .buffer
             .push_typed(push.data, push.kind, push.replaceable)

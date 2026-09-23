@@ -648,6 +648,22 @@ pub struct BlockedMessage {
     pub workspace_id: Option<String>,
 }
 
+/// `{"capabilities":[...],"type":"caps_update"}` — Phase-5 §0: the
+/// server's advertised capability set mid-session. Replaces the
+/// `push_config.capabilities` list wholesale (docs/13).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CapsUpdateMessage {
+    #[serde(
+        default,
+        deserialize_with = "de_nullable",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub capabilities: Option<MaybeNull<Vec<String>>>,
+    /// Envelope discriminator. Constructors set the canonical constant.
+    #[serde(default, deserialize_with = "de_default")]
+    pub r#type: String,
+}
+
 /// `command_result` — correlated unary action result.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CommandResultMessage {
@@ -1126,6 +1142,7 @@ pub enum Outbound {
     Agents(AgentsMessage),
     AppDeployStatus(AppDeployStatusMessage),
     Blocked(Box<BlockedMessage>),
+    CapsUpdate(CapsUpdateMessage),
     CommandResult(CommandResultMessage),
     Error(ErrorMessage),
     HerdrStatus(HerdrStatusMessage),
@@ -1182,6 +1199,7 @@ impl Outbound {
             "agents" => typed!(Agents, AgentsMessage),
             "app_deploy_status" => typed!(AppDeployStatus, AppDeployStatusMessage),
             "blocked" => typed!(Blocked, Box<BlockedMessage>),
+            "caps_update" => typed!(CapsUpdate, CapsUpdateMessage),
             "command_result" => typed!(CommandResult, CommandResultMessage),
             "error" => typed!(Error, ErrorMessage),
             "herdr_status" => typed!(HerdrStatus, HerdrStatusMessage),
@@ -1227,6 +1245,7 @@ impl Outbound {
             Outbound::Agents(m) => enc!(m),
             Outbound::AppDeployStatus(m) => enc!(m),
             Outbound::Blocked(m) => enc!(m),
+            Outbound::CapsUpdate(m) => enc!(m),
             Outbound::CommandResult(m) => enc!(m),
             Outbound::Error(m) => enc!(m),
             Outbound::HerdrStatus(m) => enc!(m),
@@ -1318,4 +1337,54 @@ pub fn decode_failure_response(raw: &serde_json::Map<String, serde_json::Value>)
         request_id,
         ApiError::new(super::types::error_codes::INVALID_REQUEST, BTreeMap::new()),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn caps_update_round_trips() {
+        let outbound = Outbound::CapsUpdate(CapsUpdateMessage {
+            capabilities: Some(MaybeNull::Value(vec![
+                "attention_classification".to_owned(),
+                "focus".to_owned(),
+            ])),
+            r#type: "caps_update".to_owned(),
+        });
+        let encoded = String::from_utf8(outbound.encode()).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"capabilities":["attention_classification","focus"],"type":"caps_update"}"#
+        );
+        // The envelope decoder picks the typed variant, and an empty
+        // advertised set round-trips as `[]` (not `null`/absent).
+        let decoded = Outbound::decode(encoded.as_bytes()).unwrap();
+        let Outbound::CapsUpdate(message) = decoded else {
+            panic!("expected CapsUpdate, got {decoded:?}");
+        };
+        assert_eq!(
+            message.capabilities.as_ref().and_then(MaybeNull::value),
+            Some(&vec![
+                "attention_classification".to_owned(),
+                "focus".to_owned()
+            ])
+        );
+
+        let empty = Outbound::decode(br#"{"capabilities":[],"type":"caps_update"}"#).unwrap();
+        let Outbound::CapsUpdate(message) = empty else {
+            panic!("expected CapsUpdate");
+        };
+        assert_eq!(
+            message.capabilities.as_ref().and_then(MaybeNull::value),
+            Some(&Vec::<String>::new())
+        );
+        // `null` and absent both read `None`-ish — the list semantics live
+        // on the sender (wholesale replace when present).
+        let null_list = Outbound::decode(br#"{"capabilities":null,"type":"caps_update"}"#).unwrap();
+        let Outbound::CapsUpdate(message) = null_list else {
+            panic!("expected CapsUpdate");
+        };
+        assert!(matches!(message.capabilities, Some(MaybeNull::Null) | None));
+    }
 }

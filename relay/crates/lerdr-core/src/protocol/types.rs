@@ -26,6 +26,10 @@ pub const SPEECH_SYNTHESIS_CAPABILITY: &str = "speech_synthesis";
 pub const SPEECH_VOICE_MANAGEMENT_CAPABILITY: &str = "speech_voice_management";
 
 /// `protocol.Capabilities` — the capability list advertised in `push_config`.
+///
+/// `"focus"` is the Phase-5 §0 addition: the relay advertises it while
+/// Herdr evidence does not refute the whole focus method family
+/// (`lerdr-coord`'s `caps_update` carries the mid-session flip).
 pub const CAPABILITIES: &[&str] = &[
     "attention_classification",
     "clear_activities",
@@ -42,6 +46,7 @@ pub const CAPABILITIES: &[&str] = &[
     "semantic_input",
     "secret_input",
     "invitation_qr",
+    "focus",
 ];
 
 /// Error codes emitted by the relay (`ErrorInvalidRequest` etc.).
@@ -50,6 +55,10 @@ pub mod error_codes {
     pub const UNKNOWN_ACTION: &str = "unknown_action";
     pub const INCOMPATIBLE_PROTOCOL: &str = "incompatible_protocol";
     pub const READER_DENIED: &str = "reader_denied";
+    /// Phase-5 §0 — the action's required capability is not live on this
+    /// session (absent from the advertised set, the client's announced
+    /// set, or both).
+    pub const CAPABILITY_UNSUPPORTED: &str = "capability_unsupported";
 }
 
 /// `ActionReceiptPhase` — a wire string; unknown phases round-trip.
@@ -331,7 +340,11 @@ const fn mutate_action_unversioned(
     }
 }
 
-/// `protocol.actionCatalog` — all 70 actions, same classification as Go.
+/// `protocol.actionCatalog` — the oracle's 70 actions plus the Phase-5
+/// additions (`client_caps`/`caps_update` negotiation and the `focus_*`
+/// family, docs/13 §§0-1.1). The negotiation frames classify `ReadOnly`
+/// so any authenticated device may announce its set; they are absorbed
+/// by the session layer before routing.
 pub fn classify_action(operation: &str) -> Option<ActionMetadata> {
     let metadata = match operation {
         "acknowledge_pane" => mutate_action("acknowledge_pane", true, false),
@@ -342,13 +355,19 @@ pub fn classify_action(operation: &str) -> Option<ActionMetadata> {
         "agent_stop" => mutate_action("agent_stop", true, true),
         "answer_question" => mutate_action("answer_question", true, true),
         "cancel_speech" => read_action("cancel_speech"),
+        "caps_update" => read_action("caps_update"),
         "check_update" => read_action("check_update"),
         "clarify_question" => mutate_action("clarify_question", true, true),
         "clear_activities" => mutate_action("clear_activities", false, false),
+        "client_caps" => read_action("client_caps"),
         "copy_agent_response" => mutate_action("copy_agent_response", false, false),
         "deploy_app_update" => mutate_action("deploy_app_update", false, false),
         "create_device_invitation" => mutate_action("create_device_invitation", false, true),
         "device_list" => read_action("device_list"),
+        "focus_agent" => mutate_action("focus_agent", true, false),
+        "focus_pane" => mutate_action("focus_pane", true, false),
+        "focus_tab" => mutate_action("focus_tab", true, false),
+        "focus_workspace" => mutate_action("focus_workspace", true, false),
         "get_activity" => read_action("get_activity"),
         "get_conversation_history" => read_action("get_conversation_history"),
         "install_update" => mutate_action_unversioned("install_update", false, false),
@@ -415,6 +434,19 @@ pub fn requires_protocol(message_type: &str) -> bool {
     classify_action(message_type).is_none_or(|m| m.requires_protocol)
 }
 
+/// The negotiated capability an action is gated on — Phase-5 §0's
+/// `capabilities` exchange. `None` means the action dispatches regardless
+/// of negotiation (every pre-Phase-5 action). A gated action is live on a
+/// session only while the capability appears on BOTH the server's
+/// advertised list (`push_config`/`caps_update`) and the client's
+/// announced list (`client_caps`/inbound `caps_update`).
+pub fn required_capability(operation: &str) -> Option<&'static str> {
+    match operation {
+        "focus_pane" | "focus_tab" | "focus_workspace" | "focus_agent" => Some("focus"),
+        _ => None,
+    }
+}
+
 /// `protocol.RequestScope` — the dispatch scope extracted from an [`Inbound`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct RequestScope {
@@ -475,9 +507,15 @@ mod tests {
     }
 
     #[test]
-    fn catalog_counts_70_actions() {
+    fn catalog_classifies_phase5_actions() {
         let known = [
             "acknowledge_pane",
+            "client_caps",
+            "caps_update",
+            "focus_pane",
+            "focus_tab",
+            "focus_workspace",
+            "focus_agent",
             "install_update",
             "watch_pane",
             "worktree_remove",
@@ -489,5 +527,24 @@ mod tests {
         assert!(classify_action("send_text").unwrap().requires_protocol);
         assert!(requires_protocol("nonsense_action"));
         assert!(classify_action("nonsense_action").is_none());
+    }
+
+    #[test]
+    fn focus_actions_are_mutating_and_capability_gated() {
+        for action in ["focus_pane", "focus_tab", "focus_workspace", "focus_agent"] {
+            let meta = classify_action(action).unwrap();
+            assert_eq!(meta.class, ActionClass::Mutating, "{action}");
+            assert!(meta.requires_protocol, "{action}");
+            assert_eq!(required_capability(action), Some("focus"), "{action}");
+        }
+        // Negotiation frames are read-only and never capability-gated.
+        for action in ["client_caps", "caps_update"] {
+            let meta = classify_action(action).unwrap();
+            assert_eq!(meta.class, ActionClass::ReadOnly, "{action}");
+            assert!(!meta.requires_protocol, "{action}");
+            assert_eq!(required_capability(action), None, "{action}");
+        }
+        assert_eq!(required_capability("send_text"), None);
+        assert!(CAPABILITIES.contains(&"focus"));
     }
 }

@@ -548,6 +548,36 @@ impl ActionRouter for HerdRouter {
                 actions::questions::navigate_question
             ),
 
+            // --- focus (Phase-5) --------------------------------------------
+            "focus_pane" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::focus::focus_pane
+            ),
+            "focus_tab" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::focus::focus_tab
+            ),
+            "focus_workspace" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::focus::focus_workspace
+            ),
+            "focus_agent" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::focus::focus_agent
+            ),
+
             // --- uploads ---------------------------------------------------
             "upload_begin" => spawn_action!(
                 self,

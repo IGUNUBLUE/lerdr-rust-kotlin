@@ -8,7 +8,12 @@
 //! `invalid_request` naming the offending field. The exempt actions
 //! release owner-scoped state already keyed by client+pane or speech
 //! request id, so a replaced pane must not strand the old watch, size
-//! lease, or synthesis over a stale exact target.
+//! lease, or synthesis over a stale exact target. The Phase-5 focus
+//! family joins the exempt set except `focus_pane`: the tab/workspace/
+//! agent-session ids are the authoritative addresses there — a pane
+//! that changed underneath must not veto focusing a still-live tab,
+//! workspace, or agent (`focus_pane` keeps the full tuple check — it
+//! IS the pane address).
 
 use std::collections::BTreeMap;
 
@@ -26,6 +31,14 @@ pub(crate) fn validate_exact_pane_target(
     authenticated: bool,
 ) -> Option<ApiError> {
     if pane_id.is_empty() {
+        return None;
+    }
+    // `focus_tab`/`focus_workspace`/`focus_agent` are addressed by
+    // tab/workspace/agent-session id — any `pane_id` present is client
+    // context, not the address, so neither the tuple nor pane equality
+    // applies (`focus_pane` is NOT here: its pane is the address and
+    // keeps the full check below).
+    if matches!(action_type, "focus_tab" | "focus_workspace" | "focus_agent") {
         return None;
     }
     if matches!(
@@ -119,6 +132,7 @@ mod tests {
             terminal_id: "term-1".into(),
             generation,
             agent_session_id: "sess-1".into(),
+            ..TargetRef::default()
         }
     }
 
@@ -225,6 +239,38 @@ mod tests {
         assert_eq!(field(&err), "target");
         assert!(
             validate_exact_pane_target(&t, "send_text", "pane-1", Some(&target(1)), true).is_none()
+        );
+    }
+
+    #[test]
+    fn non_pane_focus_actions_skip_target_checks() {
+        let t = topology();
+        // `focus_tab`/`focus_workspace`/`focus_agent` are addressed by
+        // tab/workspace/session id — any pane fields are context, and a
+        // stale (or absent, or mismatched) pane identity never vetoes.
+        for action in ["focus_tab", "focus_workspace", "focus_agent"] {
+            assert!(
+                validate_exact_pane_target(&t, action, "pane-1", None, true).is_none(),
+                "{action} without target"
+            );
+            let mut stale = target(99);
+            stale.pane_id = "pane-2".into(); // even a mismatch passes —
+            stale.terminal_id = "gone".into();
+            assert!(
+                validate_exact_pane_target(&t, action, "pane-1", Some(&stale), true).is_none(),
+                "{action} with a stale/mismatched pane"
+            );
+        }
+        // `focus_pane` is NOT exempt — the pane is its address, so the
+        // full tuple check applies.
+        let mut stale = target(0);
+        stale.terminal_id = "gone".into();
+        let err =
+            validate_exact_pane_target(&t, "focus_pane", "pane-1", Some(&stale), true).unwrap();
+        assert_eq!(field(&err), "target");
+        assert!(
+            validate_exact_pane_target(&t, "focus_pane", "pane-1", Some(&target(0)), true)
+                .is_none()
         );
     }
 

@@ -15,7 +15,9 @@ use serde::{Deserialize, Serialize};
 use crate::json::{de_default, RawJson};
 
 /// `TargetRef` identifies the pane/tab/workspace a message is about.
-/// All five fields are always emitted (no `omitempty` in Go).
+/// The five original fields are always emitted (no `omitempty` in Go);
+/// `workspace_id`/`tab_id` are the Phase-5 additions — emitted only when
+/// non-empty so pre-Phase-5 `decoded_json` stays byte-exact.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TargetRef {
     #[serde(default, deserialize_with = "de_default")]
@@ -28,6 +30,20 @@ pub struct TargetRef {
     pub generation: i64,
     #[serde(default, deserialize_with = "de_default")]
     pub agent_session_id: String,
+    /// Phase-5 `focus_workspace` target (`docs/13` §1.1).
+    #[serde(
+        default,
+        deserialize_with = "de_default",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub workspace_id: String,
+    /// Phase-5 `focus_tab` target (`docs/13` §1.1).
+    #[serde(
+        default,
+        deserialize_with = "de_default",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub tab_id: String,
 }
 
 /// Errors from decoding an inbound message.
@@ -55,6 +71,10 @@ pub enum DecodeError {
 /// special-cased in [`Inbound::decode_map`]; the rest stay reachable
 /// through [`Inbound::raw`], [`Inbound::raw_str`], and [`Inbound::raw_int`]
 /// (`content_fingerprint`/`interval_ms` have named accessors too).
+///
+/// Phase-5 adds `capabilities`/`preferred_inner_codec` (`client_caps`,
+/// docs/13 §0) — fields the Go struct never carried; they append at the
+/// tail and emit only when populated.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Inbound {
     #[serde(default, deserialize_with = "de_default")]
@@ -432,6 +452,22 @@ pub struct Inbound {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub unlocked: bool,
+    /// Phase-5 `client_caps`/inbound `caps_update` — the client's
+    /// announced capability list (docs/13 §0).
+    #[serde(
+        default,
+        deserialize_with = "de_default",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub capabilities: Vec<String>,
+    /// Phase-5 `client_caps` — the client's preferred inner codec
+    /// (`"json"` or `"binary-v1"`; binary negotiation is deferred).
+    #[serde(
+        default,
+        deserialize_with = "de_default",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub preferred_inner_codec: String,
     /// Wire fields the typed view does not model — the raw decoded map,
     /// captured by [`Inbound::decode_map`] before normalization so
     /// [`Inbound::raw`]/[`Inbound::raw_str`]/[`Inbound::raw_int`] see
@@ -645,6 +681,69 @@ mod tests {
             Inbound::decode(br#"{"type":"read_pane","pane_id":"p1","content_fingerprint":null}"#)
                 .unwrap();
         assert_eq!(msg.content_fingerprint(), None);
+    }
+
+    #[test]
+    fn phase5_target_ref_fields_decode_and_emit_when_populated() {
+        // `workspace_id`/`tab_id` are additive (docs/13 §1.1): absent
+        // decodes to "", and "" stays out of `decoded_json` so pre-Phase-5
+        // re-serialization stays byte-exact.
+        let msg = Inbound::decode(
+            br#"{"type":"focus_workspace","target":{"workspace_id":"wE","pane_id":"wE:p1"}}"#,
+        )
+        .unwrap();
+        let target = msg.target.as_ref().unwrap();
+        assert_eq!(target.workspace_id, "wE");
+        assert_eq!(target.pane_id, "wE:p1");
+        assert_eq!(target.tab_id, "");
+        let encoded = String::from_utf8(msg.encode()).unwrap();
+        assert!(encoded.contains("\"workspace_id\":\"wE\""), "{encoded}");
+        assert!(!encoded.contains("tab_id"), "{encoded}");
+
+        let msg = Inbound::decode(
+            br#"{"type":"focus_tab","target":{"pane_id":"wE:p1","tab_id":"wE:p1:t2"}}"#,
+        )
+        .unwrap();
+        let target = msg.target.as_ref().unwrap();
+        assert_eq!(target.tab_id, "wE:p1:t2");
+        assert_eq!(target.workspace_id, "");
+
+        // A pre-Phase-5 target emits none of the new fields.
+        let msg = Inbound::decode(br#"{"type":"send_text","target":{"pane_id":"p1"}}"#).unwrap();
+        let encoded = String::from_utf8(msg.encode()).unwrap();
+        assert!(!encoded.contains("workspace_id"), "{encoded}");
+        assert!(!encoded.contains("tab_id"), "{encoded}");
+    }
+
+    #[test]
+    fn client_caps_fields_decode_and_emit() {
+        let msg = Inbound::decode(
+            br#"{"type":"client_caps","protocol":3,"capabilities":["focus","frame_zstd"],"preferred_inner_codec":"binary-v1"}"#,
+        )
+        .unwrap();
+        assert_eq!(msg.capabilities, ["focus", "frame_zstd"]);
+        assert_eq!(msg.preferred_inner_codec, "binary-v1");
+        let encoded = String::from_utf8(msg.encode()).unwrap();
+        assert!(
+            encoded.contains("\"capabilities\":[\"focus\",\"frame_zstd\"]"),
+            "{encoded}"
+        );
+        assert!(
+            encoded.contains("\"preferred_inner_codec\":\"binary-v1\""),
+            "{encoded}"
+        );
+
+        // Inbound `caps_update` re-announces through the same field;
+        // absent list and absent codec emit nothing.
+        let msg = Inbound::decode(br#"{"type":"caps_update","capabilities":["focus"]}"#).unwrap();
+        assert_eq!(msg.capabilities, ["focus"]);
+        assert_eq!(msg.preferred_inner_codec, "");
+        let encoded = String::from_utf8(msg.encode()).unwrap();
+        assert!(!encoded.contains("preferred_inner_codec"), "{encoded}");
+
+        let msg = Inbound::decode(br#"{"type":"read_pane"}"#).unwrap();
+        let encoded = String::from_utf8(msg.encode()).unwrap();
+        assert!(!encoded.contains("capabilities"), "{encoded}");
     }
 
     #[test]

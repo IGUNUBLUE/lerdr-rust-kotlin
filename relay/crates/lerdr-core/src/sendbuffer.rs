@@ -23,7 +23,9 @@ pub const MAX_OUTBOUND_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 pub const DEFAULT_MAX_BYTES: usize = MAX_OUTBOUND_MESSAGE_BYTES;
 
 /// Message types whose newest frame supersedes a queued same-type tail —
-/// the exact list from `encodeMessage` in `internal/transport/ws.go`.
+/// the exact list from `encodeMessage` in `internal/transport/ws.go`,
+/// plus Phase-5's `caps_update`: a queued older capability set is
+/// superseded by the newest one, same as the snapshot streams.
 /// Snapshot/state streams collapse; deltas, receipts, and per-event
 /// broadcasts never do.
 pub const REPLACEABLE_TYPES: &[&str] = &[
@@ -35,6 +37,7 @@ pub const REPLACEABLE_TYPES: &[&str] = &[
     "pane_content",
     "pane_unchanged",
     "pane_resync",
+    "caps_update",
 ];
 
 /// Whether `kind` is in the replaceable set (`encodeMessage`'s decision).

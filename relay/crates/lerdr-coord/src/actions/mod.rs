@@ -13,6 +13,7 @@
 pub(crate) mod activity;
 pub(crate) mod agents;
 pub(crate) mod conversation;
+pub(crate) mod focus;
 pub(crate) mod input;
 pub(crate) mod inspect;
 pub(crate) mod leases;
