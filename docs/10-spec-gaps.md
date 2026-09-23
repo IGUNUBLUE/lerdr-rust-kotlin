@@ -741,8 +741,9 @@ repository seams + lifecycle wiring rather than protocol changes
 
 Deferred: workspace-row reorder (oracle `WorkspaceManager`), feed
 diagnostics surface, OSC-52 clipboard, hardware-keyboard map, voice
-input, attachment ingress, `deploy_app_update` (phone-side app deploy
-— desktop-origin concept), swipe-to-switch-pane.
+input, attachment ingress, swipe-to-switch-pane. (`deploy_app_update`
+was listed here at the time; later confirmed removed upstream — see
+round 14's tail section.)
 
 ## Round 17 — Wave-3 remaining parity surfaces (2026)
 
@@ -780,11 +781,13 @@ actually implements landed here.
 - Housekeeping: `HomeScreenScreenshotTest` stray NUL bytes →
   `\u0000` escapes (production group keys use NUL separators).
 
-Genuinely remaining: `deploy_app_update` — wire-catalog command with
-no frontend consumer even in the oracle (appears only in its
-CHANGELOG/tests); the deploy source is relay-side. Plus product-level
-items the oracle never shipped (voice, OSC-52, hardware keys,
-pane-swipe).
+Genuinely remaining at the time: `deploy_app_update` — wire-catalog
+command with no frontend consumer even in the oracle. Since confirmed
+removed upstream (Tailscale-only transport; see the round-14 tail
+section): the name stays reserved in the v3 catalog and
+`app_deploy_status` remains a parseable frame with no emitter, matching
+post-removal oracle behavior. Plus product-level items the oracle never
+shipped (voice, OSC-52, hardware keys, pane-swipe).
 
 ## Round 14 — relay wave: semantic layer, Herdr boundary, durable push (2026)
 
