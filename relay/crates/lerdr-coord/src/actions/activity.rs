@@ -359,12 +359,31 @@ impl Journal {
     /// (the oracle's caller logs `activity append failed` and skips the
     /// broadcast) so memory and file never diverge — the file is
     /// authoritative on the next [`Journal::open`].
+    ///
+    /// Transition rows split this in two ([`commit`] + [`publish`] with a
+    /// [`discard`] escape) so the projector can fence the append against
+    /// the transition's currency.
     #[allow(dead_code)] // consumed as action modules wire their recordActivity sites
     pub(crate) fn record(&self, entry: NewEntry) -> ActivityEntry {
+        let entry = self.stamp(entry);
+        {
+            let mut inner = self.inner.lock().expect("activity journal poisoned");
+            if !self.append_locked(&mut inner, &entry) {
+                return entry;
+            }
+        }
+        self.publish(&entry);
+        entry
+    }
+
+    /// `stamp` — `NewEntry` normalization + `id`/`timestamp` stamping.
+    /// `timestamp` honors the `transition_at` override
+    /// `RecordTransitionActivity` applies.
+    fn stamp(&self, entry: NewEntry) -> ActivityEntry {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default();
-        let entry = ActivityEntry {
+        ActivityEntry {
             // `NewEntry` — `{unixnano}-{sequence}-{paneID}`.
             id: format!(
                 "{}-{}-{}",
@@ -384,44 +403,109 @@ impl Journal {
             extract: truncate_chars(&entry.extract, MAX_EXTRACT_CHARS),
             session: entry.session,
             details: entry.details,
-        };
-        {
-            let mut inner = self.inner.lock().expect("activity journal poisoned");
-            if let Some(storage) = &self.storage {
-                if let Err(error) = append_durable(storage, &mut inner, entry.clone()) {
-                    // `recordActivity` — the oracle logs
-                    // "activity append failed" and skips the broadcast.
-                    tracing::warn!("activity append failed: {error}");
-                    return entry;
-                }
-            } else {
-                let size = encoded_len(&entry);
-                inner.bytes += size;
-                inner.entries.push_back((size, entry.clone()));
-                // `retainWithinLimits` — the newest entries win both
-                // bounds. The byte bound always keeps at least the
-                // newest entry; a single entry exceeding `maxBytes` is
-                // unreachable here (extract, the only unbounded field,
-                // is truncated far below it), where the oracle would
-                // reject the append outright.
-                while inner.entries.len() > MAX_ITEMS {
-                    if let Some((size, _)) = inner.entries.pop_front() {
-                        inner.bytes -= size;
-                    }
-                }
-                while inner.bytes > MAX_BYTES && inner.entries.len() > 1 {
-                    if let Some((size, _)) = inner.entries.pop_front() {
-                        inner.bytes -= size;
-                    }
-                }
+        }
+    }
+
+    /// `record`'s append half — durable write first when the journal is
+    /// file-backed, then the ring. Returns `false` on a failed durable
+    /// append (the oracle's `Commit` error path — the entry is dropped,
+    /// nothing is broadcast).
+    fn append_locked(&self, inner: &mut Inner, entry: &ActivityEntry) -> bool {
+        if let Some(storage) = &self.storage {
+            if let Err(error) = append_durable(storage, inner, entry.clone()) {
+                tracing::warn!("activity append failed: {error}");
+                return false;
+            }
+            return true;
+        }
+        let size = encoded_len(entry);
+        inner.bytes += size;
+        inner.entries.push_back((size, entry.clone()));
+        // `retainWithinLimits` — the newest entries win both bounds. The
+        // byte bound always keeps at least the newest entry; a single
+        // entry exceeding `maxBytes` is unreachable here (extract, the
+        // only unbounded field, is truncated far below it), where the
+        // oracle would reject the append outright.
+        while inner.entries.len() > MAX_ITEMS {
+            if let Some((size, _)) = inner.entries.pop_front() {
+                inner.bytes -= size;
             }
         }
+        while inner.bytes > MAX_BYTES && inner.entries.len() > 1 {
+            if let Some((size, _)) = inner.entries.pop_front() {
+                inner.bytes -= size;
+            }
+        }
+        true
+    }
+
+    /// `activityW.Commit` — stamp + append WITHOUT the broadcast; the
+    /// projector fences on the transition's currency and then either
+    /// [`publish`]es or [`discard`]s. `None` means the append failed
+    /// (already logged; nothing committed).
+    pub(crate) fn commit(&self, entry: NewEntry) -> Option<ActivityEntry> {
+        let entry = self.stamp(entry);
+        let mut inner = self.inner.lock().expect("activity journal poisoned");
+        self.append_locked(&mut inner, &entry).then_some(entry)
+    }
+
+    /// `d.broadcast` after a fenced commit — emit the `activity` event.
+    pub(crate) fn publish(&self, entry: &ActivityEntry) {
         if self.events.receiver_count() > 0 {
             let _ = self
                 .events
                 .send(JournalEvent::Recorded(Box::new(entry.clone())));
         }
-        entry
+    }
+
+    /// `activityW.Discard` → `Journal.Discard` — remove a committed entry
+    /// that went stale before it could be published: write-ahead the
+    /// tombstone, compact the journal without the entry, restore the
+    /// prior tombstone set (the crash window closes between the
+    /// tombstone and the rewrite, exactly like the oracle).
+    pub(crate) fn discard(&self, id: &str) {
+        if id.is_empty() {
+            return;
+        }
+        let mut inner = self.inner.lock().expect("activity journal poisoned");
+        let retained: Vec<(usize, ActivityEntry)> = inner
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.id != id)
+            .cloned()
+            .collect();
+        if retained.len() == inner.entries.len() {
+            return;
+        }
+        if let Some(storage) = &self.storage {
+            let previous = match load_tombstones(&storage.tombstones) {
+                Ok(previous) => previous,
+                Err(error) => {
+                    tracing::warn!("stale transition activity discard failed: {error}");
+                    return;
+                }
+            };
+            let mut doomed = previous.clone();
+            doomed.insert(id.to_owned());
+            if let Err(error) = write_tombstones(storage, &doomed) {
+                tracing::warn!("stale transition activity discard failed: {error}");
+                return;
+            }
+            if let Err(error) = compact(storage, retained.iter().map(|(_, entry)| entry)) {
+                if let Err(restore) = write_tombstones(storage, &previous) {
+                    tracing::warn!(
+                        "discard stale activity: {error}; restore activity tombstones: {restore}"
+                    );
+                    return;
+                }
+                tracing::warn!("stale transition activity discard failed: {error}");
+                return;
+            }
+            // The entry is durably gone — restore the pre-discard set.
+            let _ = write_tombstones(storage, &previous);
+        }
+        inner.bytes = retained.iter().map(|(size, _)| *size).sum();
+        inner.entries = retained.into();
     }
 
     /// `Recent` — the newest `limit` entries, oldest first. A `limit` of
@@ -960,7 +1044,6 @@ pub(crate) async fn clear_activities(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actions::Acks;
     use crate::topology::Topology;
     use crate::TopologyActor;
     use std::os::unix::fs::MetadataExt;
@@ -982,7 +1065,6 @@ mod tests {
             topology: Arc::new(Topology::default()),
             handle: TopologyActor::spawn(client.clone(), cancel),
             leases: crate::actions::leases::Leases::new(client),
-            acks: Acks::default(),
             profiles: crate::actions::profiles::Resolver::with_config_home(
                 tempfile::tempdir().expect("tempdir").keep(),
             ),

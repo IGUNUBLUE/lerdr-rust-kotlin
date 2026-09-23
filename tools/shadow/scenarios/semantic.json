@@ -1,0 +1,443 @@
+{
+  "name": "semantic",
+  "vars": {
+    "pane_id": "wE:p1",
+    "workspace_id": "wE",
+    "target": {
+      "server_session_id": "primary",
+      "pane_id": "wE:p1",
+      "terminal_id": "term-1",
+      "generation": 0,
+      "agent_session_id": ""
+    },
+    "approval_view": "Do you want to proceed?\nBash command\n$ npm test\n\u276f 1. Yes\n  2. Yes, and remember this choice\n  3. No\nEsc to cancel \u00b7 Enter to confirm\n",
+    "permission_view": "Claude needs your permission to use Bash.\n$ npm test\n\u276f 1. Allow once\n  2. Reject\nEsc to cancel \u00b7 Enter to confirm\n",
+    "question_view": "What should drive reconnect attempts?\n\u276f 1. Backoff + jitter\nReduce synchronized retries.\n2. Fixed retry\nKeep timing predictable.\n3. Event-driven\nRetry only after connectivity changes.\n4. Type something.\n5. Chat about this\nEnter to select \u00b7 \u2191/\u2193 to navigate \u00b7 Esc to cancel\n",
+    "done_view": "$ npm test\n    Finished `test` profile\n    test result: ok. 42 passed\n$ ",
+    "pane_blocked": {
+      "pane_id": "wE:p1",
+      "terminal_id": "term-1",
+      "workspace_id": "wE",
+      "tab_id": "wE:t1",
+      "focused": true,
+      "cwd": "/home/relay/project",
+      "foreground_cwd": "/home/relay/project",
+      "agent": "claude",
+      "agent_status": "blocked",
+      "revision": 3,
+      "scroll": {
+        "max_offset_from_bottom": 0
+      }
+    },
+    "pane_blocked_unfocused": {
+      "pane_id": "wE:p1",
+      "terminal_id": "term-1",
+      "workspace_id": "wE",
+      "tab_id": "wE:t1",
+      "focused": false,
+      "cwd": "/home/relay/project",
+      "foreground_cwd": "/home/relay/project",
+      "agent": "claude",
+      "agent_status": "blocked",
+      "revision": 3,
+      "scroll": {
+        "max_offset_from_bottom": 0
+      }
+    }
+  },
+  "compare": {
+    "drop_types": [
+      "e2ee_server_hello",
+      "action_receipt"
+    ],
+    "unordered_types": [
+      "push_config",
+      "herdr_status",
+      "workspaces",
+      "agents",
+      "activity_history",
+      "inventory_status",
+      "capabilities",
+      "update_status",
+      "speech_voices",
+      "agent_profiles",
+      "push_policy",
+      "activity",
+      "blocked",
+      "agent_update"
+    ],
+    "drop_keys": [
+      "_server_received_at",
+      "_server_sequence",
+      "at",
+      "id",
+      "created_at",
+      "updated_at",
+      "paired_at_ms",
+      "last_seen_at_ms",
+      "expires_at_ms",
+      "started_at",
+      "completed_at",
+      "timestamp",
+      "ts",
+      "idle_since",
+      "last_active_at",
+      "last_attempt_at",
+      "last_success_at",
+      "received_at_ms",
+      "content_fingerprint",
+      "last_seen_at",
+      "target",
+      "event_id",
+      "transition_at"
+    ],
+    "type_drop_keys": {
+      "push_config": [
+        "agent_profiles",
+        "app_deploy",
+        "capabilities",
+        "herdr_status",
+        "home",
+        "host",
+        "inventory",
+        "speech_languages",
+        "update",
+        "vapid_public_key",
+        "version",
+        "release_version",
+        "revision"
+      ],
+      "herdr_status": [
+        "features",
+        "generation",
+        "surface_interest",
+        "capabilities"
+      ],
+      "agents": [
+        "pane_revision",
+        "tokens",
+        "state_labels"
+      ],
+      "workspaces": [
+        "cwd",
+        "tokens",
+        "worktree"
+      ],
+      "blocked": [
+        "pane_revision"
+      ],
+      "agent_update": [
+        "pane_revision"
+      ]
+    },
+    "map_keys": [
+      "device_id",
+      "credential_id",
+      "credential_secret",
+      "vapid_public_key",
+      "host",
+      "home",
+      "version",
+      "release_version",
+      "revision",
+      "machine_id",
+      "instance_id",
+      "socket_path",
+      "endpoint",
+      "public_key",
+      "proof",
+      "nonce",
+      "url"
+    ],
+    "async_dedupe": true,
+    "notes": [
+      "action_receipt is Rust's v3 dispatch-evidence addition \u2014 Go has no counterpart; dropped (census still shows it).",
+      "inventory_status compares the full six-key projection (state/error_code/message/stale + both timestamps); last_attempt_at/last_success_at are wall-clock volatile.",
+      "push_config is compared on {type,protocol} only \u2014 capability lists, update/inventory/speech blocks are implementation-scoped.",
+      "agents/workspaces compare the common projection core plus server_session_id, activity_seq, project, raw_pane_id and the tab fields \u2014 all emitted identically by both relays. Still dropped: pane_revision (commit-epoch counter; its value depends on which internal commit the publish raced), tokens/state_labels (Go-only fields Rust does not project), and workspaces' cwd/tokens/worktree (Go hydrates cwd from tabs/panes; Rust omits it).",
+      "herdr_status compares health_check/server_protocol/server_version; per-probe feature maps and generation counters are per-implementation.",
+      "Semantic fields compare for real: attention_kind/prompt/command/options/approval_fingerprint/interaction/interaction_id/question_layout on agents+blocked+pane_content, and the activity row's kind/status/summary/details.attention_kind \u2014 event_id/pane_revision/transition_at are per-commit volatile.",
+      "Status transitions ride pane_agent_detected (final_status) \u2014 pane.updated only commits on topology-visible fields (Go's paneTopologyChanged excludes status), so the drift legs flip focused in the pane record.",
+      "Go pushes an empty activity_history at connect; drop_matches removes only the null-activities variant.",
+      "Go orders the startup burst push_config,agents,workspaces,activity_history,inventory_status; Rust sends push_config,herdr_status,workspaces,agents \u2014 unordered_types covers the interleaving.",
+      "Transition broadcasts (blocked vs activity vs agents) race across projector/journal/notice paths on both relays \u2014 collect steps carry no capture so unordered_types pools them; until matches still gate each leg's timing."
+    ],
+    "drop_matches": [
+      {
+        "type": "activity_history",
+        "contains": {
+          "activities": null
+        }
+      }
+    ]
+  },
+  "steps": [
+    {
+      "op": "expect",
+      "label": "startup-push-config",
+      "match": {
+        "type": "push_config"
+      },
+      "timeout_ms": 8000
+    },
+    {
+      "op": "expect",
+      "label": "startup-workspaces",
+      "match": {
+        "type": "workspaces",
+        "contains": {
+          "workspaces": [
+            {
+              "workspace_id": "{workspace_id}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "op": "expect",
+      "label": "startup-agents",
+      "match": {
+        "type": "agents",
+        "contains": {
+          "agents": [
+            {
+              "pane_id": "{pane_id}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "op": "settle",
+      "label": "startup-settle",
+      "ms": 600
+    },
+    {
+      "op": "fence",
+      "label": "startup-done"
+    },
+    {
+      "op": "fake_call",
+      "label": "seed-approval",
+      "method": "control.set",
+      "params": {
+        "pane_id": "{pane_id}",
+        "text": "{approval_view}"
+      }
+    },
+    {
+      "op": "fake_call",
+      "label": "block-pane",
+      "method": "control.set_pane",
+      "params": {
+        "pane_id": "{pane_id}",
+        "fields": {
+          "agent_status": "blocked"
+        }
+      }
+    },
+    {
+      "op": "fake_call",
+      "label": "emit-blocked",
+      "method": "control.emit",
+      "params": {
+        "name": "pane_agent_detected",
+        "data": {
+          "pane_id": "{pane_id}",
+          "agent": "claude",
+          "final_status": "blocked"
+        }
+      }
+    },
+    {
+      "op": "collect",
+      "label": "blocked-entry",
+      "until": {
+        "type": "blocked",
+        "contains": {
+          "pane_id": "{pane_id}",
+          "attention_kind": "approval"
+        }
+      },
+      "timeout_ms": 8000,
+      "quiesce_ms": 600
+    },
+    {
+      "op": "send",
+      "label": "read-blocked-pane",
+      "request_id": "req-rb",
+      "frame": {
+        "type": "read_pane",
+        "protocol": 3,
+        "request_id": "{request_id}",
+        "pane_id": "{pane_id}",
+        "lines": 30,
+        "format": "text",
+        "target": "{target}"
+      },
+      "capture": [
+        "pane_content",
+        "pane_unchanged"
+      ],
+      "until": {
+        "type": "pane_content"
+      },
+      "timeout_ms": 8000
+    },
+    {
+      "op": "fake_call",
+      "label": "seed-permission",
+      "method": "control.set",
+      "params": {
+        "pane_id": "{pane_id}",
+        "text": "{permission_view}"
+      }
+    },
+    {
+      "op": "fake_call",
+      "label": "unfocus-pane",
+      "method": "control.set_pane",
+      "params": {
+        "pane_id": "{pane_id}",
+        "fields": {
+          "focused": false
+        }
+      }
+    },
+    {
+      "op": "fake_call",
+      "label": "emit-drift",
+      "method": "control.emit",
+      "params": {
+        "name": "pane_updated",
+        "data": {
+          "pane": "{pane_blocked_unfocused}"
+        }
+      }
+    },
+    {
+      "op": "collect",
+      "label": "approval-drift",
+      "until": {
+        "type": "blocked",
+        "contains": {
+          "pane_id": "{pane_id}",
+          "options": [
+            "Allow once",
+            "Reject"
+          ]
+        }
+      },
+      "timeout_ms": 8000,
+      "quiesce_ms": 600
+    },
+    {
+      "op": "fake_call",
+      "label": "seed-question",
+      "method": "control.set",
+      "params": {
+        "pane_id": "{pane_id}",
+        "text": "{question_view}"
+      }
+    },
+    {
+      "op": "fake_call",
+      "label": "refocus-pane",
+      "method": "control.set_pane",
+      "params": {
+        "pane_id": "{pane_id}",
+        "fields": {
+          "focused": true
+        }
+      }
+    },
+    {
+      "op": "fake_call",
+      "label": "emit-question-drift",
+      "method": "control.emit",
+      "params": {
+        "name": "pane_updated",
+        "data": {
+          "pane": "{pane_blocked}"
+        }
+      }
+    },
+    {
+      "op": "collect",
+      "label": "question-drift",
+      "until": {
+        "type": "blocked",
+        "contains": {
+          "pane_id": "{pane_id}",
+          "attention_kind": "question"
+        }
+      },
+      "timeout_ms": 8000,
+      "quiesce_ms": 600
+    },
+    {
+      "op": "fake_call",
+      "label": "seed-done",
+      "method": "control.set",
+      "params": {
+        "pane_id": "{pane_id}",
+        "text": "{done_view}"
+      }
+    },
+    {
+      "op": "fake_call",
+      "label": "idle-pane",
+      "method": "control.set_pane",
+      "params": {
+        "pane_id": "{pane_id}",
+        "fields": {
+          "agent_status": "idle"
+        }
+      }
+    },
+    {
+      "op": "fake_call",
+      "label": "emit-idle",
+      "method": "control.emit",
+      "params": {
+        "name": "pane_agent_detected",
+        "data": {
+          "pane_id": "{pane_id}",
+          "agent": "claude",
+          "final_status": "idle"
+        }
+      }
+    },
+    {
+      "op": "collect",
+      "label": "completion",
+      "timeout_ms": 5000,
+      "quiesce_ms": 900
+    },
+    {
+      "op": "send",
+      "label": "acknowledge-done",
+      "request_id": "req-ack",
+      "frame": {
+        "type": "acknowledge_pane",
+        "protocol": 3,
+        "request_id": "{request_id}",
+        "pane_id": "{pane_id}",
+        "target": "{target}"
+      },
+      "until": {
+        "type": "command_result",
+        "request_id": "{request_id}"
+      },
+      "timeout_ms": 8000,
+      "quiesce_ms": 700
+    },
+    {
+      "op": "collect",
+      "label": "drain",
+      "timeout_ms": 2500,
+      "quiesce_ms": 800
+    }
+  ]
+}

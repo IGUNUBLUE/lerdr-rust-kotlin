@@ -14,8 +14,7 @@
   "compare": {
     "drop_types": [
       "e2ee_server_hello",
-      "action_receipt",
-      "inventory_status"
+      "action_receipt"
     ],
     "unordered_types": [
       "push_config",
@@ -47,6 +46,8 @@
       "ts",
       "idle_since",
       "last_active_at",
+      "last_attempt_at",
+      "last_success_at",
       "received_at_ms",
       "content_fingerprint",
       "last_seen_at",
@@ -75,14 +76,7 @@
         "capabilities"
       ],
       "agents": [
-        "activity_seq",
         "pane_revision",
-        "project",
-        "raw_pane_id",
-        "tab_label",
-        "tab_number",
-        "tab_order",
-        "updated_at",
         "tokens",
         "state_labels"
       ],
@@ -90,25 +84,6 @@
         "cwd",
         "tokens",
         "worktree"
-      ],
-      "activity": [
-        "project",
-        "session",
-        "session_name",
-        "host"
-      ],
-      "activity_history": [
-        "project",
-        "session",
-        "session_name",
-        "host"
-      ],
-      "pane_content": [
-        "attention_kind",
-        "command",
-        "no_echo",
-        "options",
-        "prompt"
       ]
     },
     "map_keys": [
@@ -133,11 +108,11 @@
     "async_dedupe": true,
     "notes": [
       "action_receipt is Rust's v3 dispatch-evidence addition \u2014 Go has no counterpart; dropped (census still shows it).",
-      "inventory_status is a Go-only inventory-poller frame; dropped.",
+      "inventory_status compares the full six-key projection (state/error_code/message/stale + both timestamps); last_attempt_at/last_success_at are wall-clock volatile.",
       "push_config is compared on {type,protocol} only \u2014 capability lists, update/inventory/speech blocks are implementation-scoped.",
-      "agents/workspaces compare the common projection core plus server_session_id (both relays emit it); Go-only fields (activity_seq, pane_revision, project, raw_pane_id, tab_label/number/order, cwd) are declared deltas in type_drop_keys.",
+      "agents/workspaces compare the common projection core plus server_session_id, activity_seq, project, raw_pane_id and the tab fields \u2014 all emitted identically by both relays. Still dropped: pane_revision (commit-epoch counter; its value depends on which internal commit the publish raced), tokens/state_labels (Go-only fields Rust does not project), and workspaces' cwd/tokens/worktree (Go hydrates cwd from tabs/panes; Rust omits it).",
       "herdr_status compares health_check/server_protocol/server_version; per-probe feature maps and generation counters are per-implementation.",
-      "pane_content compares content/format/pane_id/truncated; Go's attention/prompt/layout fields are a wider projection.",
+      "pane_content compares the full semantic projection for real \u2014 attention_kind/prompt/command/options/no_echo land from the shared classify+noecho pass.",
       "Go pushes an empty activity_history at connect; drop_matches removes only the null-activities variant.",
       "Go orders the startup burst push_config,agents,workspaces,activity_history,inventory_status; Rust sends push_config,herdr_status,workspaces,agents \u2014 unordered_types covers the interleaving."
     ],

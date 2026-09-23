@@ -58,7 +58,11 @@ Exit codes: `0` identical, `1` normalized streams differ, `2` infra failure.
    `\x00`, hence the `\u0000` escapes in `state.json`).
 3. Each relay gets an isolated side dir (`XDG_CONFIG_HOME`/`XDG_DATA_HOME`/
    `XDG_CACHE_HOME`, runtime dir, device-auth store) plus a **shared** `$HOME`
-   so `list_directories` output is byte-identical.
+   so `list_directories` output is byte-identical. Relays start **just
+   before their own run** — `control.emit` reaches every held
+   `events.subscribe` connection, so a relay already up during the other
+   side's run would process those transitions and enter its own run with
+   pre-advanced ledgers/journal.
 4. `lerdr-shadow run` performs the real E2EE handshake (bootstrap token =
    `LERDR_RELAY_TOKEN`, 32 bytes) against `/ws`, then executes `steps`.
 5. `lerdr-shadow diff` attributes frames to step buckets or the async pool,
@@ -68,7 +72,7 @@ Exit codes: `0` identical, `1` normalized streams differ, `2` infra failure.
 
 | knob | effect |
 |---|---|
-| `drop_types` | whole frame types excluded (one-sided: `action_receipt`, `inventory_status`; transport: `e2ee_server_hello`) |
+| `drop_types` | whole frame types excluded (one-sided: `action_receipt`; transport: `e2ee_server_hello`) |
 | `drop_matches` | predicate drops — a `{type, contains}` clause; kills Go's empty startup `activity_history` only when `activities` is null |
 | `unordered_types` | scheduler-owned types pool as a sorted multiset, **preempting** `request_id` attribution (a `capture` list on the step wins) |
 | `drop_keys` | keys removed at any depth (timestamps, generated `id`s, echoed `target`) |
@@ -109,22 +113,36 @@ these actions.
 
 ## Current result
 
-`core` — `--mode self` → **IDENTICAL**; `--mode go` → DIFFERs on exactly one
-declared line: `agents[*].server_session_id` (`"primary"` on Go, absent on
-Rust — `topology.rs` does not fill it yet). Everything else identical.
+`core` — `--mode self` and `--mode go` → **IDENTICAL**, including the
+semantic `pane_content` fields and the `activity`/`activity_history`
+attribution rows (`project`/`host`/`session`).
 
 `watch` — `--mode self` and `--mode go` → **IDENTICAL**: the full
 `watch_pane` → `pane_content{ack_required}` → `pane_applied` → mutate →
 `pane_delta` → ack → `unwatch_pane` lifecycle matches, including identical
-`segments` (`[{copy_lines:12},{text:"appended line 13\n"}]`).
+`segments` (`[{copy_lines:12},{text:"appended line 13\n"}]`) and the full
+classification/no-echo projection on both frame types.
+
+`semantic` — `--mode self` and `--mode go` → **IDENTICAL**: the blocked
+lifecycle (approval → drift → question → idle completion) matches
+frame-for-frame — `blocked`/`agents`/`pane_content` carry the real
+`attention_kind`/`prompt`/`command`/`options`/`approval_fingerprint`/
+`interaction`/`interaction_id`/`question_layout`, and the transition
+journal emits identical `blocked`/`question`/`finished` activity rows.
 
 Documented deltas:
 
 - `action_receipt` — Rust-only v3 dispatch evidence (dropped, still censused).
-- `inventory_status` — Go-only poller frame (dropped).
-- `push_config`/`herdr_status`/`agents`/`workspaces`/`pane_content`/`activity*`
-  — per-type field deltas via `type_drop_keys` (see notes in `core.json`).
-- `pane_delta.format` — Go's `paneDeltaResponse` copies it; Rust omits it.
+- `inventory_status` — compared for real: the full six-key projection
+  (state/error_code/message/stale + both timestamps); only
+  `last_attempt_at`/`last_success_at` are key-dropped (wall-clock volatile).
+- `push_config`/`herdr_status` — implementation-scoped capability/update
+  payloads via `type_drop_keys` (see notes in `core.json`).
+- `agents[*].{pane_revision,tokens,state_labels}` — `pane_revision` is the
+  per-commit epoch counter (its value depends on which internal commit a
+  publish raced); `tokens`/`state_labels` are Go-only fields.
+- `workspaces[*].{cwd,tokens,worktree}` — Go hydrates `cwd` from tabs/panes
+  and emits `tokens`/`worktree`; Rust omits all three.
 - Go emits an empty `activity_history` at connect (predicate-dropped).
 - Startup burst order differs (push_config first vs unordered set) — the pool.
 
@@ -132,12 +150,16 @@ Documented deltas:
 
 - `lerdr-relay` must build cleanly; if a sibling workstream is mid-edit on
   `lerdr-coord`, `--skip-build` reuses the last good `target/debug` binaries.
-- The fake socket is shared between relays *and* runs sequentially — both
-  relays' `events.subscribe` connections see every `control.emit`
-  (`delivered` counts subscribers, typically 2). A `control.set` during one
-  side's run persists into the other's: mutation scenarios must seed the
-  pane to a fixed baseline with `control.set` before the behaviour under
-  test (`watch.json` does this). Other fake state stays immutable.
+- The fake socket is shared between relays; a `control.emit` during one
+  side's run is also seen by the *already-run* side (`delivered` counts
+  subscribers) — harmless, its trace is captured. The not-yet-run side is
+  never up during another side's run (relays start just before their own
+  client connects). A `control.set`/`control.set_pane` during one side's
+  run persists into the other's: mutation scenarios must seed the pane to
+  a fixed baseline before the behaviour under test (`watch.json` does
+  this) and leave compared topology fields (`agent_status`, `focused`,
+  `revision`) at their seed values at the end — the second relay's
+  startup burst must observe the same topology the first did.
 - Deltas need real deltas: `panedelta` requires a ≥3-line copy anchor
   (`MINIMUM_COPY_LINES`) and charges 64 B/segment in `efficient` — small or
   scattered edits legitimately produce a full `pane_content` on both relays.

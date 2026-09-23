@@ -1945,7 +1945,7 @@ mod tests {
     use lerdr_herdr::{Client, SessionSnapshot};
 
     use super::*;
-    use crate::actions::{leases::Leases, profiles::Resolver, Acks};
+    use crate::actions::{leases::Leases, profiles::Resolver};
     use crate::topology::Topology;
     use crate::TopologyActor;
 
@@ -2069,7 +2069,6 @@ mod tests {
         ActionContext {
             handle: TopologyActor::spawn(client.clone(), CancellationToken::new()),
             leases: Leases::new(client.clone()),
-            acks: Acks::default(),
             profiles: Resolver::with_config_home(tempfile::tempdir().expect("tempdir").keep()),
             questions: crate::actions::questions::Questions::default(),
             uploads: crate::actions::uploads::Uploads::new(

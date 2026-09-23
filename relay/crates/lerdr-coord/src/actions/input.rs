@@ -625,7 +625,6 @@ mod tests {
                 tokio_util::sync::CancellationToken::new(),
             ),
             leases: crate::actions::leases::Leases::new(client.clone()),
-            acks: crate::actions::Acks::default(),
             profiles: crate::actions::profiles::Resolver::with_config_home(
                 tempfile::tempdir().expect("tempdir").keep(),
             ),

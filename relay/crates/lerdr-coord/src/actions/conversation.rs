@@ -30,7 +30,7 @@ const ACTION: &str = "get_conversation_history";
 /// `Generation`; the topology projection has no equivalent counter, so the
 /// tuple alone carries the check here.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ConversationTuple {
+pub(crate) struct ConversationTuple {
     agent: String,
     cwd: String,
     project: ProjectContext,
@@ -40,7 +40,8 @@ struct ConversationTuple {
 /// `projectContextForAgent` — `NormalizeProjectContext(agent.Agent, …)` over
 /// the pane's cwd + foreground hint. `AgentInfo.agent` is `Option` where the
 /// oracle's `Agent` is a plain string; `""` normalizes the same.
-fn conversation_tuple(agent: &AgentInfo) -> ConversationTuple {
+/// `pub(crate)` — the projector's finished-branch fence re-checks it.
+pub(crate) fn conversation_tuple(agent: &AgentInfo) -> ConversationTuple {
     let provider = agent
         .agent
         .clone()
@@ -67,8 +68,9 @@ fn conversation_tuple(agent: &AgentInfo) -> ConversationTuple {
 
 /// The relay's `$HOME` — `os.UserHomeDir`. Reader env overrides
 /// (`*_CONFIG_DIR`, `HERDR_*`/`LERDR_*` lists) are read inside
-/// `crate::conversation`.
-fn home_dir() -> PathBuf {
+/// `crate::conversation`. `pub(crate)` — the transition projector's
+/// shared `Reader` is rooted the same way.
+pub(crate) fn home_dir() -> PathBuf {
     std::env::var_os("HOME").map_or_else(PathBuf::new, PathBuf::from)
 }
 
