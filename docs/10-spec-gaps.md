@@ -780,6 +780,8 @@ actually implements landed here.
 - Housekeeping: `HomeScreenScreenshotTest` stray NUL bytes →
   `\u0000` escapes (production group keys use NUL separators).
 
-Genuinely remaining: `deploy_app_update` (phone-side app deploy —
-the oracle's flow is desktop-origin), plus product-level items the
-oracle never shipped (voice, OSC-52, hardware keys, pane-swipe).
+Genuinely remaining: `deploy_app_update` — wire-catalog command with
+no frontend consumer even in the oracle (appears only in its
+CHANGELOG/tests); the deploy source is relay-side. Plus product-level
+items the oracle never shipped (voice, OSC-52, hardware keys,
+pane-swipe).
