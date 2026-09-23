@@ -270,11 +270,23 @@ impl SubscribeError {
     /// subscription entry (Herdr builds without move_block reject the whole
     /// `events.subscribe` when the name is present).
     pub fn is_workspace_reordered_rejected(&self) -> bool {
-        self.pre_dispatch
-            && self.code.as_deref() == Some("invalid_request")
-            && self
-                .message
-                .contains("unknown variant `workspace.reordered`")
+        self.rejected_variant() == Some("workspace.reordered")
+    }
+
+    /// The subscription variant a pre-dispatch `invalid_request` refusal
+    /// rejected — the `unknown variant \`X\`` inside the message. Herdr
+    /// rejects the whole `events.subscribe` when one entry is unknown and
+    /// names the first offender; the caller drops it and retries, so
+    /// `Some` means "retry without that entry", not "failed".
+    pub fn rejected_variant(&self) -> Option<&str> {
+        if !(self.pre_dispatch && self.code.as_deref() == Some("invalid_request")) {
+            return None;
+        }
+        const MARKER: &str = "unknown variant `";
+        let start = self.message.find(MARKER)? + MARKER.len();
+        let rest = &self.message[start..];
+        let end = rest.find('`')?;
+        Some(&rest[..end])
     }
 }
 
@@ -345,4 +357,62 @@ pub enum BootstrapError {
     Subscribe(#[from] SubscribeError),
     #[error("session.snapshot: {0}")]
     Snapshot(#[from] HerdrError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejected_variant_parses_unknown_variant_refusals() {
+        // The pre-dispatch `invalid_request` refusal naming the offender —
+        // Herdr's `events.subscribe` decoder error verbatim.
+        let err = SubscribeError::refused(
+            "invalid_request".to_owned(),
+            "invalid request: unknown variant `pane.output_changed`".to_owned(),
+            true,
+        );
+        assert_eq!(err.rejected_variant(), Some("pane.output_changed"));
+        assert!(!err.is_workspace_reordered_rejected());
+
+        let err = SubscribeError::refused(
+            "invalid_request".to_owned(),
+            "invalid request: unknown variant `workspace.reordered`".to_owned(),
+            true,
+        );
+        assert_eq!(err.rejected_variant(), Some("workspace.reordered"));
+        assert!(err.is_workspace_reordered_rejected());
+    }
+
+    #[test]
+    fn rejected_variant_ignores_other_failures() {
+        // Post-dispatch — bytes went out; nothing to retry safely.
+        let mut err = SubscribeError::refused(
+            "invalid_request".to_owned(),
+            "invalid request: unknown variant `workspace.reordered`".to_owned(),
+            false,
+        );
+        assert_eq!(err.rejected_variant(), None);
+
+        // A different refusal code naming the variant — not the decoder's
+        // unknown-variant rejection.
+        err = SubscribeError::refused(
+            "unknown_subscription".to_owned(),
+            "unknown variant `workspace.reordered`".to_owned(),
+            true,
+        );
+        assert_eq!(err.rejected_variant(), None);
+
+        // The decoder complaint about something else entirely.
+        err = SubscribeError::refused(
+            "invalid_request".to_owned(),
+            "invalid request: subscriptions must not be empty".to_owned(),
+            true,
+        );
+        assert_eq!(err.rejected_variant(), None);
+
+        // Transport failure — no refusal at all.
+        let err = SubscribeError::transport(HerdrError::not_started_msg("dial failed"));
+        assert_eq!(err.rejected_variant(), None);
+    }
 }

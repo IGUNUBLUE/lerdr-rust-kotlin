@@ -94,6 +94,15 @@ async fn schema_path_adjudicates_tracked_methods() {
         report.feature(features::WORKSPACE_REORDERED).state,
         FeatureState::Supported
     );
+    // `pane.output_changed` is not in the subscription table.
+    assert_eq!(
+        report.feature(features::PANE_OUTPUT_CHANGED).state,
+        FeatureState::Unsupported
+    );
+    assert_eq!(
+        report.feature(features::PANE_OUTPUT_CHANGED).reason,
+        "schema_absent"
+    );
     assert_eq!(report.server_version, "0.9.1");
     assert_eq!(report.server_protocol, 22);
     assert_eq!(report.endpoint_protocol_generation, Some(3));
@@ -103,6 +112,75 @@ async fn schema_path_adjudicates_tracked_methods() {
     );
     // The schema path burns no probe sockets — one ping only.
     assert_eq!(server.accept_count(), 1);
+}
+
+/// Herdr 0.9.1's exact shape: `pane_output_changed` appears in the
+/// streamed-event payload table but the `Subscription` variant does not
+/// exist — the live socket rejects it as an unknown variant. The schema
+/// verdict must come from the subscription table alone, so the
+/// `events.subscribe` handshake never pays the doomed round-trip.
+#[tokio::test]
+async fn output_changed_event_payload_without_subscription_is_unsupported() {
+    let server = FakeHerdr::start(Action::Reply(pong())).await;
+    let schema = schema_with(
+        &["ping", "events.subscribe"],
+        &["pane.updated", "workspace.reordered"],
+        &["pane_output_changed", "pane_updated"],
+    );
+    let client = test_client(&server, SchemaSource::Static(schema));
+
+    let report = client.collect_capabilities().await;
+    assert_eq!(
+        report.feature(features::PANE_OUTPUT_CHANGED).state,
+        FeatureState::Unsupported,
+        "the EventData listing is not subscription evidence"
+    );
+    assert_eq!(
+        report.feature(features::PANE_OUTPUT_CHANGED).reason,
+        "schema_absent"
+    );
+    assert!(!client.should_attempt_pane_output_changed());
+
+    // The consult suppresses the attempt — the handshake goes out clean.
+    // (`reqs[0]` is the collect's ping; the subscribe is `reqs[1]`.)
+    server.push(Action::Stream(vec![support::subscription_started_line()]));
+    let stream = client.subscribe_topology().await.unwrap();
+    drop(stream);
+    let reqs = server.requests();
+    let types: Vec<&str> = reqs[1].params["subscriptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["type"].as_str())
+        .collect();
+    assert!(!types.contains(&"pane.output_changed"));
+    assert!(types.contains(&"workspace.reordered"));
+    // A skipped attempt probed nothing — the atomic stays "not probed".
+    assert_eq!(client.pane_output_changed_supported(), None);
+}
+
+/// When the schema does list the `pane.output_changed` subscription
+/// variant, it is adjudicated like `workspace.reordered`.
+#[tokio::test]
+async fn output_changed_subscription_in_schema_is_supported() {
+    let server = FakeHerdr::start(Action::Reply(pong())).await;
+    let schema = schema_with(
+        &["ping", "events.subscribe"],
+        &["pane.updated", "pane.output_changed"],
+        &[],
+    );
+    let client = test_client(&server, SchemaSource::Static(schema));
+
+    let report = client.collect_capabilities().await;
+    assert_eq!(
+        report.feature(features::PANE_OUTPUT_CHANGED).state,
+        FeatureState::Supported
+    );
+    assert_eq!(
+        report.feature(features::PANE_OUTPUT_CHANGED).reason,
+        "schema_advertised"
+    );
+    assert!(client.should_attempt_pane_output_changed());
 }
 
 #[tokio::test]
@@ -276,6 +354,18 @@ async fn workspace_reordered_subscription_outcome_overrides_schema() {
     let stream = client.subscribe_topology().await.unwrap();
     drop(stream);
     assert_eq!(client.workspace_reordered_supported(), Some(true));
+    // The schema verdict does not exist until `collect_capabilities`
+    // runs below — this subscribe is pre-adjudication, so
+    // `pane.output_changed` rides and is acknowledged.
+    let reqs = server.requests();
+    let types: Vec<&str> = reqs[0].params["subscriptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["type"].as_str())
+        .collect();
+    assert!(types.contains(&"pane.output_changed"));
+    assert_eq!(client.pane_output_changed_supported(), Some(true));
 
     let report = client.collect_capabilities().await;
     assert_eq!(
@@ -284,6 +374,16 @@ async fn workspace_reordered_subscription_outcome_overrides_schema() {
     );
     assert_eq!(
         report.feature(features::WORKSPACE_REORDERED).reason,
+        "subscription_acknowledged"
+    );
+    // The same overlay rule covers `pane.output_changed`: the schema's
+    // `schema_absent` loses to the handshake's observed acceptance.
+    assert_eq!(
+        report.feature(features::PANE_OUTPUT_CHANGED).state,
+        FeatureState::Supported
+    );
+    assert_eq!(
+        report.feature(features::PANE_OUTPUT_CHANGED).reason,
         "subscription_acknowledged"
     );
 }
@@ -311,7 +411,9 @@ async fn subscribe_skips_reordered_when_ledger_knows_unsupported() {
         !types.contains(&"workspace.reordered"),
         "known-unsupported variant must not be re-offered: {types:?}"
     );
-    assert_eq!(types.len(), 20);
+    // The other optional entry is unjudged — it still rides.
+    assert!(types.contains(&"pane.output_changed"));
+    assert_eq!(types.len(), 21);
     // The variant was skipped on the ledger's verdict, not rejected by
     // this bootstrap — the probe atomic stays "not probed" while the
     // published verdict keeps the observed evidence.
@@ -320,6 +422,7 @@ async fn subscribe_skips_reordered_when_ledger_knows_unsupported() {
         client.feature(features::WORKSPACE_REORDERED).state,
         FeatureState::Unsupported
     );
+    assert_eq!(client.pane_output_changed_supported(), Some(true));
 }
 
 #[tokio::test]
@@ -384,6 +487,8 @@ async fn subscribe_rejection_marks_reordered_unsupported() {
     let stream = client.subscribe_topology().await.unwrap();
     drop(stream);
     assert_eq!(client.workspace_reordered_supported(), Some(false));
+    // `pane.output_changed` rode the retry and was acknowledged there.
+    assert_eq!(client.pane_output_changed_supported(), Some(true));
 
     let report = client.collect_capabilities().await;
     assert_eq!(
@@ -393,6 +498,14 @@ async fn subscribe_rejection_marks_reordered_unsupported() {
     assert_eq!(
         report.feature(features::WORKSPACE_REORDERED).reason,
         "subscription_rejected"
+    );
+    assert_eq!(
+        report.feature(features::PANE_OUTPUT_CHANGED).state,
+        FeatureState::Supported
+    );
+    assert_eq!(
+        report.feature(features::PANE_OUTPUT_CHANGED).reason,
+        "subscription_acknowledged"
     );
 }
 

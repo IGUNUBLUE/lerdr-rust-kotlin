@@ -96,11 +96,37 @@ const SINGLEFLIGHT_METHODS: &[&str] = &[
     "tab.list",
 ];
 
-/// `workspace.reordered` subscription capability — probed optimistically on
+/// Optional-subscription capability tri-states — probed optimistically on
 /// each bootstrap, matching the Go client's reset→attempt→note lifecycle.
-const WS_REORDERED_UNKNOWN: u8 = 0;
-const WS_REORDERED_SUPPORTED: u8 = 1;
-const WS_REORDERED_UNSUPPORTED: u8 = 2;
+const SUBSCRIPTION_UNKNOWN: u8 = 0;
+const SUBSCRIPTION_SUPPORTED: u8 = 1;
+const SUBSCRIPTION_UNSUPPORTED: u8 = 2;
+
+/// The optional subscription variants one `subscribe_topology` attempt
+/// still carries — entries drop out as Herdr's `unknown variant` refusals
+/// name them, so a server accepting the reduced set stops the retry.
+#[derive(Clone, Copy)]
+struct SubscriptionAttempt {
+    workspace_reordered: bool,
+    pane_output_changed: bool,
+}
+
+impl SubscriptionAttempt {
+    /// Drop the entry Herdr's `unknown variant` refusal named. `false`
+    /// when the refusal names a variant this attempt is not requesting —
+    /// nothing left to retry, the error surfaces.
+    fn drop_rejected(&mut self, variant: &str) -> bool {
+        if variant == features::WORKSPACE_REORDERED && self.workspace_reordered {
+            self.workspace_reordered = false;
+            return true;
+        }
+        if variant == features::PANE_OUTPUT_CHANGED && self.pane_output_changed {
+            self.pane_output_changed = false;
+            return true;
+        }
+        false
+    }
+}
 
 struct ClientInner {
     transport: Arc<dyn Transport>,
@@ -110,6 +136,7 @@ struct ClientInner {
     seq: AtomicU64,
     flights: Singleflight,
     workspace_reordered: AtomicU8,
+    pane_output_changed: AtomicU8,
     /// The capability ledger — last published report plus observed notes.
     /// `std::sync::Mutex`: mutations are short map writes, never held across
     /// an `.await`.
@@ -138,7 +165,8 @@ impl Client {
                 config,
                 seq: AtomicU64::new(0),
                 flights: Singleflight::default(),
-                workspace_reordered: AtomicU8::new(WS_REORDERED_UNKNOWN),
+                workspace_reordered: AtomicU8::new(SUBSCRIPTION_UNKNOWN),
+                pane_output_changed: AtomicU8::new(SUBSCRIPTION_UNKNOWN),
                 capabilities: std::sync::Mutex::new(CapabilityLedger::default()),
                 capability_refresh: tokio::sync::Mutex::new(()),
             }),
@@ -482,9 +510,16 @@ impl Client {
             {
                 Ok(r) => return Ok(r.read),
                 Err(e) => {
-                    let retry = self.inner.config.read_retry
-                        && attempt == 0
-                        && e.phase() != DispatchPhase::Refused;
+                    // `stale_content` is a refusal but a transient one —
+                    // the fenced revision raced an in-flight write, so a
+                    // re-read lands on the settled write (Herdr's seqlock
+                    // contract). One retry, on top of the transport-level
+                    // `read_retry` rule.
+                    let stale = e.refusal_code() == Some("stale_content");
+                    let retry = attempt == 0
+                        && (stale
+                            || (self.inner.config.read_retry
+                                && e.phase() != DispatchPhase::Refused));
                     if !retry {
                         return Err(e);
                     }
@@ -737,55 +772,91 @@ impl Client {
         ))
     }
 
-    /// The topology subscription set with the `workspace.reordered` fallback:
-    /// attempt including it while its capability is not known-unsupported
-    /// (`ShouldAttemptWorkspaceReordered`), and on Herdr's pre-dispatch
-    /// rejection resubscribe without it — the Go client's `Bootstrap`
-    /// behavior. The attempt's outcome is recorded into the ledger
+    /// The topology subscription set with the optional-variant fallback:
+    /// attempt each of `workspace.reordered` / `pane.output_changed` while
+    /// its capability is not known-unsupported
+    /// (`ShouldAttemptWorkspaceReordered` generalized), and on Herdr's
+    /// `unknown variant` refusal resubscribe with the named entry dropped
+    /// — the Go client's `Bootstrap` retry looped over both optional
+    /// entries. Every outcome is recorded into the ledger
     /// (`subscription_acknowledged` / `subscription_rejected`).
     ///
-    /// Called standalone, the ledger's published verdict gates the attempt —
-    /// a schema `schema_absent` or an earlier same-server rejection skips
-    /// the doomed round-trip. Called through [`Client::bootstrap_with`] the
-    /// live verdicts have just been invalidated (`reconnect_required`), so
-    /// the consult reads `unknown` and the variant is re-probed — the
-    /// oracle's reset→attempt ordering verbatim.
+    /// Called standalone, the ledger's published verdict gates each
+    /// attempt — a schema `schema_absent` or an earlier same-server
+    /// rejection skips the doomed round-trip (0.9.1 lists
+    /// `pane_output_changed` among streamed events but ships no matching
+    /// `Subscription` variant, so the schema gate is what keeps the
+    /// request clean there). Called through [`Client::bootstrap_with`]
+    /// the live verdicts have just been invalidated
+    /// (`reconnect_required`), so `workspace.reordered`'s consult reads
+    /// `unknown` and the variant is re-probed — the oracle's
+    /// reset→attempt ordering verbatim. `pane.output_changed` is *not* a
+    /// live verdict — its published schema adjudication stays consulted
+    /// across reconnects.
     pub async fn subscribe_topology(&self) -> Result<EventStream, SubscribeError> {
-        let attempt = self.should_attempt_workspace_reordered();
-        // `None`/`Some(_)` from `workspace_reordered_supported` describes
-        // this bootstrap's probe — a skipped attempt probed nothing.
+        let mut attempt = SubscriptionAttempt {
+            workspace_reordered: self.should_attempt_workspace_reordered(),
+            pane_output_changed: self.should_attempt_pane_output_changed(),
+        };
+        // `None`/`Some(_)` from the `*_supported` accessors describes this
+        // bootstrap's probe — a skipped attempt probed nothing.
         self.inner
             .workspace_reordered
-            .store(WS_REORDERED_UNKNOWN, Ordering::Relaxed);
-        match self
-            .subscribe_events(&topology_subscriptions(attempt))
-            .await
-        {
-            Ok(stream) => {
-                if attempt {
-                    self.inner
-                        .workspace_reordered
-                        .store(WS_REORDERED_SUPPORTED, Ordering::Relaxed);
-                    self.note_feature(
-                        features::WORKSPACE_REORDERED,
-                        FeatureState::Supported,
-                        "subscription_acknowledged",
-                    );
+            .store(SUBSCRIPTION_UNKNOWN, Ordering::Relaxed);
+        self.inner
+            .pane_output_changed
+            .store(SUBSCRIPTION_UNKNOWN, Ordering::Relaxed);
+        loop {
+            match self
+                .subscribe_events(&topology_subscriptions(
+                    attempt.workspace_reordered,
+                    attempt.pane_output_changed,
+                ))
+                .await
+            {
+                Ok(stream) => {
+                    if attempt.workspace_reordered {
+                        self.inner
+                            .workspace_reordered
+                            .store(SUBSCRIPTION_SUPPORTED, Ordering::Relaxed);
+                        self.note_feature(
+                            features::WORKSPACE_REORDERED,
+                            FeatureState::Supported,
+                            "subscription_acknowledged",
+                        );
+                    }
+                    if attempt.pane_output_changed {
+                        self.inner
+                            .pane_output_changed
+                            .store(SUBSCRIPTION_SUPPORTED, Ordering::Relaxed);
+                        self.note_feature(
+                            features::PANE_OUTPUT_CHANGED,
+                            FeatureState::Supported,
+                            "subscription_acknowledged",
+                        );
+                    }
+                    return Ok(stream);
                 }
-                Ok(stream)
+                Err(err) => {
+                    let Some(variant) = err.rejected_variant() else {
+                        return Err(err);
+                    };
+                    if !attempt.drop_rejected(variant) {
+                        // The refusal named an entry we are not
+                        // requesting — nothing to drop, so this is a
+                        // genuine handshake failure, not a capability
+                        // negotiation.
+                        return Err(err);
+                    }
+                    let flag = if variant == features::WORKSPACE_REORDERED {
+                        &self.inner.workspace_reordered
+                    } else {
+                        &self.inner.pane_output_changed
+                    };
+                    flag.store(SUBSCRIPTION_UNSUPPORTED, Ordering::Relaxed);
+                    self.note_feature(variant, FeatureState::Unsupported, "subscription_rejected");
+                }
             }
-            Err(err) if attempt && err.is_workspace_reordered_rejected() => {
-                self.inner
-                    .workspace_reordered
-                    .store(WS_REORDERED_UNSUPPORTED, Ordering::Relaxed);
-                self.note_feature(
-                    features::WORKSPACE_REORDERED,
-                    FeatureState::Unsupported,
-                    "subscription_rejected",
-                );
-                self.subscribe_events(&topology_subscriptions(false)).await
-            }
-            Err(err) => Err(err),
         }
     }
 
@@ -850,8 +921,20 @@ impl Client {
     /// (Some(false)), or not yet probed (None) by the last bootstrap.
     pub fn workspace_reordered_supported(&self) -> Option<bool> {
         match self.inner.workspace_reordered.load(Ordering::Relaxed) {
-            WS_REORDERED_SUPPORTED => Some(true),
-            WS_REORDERED_UNSUPPORTED => Some(false),
+            SUBSCRIPTION_SUPPORTED => Some(true),
+            SUBSCRIPTION_UNSUPPORTED => Some(false),
+            _ => None,
+        }
+    }
+
+    /// Whether `pane.output_changed` was confirmed (Some(true)), rejected
+    /// (Some(false)), or not yet probed (None) by the last topology
+    /// subscription. Distinct from the schema's `pane_output_changed`
+    /// event payload — this reports the *subscription* outcome.
+    pub fn pane_output_changed_supported(&self) -> Option<bool> {
+        match self.inner.pane_output_changed.load(Ordering::Relaxed) {
+            SUBSCRIPTION_SUPPORTED => Some(true),
+            SUBSCRIPTION_UNSUPPORTED => Some(false),
             _ => None,
         }
     }
@@ -887,6 +970,14 @@ impl Client {
     /// `ShouldAttemptWorkspaceReordered` — attempt unless known-unsupported.
     pub fn should_attempt_workspace_reordered(&self) -> bool {
         self.feature(features::WORKSPACE_REORDERED).state != FeatureState::Unsupported
+    }
+
+    /// Same consult for `pane.output_changed` — attempt unless
+    /// known-unsupported. The published schema adjudication counts here:
+    /// `schema_absent` (0.9.1's event-payload-only listing) suppresses the
+    /// attempt entirely, so the doomed round-trip is never paid.
+    pub fn should_attempt_pane_output_changed(&self) -> bool {
+        self.feature(features::PANE_OUTPUT_CHANGED).state != FeatureState::Unsupported
     }
 
     /// `InvalidateLiveCapabilities` — run at the top of every bootstrap.

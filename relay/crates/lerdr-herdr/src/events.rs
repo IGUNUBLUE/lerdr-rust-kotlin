@@ -254,11 +254,18 @@ impl Serialize for Subscription {
     }
 }
 
-/// The relay's topology subscription set — exactly the Go client's
-/// `topologySubscriptions`: 20 lifecycle events plus `workspace.reordered`
-/// gated on the capability probe (older Herdr builds reject the whole
-/// `events.subscribe` when the name is present).
-pub fn topology_subscriptions(include_workspace_reordered: bool) -> Vec<Subscription> {
+/// The relay's topology subscription set — the Go client's
+/// `topologySubscriptions` (20 lifecycle events) plus two gated optional
+/// entries: `workspace.reordered` (older Herdr builds reject the whole
+/// `events.subscribe` when the name is present) and `pane.output_changed`
+/// (only present on builds whose schema exposes the subscription variant —
+/// 0.9.1 lists the `pane_output_changed` event payload but ships no
+/// `pane.output_changed` subscription, so the capability consult keeps it
+/// off the wire there).
+pub fn topology_subscriptions(
+    include_workspace_reordered: bool,
+    include_pane_output_changed: bool,
+) -> Vec<Subscription> {
     const NAMES: &[&str] = &[
         "pane.created",
         "pane.closed",
@@ -284,6 +291,9 @@ pub fn topology_subscriptions(include_workspace_reordered: bool) -> Vec<Subscrip
     let mut subs: Vec<Subscription> = NAMES.iter().map(|n| Subscription::Named(n)).collect();
     if include_workspace_reordered {
         subs.push(Subscription::Named("workspace.reordered"));
+    }
+    if include_pane_output_changed {
+        subs.push(Subscription::Named("pane.output_changed"));
     }
     subs
 }
@@ -909,8 +919,8 @@ mod tests {
 
     #[test]
     fn topology_subscriptions_reordered_gate() {
-        let with = topology_subscriptions(true);
-        let without = topology_subscriptions(false);
+        let with = topology_subscriptions(true, false);
+        let without = topology_subscriptions(false, false);
         assert_eq!(with.len(), without.len() + 1);
         assert!(with
             .iter()
@@ -918,6 +928,23 @@ mod tests {
         assert!(!without
             .iter()
             .any(|s| matches!(s, Subscription::Named("workspace.reordered"))));
+    }
+
+    /// `pane.output_changed` rides the same bounded-set handshake as
+    /// `workspace.reordered` — gated independently, absent by default.
+    #[test]
+    fn topology_subscriptions_output_changed_gate() {
+        let with = topology_subscriptions(false, true);
+        let without = topology_subscriptions(false, false);
+        assert_eq!(with.len(), without.len() + 1);
+        assert!(with
+            .iter()
+            .any(|s| matches!(s, Subscription::Named("pane.output_changed"))));
+        assert!(!without
+            .iter()
+            .any(|s| matches!(s, Subscription::Named("pane.output_changed"))));
+        // Both optionals together extend the 20-name base by two.
+        assert_eq!(topology_subscriptions(true, true).len(), without.len() + 2);
     }
 
     #[tokio::test]

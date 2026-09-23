@@ -52,6 +52,12 @@ pub mod features {
     pub const WORKSPACE_MOVE_BLOCK: &str = "workspace.move_block";
     /// `workspace.reordered` subscription/event variant.
     pub const WORKSPACE_REORDERED: &str = "workspace.reordered";
+    /// `pane.output_changed` subscription variant — the event's
+    /// `events.subscribe` entry, not its `EventData` payload: 0.9.1 lists
+    /// `pane_output_changed` among streamed events but has no matching
+    /// `Subscription` variant, so only the subscription table counts as
+    /// evidence the server will accept it.
+    pub const PANE_OUTPUT_CHANGED: &str = "pane.output_changed";
     /// `pane.read` method.
     pub const PANE_READ: &str = "pane.read";
     /// `tab.move` method.
@@ -752,6 +758,26 @@ pub(crate) async fn collect_capabilities(client: &Client) -> CapabilityReport {
             };
             next.features
                 .insert(features::WORKSPACE_REORDERED.to_owned(), reordered);
+            // `pane.output_changed` — adjudicated on the *subscription*
+            // table alone: 0.9.1 ships `pane_output_changed` in `EventData`
+            // but no matching `Subscription` variant (the live server
+            // rejects it as an unknown variant), so `supports_event`'s
+            // event-table leg would be a false positive here.
+            let output_changed = if registry.supports_subscription(features::PANE_OUTPUT_CHANGED) {
+                FeatureEvidence {
+                    state: FeatureState::Supported,
+                    reason: "schema_advertised".to_owned(),
+                    generation: 0,
+                }
+            } else {
+                FeatureEvidence {
+                    state: FeatureState::Unsupported,
+                    reason: "schema_absent".to_owned(),
+                    generation: 0,
+                }
+            };
+            next.features
+                .insert(features::PANE_OUTPUT_CHANGED.to_owned(), output_changed);
         }
         None => {
             // Probe fallback — schema absent or untrusted. Reusable
