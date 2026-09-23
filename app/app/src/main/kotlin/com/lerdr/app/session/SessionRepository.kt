@@ -34,7 +34,9 @@ import lerdr.core.conversation.ConversationPageRequest
 import lerdr.core.conversation.ConversationProjector
 import lerdr.core.data.CredentialEnrollment
 import lerdr.core.data.CredentialStore
+import lerdr.core.data.DeviceRole
 import lerdr.core.data.RelayDeviceAuth
+import lerdr.core.data.RelayDeviceCredential
 import lerdr.core.data.RelayEndpoint
 import lerdr.core.data.RelayRegistry
 import lerdr.core.data.fromFinish
@@ -227,6 +229,20 @@ class SessionRepository @Inject constructor(
         val since = synchronized(lock) { hiddenSince }
         return since > 0 && System.currentTimeMillis() - since < PANE_LEASE_HIDDEN_GRACE_MS
     }
+
+    /**
+     * This device's enrolled role on the relay — the oracle's
+     * `readOnlyRelayIds` source. Only a stored credential carries a role;
+     * invitations and unpaired relays return null.
+     */
+    fun deviceRole(relayId: String): DeviceRole? =
+        (authByRelay[relayId] as? RelayDeviceCredential)?.role
+
+    /**
+     * The oracle's `readOnly` gate (fail-closed): mutating UI enables only
+     * when the enrolled role is proven CONTROLLER.
+     */
+    fun canControl(relayId: String): Boolean = deviceRole(relayId) == DeviceRole.CONTROLLER
 
     /** `revalidateConnections` — foreground/wake/network-restore probe. */
     fun revalidateAll() {
