@@ -37,6 +37,7 @@
 
 mod actions;
 mod actor;
+mod annotations;
 mod classify;
 pub mod conversation;
 mod fingerprint;
@@ -53,6 +54,7 @@ mod watches;
 pub use actions::speech::{speech_voices_cli, SpeechCliError};
 pub use actor::Invalidation;
 pub use actor::{TopologyActor, TopologyHandle};
+pub use annotations::{update_window_title, ClientCountLookup};
 pub use fingerprint::content_fingerprint;
 pub use router::{ClientSinkLookup, HerdRouter, HerdRouterFactory};
 pub use snapshot::{compose_snapshot, inventory_status};

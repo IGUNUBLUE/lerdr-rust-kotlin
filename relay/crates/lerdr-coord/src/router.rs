@@ -64,6 +64,10 @@ struct ActionShared {
     /// `s.historyM` — the claude-like transcript merge ledger; shared with
     /// the transition projector's capture loop.
     history: crate::history::Manager,
+    /// The `pane.report_metadata`/`workspace.report_metadata` watch
+    /// annotations — one relay-wide ledger (per-source seqs, watcher
+    /// refcounts) feeding a serial report queue.
+    annotations: crate::annotations::WatchAnnotations,
     /// `s.auditLog` — spawned handlers append `result` rows here; the
     /// session layer owns `attempt` rows and admin results.
     audit: Option<Arc<audit::AuditLog>>,
@@ -88,12 +92,16 @@ impl HerdRouterFactory {
     /// activity journal under `runtime_dir/activity` (the oracle's
     /// data-dir layout). `audit` is the process-wide write-audit log the
     /// session layer also records into (`audit.Open(cfg.CacheDir)`).
+    /// `devices_of` reports the live connected-controller count for the
+    /// `lerdr.devices` workspace annotation (`Relay::connected_clients`
+    /// behind a lazy lookup — the Relay is built after the factory).
     pub fn new(
         handle: TopologyHandle,
         sink_of: ClientSinkLookup,
         cancel: CancellationToken,
         runtime_dir: std::path::PathBuf,
         audit: Option<Arc<audit::AuditLog>>,
+        devices_of: crate::annotations::ClientCountLookup,
     ) -> Self {
         let leases = actions::leases::Leases::new(handle.client.clone());
         leases.spawn_sweeper(cancel.clone());
@@ -134,9 +142,9 @@ impl HerdRouterFactory {
             cancel: cancel.clone(),
         });
         Self {
-            handle,
+            handle: handle.clone(),
             sink_of,
-            cancel,
+            cancel: cancel.clone(),
             shared: Arc::new(ActionShared {
                 leases,
                 profiles: actions::profiles::Resolver::new(),
@@ -147,6 +155,9 @@ impl HerdRouterFactory {
                 speech: actions::speech::Speech::default(),
                 notices,
                 history,
+                annotations: crate::annotations::WatchAnnotations::spawn(
+                    handle, devices_of, cancel,
+                ),
                 audit,
             }),
         }
@@ -353,6 +364,13 @@ impl HerdRouter {
 
 impl Drop for HerdRouter {
     fn drop(&mut self) {
+        // Clear this session's watch annotations before the tasks die —
+        // `pane_ids` must be read while the map is still populated.
+        if let Some(client_id) = self.client_id.clone() {
+            for pane_id in self.watches.pane_ids() {
+                self.shared.annotations.watch_stopped(&client_id, &pane_id);
+            }
+        }
         self.watches.stop_all();
         if let Some(f) = self.forwarder.take() {
             f.abort();
@@ -1078,7 +1096,7 @@ impl HerdRouter {
             }),
         };
         self.watches.start(
-            pane_id,
+            pane_id.clone(),
             spec,
             WatchDeps {
                 handle: self.handle.clone(),
@@ -1091,6 +1109,11 @@ impl HerdRouter {
                 cancel: self.cancel.clone(),
             },
         );
+        // `lerdr_watching` / `lerdr.devices` — idempotent when a re-watch
+        // replaced a live watch on the same pane.
+        self.shared
+            .annotations
+            .watch_started(&self.client_id.clone().unwrap_or_default(), &pane_id);
         RouterReply::send(vec![receipt(
             &request_id,
             &action_id,
@@ -1106,7 +1129,12 @@ impl HerdRouter {
         action_id: String,
         message: &Inbound,
     ) -> RouterReply {
-        self.watches.stop(&message.pane_id);
+        if self.watches.stop(&message.pane_id) {
+            self.shared.annotations.watch_stopped(
+                &self.client_id.clone().unwrap_or_default(),
+                &message.pane_id,
+            );
+        }
         RouterReply::send(vec![receipt(
             &request_id,
             &action_id,
@@ -1715,6 +1743,7 @@ mod tests {
             CancellationToken::new(),
             dir.path().join("runtime"),
             Some(log.clone()),
+            std::sync::Arc::new(|| 1),
         );
         let mut router = factory.into_factory()();
         let identity = lerdr_relay::auth::AuthenticatedIdentity {
@@ -1780,6 +1809,7 @@ mod tests {
             CancellationToken::new(),
             dir.path().join("runtime"),
             Some(log.clone()),
+            std::sync::Arc::new(|| 1),
         );
         let mut router = factory.into_factory()();
         let identity = lerdr_relay::auth::AuthenticatedIdentity {

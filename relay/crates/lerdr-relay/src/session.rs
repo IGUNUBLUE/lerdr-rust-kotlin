@@ -121,6 +121,14 @@ pub struct SessionConfig {
     /// device-admin replies the router never sees. `None` disables the
     /// log (`s.auditLog == nil` → `recordWriteAudit` no-ops).
     pub audit: Option<AuditHook>,
+    /// Live-registry observer — the [`Relay`] fires it with the
+    /// connected-client count after every authenticated registration and
+    /// every teardown (`hub.Clients` watchers in the oracle). lerdr-coord
+    /// drives `client.window_title.{set,clear}` through it; `None` — a
+    /// bare `serve_connection` with no registry — observes nothing.
+    ///
+    /// [`Relay`]: crate::server::Relay
+    pub clients_changed: Option<ClientsChangedHook>,
 }
 
 /// The write-audit hook — `Arc`-wrapped so `SessionConfig` stays
@@ -208,6 +216,25 @@ impl DisconnectCredentials {
     }
 }
 
+/// The client-count observer — fired with the live registry size after
+/// every authenticated registration and every session teardown. Wraps
+/// `Arc<dyn Fn>` so `SessionConfig` stays `Clone + Debug`.
+#[derive(Clone)]
+pub struct ClientsChangedHook(pub std::sync::Arc<dyn Fn(usize) + Send + Sync>);
+
+impl std::fmt::Debug for ClientsChangedHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ClientsChangedHook(..)")
+    }
+}
+
+impl ClientsChangedHook {
+    /// Fire the observer with the post-change registry size.
+    pub fn changed(&self, clients: usize) {
+        (self.0)(clients)
+    }
+}
+
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
@@ -222,6 +249,7 @@ impl Default for SessionConfig {
             reset_bootstrap: None,
             disconnect_credentials: None,
             audit: None,
+            clients_changed: None,
         }
     }
 }

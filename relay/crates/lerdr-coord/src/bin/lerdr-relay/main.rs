@@ -21,7 +21,9 @@ use lerdr_core::audit;
 use lerdr_herdr::Client;
 use lerdr_relay::auth::BootstrapRearm;
 use lerdr_relay::server::{HealthProbe, InventoryProbeFn};
-use lerdr_relay::session::{AttributionFn, AuditHook, SessionConfig, SnapshotFn};
+use lerdr_relay::session::{
+    AttributionFn, AuditHook, ClientsChangedHook, SessionConfig, SnapshotFn,
+};
 use lerdr_relay::store::FileAuthStore;
 use lerdr_relay::Relay;
 use tokio::net::TcpListener;
@@ -174,6 +176,117 @@ enum Commands {
             value_name = "ARGS"
         )]
         args: Vec<String>,
+    },
+    /// Herdr `plugin.pane.*` passthrough — open/focus/close plugin panes.
+    /// Flags mirror `herdr plugin pane …` (plugin/scripts/* invokes that
+    /// CLI; this is the same surface through our typed socket client).
+    PluginPane {
+        /// Herdr API socket [env: HERDR_SOCKET_PATH, default
+        /// ~/.config/herdr/herdr.sock].
+        #[arg(long, global = true)]
+        socket_path: Option<PathBuf>,
+        #[command(subcommand)]
+        command: PluginPaneCommand,
+    },
+    /// Herdr `server.*` passthrough — config reload + agent-manifest
+    /// reload/status (`herdr server reload-config` & friends).
+    HerdrReload {
+        /// Herdr API socket [env: HERDR_SOCKET_PATH, default
+        /// ~/.config/herdr/herdr.sock].
+        #[arg(long, global = true)]
+        socket_path: Option<PathBuf>,
+        #[command(subcommand)]
+        command: HerdrReloadCommand,
+    },
+    /// Herdr `integration.{install,uninstall}` passthrough.
+    Integration {
+        /// Herdr API socket [env: HERDR_SOCKET_PATH, default
+        /// ~/.config/herdr/herdr.sock].
+        #[arg(long, global = true)]
+        socket_path: Option<PathBuf>,
+        #[command(subcommand)]
+        command: IntegrationCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum PluginPaneCommand {
+    /// `plugin.pane.open` — flags mirror `herdr plugin pane open`.
+    Open(Box<PluginPaneOpenArgs>),
+    /// `plugin.pane.focus <PANE_ID>`.
+    Focus {
+        /// The plugin pane to focus.
+        pane_id: String,
+    },
+    /// `plugin.pane.close <PANE_ID>`.
+    Close {
+        /// The plugin pane to close.
+        pane_id: String,
+    },
+}
+
+#[derive(Args)]
+struct PluginPaneOpenArgs {
+    /// Plugin id (`--plugin`).
+    #[arg(long = "plugin", value_name = "ID")]
+    plugin_id: String,
+    /// Manifest entrypoint id (`--entrypoint`).
+    #[arg(long, value_name = "ID")]
+    entrypoint: String,
+    /// `overlay|popup|split|tab|zoomed`.
+    #[arg(long, value_name = "PLACEMENT")]
+    placement: Option<String>,
+    /// Workspace to open into (`--workspace`).
+    #[arg(long, value_name = "ID")]
+    workspace: Option<String>,
+    /// Pane to split/replace (`--target-pane`).
+    #[arg(long = "target-pane", value_name = "PANE")]
+    target_pane: Option<String>,
+    /// `right|down` — split direction.
+    #[arg(long, value_name = "DIRECTION")]
+    direction: Option<String>,
+    /// Working directory for the pane process.
+    #[arg(long, value_name = "PATH")]
+    cwd: Option<String>,
+    /// `KEY=VALUE` — repeatable env for the launched process.
+    #[arg(long = "env", value_name = "KEY=VALUE")]
+    env: Vec<String>,
+    /// Popup width — cells or `N%`.
+    #[arg(long, value_name = "SIZE")]
+    width: Option<String>,
+    /// Popup height — cells or `N%`.
+    #[arg(long, value_name = "SIZE")]
+    height: Option<String>,
+    /// Focus the new pane.
+    #[arg(long, overrides_with = "no_focus")]
+    focus: bool,
+    /// Do not focus the new pane.
+    #[arg(long)]
+    no_focus: bool,
+}
+
+#[derive(Subcommand)]
+enum HerdrReloadCommand {
+    /// `server.reload_config` (`herdr server reload-config`).
+    Config,
+    /// `server.agent_manifests` — active manifest status.
+    AgentManifests,
+    /// `server.reload_agent_manifests`
+    /// (`herdr server reload-agent-manifests`).
+    ReloadAgentManifests,
+}
+
+#[derive(Subcommand)]
+enum IntegrationCommand {
+    /// `integration.install <TARGET>` (`herdr integration install`).
+    Install {
+        /// The integration target (claude, codex, devin, …).
+        target: String,
+    },
+    /// `integration.uninstall <TARGET>`.
+    Uninstall {
+        /// The integration target.
+        target: String,
     },
 }
 
@@ -372,6 +485,27 @@ fn run_hook(command: Commands) -> ExitCode {
                 }
             })
         }
+        Commands::PluginPane {
+            socket_path,
+            command,
+        } => {
+            let socket_path = herdr_socket_path(socket_path);
+            block_on_herdr(async move { plugin_pane(socket_path, command).await })
+        }
+        Commands::HerdrReload {
+            socket_path,
+            command,
+        } => {
+            let socket_path = herdr_socket_path(socket_path);
+            block_on_herdr(async move { herdr_reload(socket_path, command).await })
+        }
+        Commands::Integration {
+            socket_path,
+            command,
+        } => {
+            let socket_path = herdr_socket_path(socket_path);
+            block_on_herdr(async move { integration(socket_path, command).await })
+        }
         Commands::Serve(_) => unreachable!("serve handled in main"),
     };
     match result {
@@ -439,6 +573,175 @@ fn fail(error: BoxError) -> ExitCode {
 }
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+/// The Herdr socket a passthrough command talks to — `--socket-path`,
+/// then `HERDR_SOCKET_PATH`, then the default
+/// `$XDG_CONFIG_HOME/herdr/herdr.sock` (config.rs's resolution minus the
+/// relay-only fields).
+fn herdr_socket_path(override_path: Option<PathBuf>) -> PathBuf {
+    override_path
+        .or_else(|| std::env::var("HERDR_SOCKET_PATH").ok().map(PathBuf::from))
+        .unwrap_or_else(|| {
+            let config_home = std::env::var("XDG_CONFIG_HOME")
+                .ok()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    std::env::var("HOME")
+                        .ok()
+                        .map(PathBuf::from)
+                        .unwrap_or_default()
+                        .join(".config")
+                });
+            config_home.join("herdr").join("herdr.sock")
+        })
+}
+
+/// The passthrough commands are one-shot socket calls — a current-thread
+/// runtime is plenty (no serve loop).
+fn block_on_herdr(
+    f: impl std::future::Future<Output = Result<(), BoxError>>,
+) -> Result<(), BoxError> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(f)
+}
+
+/// `herdr plugin pane …` — one socket call per subcommand; the response
+/// body prints as JSON for scripts.
+async fn plugin_pane(socket_path: PathBuf, command: PluginPaneCommand) -> Result<(), BoxError> {
+    use lerdr_herdr::{PluginPanePlacement, PopupSize, SplitDirection};
+    let client = Client::unix(socket_path);
+    match command {
+        PluginPaneCommand::Open(args) => {
+            let PluginPaneOpenArgs {
+                plugin_id,
+                entrypoint,
+                placement,
+                workspace,
+                target_pane,
+                direction,
+                cwd,
+                env,
+                width,
+                height,
+                focus,
+                no_focus,
+            } = *args;
+            let placement = placement
+                .map(|raw| {
+                    PluginPanePlacement::parse(&raw).ok_or_else(|| {
+                        usage(format!(
+                            "invalid --placement {raw:?} (overlay|popup|split|tab|zoomed)"
+                        ))
+                    })
+                })
+                .transpose()?;
+            let direction = direction
+                .map(|raw| {
+                    Ok::<SplitDirection, BoxError>(match raw.as_str() {
+                        "right" => SplitDirection::Right,
+                        "down" => SplitDirection::Down,
+                        _ => {
+                            return Err(usage(format!("invalid --direction {raw:?} (right|down)")))
+                        }
+                    })
+                })
+                .transpose()?;
+            let parse_size = |flag: &str, raw: String| -> Result<PopupSize, BoxError> {
+                PopupSize::parse(&raw)
+                    .ok_or_else(|| usage(format!("invalid {flag} {raw:?} (cells or N%)")))
+            };
+            let width = width.map(|raw| parse_size("--width", raw)).transpose()?;
+            let height = height.map(|raw| parse_size("--height", raw)).transpose()?;
+            let mut env_map = std::collections::BTreeMap::new();
+            for kv in env {
+                let Some((key, value)) = kv.split_once('=') else {
+                    return Err(usage(format!("invalid --env {kv:?} (KEY=VALUE)")));
+                };
+                env_map.insert(key.to_owned(), value.to_owned());
+            }
+            let focus = if focus {
+                Some(true)
+            } else if no_focus {
+                Some(false)
+            } else {
+                None
+            };
+            let pane = client
+                .plugin_pane_open(&lerdr_herdr::PluginPaneOpenParams {
+                    plugin_id,
+                    entrypoint,
+                    workspace_id: workspace,
+                    target_pane_id: target_pane,
+                    cwd,
+                    env: env_map,
+                    direction,
+                    placement,
+                    width,
+                    height,
+                    focus,
+                })
+                .await?;
+            println!("{}", serde_json::to_string(&pane)?);
+        }
+        PluginPaneCommand::Focus { pane_id } => {
+            let pane = client.plugin_pane_focus(&pane_id).await?;
+            println!("{}", serde_json::to_string(&pane)?);
+        }
+        PluginPaneCommand::Close { pane_id } => {
+            let closed = client.plugin_pane_close(&pane_id).await?;
+            println!("{}", serde_json::json!({"pane_id": closed}));
+        }
+    }
+    Ok(())
+}
+
+/// `herdr server …` — config reload, manifest status, manifest reload;
+/// each response prints as JSON.
+async fn herdr_reload(socket_path: PathBuf, command: HerdrReloadCommand) -> Result<(), BoxError> {
+    let client = Client::unix(socket_path);
+    match command {
+        HerdrReloadCommand::Config => {
+            let outcome = client.server_reload_config().await?;
+            println!("{}", serde_json::to_string(&outcome)?);
+        }
+        HerdrReloadCommand::AgentManifests => {
+            let status = client.server_agent_manifests().await?;
+            println!("{}", serde_json::to_string(&status)?);
+        }
+        HerdrReloadCommand::ReloadAgentManifests => {
+            let manifests = client.server_reload_agent_manifests().await?;
+            println!("{}", serde_json::to_string(&manifests)?);
+        }
+    }
+    Ok(())
+}
+
+/// `herdr integration {install,uninstall} <TARGET>` — the typed outcome
+/// prints as JSON.
+async fn integration(socket_path: PathBuf, command: IntegrationCommand) -> Result<(), BoxError> {
+    use lerdr_herdr::IntegrationTarget;
+    let client = Client::unix(socket_path);
+    let (target_name, install) = match command {
+        IntegrationCommand::Install { target } => (target, true),
+        IntegrationCommand::Uninstall { target } => (target, false),
+    };
+    let target = IntegrationTarget::parse(&target_name)
+        .ok_or_else(|| usage(format!("unknown integration target {target_name:?}")))?;
+    if install {
+        let outcome = client.integration_install(target).await?;
+        println!("{}", serde_json::to_string(&outcome)?);
+    } else {
+        let outcome = client.integration_uninstall(target).await?;
+        println!("{}", serde_json::to_string(&outcome)?);
+    }
+    Ok(())
+}
+
+fn usage(message: String) -> BoxError {
+    Box::new(UsageError(message))
+}
 
 async fn run(args: ServeArgs) -> Result<(), BoxError> {
     let cfg = config::resolve(
@@ -528,12 +831,23 @@ async fn run(args: ServeArgs) -> Result<(), BoxError> {
             }
         })
     };
+    // `lerdr.devices` workspace annotation — the live controller count
+    // resolves through the same OnceCell (the Relay is built below).
+    let devices_of: lerdr_coord::ClientCountLookup = {
+        let cell = Arc::clone(&relay_cell);
+        Arc::new(move || {
+            cell.get()
+                .map(|r: &Relay| r.connected_clients())
+                .unwrap_or(0)
+        })
+    };
     let router_factory = HerdRouterFactory::new(
         topology.clone(),
         sink_of,
         shutdown.clone(),
         cfg.runtime_dir.clone(),
         Some(audit.clone()),
+        devices_of,
     );
     let factory = router_factory.clone().into_factory();
     let topology_for_snapshot = topology.clone();
@@ -573,6 +887,19 @@ async fn run(args: ServeArgs) -> Result<(), BoxError> {
                 log: audit.clone(),
                 attribution: Some(attribution),
             }),
+            // `client.window_title` — "lerdr: N device(s)" while
+            // controllers are connected; cleared when the last leaves.
+            // The async call hops onto the runtime from the registry's
+            // sync hook.
+            clients_changed: Some(ClientsChangedHook(Arc::new({
+                let client = topology.client.clone();
+                move |count| {
+                    let client = client.clone();
+                    tokio::spawn(async move {
+                        lerdr_coord::update_window_title(&client, count).await;
+                    });
+                }
+            }))),
             ..SessionConfig::default()
         });
     let _ = relay_cell.set(relay.clone());
