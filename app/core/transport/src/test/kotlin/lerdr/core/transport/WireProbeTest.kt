@@ -60,7 +60,12 @@ class WireProbeTest {
                 }
                 val detail = when (type) {
                     "agents" -> "rows=" +
-                        (frame["agents"]?.jsonArray?.size ?: -1)
+                        (frame["agents"]?.jsonArray?.size ?: -1) + " " +
+                        (frame["agents"]?.jsonArray?.joinToString(",") { row ->
+                            val o = row.jsonObject
+                            listOf("pane_id", "status", "attention_kind")
+                                .joinToString("|") { k -> o[k]?.jsonPrimitive?.content ?: "-" }
+                        } ?: "?")
                     "workspaces" -> "rows=" +
                         (frame["workspaces"]?.jsonArray?.size ?: -1)
                     "push_config" -> "keys=" +
