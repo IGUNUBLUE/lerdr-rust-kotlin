@@ -34,7 +34,12 @@ line-by-line. Everything is specified in `docs/` — read `00-inventory`,
   `lerdr-fixture` crate (Rust).
 - Live gates (not in CI): `LERDR_INTEROP=1 :core:transport:test --tests
   InteropTest` pairs against the running Go relay; `HERDR_LIVE=1 cargo
-  test -p lerdr-herdr --test live` hits the real Herdr socket.
+  test -p lerdr-herdr --test live` hits the real Herdr socket;
+  `LERDR_PROBE=1 LERDR_PROBE_TOKEN=<32B> :core:transport:test --tests
+  WireProbeTest --rerun-tasks` pairs a throwaway device against the Rust
+  relay at `ws://127.0.0.1:8377` and prints every inbound frame + codec
+  result (re-arm the invitation with `kill -USR1 <relay-pid>`; leaves an
+  enrolled credential behind).
 - App visual changes: screenshot test (Roborazzi) in the PR.
 
 ## Skills

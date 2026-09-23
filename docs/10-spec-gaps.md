@@ -450,8 +450,137 @@ compare surface (`server_session_id`, `session`, `session_name`,
   fake/fixture path doesn't populate).
 - **Go-only agent projection keys** — `activity_seq`, `pane_revision`,
   `project`, `raw_pane_id`, `tab_label`/`tab_number`/`tab_order`,
-  `cwd`, `tokens`, `state_labels`, `updated_at` remain declared
-  deltas in `type_drop_keys`.
+  `cwd`, `tokens`, `state_labels`, `last_active_at` remain declared
+  deltas in `type_drop_keys`. `updated_at`/`last_seen_at` are now
+  emitted from per-pane `AgentTimes` observation bookkeeping
+  (`updated_at` bumps when Herdr's `state_change_seq`/`revision`
+  advances; `last_seen_at` refreshes every apply) — memory-only,
+  unlike the oracle's restart-persistent triage records.
 - **`acknowledged.classificationAgent` probe leg** — the third
   `paneWatchNeedsFrameRead` trigger has no counterpart until the
   classification projection exists.
+
+## Round 11 — live device test (emulator ↔ Rust relay ↔ real Herdr)
+
+First on-device run surfaced three runtime-only defects no automated
+gate caught; all fixed and re-verified live (pairing → connect →
+agents/workspaces inventory → `watch_pane` terminal stream → ANSI
+render → pane-size lease → interactive key bar):
+
+- **`usesCleartextTraffic=false` blocked every `ws://` relay** —
+  direct-LAN relays are the oracle's normal path and the payload is
+  `herdr-e2ee-v2` sealed either way; the flag is now `true` with the
+  rationale recorded in the manifest.
+- **`RelaySyncService` FGS-deadline crash** — pairing flaps
+  `CONNECTED→CLOSED→CONNECTED` inside milliseconds (the setup socket
+  hands off to the enrolled credential); `stopService` landing before
+  `onCreate`'s `startForeground` makes Android kill the process with
+  `ForegroundServiceDidNotStartInTimeException`. Fix: stops are now
+  delivered as a queued `ACTION_STOP` command (ordered after
+  `startForeground` by construction) with `stopSelf(startId)` scoping,
+  the notifier debounces zero-connection stops (3 s) and only stops a
+  service it armed, and the in-service safety net uses the same settle
+  window.
+- **`herdr_status.features: null` broke the whole inventory** —
+  Kotlin types `features` as a non-null map (the oracle always
+  allocates it); the Rust relay emitted `null`, so `push_config`/
+  `herdr_status` failed decode → `UnknownServerMessage`, inventory
+  stayed `starting`, and `acceptsInventorySnapshots` dropped every
+  `agents`/`workspaces` frame. The relay now emits `features: {}`
+  (no probe-ledger subsystem yet — the oracle's map is evidence
+  gathered by active probing).
+- **Agent observation times** — `updated_at`/`last_seen_at` were 0,
+  rendering "497253h ago" ages on device. `AgentTimes` now stamps them
+  from snapshot-apply observation (change-keyed on `state_change_seq`/
+  `revision`, bumped by `bump_generation`); `last_active_at` remains a
+  declared gap (the oracle derives it from the activity journal).
+
+## Round 12 — phone-terminal interaction layer + mobile polish (2025)
+
+Second live pass on emulator + real device (Moto G85, `adb reverse`
+USB tunnel — LAN 8377 is firewalled; `ws://127.0.0.1` over USB works
+unchanged because the E2EE handshake is host-agnostic). Everything
+below is verified on-device; multi-finger pinch verified by code path
+only (no `adb input` equivalent).
+
+### Landed this round
+
+- **Paired-device rows** (`DevicesSection`) — metadata `FlowRow` +
+  oracle's ≤36rem breakpoint (`WIDE_DEVICE_ROW_MIN`): actions drop
+  below the row as equal-width buttons. Fixed the timestamp
+  char-per-line collapse.
+- **Single special-keys bar** — merged the duplicate row; keys send the
+  oracle's exact wire spellings (`Left`/`Escape`/`Ctrl+C` — `send_keys`
+  passes names through and the relay normalizes; the old `ArrowLeft`
+  style would have been rejected by Herdr).
+- **Latching Ctrl + combos sheet** — Ctrl arms as a modifier
+  (highlighted), next typed letter emits `Ctrl+X` without touching the
+  draft; long-press Ctrl opens the `C-c C-d C-z C-l C-r` sheet.
+- **"show keyboard" pill** — now focuses the inject field + opens IME;
+  tap on the terminal surface does the same (spec §Terminal).
+- **"scroll to live" pill** — appears when follow-live releases on
+  scroll-up; tap snaps to the live edge and re-arms follow.
+- **Long-press context menu** — row hit-test by Y (blank rows omit
+  "Copy line"); copy line / copy transcript / share transcript; per-URL
+  open-link / copy-link from linkified `href` spans.
+- **Pinch-to-zoom** — `fontScale` 0.6–2.5× on the surface state; cell
+  metrics re-probe → `lease_pane_size` re-leases automatically.
+- **Real RTT** — `refresh_agents` keepalive round-trip measures `rttMs`
+  (`-1` = unmeasured, reset on disconnect); relay chips render
+  `sd · direct · 9ms`, settings detail `… · protocol 3 · 9ms`.
+- **`RelayConnection.terminate()` ordering** — `disconnect.complete`
+  resumed collectors before `_state = Closed` was written; reordered
+  behind a CAS guard (fixed the `serverCloseEndsIncoming…` flake).
+- **Launcher icon** — iguana-head medallion (project-provided artwork)
+  as the color foreground over the artwork's own jungle-leaf field as
+  the background layer; the whole badge sits inside the adaptive safe
+  zone so the medallion edge never clips. Monochrome layer is a lizard
+  silhouette glyph. `LockGate` badge uses the same mark. The "show
+  keyboard" pill was dropped — tapping the terminal surface already
+  opens the IME.
+
+### Candidate features — not yet spec'd
+
+Adopted from mobile-terminal UX patterns; each needs a spec entry
+before implementation:
+
+- **Image/file attach + annotate in the composer** — attach sheet,
+  thumbnail preview, attach→paste path or caption into the prompt.
+  Needs a wire shape (relay has no file-ingress message today) —
+  largest spec gap in this list.
+- **Customizable shortcut panel** — user-defined key strips above the
+  bar (persisted per relay? per pane class?). Key bar is already
+  data-driven; this is a settings + persistence item.
+- **OSC-52 remote clipboard** — pane OSC52 sequences → Android
+  clipboard, with a confirmation affordance. Parser hook exists
+  (`AnsiSpans`); needs the clipboard seam + privacy copy in settings.
+- **Hardware-keyboard map** — Ctrl/Alt/Esc chords on physical
+  keyboards; map through the same `send_keys` vocabulary.
+- **Swipe-to-switch-pane / recent directories** — horizontal swipe on
+  the terminal or a jump-list in the composer for recent cwds.
+- **Relay version string** — settings shows `relay 0.0.0`; the Rust
+  relay doesn't emit a real version yet.
+- **True multi-touch pinch test** — needs a Compose/Robolectric or
+  instrumentation test; `adb input` can't synthesize two pointers.
+
+## Round 13 — Computers tab + provider avatars (2026)
+
+- **Computers tab**: the relays carousel at the bottom of Home became a
+  real bottom-nav destination (`LerdrKey.Computers`, `ComputersScreen`) —
+  Agents · Computers · Activity · Settings. One row per connected relay
+  (label, transport, live status/RTT, agent count); the single "+"
+  FAB pairs a new device. Fine management stays in Settings → Devices;
+  the redundant pair affordances on Home (FAB + trailing add-card) were
+  removed since both did the same thing.
+- **Provider-logo avatars**: `AgentListItemUi`/`AttentionCardUi` and the
+  three session UiStates (`Feed`/`Terminal`/`Files`) gained a `provider`
+  field (normalized wire `agent`); the shared `ProviderBadge` renders:
+  the official mark for CLIs with a public vector asset
+  (claude/claudecode, codex/openaicodex, gemini/geminicli, opencode,
+  copilot/githubcopilot, cursor via simple-icons CC0; devin via the
+  devin.ai mark); a `π` glyph for pi/picodingagent/
+  omp/ohmypi; and a deterministic provider-hued monogram tile for known
+  CLIs without a public mark (qoder, omo/ohmyopencode, hermes,
+  and any future wire identity). Plain shells/absent metadata keep the
+  neutral letter monogram. The badge appears in Home rows, attention
+  cards, and the shared `SessionTopBar` title slot.

@@ -18,8 +18,9 @@ lowest-common-denominator anywhere.
 ┌────────────────────────────────────────────┐
 │  Home (mission control)                    │
 │  ├─ Needs-you rail  (attention inbox)      │
-│  ├─ Agents          (grouped by workspace) │
-│  └─ Relays strip    (computers carousel)   │
+│  └─ Agents          (grouped by workspace) │
+├────────────────────────────────────────────┤
+│  Computers          (connected relays)     │
 ├────────────────────────────────────────────┤
 │  Agent session                             │
 │  ├─ Feed     (semantic timeline — default) │
@@ -32,7 +33,7 @@ lowest-common-denominator anywhere.
 └────────────────────────────────────────────┘
 ```
 
-Bottom nav (M3E `ShortNavigationBar`): **Agents · Activity · Settings**.
+Bottom nav (M3E `ShortNavigationBar`): **Agents · Computers · Activity · Settings**.
 Everything else stacks on top with predictive back.
 
 ## Screen: Home
@@ -46,11 +47,18 @@ Everything else stacks on top with predictive back.
   with `WavyProgressIndicator` (the M3E signature), idle agents with quiet
   status chips. Swipe actions: right = open, left = stop (destructive, with
   confirmation haptic + undo snackbar).
-- **Relays carousel**: each computer a card — connectivity state, agent
-  count, transport in use (`tailscale`/`gateway`/`direct`), subtle
-  morphing-shape loader while connecting.
-- **FAB menu** (`FloatingActionButtonMenu`): New agent · New workspace ·
-  Pair device (QR) — replaces stacked FABs per M3E guidance.
+- **Agent avatars**: provider logo glyph when the wire `agent` is a known
+  CLI (claude/codex/gemini — simple-icons marks); letter monogram for
+  plain shells and unknown providers.
+- **FAB menu** (`FloatingActionButtonMenu`): New agent · New workspace —
+  pairing lives on the Computers tab.
+
+## Screen: Computers
+
+- **Computers tab**: one row per connected relay — label, transport,
+  live status/RTT, agent count; FAB pairs a new device. Read-only glance:
+  fine management (reconnect/forget/rename/revoke) stays in Settings →
+  Devices. Replaces the old relays carousel at the bottom of Home.
 - Empty state: expressive illustration + "pair your first computer" CTA
   → QR scanner.
 
@@ -84,18 +92,24 @@ Data: `get_conversation_history` pages + `question`/attention events +
 
 - `LazyColumn` of ANSI-parsed `AnnotatedString` rows (monospace, bundled
   font), keyed virtualization, delta-applied — 60 fps scrolling.
-- **Special-keys bar** (collapsible): `Esc Tab ↑ ↓ ← → | Ctrl` — Ctrl is a
-  latching modifier (tap then letter = `C-x`). Long-press Ctrl opens the
-  combos sheet (`C-c C-d C-z C-l C-r`).
+- **Special-keys bar** (single, horizontally scrollable): `Esc Tab ← ↓ ↑ →
+  Enter ⌫ | Ctrl` — key names are the Herdr semantic vocabulary
+  (`Left`/`Enter`/`Escape`/`Ctrl+…`), passed through `send_keys`
+  verbatim. Ctrl is a latching modifier (tap then letter = `C-x`).
+  Long-press Ctrl opens the combos sheet (`C-c C-d C-z C-l C-r`).
 - **IME behavior**: tap screen → keyboard up, typing sends `send_text`;
   suggestion bar hidden (terminal context); Enter = `send_keys [Enter]`.
 - **Size lease**: measure grid → `lease_pane_size`; on keyboard-open,
   `adjustResize` shrinks the grid and re-leases rows — pane reflows like a
   real terminal resize. Release on background/hide.
-- Pinch-to-zoom adjusts font → re-leases columns.
+- Pinch-to-zoom adjusts font → re-leases columns. Two-finger only —
+  single-finger drags stay with scroll; scale is clamped 0.6–2.5×.
 - Scrollback stays readable while live: pause-follow button ("scroll to
   live" pill, Telegram-style) when scrolled up; deltas still apply.
-- Long-press a row → copy line / copy screen / share transcript.
+- Long-press a row → context menu at the touch point: copy line / copy
+  transcript / share transcript, plus open-link / copy-link for each URL
+  in the row (linkified spans already carry normalized `href`s — the
+  menu is their touch surface).
 
 ### Details mode
 
@@ -129,14 +143,18 @@ gone.
 - **Devices**: this device + paired list (rename/revoke), create
   invitation QR for a new phone (controller or reader).
 - **Speech**: voice catalog, install/remove, language chips.
-- **App**: biometric lock toggle, theme (dynamic color on/off),
+- **App**: biometric lock toggle, theme mode (system/light/dark),
   update check, diagnostics export.
 
 ## Motion & theming (M3 Expressive)
 
 - `MaterialExpressiveTheme` + `motionScheme()` — spring physics defaults.
-- Dynamic color (wallpaper) default-on; brand fallback for sideloaded
-  contexts without wallpaper colors.
+- Brand palette (`LerdrDarkColorScheme` / `LerdrLightColorScheme`, tuned
+  against `docs/mockup.png`) is the default in both light and dark —
+  dynamic (wallpaper) Material You color is off by default so the
+  mission-control identity doesn't wash out on an arbitrary wallpaper;
+  it stays available as an internal toggle for future exposure, but is
+  not wired to a Settings switch today.
 - Morphing shapes on status indicators (working = wavy, waiting = pulsing
   "cookie" shape, error = sharp).
 - Predictive back; shared-axis transitions list→detail; attention cards
