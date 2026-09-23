@@ -233,8 +233,8 @@ pub fn default_snapshot() -> Vec<Outbound> {
     vec![Outbound::PushConfig(Box::new(PushConfig {
         r#type: "push_config".to_owned(),
         protocol: VERSION,
-        version: env!("CARGO_PKG_VERSION").to_owned(),
-        release_version: env!("CARGO_PKG_VERSION").to_owned(),
+        version: lerdr_core::release_version().to_owned(),
+        release_version: lerdr_core::release_version().to_owned(),
         capabilities: MaybeNull::Value(CAPABILITIES.iter().map(|s| s.to_string()).collect()),
         herdr_status: HerdrStatus::default(),
         ..PushConfig::default()
