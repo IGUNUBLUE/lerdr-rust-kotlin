@@ -21,6 +21,9 @@ import com.lerdr.app.session.feed.QuestionDraft
 import com.lerdr.app.session.feed.SlashCommand
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import kotlinx.serialization.json.JsonPrimitive
+import lerdr.core.conversation.ConversationBrowseProgress
+import lerdr.core.conversation.ConversationBrowseState
+import lerdr.core.conversation.ConversationDiagnostics
 import lerdr.core.conversation.ConversationEntry
 import lerdr.core.conversation.ConversationRole
 import lerdr.core.conversation.ConversationTool
@@ -175,7 +178,10 @@ class AgentFeedScreenshotTest {
                     onCopyResponse = { entryText, onCopied -> onCopied(entryText) },
                     onClearError = {},
                     onLoadOlder = {},
-                    onRetryHistory = {},
+                    onReloadHistory = {},
+                    onRecoverHistory = {},
+                    onCancelPreparation = {},
+                    onContinuePreparation = {},
                     onPickAttachments = {},
                     onRemoveAttachment = {},
                     onClearAttachments = {},
@@ -401,6 +407,95 @@ class AgentFeedScreenshotTest {
                         args = mapOf("max" to JsonPrimitive(8)),
                     ),
                 ),
+            ),
+        )
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    // ── conversation-history warnings + preparation ─────────────────
+
+    @Test
+    fun feed_historyDiagnostics() {
+        show(
+            baseState().copy(
+                hasMoreHistory = true,
+                historyDiagnostics = ConversationDiagnostics(
+                    oversizedRecords = 2,
+                    corruptRecords = 1,
+                    omittedTools = 3,
+                    omittedPayloads = 1,
+                    continuationIncomplete = true,
+                    continuationReason = "invalid_link",
+                ),
+            ),
+        )
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun feed_historyPreparing() {
+        show(
+            baseState().copy(
+                hasMoreHistory = true,
+                browseState = ConversationBrowseState.PREPARING,
+                browseProgress = ConversationBrowseProgress(
+                    phase = "indexing",
+                    scannedBytes = 512,
+                    sourceBytes = 2_048,
+                ),
+            ),
+        )
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun feed_historyPreparationPaused() {
+        show(
+            baseState().copy(
+                hasMoreHistory = true,
+                preparationPaused = true,
+            ),
+        )
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun feed_historyErrorContinue() {
+        show(
+            baseState().copy(
+                hasMoreHistory = true,
+                browseState = ConversationBrowseState.FAILED,
+                historyError =
+                    "History loading stalled without finding more messages. Continue to retry.",
+                historyErrorCode = "stalled",
+                historyErrorRetryable = true,
+            ),
+        )
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun feed_historySourceChanged() {
+        show(
+            baseState().copy(
+                hasMoreHistory = true,
+                historyError =
+                    "The conversation source changed while history was being browsed.",
+                historyErrorCode = "source_changed",
+                historyErrorRetryable = false,
+            ),
+        )
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun feed_historyUnavailable() {
+        show(
+            baseState().copy(
+                entries = emptyList(),
+                historyPageAvailable = false,
+                historyUnavailableReason =
+                    "Conversation history is not available for this agent.",
             ),
         )
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)

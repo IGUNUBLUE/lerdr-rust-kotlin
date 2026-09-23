@@ -76,6 +76,7 @@ import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.PreviewLightDark
 import androidx.compose.ui.unit.IntOffset
@@ -84,6 +85,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lerdr.app.di.AppEntryPoint
 import com.lerdr.app.session.feed.FeedBlockerCard
+import com.lerdr.app.session.feed.FeedHistoryWarnings
 import com.lerdr.app.session.feed.FeedMarkdown
 import com.lerdr.app.session.feed.FeedToolCard
 import com.lerdr.app.session.feed.MAX_VISIBLE_SLASH_COMMANDS
@@ -92,6 +94,7 @@ import com.lerdr.app.session.feed.SlashCommandCatalog
 import com.lerdr.app.session.feed.SlashCommandMenu
 import com.lerdr.app.session.feed.effectiveSlashIndex
 import com.lerdr.app.session.feed.feedMatchingEntryIndexes
+import com.lerdr.app.session.feed.isHistorySourceChanged
 import com.lerdr.app.session.feed.matchingSlashCommands
 import com.lerdr.app.session.feed.slashQueryFor
 import com.lerdr.app.session.feed.slashSelectionText
@@ -101,6 +104,7 @@ import com.lerdr.core.designsystem.theme.LerdrTheme
 import dagger.hilt.android.EntryPointAccessors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import lerdr.core.conversation.ConversationBrowseState
 import lerdr.core.conversation.ConversationEntry
 import lerdr.core.conversation.ConversationRole
 
@@ -153,7 +157,10 @@ fun AgentFeedScreen(
         onCopyResponse = viewModel::copyAgentResponse,
         onClearError = viewModel::clearError,
         onLoadOlder = viewModel::loadOlderHistory,
-        onRetryHistory = viewModel::loadHistory,
+        onReloadHistory = viewModel::loadHistory,
+        onRecoverHistory = viewModel::recoverHistory,
+        onCancelPreparation = viewModel::cancelPreparation,
+        onContinuePreparation = viewModel::continuePreparation,
         onPickAttachments = { picker.launch(arrayOf("*/*")) },
         onRemoveAttachment = viewModel::removeAttachment,
         onClearAttachments = viewModel::clearAttachments,
@@ -180,7 +187,14 @@ fun AgentFeedContent(
     onCopyResponse: (String, (String) -> Unit) -> Unit,
     onClearError: () -> Unit,
     onLoadOlder: () -> Unit,
-    onRetryHistory: () -> Unit,
+    /** Oracle `reloadHistory`/`returnToLatest` — cursorless fresh browse. */
+    onReloadHistory: () -> Unit,
+    /** Oracle `recoverHistory` — the error row's Continue/Retry affordance. */
+    onRecoverHistory: () -> Unit,
+    /** Oracle `pausePreparation` — stops the client-side poll loop. */
+    onCancelPreparation: () -> Unit,
+    /** Oracle `continuePreparation` — resumes polling the stored cursor. */
+    onContinuePreparation: () -> Unit,
     onPickAttachments: () -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onClearAttachments: () -> Unit,
@@ -212,9 +226,27 @@ fun AgentFeedContent(
     // One match = one entry row; the find bar counts rows like the oracle's
     // `n of m` over `visibleEntries`.
     val matchCount = if (searching) matchedIndexes.size else 0
-    // `load-older` (+ `no-history`) header items offset lazy indices.
-    val headerOffset = (if (uiState.hasMoreHistory) 1 else 0) +
-        (if (!uiState.historyAvailable && uiState.entries.isEmpty()) 1 else 0)
+    // ── history status surface — the oracle's `conversation-warning` block ──
+    // `sourceChangedNotice` — cursor-invalidating failures reload cursorless.
+    val historySourceChanged = isHistorySourceChanged(
+        uiState.historyError,
+        uiState.historyErrorCode,
+    )
+    // `hasMore && !sourceChangedNotice && polls < max && state !== 'preparing'`
+    val loadOlderVisible = uiState.hasMoreHistory && !historySourceChanged &&
+        !uiState.preparationPaused &&
+        uiState.browseState != ConversationBrowseState.PREPARING
+    // `loading && !entries.length` / `!available && !entries.length` — the
+    // oracle's empty-state branches are exclusive (loading first) and
+    // suppress the whole warning block.
+    val historyLoadingEmpty = uiState.historyLoading && uiState.entries.isEmpty()
+    val historyUnavailableEmpty = !historyLoadingEmpty &&
+        uiState.entries.isEmpty() &&
+        (!uiState.historyAvailable || !uiState.historyPageAvailable)
+    // `load-older`/`no-history`/`history-loading` header items offset lazy indices.
+    val headerOffset = (if (loadOlderVisible) 1 else 0) +
+        (if (historyUnavailableEmpty) 1 else 0) +
+        (if (historyLoadingEmpty) 1 else 0)
 
     fun revealFindMatch(index: Int) {
         val normalized = wrapFindIndex(index, matchCount)
@@ -451,6 +483,26 @@ fun AgentFeedContent(
                         .padding(bottom = spacing.small),
                 )
             }
+            // The oracle renders its `conversation-warning` rows above the
+            // scrollable transcript — fixed placement, same template order.
+            if (!historyLoadingEmpty && !historyUnavailableEmpty) {
+                FeedHistoryWarnings(
+                    browseState = uiState.browseState,
+                    browseProgress = uiState.browseProgress,
+                    diagnostics = uiState.historyDiagnostics,
+                    preparationPaused = uiState.preparationPaused,
+                    hasMoreHistory = uiState.hasMoreHistory,
+                    historyLoading = uiState.historyLoading,
+                    entriesEmpty = uiState.entries.isEmpty(),
+                    historyError = uiState.historyError,
+                    historyErrorCode = uiState.historyErrorCode,
+                    historyErrorRetryable = uiState.historyErrorRetryable,
+                    onReloadHistory = onReloadHistory,
+                    onRecoverHistory = onRecoverHistory,
+                    onCancelPreparation = onCancelPreparation,
+                    onContinuePreparation = onContinuePreparation,
+                )
+            }
             LazyColumn(
                 state = listState,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -462,24 +514,51 @@ fun AgentFeedContent(
                 ),
                 verticalArrangement = Arrangement.spacedBy(spacing.small),
             ) {
-                if (uiState.hasMoreHistory) {
+                if (historyLoadingEmpty) {
+                    // `historyStatusText || 'Loading conversation…'`
+                    item(key = "history-loading") {
+                        Text(
+                            "Loading conversation…",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.fillMaxWidth(),
+                            textAlign = TextAlign.Center,
+                        )
+                    }
+                }
+                if (loadOlderVisible) {
                     item(key = "load-older") {
                         TextButton(
                             onClick = onLoadOlder,
-                            enabled = !uiState.historyLoading,
+                            enabled = !uiState.historyLoading && !uiState.preparationPaused,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
-                            Text(if (uiState.historyLoading) "Loading…" else "Load older")
+                            Text(
+                                if (uiState.historyLoading) {
+                                    "Loading…"
+                                } else if (uiState.browseState == ConversationBrowseState.FAILED) {
+                                    "Retry loading"
+                                } else {
+                                    "Load older turns"
+                                },
+                            )
                         }
                     }
                 }
-                if (!uiState.historyAvailable && uiState.entries.isEmpty()) {
+                if (historyUnavailableEmpty) {
                     item(key = "no-history") {
                         Text(
-                            uiState.historyError
-                                ?: "This agent does not report conversation history.",
+                            if (uiState.historyPageAvailable) {
+                                "This agent does not report conversation history."
+                            } else {
+                                uiState.historyUnavailableReason.ifEmpty {
+                                    "Conversation history is unavailable."
+                                }
+                            },
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth(),
                         )
                     }
                 }
@@ -908,7 +987,10 @@ private fun AgentFeedContentPreview() {
             onCopyResponse = { _, _ -> },
             onClearError = {},
             onLoadOlder = {},
-            onRetryHistory = {},
+            onReloadHistory = {},
+            onRecoverHistory = {},
+            onCancelPreparation = {},
+            onContinuePreparation = {},
             onPickAttachments = {},
             onRemoveAttachment = {},
             onClearAttachments = {},

@@ -5,6 +5,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -14,11 +16,16 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
+import com.lerdr.app.session.feed.HISTORY_MAX_PREPARATION_POLLS
+import com.lerdr.app.session.feed.HISTORY_PREPARATION_INTERVAL_MS
+import com.lerdr.app.session.feed.HISTORY_WIRE_PAGE_SIZE
 import com.lerdr.app.session.feed.QuestionDraft
 import com.lerdr.app.session.feed.SlashCommand
 import com.lerdr.app.session.feed.SlashCommandCatalog
 import com.lerdr.app.session.feed.createQuestionDraft
+import com.lerdr.app.session.feed.mergeHistoryDiagnostics
 import com.lerdr.app.session.feed.parseSlashCatalog
 import com.lerdr.app.session.feed.questionDraftKey
 import com.lerdr.app.session.feed.questionSubmitAllowed
@@ -26,7 +33,12 @@ import com.lerdr.app.session.feed.shouldRestoreQuestionDraft
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import lerdr.core.conversation.ConversationBrowseError
+import lerdr.core.conversation.ConversationBrowseProgress
+import lerdr.core.conversation.ConversationBrowseState
+import lerdr.core.conversation.ConversationDiagnostics
 import lerdr.core.conversation.ConversationEntry
+import lerdr.core.conversation.ConversationPage
 import lerdr.core.conversation.ConversationPageRequest
 import lerdr.core.data.DraftStore
 import lerdr.core.data.composerDraftIdentity
@@ -62,8 +74,30 @@ data class FeedUiState(
     /** Conversation entries, oldest → newest within the loaded window. */
     val entries: List<ConversationEntry> = emptyList(),
     val historyLoading: Boolean = false,
+    /** Oracle `error.message` — the error row text (null when healthy). */
     val historyError: String? = null,
+    /** Oracle `errorCode` — drives the Reload-vs-Retry/Continue affordance. */
+    val historyErrorCode: String = "",
+    /** Oracle `errorRetryable` — whether the error row offers recovery. */
+    val historyErrorRetryable: Boolean = false,
+    /** Oracle `available` — false when the relay cannot serve this conversation. */
+    val historyPageAvailable: Boolean = true,
+    /** Oracle `reason` — the unavailable explanation for the empty state. */
+    val historyUnavailableReason: String = "",
     val hasMoreHistory: Boolean = false,
+    /** Oracle `state` — the browse lifecycle of the loaded window. */
+    val browseState: ConversationBrowseState = ConversationBrowseState.READY,
+    /** Oracle `progress` — snapshot preparation progress while preparing. */
+    val browseProgress: ConversationBrowseProgress? = null,
+    /** Oracle `diagnostics` — reader/browser self-report merged across pages. */
+    val historyDiagnostics: ConversationDiagnostics = ConversationDiagnostics(),
+    /**
+     * Oracle `preparationPolls >= HISTORY_MAX_PREPARATION_POLLS` — the
+     * preparation poll loop is paused (Cancel) or stalled; the warning row
+     * switches from "Preparing history…" + Cancel to "Preparation is
+     * paused." + Continue.
+     */
+    val preparationPaused: Boolean = false,
     /** Non-null while this agent blocks — the blocker card renders it. */
     val blocked: Agent? = null,
     /**
@@ -122,12 +156,32 @@ class FeedViewModel(
     /** `attachmentCancelRequested` — a canceled upload reads as info, not error. */
     private var attachmentCancelRequested = false
 
+    /** In-flight history demand — the oracle's `demandRunning`/`activeAbort`. */
+    private var historyJob: Job? = null
+
+    /** Oracle `manualPreparationPause` — Cancel stops polling without a wire call. */
+    private var manualPreparationPause = false
+
+    /** Oracle `preparationProgressKey` — identical progress snapshots stall the loop. */
+    private var preparationProgressKey = ""
+
     private data class FeedLocal(
         val entries: List<ConversationEntry> = emptyList(),
         val loading: Boolean = false,
         val error: String? = null,
+        val errorCode: String = "",
+        val errorRetryable: Boolean = false,
+        /** Page-level `available` — the oracle's `available`/`reason` empty state. */
+        val pageAvailable: Boolean = true,
+        val pageReason: String = "",
         val hasMore: Boolean = false,
         val nextCursor: String = "",
+        /** Oracle `state`/`progress`/`diagnostics` — the browse status surface. */
+        val browseState: ConversationBrowseState = ConversationBrowseState.READY,
+        val browseProgress: ConversationBrowseProgress? = null,
+        val diagnostics: ConversationDiagnostics = ConversationDiagnostics(),
+        /** Oracle `preparationPolls` — identical-progress polls; >= max is paused. */
+        val preparationPolls: Int = 0,
         val draft: String = "",
         val sending: Boolean = false,
         val lastError: String? = null,
@@ -162,6 +216,13 @@ class FeedViewModel(
         val baseId: String,
         val interaction: Interaction,
     )
+
+    /**
+     * Which lane a history demand serves — the oracle's `initial`/`refresh`
+     * (fresh head, replaces the window) vs `older`/`full` (cursorful,
+     * prepend-merges). `retry`/`continuePreparation` pick by cursor.
+     */
+    private enum class HistoryLane { LATEST, OLDER }
 
     private val local = MutableStateFlow(FeedLocal())
 
@@ -199,7 +260,16 @@ class FeedViewModel(
             entries = local.entries,
             historyLoading = local.loading,
             historyError = local.error,
+            historyErrorCode = local.errorCode,
+            historyErrorRetryable = local.errorRetryable,
+            historyPageAvailable = local.pageAvailable,
+            historyUnavailableReason = local.pageReason,
             hasMoreHistory = local.hasMore,
+            browseState = local.browseState,
+            browseProgress = local.browseProgress,
+            historyDiagnostics = local.diagnostics,
+            preparationPaused =
+                local.preparationPolls >= HISTORY_MAX_PREPARATION_POLLS,
             blocked = blockedAgent?.takeIf { !questionHidden },
             blockedInteraction = interaction,
             questionDraft = interaction?.let {
@@ -265,53 +335,331 @@ class FeedViewModel(
         loadHistory()
     }
 
-    /** First page — newest entries — or a PREPARING/FAILED error row. */
+    /**
+     * First page — newest entries — or a PREPARING/FAILED status surface.
+     * Also the oracle's `returnToLatest` ("Reload history"): a cursorless
+     * fresh browse that replaces the window, aborting any demand in flight.
+     */
     fun loadHistory() {
-        viewModelScope.launch {
-            local.value = local.value.copy(loading = true, error = null)
+        historyJob?.cancel()
+        manualPreparationPause = false
+        preparationProgressKey = ""
+        local.value = local.value.copy(
+            pageAvailable = true,
+            pageReason = "",
+            browseState = ConversationBrowseState.READY,
+            browseProgress = null,
+            diagnostics = ConversationDiagnostics(),
+            preparationPolls = 0,
+            error = null,
+            errorCode = "",
+            errorRetryable = false,
+            nextCursor = "",
+            hasMore = false,
+        )
+        launchHistoryDemand(HistoryLane.LATEST, cursor = "")
+    }
+
+    /**
+     * Older page — prepends entries, cursor advances toward the past. The
+     * oracle's `demandOlder` refuses while an error or a pause is set; the
+     * recover affordances own those states.
+     */
+    fun loadOlderHistory() {
+        val cursor = local.value.nextCursor
+        if (local.value.error != null || manualPreparationPause) return
+        if (cursor.isEmpty() || !local.value.hasMore) return
+        if (historyJob?.isActive == true) return
+        launchHistoryDemand(HistoryLane.OLDER, cursor)
+    }
+
+    /**
+     * Oracle `pausePreparation` (the Cancel action) — purely client-side:
+     * no wire call; the in-flight poll is aborted and `preparationPolls`
+     * jumps to the cap so the row flips to "Preparation is paused.".
+     */
+    fun cancelPreparation() {
+        if (local.value.browseState != ConversationBrowseState.PREPARING) return
+        manualPreparationPause = true
+        historyJob?.cancel()
+        local.value = local.value.copy(
+            loading = false,
+            preparationPolls = HISTORY_MAX_PREPARATION_POLLS,
+        )
+    }
+
+    /**
+     * Oracle `continuePreparation` (the Continue action) — re-issues
+     * `get_conversation_history` with the cursor the preparation was
+     * polling; a fresh stall window starts (polls reset).
+     */
+    fun continuePreparation() {
+        val cursor = local.value.nextCursor
+        val stalled = local.value.errorCode == PREPARATION_STALLED_CODE
+        if (cursor.isEmpty() || (!manualPreparationPause && !stalled)) return
+        local.value = local.value.copy(preparationPolls = 0)
+        launchHistoryDemand(HistoryLane.OLDER, cursor)
+    }
+
+    /**
+     * Oracle `recoverHistory` — the error row's affordance: a
+     * `preparation_stalled` error continues the poll loop; every other
+     * retryable error re-issues the failed request with `retry: true`
+     * (the oracle's `retry()`).
+     */
+    fun recoverHistory() {
+        if (local.value.errorCode == PREPARATION_STALLED_CODE) {
+            continuePreparation()
+            return
+        }
+        if (!local.value.errorRetryable) return
+        // After a failure `nextCursor` holds the failed request's cursor —
+        // empty means the cursorless head failed and the retry re-browses.
+        val cursor = local.value.nextCursor
+        launchHistoryDemand(
+            if (cursor.isEmpty()) HistoryLane.LATEST else HistoryLane.OLDER,
+            cursor,
+            retry = true,
+        )
+    }
+
+    // ── history demand loop ───────────────────────────────────────────
+
+    /**
+     * The oracle's `runDemand`, reduced to our single-page contract: one
+     * `get_conversation_history` request per iteration, where `preparing`
+     * pages are status (not content) and re-polled after
+     * [HISTORY_PREPARATION_INTERVAL_MS] with the page's `next_cursor` until
+     * the read resolves, fails, or stalls at [HISTORY_MAX_PREPARATION_POLLS]
+     * identical progress snapshots.
+     */
+    private fun launchHistoryDemand(
+        lane: HistoryLane,
+        cursor: String,
+        retry: Boolean = false,
+    ) {
+        historyJob?.cancel()
+        manualPreparationPause = false
+        preparationProgressKey = ""
+        historyJob = viewModelScope.launch {
+            val thisJob = coroutineContext.job
+            var requestedCursor = cursor
+            var firstPage = true
             try {
-                val page = sessions.conversationPage(paneId)
-                local.value = local.value.copy(
-                    loading = false,
-                    entries = page.entries,
-                    hasMore = page.hasMore,
-                    nextCursor = page.nextCursor,
-                    error = page.error?.message
-                        ?: page.reason.takeIf { !page.available },
-                )
-            } catch (failure: Exception) {
-                local.value = local.value.copy(
-                    loading = false,
-                    error = failure.message ?: "History unavailable",
-                )
+                while (true) {
+                    if (firstPage) local.value = local.value.copy(loading = true)
+                    val page = try {
+                        sessions.conversationPage(
+                            paneId,
+                            ConversationPageRequest(
+                                cursor = requestedCursor,
+                                limit = HISTORY_WIRE_PAGE_SIZE,
+                                retry = retry && firstPage,
+                            ),
+                        )
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failure: Exception) {
+                        failHistoryRequest(failure, requestedCursor)
+                        return@launch
+                    }
+                    firstPage = false
+                    if (page.state == ConversationBrowseState.PREPARING) {
+                        if (!acceptPreparingPage(page, requestedCursor)) return@launch
+                        requestedCursor = local.value.nextCursor
+                        delay(HISTORY_PREPARATION_INTERVAL_MS)
+                    } else {
+                        acceptHistoryPage(page, lane, requestedCursor)
+                        return@launch
+                    }
+                }
+            } finally {
+                // A superseding demand owns `loading` now — don't stomp it.
+                if (historyJob == thisJob) {
+                    historyJob = null
+                    local.value = local.value.copy(loading = false)
+                }
             }
         }
     }
 
-    /** Older page — prepends entries, cursor advances toward the past. */
-    fun loadOlderHistory() {
-        val cursor = local.value.nextCursor
-        if (cursor.isEmpty() || local.value.loading) return
-        viewModelScope.launch {
-            local.value = local.value.copy(loading = true, error = null)
-            try {
-                val page = sessions.conversationPage(
-                    paneId,
-                    ConversationPageRequest(cursor = cursor),
-                )
+    /**
+     * The oracle's `acceptPage` preparing branch + `advancePreparation`:
+     * preparation pages carry no entries — only the cursor/progress snapshot
+     * updates. Polls reset on progress changes; [HISTORY_MAX_PREPARATION_POLLS]
+     * identical snapshots pause with the retryable `preparation_stalled`
+     * error. Returns false when the loop must stop.
+     */
+    private fun acceptPreparingPage(
+        page: ConversationPage,
+        requestedCursor: String,
+    ): Boolean {
+        // `page.nextCursor || requestedCursor || this.cursor` — the poll lane.
+        val resolvedCursor = page.nextCursor
+            .ifEmpty { requestedCursor }
+            .ifEmpty { local.value.nextCursor }
+        // JSON.stringify(progress || {}) — a null progress is one stable key.
+        val progressKey = page.progress?.let {
+            "${it.phase}|${it.scannedBytes}|${it.sourceBytes}"
+        } ?: ""
+        val polls = if (progressKey == preparationProgressKey) {
+            local.value.preparationPolls + 1
+        } else {
+            1
+        }
+        preparationProgressKey = progressKey
+        local.value = local.value.copy(
+            loading = false,
+            browseState = ConversationBrowseState.PREPARING,
+            browseProgress = page.progress,
+            nextCursor = resolvedCursor,
+            hasMore = page.hasMore || resolvedCursor.isNotEmpty(),
+            diagnostics = if (requestedCursor.isEmpty()) {
+                page.diagnostics
+            } else {
+                mergeHistoryDiagnostics(local.value.diagnostics, page.diagnostics)
+            },
+            error = null,
+            errorCode = "",
+            errorRetryable = false,
+            preparationPolls = polls,
+        )
+        if (polls >= HISTORY_MAX_PREPARATION_POLLS) {
+            local.value = local.value.copy(
+                error = "Preparation is paused because progress has not changed. Continue to retry.",
+                errorCode = PREPARATION_STALLED_CODE,
+                errorRetryable = true,
+            )
+            return false
+        }
+        return true
+    }
+
+    /**
+     * The oracle's `acceptPage` resolution branch: `failed`/error pages keep
+     * the failed cursor for the recover affordance; a cursorful unavailable
+     * page becomes a retryable `history_unavailable` error; a cursorless
+     * unavailable page is the authoritative empty state; a ready page applies
+     * its window (fresh head replaces, older pages prepend-merge by id).
+     */
+    private fun acceptHistoryPage(
+        page: ConversationPage,
+        lane: HistoryLane,
+        requestedCursor: String,
+    ) {
+        val freshHead = lane == HistoryLane.LATEST && requestedCursor.isEmpty()
+        val pageError = page.error
+        if (pageError != null || page.state == ConversationBrowseState.FAILED) {
+            val error = pageError ?: ConversationBrowseError(
+                code = "history_failed",
+                message = page.reason.ifEmpty {
+                    "Conversation history could not be loaded."
+                },
+                retryable = false,
+            )
+            val resolvedCursor = page.nextCursor
+                .ifEmpty { requestedCursor }
+                .ifEmpty { local.value.nextCursor }
+            local.value = local.value.copy(
+                loading = false,
+                // `stateValue.state = pageState` — the wire state stands even
+                // when the page carries `error` without `failed`.
+                browseState = page.state,
+                browseProgress = page.progress,
+                diagnostics = if (freshHead) {
+                    page.diagnostics
+                } else {
+                    mergeHistoryDiagnostics(local.value.diagnostics, page.diagnostics)
+                },
+                error = error.message,
+                errorCode = error.code,
+                errorRetryable = error.retryable,
+                nextCursor = resolvedCursor,
+                hasMore = resolvedCursor.isNotEmpty() || page.hasMore,
+            )
+            return
+        }
+        if (!page.available) {
+            if (!freshHead) {
+                // A cursorful unavailable page keeps the loaded window and
+                // surfaces a recoverable error instead (oracle acceptPage).
+                val resolvedCursor = page.nextCursor
+                    .ifEmpty { requestedCursor }
+                    .ifEmpty { local.value.nextCursor }
                 local.value = local.value.copy(
                     loading = false,
-                    entries = page.entries + local.value.entries,
-                    hasMore = page.hasMore,
-                    nextCursor = page.nextCursor,
+                    browseState = page.state,
+                    browseProgress = page.progress,
+                    error = page.reason.ifEmpty {
+                        "Older conversation history is unavailable."
+                    },
+                    errorCode = page.reasonCode.ifEmpty { "history_unavailable" },
+                    errorRetryable = true,
+                    nextCursor = resolvedCursor,
+                    hasMore = resolvedCursor.isNotEmpty() || page.hasMore,
                 )
-            } catch (failure: Exception) {
+            } else {
+                // The oracle's authoritative unavailable — the cursorless
+                // result replaces the window and clears the browse lane.
                 local.value = local.value.copy(
                     loading = false,
-                    error = failure.message ?: "Could not load older history",
+                    entries = emptyList(),
+                    hasMore = false,
+                    nextCursor = "",
+                    browseState = page.state,
+                    browseProgress = page.progress,
+                    diagnostics = page.diagnostics,
+                    pageAvailable = false,
+                    pageReason = page.reason,
+                    error = null,
+                    errorCode = "",
+                    errorRetryable = false,
+                    preparationPolls = 0,
                 )
             }
+            return
         }
+        val entries = if (freshHead) {
+            page.entries
+        } else {
+            mergeOlderEntries(local.value.entries, page.entries)
+        }
+        local.value = local.value.copy(
+            loading = false,
+            entries = entries,
+            hasMore = page.hasMore || page.nextCursor.isNotEmpty(),
+            nextCursor = page.nextCursor,
+            browseState = page.state,
+            browseProgress = page.progress,
+            diagnostics = if (freshHead) {
+                page.diagnostics
+            } else {
+                mergeHistoryDiagnostics(local.value.diagnostics, page.diagnostics)
+            },
+            pageAvailable = true,
+            pageReason = if (freshHead) page.reason else local.value.pageReason,
+            error = null,
+            errorCode = "",
+            errorRetryable = false,
+            preparationPolls = 0,
+        )
+    }
+
+    /**
+     * The oracle's `conversationError` — a transport failure becomes a
+     * retryable `history_failed` error; the request's cursor is retained so
+     * [recoverHistory] can re-issue it.
+     */
+    private fun failHistoryRequest(failure: Exception, requestedCursor: String) {
+        val resolvedCursor = requestedCursor.ifEmpty { local.value.nextCursor }
+        local.value = local.value.copy(
+            loading = false,
+            error = failure.message ?: "Conversation history could not be loaded.",
+            errorCode = "history_failed",
+            errorRetryable = true,
+            nextCursor = resolvedCursor,
+            hasMore = resolvedCursor.isNotEmpty() || local.value.hasMore,
+        )
     }
 
     fun onDraftChange(text: String) {
@@ -950,7 +1298,18 @@ class FeedViewModel(
         const val SLASH_COMMANDS_CAPABILITY = "slash_commands"
         const val AGENT_RESPONSE_COPY_CAPABILITY = "agent_response_copy"
         const val SLASH_TIMEOUT_MS = 10_000L
+        /** The controller's client-side stall code — `recoverHistory` routes it to Continue. */
+        const val PREPARATION_STALLED_CODE = "preparation_stalled"
     }
+}
+
+/** Oracle `mergeOlderEntries` — older pages prepend, deduplicated by id. */
+private fun mergeOlderEntries(
+    existing: List<ConversationEntry>,
+    older: List<ConversationEntry>,
+): List<ConversationEntry> {
+    val existingIds = existing.mapTo(HashSet()) { it.id }
+    return older.filter { it.id !in existingIds } + existing
 }
 
 /** Oracle `RESPONSE_COPY_AGENT_IDS` — profiles the copy transaction drives. */
