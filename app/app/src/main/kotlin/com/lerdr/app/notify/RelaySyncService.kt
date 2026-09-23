@@ -10,9 +10,11 @@ import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import lerdr.core.store.AgentStore
@@ -47,6 +49,7 @@ class RelaySyncService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
+    @OptIn(FlowPreview::class)
     override fun onCreate() {
         super.onCreate()
         notifier.ensureChannels()
@@ -61,25 +64,38 @@ class RelaySyncService : Service() {
         )
         // Keep the rollup honest as sessions gain/lose agents and relays.
         serviceScope.launch {
-            combine(agentStore.agents, connectionStore.connections, ::Pair)
+            combine(agentStore.agents, connectionStore.connections) { agents, connections ->
+                agents.size to connections.values.count {
+                    it.status == RelayStatus.CONNECTED
+                }
+            }
                 .distinctUntilChanged()
-                .collect { (agents, connections) ->
-                    val connected = connections.values.count {
-                        it.status == RelayStatus.CONNECTED
-                    }
+                // A zero must settle before it can self-stop — the notifier
+                // debounces the same flap window before sending ACTION_STOP.
+                .debounce { (_, connected) -> if (connected == 0) STOP_DEBOUNCE_MS else 0L }
+                .collect { (agentCount, connected) ->
                     if (connected == 0) {
                         // Safety net — the notifier also stops us, but a
                         // stale pin must never outlive its last session.
                         stopSelf()
                     } else {
-                        notifier.updateServiceNotification(agents.size, connected)
+                        notifier.updateServiceNotification(agentCount, connected)
                     }
                 }
         }
     }
 
     /** Sticky: if the system kills us while sessions live, come back. */
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP) {
+            // Scoped stop: if a newer command (e.g. a start from a session
+            // that re-connected mid-flap) already queued, this stop is
+            // stale and the service stays up.
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        return START_STICKY
+    }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         start(this)
@@ -114,8 +130,27 @@ class RelaySyncService : Service() {
             }
         }
 
+        /**
+         * Stops via a queued [ACTION_STOP] start-command, never
+         * `stopService`: tearing the record down between
+         * `startForegroundService` and `onCreate`'s `startForeground`
+         * makes the platform crash the process with
+         * `ForegroundServiceDidNotStartInTimeException` (seen live during
+         * pairing, when CONNECTED→CLOSED flapped 5ms after CONNECTED).
+         * A command always runs after `startForeground`, so `stopSelf`
+         * is safe by construction.
+         */
         fun stop(context: Context) {
-            context.stopService(intent(context))
+            try {
+                context.startService(intent(context).setAction(ACTION_STOP))
+            } catch (_: IllegalStateException) {
+                // Backgrounded with the FGS already dead — nothing to stop.
+            }
         }
+
+        private const val ACTION_STOP = "com.lerdr.app.notify.STOP"
+
+        /** Mirror of the notifier's settle window for a zero-connection stop. */
+        private const val STOP_DEBOUNCE_MS = 3_000L
     }
 }

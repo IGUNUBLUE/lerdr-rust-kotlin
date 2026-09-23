@@ -25,6 +25,8 @@ data class AttentionCardUi(
     val prompt: String,
     /** Top choices rendered as buttons (e.g. "Allow", "Deny"). */
     val options: List<String>,
+    /** Normalized agent identity (e.g. "claude") — drives the avatar logo. */
+    val provider: String? = null,
 )
 
 /** One agent row in the working/idle groups. */
@@ -40,6 +42,8 @@ data class AgentListItemUi(
     /** "1:24" elapsed chip, or "idle". */
     val elapsedLabel: String,
     val working: Boolean,
+    /** Normalized agent identity (e.g. "claude") — drives the avatar logo. */
+    val provider: String? = null,
 )
 
 /** One computer card on the relays strip. */

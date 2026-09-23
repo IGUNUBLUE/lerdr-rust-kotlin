@@ -146,11 +146,11 @@ private fun BrandMark(modifier: Modifier = Modifier) {
             .size(96.dp)
             .clip(MaterialTheme.shapes.extraLarge)
             .background(
-                Brush.linearGradient(listOf(Color(0xFF6366F1), Color(0xFFA855F7))),
+                Brush.radialGradient(listOf(Color(0xFF3FA892), Color(0xFF0A2E28))),
             ),
     ) {
         Image(
-            painter = painterResource(R.drawable.ic_launcher_foreground),
+            painter = painterResource(R.drawable.ic_launcher_gecko),
             contentDescription = null,
             modifier = Modifier.fillMaxSize(),
         )

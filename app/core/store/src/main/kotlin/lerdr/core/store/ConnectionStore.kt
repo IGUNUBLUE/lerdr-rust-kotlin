@@ -132,6 +132,8 @@ data class RelayConnection(
     val pushStatus: String = "",
     val vapidPublicKey: String = "",
     val gatewayAvailableVersion: String = "",
+    /** Last keepalive round-trip in ms; -1 while unmeasured or down. */
+    val rttMs: Long = -1,
 ) {
     val phase: ConnectionPhase
         get() = when {
@@ -188,6 +190,19 @@ class ConnectionStore(
     fun noteMessage(relayId: String) {
         synchronized(lock) {
             if (relayId in _connections.value) lastMessageAt[relayId] = clock()
+        }
+    }
+
+    /**
+     * Keepalive RTT from the transport — rides the emitted row (unlike
+     * [lastMessageAt]) because it only changes once per keepalive and the
+     * relay chips render it.
+     */
+    fun noteRtt(relayId: String, rttMs: Long) {
+        synchronized(lock) {
+            val connection = _connections.value[relayId] ?: return
+            if (connection.rttMs == rttMs) return
+            _connections.value = _connections.value + (relayId to connection.copy(rttMs = rttMs))
         }
     }
 

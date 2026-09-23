@@ -37,7 +37,7 @@ class TerminalInputBarScreenshotTest {
     fun inputBar_idle() {
         composeRule.setContent {
             LerdrTheme {
-                TerminalInputBar(onSendText = {}, onSendKeys = {})
+                TerminalInputBar(onSendText = {})
             }
         }
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
@@ -47,7 +47,7 @@ class TerminalInputBarScreenshotTest {
     fun inputBar_withDraft() {
         composeRule.setContent {
             LerdrTheme {
-                TerminalInputBar(onSendText = {}, onSendKeys = {})
+                TerminalInputBar(onSendText = {})
             }
         }
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)

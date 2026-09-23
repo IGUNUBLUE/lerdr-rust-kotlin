@@ -18,9 +18,13 @@ sealed interface LerdrKey : NavKey {
     @Serializable
     data class Pairing(val setupLink: SetupLink? = null) : LerdrKey
 
-    /** Mission control: needs-you rail, agents grouped by relay, relays strip. */
+    /** Mission control: needs-you rail, agents grouped by relay. */
     @Serializable
     data object Home : LerdrKey
+
+    /** Connected computers (relay endpoints) — top-level tab. */
+    @Serializable
+    data object Computers : LerdrKey
 
     /** Cross-agent journal (top-level tab). */
     @Serializable
@@ -44,7 +48,7 @@ sealed interface LerdrKey : NavKey {
 
     companion object {
         /** Keys rendered in the bottom navigation bar. */
-        val topLevel: Set<LerdrKey> = setOf(Home, Activity, Settings)
+        val topLevel: Set<LerdrKey> = setOf(Home, Computers, Activity, Settings)
     }
 }
 

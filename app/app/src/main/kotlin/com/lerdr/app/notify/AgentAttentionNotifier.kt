@@ -8,6 +8,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -48,6 +50,7 @@ class AgentAttentionNotifier @Inject constructor(
     private val started = AtomicBoolean(false)
 
     /** Boots the collectors. Idempotent — called once per process by DI. */
+    @OptIn(FlowPreview::class)
     fun start() {
         if (!started.compareAndSet(false, true)) return
         notifier.ensureChannels()
@@ -60,18 +63,32 @@ class AgentAttentionNotifier @Inject constructor(
             }
         }
         scope.launch {
+            // `pinned` keeps a zero emission from stopping a service that
+            // was never started — and, paired with the settle debounce,
+            // keeps CONNECTED↔CLOSED flaps (pairing hands the socket from
+            // the setup credential to the enrolled one; reconnects) from
+            // bouncing the pin. Starts stay immediate; only stops settle.
+            var pinned = false
             connectionStore.connections
                 .map { connections ->
-                    connections.values.count { it.status == RelayStatus.CONNECTED }
+                    connections.values.any { it.status == RelayStatus.CONNECTED }
                 }
                 .distinctUntilChanged()
+                .debounce { connected -> if (connected) 0L else STOP_DEBOUNCE_MS }
+                .distinctUntilChanged()
                 .collect { connected ->
-                    if (connected > 0) {
+                    if (connected) {
+                        pinned = true
                         RelaySyncService.start(context)
-                    } else {
+                    } else if (pinned) {
+                        pinned = false
                         RelaySyncService.stop(context)
                     }
                 }
         }
+    }
+
+    private companion object {
+        const val STOP_DEBOUNCE_MS = 3_000L
     }
 }

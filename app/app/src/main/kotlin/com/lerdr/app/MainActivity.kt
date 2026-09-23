@@ -9,6 +9,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.navigation3.runtime.EntryProviderScope
 import com.lerdr.app.activity.ActivityScreen
+import com.lerdr.app.computers.ComputersScreen
 import com.lerdr.app.home.HomeScreen
 import com.lerdr.app.notify.RequestPostNotificationsPermission
 import com.lerdr.app.pairing.PairingScreen
@@ -110,7 +111,13 @@ private fun EntryProviderScope<LerdrKey>.lerdrEntries(
         HomeScreen(
             onOpenAgent = navigator::openAgent,
             onSelectTopLevel = navigator::navigateTopLevel,
+        )
+    }
+    entry<LerdrKey.Computers> {
+        ComputersScreen(
+            onSelectTopLevel = navigator::navigateTopLevel,
             onPairDevice = { navigator.openPairing() },
+            onManageDevices = { navigator.navigateTopLevel(LerdrKey.Settings) },
         )
     }
     entry<LerdrKey.Activity> {

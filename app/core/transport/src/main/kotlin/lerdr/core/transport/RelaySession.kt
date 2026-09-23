@@ -14,6 +14,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
@@ -146,6 +147,18 @@ class RelaySession(
     @Volatile
     private var currentConnection: RelayConnection? = null
 
+    /** Keepalive ping send time — the next inbound frame completes the RTT. */
+    @Volatile
+    private var keepaliveSentAt = 0L
+
+    private val _rttMs = MutableStateFlow(-1L)
+
+    /**
+     * Last measured keepalive round-trip in ms, `-1` until the first reply
+     * lands or after a disconnect. The mockup's `relay · transport · 12ms`.
+     */
+    val rttMs: StateFlow<Long> = _rttMs.asStateFlow()
+
     private class PendingRequest(
         val deferred: CompletableDeferred<CommandResultMessage>,
         val action: String,
@@ -208,7 +221,9 @@ class RelaySession(
                 }
                 if (healthJob?.isActive == true) return
                 armHealth(connection, timeoutMs)
+                keepaliveSentAt = now()
                 if (!connection.sendRaw(KEEPALIVE_JSON)) {
+                    keepaliveSentAt = 0
                     clearHealth()
                     reconnect()
                 }
@@ -379,8 +394,14 @@ class RelaySession(
         val forwarder = launch {
             try {
                 connection.incoming.collect { message ->
-                    // Any inbound frame is proof of life: clear the health
-                    // probe and drop reconnect backoff (reconnectAttempts.delete).
+                    // Any inbound frame is proof of life: it answers the
+                    // pending keepalive ping (RTT), clears the health probe,
+                    // and drops reconnect backoff (reconnectAttempts.delete).
+                    val sentAt = keepaliveSentAt
+                    if (sentAt > 0L) {
+                        _rttMs.value = now() - sentAt
+                        keepaliveSentAt = 0L
+                    }
                     backoff.reset()
                     clearHealth()
                     dispatch(message)
@@ -404,6 +425,8 @@ class RelaySession(
         forwarder.cancel()
         keepalive.cancel()
         clearHealth()
+        keepaliveSentAt = 0L
+        _rttMs.value = -1L
         closed.reason
     }
 
@@ -434,7 +457,9 @@ class RelaySession(
     private fun sendKeepalive(connection: RelayConnection) {
         if (connection !== currentConnection || healthJob?.isActive == true) return
         armHealth(connection, backgroundHealthTimeoutMs)
+        keepaliveSentAt = now()
         if (!connection.sendRaw(KEEPALIVE_JSON)) {
+            keepaliveSentAt = 0
             clearHealth()
             failKeepalive(connection)
         }

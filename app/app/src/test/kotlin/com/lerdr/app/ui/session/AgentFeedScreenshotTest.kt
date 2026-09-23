@@ -86,6 +86,7 @@ class AgentFeedScreenshotTest {
     private fun baseState() = FeedUiState(
         paneId = "r1::%1",
         title = "claude",
+        provider = "claude",
         breadcrumb = "lerdr · main · workstation",
         statusLabel = "idle",
         connected = true,

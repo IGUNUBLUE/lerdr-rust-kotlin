@@ -32,6 +32,8 @@ data class FeedUiState(
     val title: String = "",
     /** "lerdr · main · sd" — workspace/context breadcrumb. */
     val breadcrumb: String = "",
+    /** Normalized agent identity ("claude", "codex"…) — top-bar logo. */
+    val provider: String? = null,
     val statusLabel: String = "",
     val working: Boolean = false,
     /** Transport liveness for this agent's relay. */
@@ -107,6 +109,7 @@ class FeedViewModel(
         FeedUiState(
             paneId = paneId,
             title = agent?.name ?: agent?.agent ?: paneId.substringAfter("::"),
+            provider = agent?.agent?.takeIf { it.isNotEmpty() },
             breadcrumb = breadcrumbOf(agent),
             statusLabel = agent?.status ?: "",
             working = agentStatusGroup(agent) == AgentStatusGroup.WORKING,

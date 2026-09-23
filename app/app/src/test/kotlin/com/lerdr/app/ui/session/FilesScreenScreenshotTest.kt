@@ -79,6 +79,7 @@ class FilesScreenScreenshotTest {
     private fun baseState() = FilesUiState(
         paneId = "r1::%1",
         title = "claude",
+        provider = "claude",
         breadcrumb = "lerdr · main · workstation",
         statusLabel = "working",
         connected = true,

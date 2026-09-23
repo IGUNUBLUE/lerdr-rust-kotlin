@@ -81,6 +81,7 @@ class RelayConnection(
     private val opened = CompletableDeferred<Response>()
     private val disconnect = CompletableDeferred<DisconnectReason>()
     private val ready = CompletableDeferred<Unit>()
+    private val terminated = AtomicBoolean()
 
     @Volatile
     private var socketRef: WebSocket? = null
@@ -277,9 +278,13 @@ class RelayConnection(
     }
 
     private fun terminate(reason: DisconnectReason) {
-        if (!disconnect.complete(reason)) return
-        frames.close()
+        if (!terminated.compareAndSet(false, true)) return
+        // State first: completing `disconnect` resumes awaitFrame's onAwait
+        // branch immediately, so collectors can observe the flow ending
+        // before this call returns — Closed must already be visible.
         _state.value = State.Closed(reason)
+        disconnect.complete(reason)
+        frames.close()
         ready.completeExceptionally(TransportException.ConnectionClosed(reason))
     }
 

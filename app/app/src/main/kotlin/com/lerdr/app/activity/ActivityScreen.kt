@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Lock
@@ -111,6 +112,12 @@ fun ActivityContent(
                         icon = Icons.Default.Terminal,
                         selected = false,
                         onClick = { onSelectTopLevel(LerdrKey.Home) },
+                    ),
+                    LerdrNavItem(
+                        label = "Computers",
+                        icon = Icons.Default.Dns,
+                        selected = false,
+                        onClick = { onSelectTopLevel(LerdrKey.Computers) },
                     ),
                     LerdrNavItem(
                         label = "Activity",

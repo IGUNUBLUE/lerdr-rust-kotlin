@@ -101,10 +101,11 @@ class RealHomeRepository @Inject constructor(
                     relayId = endpoint.id,
                     label = endpoint.label,
                     transport = endpoint.transport.displayName(),
-                    statusLabel = when (connection?.status) {
-                        RelayStatus.CONNECTED -> "connected"
-                        RelayStatus.CONNECTING -> "connecting…"
-                        else -> "offline"
+                    statusLabel = when {
+                        connection?.status == RelayStatus.CONNECTING -> "connecting…"
+                        connection?.status != RelayStatus.CONNECTED -> "offline"
+                        connection.rttMs >= 0 -> "${connection.rttMs}ms"
+                        else -> "connected"
                     },
                     agentCount = agents.count { it.relayId == endpoint.id },
                     connected = connection?.status == RelayStatus.CONNECTED,
@@ -142,6 +143,7 @@ class RealHomeRepository @Inject constructor(
             metaLabel = "$kindLabel · ${ageLabel(at - (lastActiveAt ?: updatedAt))}",
             prompt = prompt ?: interaction?.question ?: command ?: "",
             options = optionLabels.take(MAX_ATTENTION_OPTIONS),
+            provider = agent?.takeIf { it.isNotEmpty() },
         )
     }
 
@@ -160,6 +162,7 @@ class RealHomeRepository @Inject constructor(
                 activityLabel = statusText,
                 elapsedLabel = elapsedLabel(at - (lastActiveAt ?: updatedAt)),
                 working = true,
+                provider = agent?.takeIf { it.isNotEmpty() },
             )
         } else {
             AgentListItemUi(
@@ -169,6 +172,7 @@ class RealHomeRepository @Inject constructor(
                 activityLabel = null,
                 elapsedLabel = "idle",
                 working = false,
+                provider = agent?.takeIf { it.isNotEmpty() },
             )
         }
     }

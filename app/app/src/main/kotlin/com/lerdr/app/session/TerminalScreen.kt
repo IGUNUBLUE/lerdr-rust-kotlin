@@ -1,15 +1,22 @@
 package com.lerdr.app.session
 
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -24,6 +31,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -51,6 +59,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -133,6 +142,20 @@ fun TerminalContent(
     var findOpen by rememberSaveable { mutableStateOf(false) }
     var findQuery by rememberSaveable { mutableStateOf("") }
     var activeFindIndex by rememberSaveable { mutableStateOf(-1) }
+    var ctrlLatched by remember { mutableStateOf(false) }
+    var combosOpen by remember { mutableStateOf(false) }
+    val inputFocus = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
+
+    fun showKeyboard() {
+        inputFocus.requestFocus()
+        keyboardController?.show()
+    }
+
+    fun sendCtrlChord(letter: Char) {
+        onSendKeys(listOf("Ctrl+${letter.uppercaseChar()}"))
+        ctrlLatched = false
+    }
 
     // The corpus joins every rendered row — skipped entirely while find is
     // closed so each committed frame doesn't pay an O(text) rebuild for a
@@ -213,6 +236,8 @@ fun TerminalContent(
                     }
                 },
                 onBack = onBack,
+                provider = uiState.provider,
+                active = uiState.connected,
                 tabsPaneId = tabsPaneId,
                 onSelectTab = { onSelectTab(it.paneId) },
                 trailing = {
@@ -229,11 +254,27 @@ fun TerminalContent(
             )
         },
         bottomBar = {
-            Column {
-                SpecialKeysBar(onSendKeys = onSendKeys)
+            Column(
+                modifier = Modifier.windowInsetsPadding(
+                    WindowInsets.systemBars
+                        .union(WindowInsets.ime)
+                        .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom),
+                ),
+            ) {
+                SpecialKeysBar(
+                    onSendKeys = onSendKeys,
+                    ctrlLatched = ctrlLatched,
+                    onCtrlTap = {
+                        ctrlLatched = !ctrlLatched
+                        if (ctrlLatched) showKeyboard()
+                    },
+                    onCtrlLongPress = { combosOpen = true },
+                )
                 TerminalInputBar(
                     onSendText = onSendText,
-                    onSendKeys = onSendKeys,
+                    focusRequester = inputFocus,
+                    ctrlLatched = ctrlLatched,
+                    onCtrlChord = ::sendCtrlChord,
                 )
             }
         },
@@ -285,6 +326,10 @@ fun TerminalContent(
                             state = surfaceState,
                             findRanges = findRanges,
                             onViewportMeasured = onViewportMeasured,
+                            onTapSurface = {
+                                inputFocus.requestFocus()
+                                keyboardController?.show()
+                            },
                         )
                     }
                 }
@@ -307,8 +352,46 @@ fun TerminalContent(
                         )
                     }
                 }
+                // Mockup's "scroll to live" — appears once the follow-live
+                // pin is released by scrolling into history.
+                if (!surfaceState.stickToBottom && !uiState.waitingForContent) {
+                    Surface(
+                        onClick = { scope.launch { surfaceState.scrollToLive() } },
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        contentColor = MaterialTheme.colorScheme.onSurface,
+                        shape = CircleShape,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = spacing.small),
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(
+                                horizontal = spacing.small,
+                                vertical = spacing.extraSmall,
+                            ),
+                        ) {
+                            Icon(
+                                Icons.Default.KeyboardArrowDown,
+                                contentDescription = null,
+                                modifier = Modifier.padding(end = spacing.extraSmall),
+                            )
+                            Text(
+                                "scroll to live",
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                        }
+                    }
+                }
             }
         }
+    }
+
+    if (combosOpen) {
+        CtrlCombosSheet(
+            onSendKeys = onSendKeys,
+            onDismiss = { combosOpen = false },
+        )
     }
 }
 
@@ -414,9 +497,14 @@ internal fun TerminalFindBar(
     }
 }
 
-/** Esc Tab arrows Ctrl — the fixed special-keys bar. */
+/** Esc Tab arrows Enter ⌫ Ctrl — the mockup's single special-keys bar. */
 @Composable
-private fun SpecialKeysBar(onSendKeys: (List<String>) -> Unit) {
+private fun SpecialKeysBar(
+    onSendKeys: (List<String>) -> Unit,
+    ctrlLatched: Boolean,
+    onCtrlTap: () -> Unit,
+    onCtrlLongPress: () -> Unit,
+) {
     val spacing = LerdrTheme.spacing
     Surface(color = MaterialTheme.colorScheme.surfaceContainerLow) {
         Column(
@@ -433,64 +521,110 @@ private fun SpecialKeysBar(onSendKeys: (List<String>) -> Unit) {
                     .padding(horizontal = spacing.medium, vertical = spacing.small),
             ) {
                 SPECIAL_KEYS.forEach { (label, key) ->
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceContainerHighest,
-                        contentColor = MaterialTheme.colorScheme.onSurface,
-                        shape = MaterialTheme.shapes.small,
-                        onClick = { onSendKeys(listOf(key)) },
-                    ) {
-                        Text(
-                            label,
-                            style = MaterialTheme.typography.labelLarge,
-                            modifier = Modifier.padding(
+                    KeyButton(label = label, onClick = { onSendKeys(listOf(key)) })
+                }
+                // Latching modifier — tap, then a letter on the keyboard
+                // sends the chord; long-press opens the combos sheet.
+                val ctrlColors = if (ctrlLatched) {
+                    MaterialTheme.colorScheme.primaryContainer to
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                } else {
+                    MaterialTheme.colorScheme.surfaceContainerHighest to
+                        MaterialTheme.colorScheme.onSurface
+                }
+                Surface(
+                    color = ctrlColors.first,
+                    contentColor = ctrlColors.second,
+                    shape = MaterialTheme.shapes.small,
+                ) {
+                    Text(
+                        "Ctrl",
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier
+                            .combinedClickable(
+                                onClick = onCtrlTap,
+                                onLongClick = onCtrlLongPress,
+                            )
+                            .padding(
                                 horizontal = spacing.small + spacing.extraSmall,
                                 vertical = spacing.extraSmall,
                             ),
-                        )
-                    }
-                }
-                Spacer(Modifier.weight(1f))
-            }
-            Row(
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    shape = MaterialTheme.shapes.small,
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(
-                            horizontal = spacing.small,
-                            vertical = spacing.extraSmall,
-                        ),
-                    ) {
-                        Icon(
-                            Icons.Default.Keyboard,
-                            contentDescription = null,
-                            modifier = Modifier.padding(end = spacing.extraSmall),
-                        )
-                        Text("show keyboard", style = MaterialTheme.typography.labelSmall)
-                    }
+                    )
                 }
             }
         }
     }
 }
 
-/** label → wire key name the relay understands. */
+@Composable
+private fun KeyButton(label: String, onClick: () -> Unit) {
+    val spacing = LerdrTheme.spacing
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        shape = MaterialTheme.shapes.small,
+        onClick = onClick,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.padding(
+                horizontal = spacing.small + spacing.extraSmall,
+                vertical = spacing.extraSmall,
+            ),
+        )
+    }
+}
+
+/** Long-press-Ctrl combos sheet — the doc's `C-c C-d C-z C-l C-r` set. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CtrlCombosSheet(
+    onSendKeys: (List<String>) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(modifier = Modifier.padding(bottom = LerdrTheme.spacing.large)) {
+            CTRL_COMBOS.forEach { combo ->
+                Surface(
+                    onClick = {
+                        onSendKeys(listOf("Ctrl+${combo.last()}"))
+                        onDismiss()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        combo,
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(
+                            horizontal = LerdrTheme.spacing.medium,
+                            vertical = LerdrTheme.spacing.small,
+                        ),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * label → wire key name (`send_keys` passes names through; Herdr's
+ * vocabulary is Up/Down/Left/Right/Esc/Enter/Tab/Backspace — the oracle's
+ * `sendTerminalKey` spellings). Ctrl is not here — it's the latching
+ * modifier rendered after these keys.
+ */
 private val SPECIAL_KEYS = listOf(
     "Esc" to "Escape",
     "Tab" to "Tab",
-    "←" to "ArrowLeft",
-    "↓" to "ArrowDown",
-    "↑" to "ArrowUp",
-    "→" to "ArrowRight",
-    "Ctrl-C" to "Ctrl+C",
+    "←" to "Left",
+    "↓" to "Down",
+    "↑" to "Up",
+    "→" to "Right",
+    "Enter" to "Enter",
+    "⌫" to "Backspace",
 )
+
+private val CTRL_COMBOS = listOf("C-c", "C-d", "C-z", "C-l", "C-r")
 
 @PreviewLightDark
 @Composable
@@ -500,6 +634,7 @@ private fun TerminalContentPreview() {
             uiState = TerminalUiState(
                 paneId = "sd::%1",
                 title = "claude",
+                provider = "claude",
                 breadcrumb = "lerdr · main · sd",
                 statusLabel = "lease 92×42",
                 connected = true,

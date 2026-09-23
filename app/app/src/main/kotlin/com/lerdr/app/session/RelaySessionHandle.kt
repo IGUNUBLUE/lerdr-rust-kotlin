@@ -22,6 +22,9 @@ interface RelaySessionHandle {
     /** Session lifecycle — mirrors [RelaySession.state]. */
     val state: StateFlow<RelaySession.SessionState>
 
+    /** Last keepalive round-trip in ms; -1 while unmeasured/disconnected. */
+    val rttMs: StateFlow<Long>
+
     /**
      * Decrypted server→client frames, raw JSON. Single-consumer — the
      * repository is the only collector ([RelaySession.incoming] parity).
@@ -58,6 +61,7 @@ private class RelaySessionAdapter(
     private val session: RelaySession,
 ) : RelaySessionHandle {
     override val state: StateFlow<RelaySession.SessionState> get() = session.state
+    override val rttMs: StateFlow<Long> get() = session.rttMs
     override val incoming: Flow<JsonObject> get() = session.incoming
 
     override fun sendRaw(json: String): Boolean = session.sendRaw(json)

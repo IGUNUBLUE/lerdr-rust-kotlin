@@ -9,11 +9,18 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -170,12 +177,19 @@ fun AgentFeedContent(
                     }
                 },
                 onBack = onBack,
+                provider = uiState.provider,
+                active = uiState.working,
                 tabsPaneId = tabsPaneId,
                 onSelectTab = { onSelectTab(it.paneId) },
             )
         },
         bottomBar = {
             Composer(
+                modifier = Modifier.windowInsetsPadding(
+                    WindowInsets.systemBars
+                        .union(WindowInsets.ime)
+                        .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom),
+                ),
                 agentLabel = uiState.title.ifEmpty { uiState.paneId.substringAfter("::") },
                 draft = uiState.composerDraft,
                 sending = uiState.responding,
@@ -435,10 +449,11 @@ private fun Composer(
     onRemoveAttachment: (String) -> Unit,
     onClearAttachments: () -> Unit,
     onRestartAttachments: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val spacing = LerdrTheme.spacing
     val controlsLocked = sending || attachments.uploading
-    Surface(color = MaterialTheme.colorScheme.surface) {
+    Surface(color = MaterialTheme.colorScheme.surface, modifier = modifier) {
         Column(modifier = Modifier.fillMaxWidth()) {
             if (attachments.items.isNotEmpty() || attachments.issue != null) {
                 AttachmentTray(
@@ -627,6 +642,7 @@ private fun AgentFeedContentPreview() {
             uiState = FeedUiState(
                 paneId = "sd::%1",
                 title = "claude",
+                provider = "claude",
                 breadcrumb = "lerdr · main · sd",
                 statusLabel = "working",
                 working = true,

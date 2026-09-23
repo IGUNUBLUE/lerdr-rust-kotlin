@@ -54,6 +54,9 @@ fun SessionTopBar(
     mode: SessionMode,
     onSelectMode: (SessionMode) -> Unit,
     onBack: () -> Unit,
+    provider: String? = null,
+    /** Pulses the avatar ring while the agent works / the pane is live. */
+    active: Boolean = false,
     trailing: (@Composable () -> Unit)? = null,
     /**
      * When set, the workspace tab strip renders under the mode switch and
@@ -75,18 +78,28 @@ fun SessionTopBar(
                 }
             },
             title = {
-                Column {
-                    Text(
-                        title,
-                        style = MaterialTheme.typography.titleMedium,
-                        maxLines = 1,
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    com.lerdr.app.ui.ProviderBadge(
+                        provider = provider,
+                        label = title,
+                        size = 40.dp,
+                        prominent = true,
+                        active = active,
                     )
-                    Text(
-                        breadcrumb,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                    )
+                    Spacer(Modifier.width(spacing.small))
+                    Column {
+                        Text(
+                            title,
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1,
+                        )
+                        Text(
+                            breadcrumb,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                    }
                 }
             },
             actions = {

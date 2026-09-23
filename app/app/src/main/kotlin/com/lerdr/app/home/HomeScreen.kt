@@ -18,7 +18,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
@@ -29,7 +29,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -49,6 +48,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lerdr.app.di.AppEntryPoint
+import com.lerdr.app.ui.ProviderBadge
 import com.lerdr.core.designsystem.components.LerdrNavItem
 import dagger.hilt.android.EntryPointAccessors
 import com.lerdr.core.designsystem.components.LerdrShortNavigationBar
@@ -58,14 +58,13 @@ import com.lerdr.navigation.LerdrKey
 
 /**
  * Mission control (docs/04 §Home): needs-you rail, agents grouped by
- * activity, relays strip, bottom nav. [HomeScreen] owns the ViewModel seam;
+ * activity, bottom nav. [HomeScreen] owns the ViewModel seam;
  * [HomeContent] is pure state → previews and Roborazzi shots stay honest.
  */
 @Composable
 fun HomeScreen(
     onOpenAgent: (String) -> Unit,
     onSelectTopLevel: (LerdrKey) -> Unit,
-    onPairDevice: () -> Unit,
 ) {
     // hilt-navigation-compose is absent — pull the bound repository
     // through the singleton entry point.
@@ -81,7 +80,6 @@ fun HomeScreen(
         uiState = uiState,
         onOpenAgent = onOpenAgent,
         onSelectTopLevel = onSelectTopLevel,
-        onPairDevice = onPairDevice,
     )
 }
 
@@ -91,7 +89,6 @@ fun HomeContent(
     uiState: HomeUiState,
     onOpenAgent: (String) -> Unit,
     onSelectTopLevel: (LerdrKey) -> Unit,
-    onPairDevice: () -> Unit,
 ) {
     val spacing = LerdrTheme.spacing
     Scaffold(
@@ -126,6 +123,12 @@ fun HomeContent(
                         onClick = { onSelectTopLevel(LerdrKey.Home) },
                     ),
                     LerdrNavItem(
+                        label = "Computers",
+                        icon = Icons.Default.Dns,
+                        selected = false,
+                        onClick = { onSelectTopLevel(LerdrKey.Computers) },
+                    ),
+                    LerdrNavItem(
                         label = "Activity",
                         icon = Icons.Default.History,
                         selected = false,
@@ -139,11 +142,6 @@ fun HomeContent(
                     ),
                 ),
             )
-        },
-        floatingActionButton = {
-            FloatingActionButton(onClick = onPairDevice) {
-                Icon(Icons.Default.Add, contentDescription = "Pair device")
-            }
         },
     ) { innerPadding ->
         LazyColumn(
@@ -222,17 +220,6 @@ fun HomeContent(
                 }
             }
 
-            if (uiState.relays.isNotEmpty()) {
-                item(key = "relays-strip") {
-                    RelaysStrip(
-                        relays = uiState.relays,
-                        onPairDevice = onPairDevice,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = spacing.small),
-                    )
-                }
-            }
         }
     }
 }
@@ -316,7 +303,7 @@ private fun AttentionCard(
             verticalArrangement = Arrangement.spacedBy(LerdrTheme.spacing.small),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                AgentAvatar(label = card.agentLabel)
+                AgentAvatar(provider = card.provider, label = card.agentLabel)
                 Spacer(Modifier.width(LerdrTheme.spacing.small))
                 Column {
                     Text(
@@ -387,7 +374,7 @@ private fun AgentRow(
     ) {
         Column(modifier = Modifier.padding(LerdrTheme.spacing.medium)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                AgentAvatar(label = agent.title)
+                AgentAvatar(provider = agent.provider, label = agent.title)
                 Spacer(Modifier.width(LerdrTheme.spacing.small))
                 Column(Modifier.weight(1f)) {
                     Text(
@@ -450,86 +437,8 @@ private fun ElapsedChip(agent: AgentListItemUi) {
 }
 
 @Composable
-private fun AgentAvatar(label: String) {
-    val initial = label.firstOrNull()?.uppercase() ?: "?"
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = Modifier
-            .size(36.dp)
-            .clip(CircleShape)
-            .background(MaterialTheme.colorScheme.primaryContainer),
-    ) {
-        Text(
-            initial,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onPrimaryContainer,
-        )
-    }
-}
-
-@Composable
-private fun RelaysStrip(
-    relays: List<RelayCardUi>,
-    onPairDevice: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val spacing = LerdrTheme.spacing
-    LazyRow(
-        modifier = modifier,
-        contentPadding = PaddingValues(horizontal = spacing.medium),
-        horizontalArrangement = Arrangement.spacedBy(spacing.small),
-    ) {
-        items(relays, key = { it.relayId }) { relay ->
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                ),
-                shape = MaterialTheme.shapes.medium,
-            ) {
-                Column(
-                    modifier = Modifier.padding(spacing.small + spacing.extraSmall),
-                ) {
-                    Text(
-                        relay.label,
-                        style = MaterialTheme.typography.titleSmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        StatusDot(
-                            color = if (relay.connected) {
-                                LerdrTheme.extendedColors.live
-                            } else {
-                                LerdrTheme.extendedColors.idle
-                            },
-                        )
-                        Spacer(Modifier.width(LerdrTheme.spacing.extraSmall))
-                        Text(
-                            "${relay.transport} · ${relay.statusLabel}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-        }
-        item(key = "add-relay") {
-            Card(
-                onClick = onPairDevice,
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                ),
-                shape = MaterialTheme.shapes.medium,
-            ) {
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier.padding(spacing.medium),
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = "Pair a computer")
-                }
-            }
-        }
-    }
+private fun AgentAvatar(provider: String?, label: String) {
+    ProviderBadge(provider = provider, label = label)
 }
 
 @PreviewLightDark
@@ -540,7 +449,6 @@ private fun HomeContentPreview() {
             uiState = previewHomeUiState,
             onOpenAgent = {},
             onSelectTopLevel = {},
-            onPairDevice = {},
         )
     }
 }
@@ -553,7 +461,6 @@ private fun HomeContentEmptyPreview() {
             uiState = HomeUiState(),
             onOpenAgent = {},
             onSelectTopLevel = {},
-            onPairDevice = {},
         )
     }
 }
@@ -569,6 +476,7 @@ private val previewHomeUiState = HomeUiState(
             metaLabel = "approval · 40s",
             prompt = "Run go test ./internal/… ?",
             options = listOf("Allow", "Deny"),
+            provider = "claude",
         ),
         AttentionCardUi(
             paneId = "sd::%2",
@@ -577,16 +485,18 @@ private val previewHomeUiState = HomeUiState(
             metaLabel = "question · 3 options",
             prompt = "Which module should own the delta cache?",
             options = listOf("Answer →"),
+            provider = "devin",
         ),
     ),
     working = listOf(
         AgentListItemUi(
             paneId = "sd::%3",
-            title = "hermes · api-server",
+            title = "claude · api-server",
             statusLine = "Editing handler.go",
             activityLabel = "running tests…",
             elapsedLabel = "1:24",
             working = true,
+            provider = "claude",
         ),
         AgentListItemUi(
             paneId = "sd::%4",
@@ -595,6 +505,7 @@ private val previewHomeUiState = HomeUiState(
             activityLabel = "writing migration.sql",
             elapsedLabel = "0:37",
             working = true,
+            provider = "pi",
         ),
     ),
     idle = listOf(
@@ -605,6 +516,7 @@ private val previewHomeUiState = HomeUiState(
             activityLabel = null,
             elapsedLabel = "idle",
             working = false,
+            provider = "codex",
         ),
     ),
     relays = listOf(

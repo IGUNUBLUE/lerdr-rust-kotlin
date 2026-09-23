@@ -208,6 +208,9 @@ class SessionRepository @Inject constructor(
             val runtime = SessionRuntime(endpoint, handle)
             runtime.jobs += scope.launch { handle.state.collect { onSessionState(endpoint, it) } }
             runtime.jobs += scope.launch { handle.incoming.collect { demux(endpoint.id, it) } }
+            runtime.jobs += scope.launch {
+                handle.rttMs.collect { connectionStore.noteRtt(endpoint.id, it) }
+            }
             sessions[endpoint.id] = runtime
         }
     }

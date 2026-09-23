@@ -5,3 +5,6 @@ build/
 *.iml
 .idea/
 local.properties
+
+# Kotlin build session data
+app/.kotlin/

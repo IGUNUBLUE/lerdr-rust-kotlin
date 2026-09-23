@@ -150,6 +150,7 @@ class SettingsViewModel(
                         .takeIf { it.isNotEmpty() }
                         ?.let { "relay $it" },
                     connection.protocol.takeIf { it > 0 }?.let { "protocol $it" },
+                    connection.rttMs.takeIf { it >= 0 }?.let { "${it}ms" },
                 ).joinToString(" · ")
             } else {
                 ""

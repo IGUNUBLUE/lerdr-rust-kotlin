@@ -20,14 +20,16 @@ import androidx.compose.ui.text.TextStyle
  * `core:designsystem.components` (see AGENTS.md: features never import
  * experimental M3E APIs).
  *
- * Dynamic color is the default on API 31+; below that — or when the user
- * disables it — the brand palette ([LerdrDarkColorScheme] /
- * [LerdrLightColorScheme]) keeps the mission-control look.
+ * The brand palette ([LerdrDarkColorScheme] / [LerdrLightColorScheme]) is
+ * the default everywhere — it carries the mission-control look from
+ * docs/mockup.png regardless of wallpaper. Dynamic (Material You) color is
+ * opt-in via Settings > App, since wallpaper-derived hues can wash out the
+ * brand identity the product is designed around.
  */
 @Composable
 fun LerdrTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = true,
+    dynamicColor: Boolean = false,
     spacing: LerdrSpacing = LerdrSpacing(),
     content: @Composable () -> Unit,
 ) {

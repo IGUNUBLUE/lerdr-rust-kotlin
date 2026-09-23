@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Devices
+import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
@@ -168,6 +169,12 @@ fun SettingsContent(
                         icon = Icons.Default.Terminal,
                         selected = false,
                         onClick = { onSelectTopLevel(LerdrKey.Home) },
+                    ),
+                    LerdrNavItem(
+                        label = "Computers",
+                        icon = Icons.Default.Dns,
+                        selected = false,
+                        onClick = { onSelectTopLevel(LerdrKey.Computers) },
                     ),
                     LerdrNavItem(
                         label = "Activity",

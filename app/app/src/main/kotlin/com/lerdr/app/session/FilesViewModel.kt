@@ -38,6 +38,8 @@ data class FilesUiState(
     val paneId: String,
     val title: String = "",
     val breadcrumb: String = "",
+    /** Normalized agent identity ("claude", "codex"…) — top-bar logo. */
+    val provider: String? = null,
     val statusLabel: String = "",
     /** Transport liveness for this agent's relay — false renders "offline". */
     val connected: Boolean = false,
@@ -174,6 +176,7 @@ class FilesViewModel(
         FilesUiState(
             paneId = paneId,
             title = agent?.name ?: agent?.agent ?: paneId.substringAfter("::"),
+            provider = agent?.agent?.takeIf { it.isNotEmpty() },
             breadcrumb = breadcrumbOf(agent),
             statusLabel = agent?.status ?: "",
             connected = connection?.status == RelayStatus.CONNECTED,

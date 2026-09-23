@@ -12,13 +12,15 @@
         android:name="android.hardware.camera.any"
         android:required="false" />
 
+    <!-- Relays are user-supplied ws:// LAN origins; the socket payload is
+         herdr-e2ee-v2 sealed either way, so platform cleartext is safe. -->
     <application
         android:name=".LerdrApp"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="Lerdr"
         android:theme="@style/Theme.Lerdr"
-        android:usesCleartextTraffic="false">
+        android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"

@@ -1,7 +1,12 @@
 package com.lerdr.app.ui.terminal
 
+import android.content.Intent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -11,15 +16,20 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
@@ -27,10 +37,16 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.platform.LocalClipboard
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontStyle
@@ -39,6 +55,7 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.PreviewLightDark
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import com.lerdr.app.session.SessionRepository
 import com.lerdr.core.designsystem.theme.LerdrTextStyles
@@ -47,6 +64,7 @@ import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.max
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * The pane grid — renders committed [TerminalRowUi]s as a monospace cell
@@ -86,11 +104,19 @@ fun TerminalSurface(
     findActiveColor: Color = FIND_ACTIVE_COLOR,
     findTextColor: Color = FIND_TEXT_COLOR,
     onViewportMeasured: (columns: Int, rows: Int) -> Unit = { _, _ -> },
+    onTapSurface: () -> Unit = {},
 ) {
     val density = LocalDensity.current
     val layoutDirection = LocalLayoutDirection.current
     val textMeasurer = rememberTextMeasurer()
-    val baseStyle: TextStyle = LerdrTextStyles.terminal
+    val clipboard = LocalClipboard.current
+    val context = LocalContext.current
+    val menuScope = rememberCoroutineScope()
+    val baseStyle: TextStyle = LerdrTextStyles.terminal.let { style ->
+        // Pinch zoom rescales the font — the metrics re-probe below turns
+        // it into a new grid, which re-leases the pane size.
+        if (state.fontScale != 1f) style.copy(fontSize = style.fontSize * state.fontScale) else style
+    }
 
     // Monospace grid metrics — one probe defines every cell. Re-probe when
     // density/font scale or the style changes; never per frame.
@@ -208,75 +234,214 @@ fun TerminalSurface(
             if (state.stickToBottom) state.scrollToBottom()
         }
 
-        val maxCells = rows.maxOfOrNull { it.cells } ?: 0
-        val contentWidth = max(viewportWidth, maxCells * metrics.cellWidth)
-        val contentHeight = rows.size * metrics.rowHeight
+        var contextMenu by remember { mutableStateOf<TerminalMenuTarget?>(null) }
 
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(contentPadding)
+                // Pinch zoom — consumes pointers only while two fingers are
+                // down, so single-finger drags stay with the scrollers.
+                .pointerInput(metrics) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false)
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            if (event.changes.none { it.pressed }) break
+                            if (event.changes.count { it.pressed } < 2) continue
+                            val zoom = event.calculateZoom()
+                            if (zoom != 1f) state.zoomBy(zoom)
+                            event.changes.forEach { if (it.positionChanged()) it.consume() }
+                        }
+                    }
+                }
+                .pointerInput(metrics, rows) {
+                    detectTapGestures(
+                        onTap = { onTapSurface() },
+                        onLongPress = { point ->
+                            val contentX = point.x + horizontalScroll.value
+                            val contentY = point.y + verticalScroll.value
+                            val rowIndex = floor(contentY / metrics.rowHeight).toInt()
+                            val row = rows.getOrNull(rowIndex)
+                            val links = row?.spans
+                                ?.mapNotNull { it.href }
+                                ?.distinct()
+                                .orEmpty()
+                            contextMenu = TerminalMenuTarget(
+                                offset = Offset(
+                                    point.x.coerceIn(0f, viewportWidth),
+                                    point.y.coerceIn(0f, viewportHeight),
+                                ),
+                                rowText = row?.plainText().orEmpty(),
+                                links = links,
+                            )
+                        },
+                    )
+                }
                 .verticalScroll(verticalScroll)
                 .horizontalScroll(horizontalScroll),
         ) {
-            Canvas(
-                modifier = Modifier.requiredSize(
-                    width = with(density) { contentWidth.toDp() },
-                    height = with(density) { contentHeight.toDp() },
-                ),
+            TerminalGrid(
+                rows = rows,
+                rowLayouts = rowLayouts,
+                findLayouts = findLayouts,
+                findRanges = findRanges,
+                findMatchColor = findMatchColor,
+                findActiveColor = findActiveColor,
+                metrics = metrics,
+                cursor = cursor,
+                cursorOn = cursorOn,
+                cursorColor = cursorColor,
+                viewportWidthPx = viewportWidth,
+                verticalScroll = verticalScroll,
+            )
+        }
+
+        val menu = contextMenu
+        if (menu != null) {
+            val transcript = rows.joinToString("\n") { it.plainText() }.trimEnd()
+            DropdownMenu(
+                expanded = true,
+                onDismissRequest = { contextMenu = null },
+                offset = with(density) {
+                    DpOffset(menu.offset.x.toDp(), menu.offset.y.toDp())
+                },
             ) {
-                val scrollY = verticalScroll.value.toFloat()
-                val viewport = verticalScroll.viewportSize.toFloat()
-                // Manual virtualization: only the rows intersecting the
-                // viewport emit draw calls.
-                val firstRow = floor(scrollY / metrics.rowHeight).toInt()
-                    .coerceIn(0, rowLayouts.size)
-                val lastRow = ceil((scrollY + viewport) / metrics.rowHeight).toInt()
-                    .coerceIn(firstRow, rowLayouts.size)
-                for (index in firstRow until lastRow) {
-                    val layout = findLayouts[index] ?: rowLayouts[index]
-                    val ranges = findRanges[index]
-                    if (ranges != null) {
-                        // The mark fill — getPathForRange resolves the exact
-                        // glyph extent, so wide cells and tab-expanded runs
-                        // highlight at their rendered width.
-                        val rowTop = index * metrics.rowHeight
-                        for (range in ranges) {
-                            val bounds = layout.getPathForRange(range.start, range.end)
-                                .getBounds()
-                            drawRect(
-                                color = if (range.active) findActiveColor else findMatchColor,
-                                topLeft = Offset(bounds.left, rowTop),
-                                size = Size(bounds.width, metrics.rowHeight),
-                            )
-                            if (range.active) {
-                                // The oracle's .active box-shadow ring.
-                                drawRect(
-                                    color = FIND_ACTIVE_RING_COLOR,
-                                    topLeft = Offset(bounds.left, rowTop),
-                                    size = Size(bounds.width, metrics.rowHeight),
-                                    style = Stroke(width = ACTIVE_RING_WIDTH),
-                                )
+                if (menu.rowText.isNotBlank()) {
+                    DropdownMenuItem(
+                        text = { Text("Copy line") },
+                        onClick = {
+                            menuScope.launch {
+                                clipboard.setClipEntry(ClipEntry(android.content.ClipData.newPlainText("terminal line", menu.rowText)))
                             }
-                        }
-                    }
-                    drawText(
-                        textLayoutResult = layout,
-                        topLeft = Offset(0f, index * metrics.rowHeight),
+                            contextMenu = null
+                        },
                     )
                 }
-                if (cursor != null && cursorOn && cursor.row in firstRow until lastRow) {
-                    drawRect(
-                        color = cursorColor,
-                        topLeft = Offset(
-                            x = cursor.column * metrics.cellWidth,
-                            y = cursor.row * metrics.rowHeight,
-                        ),
-                        size = Size(metrics.cellWidth, metrics.rowHeight),
-                        alpha = CURSOR_ALPHA,
+                if (transcript.isNotBlank()) {
+                    DropdownMenuItem(
+                        text = { Text("Copy transcript") },
+                        onClick = {
+                            menuScope.launch {
+                                clipboard.setClipEntry(ClipEntry(android.content.ClipData.newPlainText("terminal transcript", transcript)))
+                            }
+                            contextMenu = null
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Share transcript") },
+                        onClick = {
+                            val send = Intent(Intent.ACTION_SEND)
+                                .setType("text/plain")
+                                .putExtra(Intent.EXTRA_TEXT, transcript)
+                            context.startActivity(Intent.createChooser(send, null))
+                            contextMenu = null
+                        },
+                    )
+                }
+                menu.links.take(MAX_MENU_LINKS).forEach { href ->
+                    DropdownMenuItem(
+                        text = { Text("Open ${shortenMenuLabel(href)}") },
+                        onClick = {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, android.net.Uri.parse(href)),
+                            )
+                            contextMenu = null
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Copy link") },
+                        onClick = {
+                            menuScope.launch {
+                                clipboard.setClipEntry(ClipEntry(android.content.ClipData.newPlainText("link", href)))
+                            }
+                            contextMenu = null
+                        },
                     )
                 }
             }
+        }
+    }
+}
+
+/** The grid draw — extracted so the gesture/menu Box above stays readable. */
+@Composable
+private fun TerminalGrid(
+    rows: List<TerminalRowUi>,
+    rowLayouts: List<TextLayoutResult>,
+    findLayouts: Map<Int, TextLayoutResult>,
+    findRanges: Map<Int, List<TerminalFindRange>>,
+    findMatchColor: Color,
+    findActiveColor: Color,
+    metrics: CellMetrics,
+    cursor: TerminalCursorUi?,
+    cursorOn: Boolean,
+    cursorColor: Color,
+    viewportWidthPx: Float,
+    verticalScroll: ScrollState,
+) {
+    val density = LocalDensity.current
+    val maxCells = rows.maxOfOrNull { it.cells } ?: 0
+    val viewportWidth = viewportWidthPx
+    val contentWidth = max(viewportWidth, maxCells * metrics.cellWidth)
+    val contentHeight = rows.size * metrics.rowHeight
+
+    Canvas(
+        modifier = Modifier.requiredSize(
+            width = with(density) { contentWidth.toDp() },
+            height = with(density) { contentHeight.toDp() },
+        ),
+    ) {
+        val scrollY = verticalScroll.value.toFloat()
+        val viewport = verticalScroll.viewportSize.toFloat()
+        // Manual virtualization: only the rows intersecting the
+        // viewport emit draw calls.
+        val firstRow = floor(scrollY / metrics.rowHeight).toInt()
+            .coerceIn(0, rowLayouts.size)
+        val lastRow = ceil((scrollY + viewport) / metrics.rowHeight).toInt()
+            .coerceIn(firstRow, rowLayouts.size)
+        for (index in firstRow until lastRow) {
+            val layout = findLayouts[index] ?: rowLayouts[index]
+            val ranges = findRanges[index]
+            if (ranges != null) {
+                // The mark fill — getPathForRange resolves the exact
+                // glyph extent, so wide cells and tab-expanded runs
+                // highlight at their rendered width.
+                val rowTop = index * metrics.rowHeight
+                for (range in ranges) {
+                    val bounds = layout.getPathForRange(range.start, range.end)
+                        .getBounds()
+                    drawRect(
+                        color = if (range.active) findActiveColor else findMatchColor,
+                        topLeft = Offset(bounds.left, rowTop),
+                        size = Size(bounds.width, metrics.rowHeight),
+                    )
+                    if (range.active) {
+                        // The oracle's .active box-shadow ring.
+                        drawRect(
+                            color = FIND_ACTIVE_RING_COLOR,
+                            topLeft = Offset(bounds.left, rowTop),
+                            size = Size(bounds.width, metrics.rowHeight),
+                            style = Stroke(width = ACTIVE_RING_WIDTH),
+                        )
+                    }
+                }
+            }
+            drawText(
+                textLayoutResult = layout,
+                topLeft = Offset(0f, index * metrics.rowHeight),
+            )
+        }
+        if (cursor != null && cursorOn && cursor.row in firstRow until lastRow) {
+            drawRect(
+                color = cursorColor,
+                topLeft = Offset(
+                    x = cursor.column * metrics.cellWidth,
+                    y = cursor.row * metrics.rowHeight,
+                ),
+                size = Size(metrics.cellWidth, metrics.rowHeight),
+                alpha = CURSOR_ALPHA,
+            )
         }
     }
 }
@@ -299,6 +464,17 @@ class TerminalSurfaceState internal constructor(
     /** Follow-live pin — new commits keep the write edge in view while set. */
     var stickToBottom by mutableStateOf(true)
         internal set
+
+    /**
+     * Pinch-zoom factor on the terminal font — rescales the cell grid,
+     * which re-measures the viewport and re-leases the pane size.
+     */
+    var fontScale by mutableFloatStateOf(1f)
+        internal set
+
+    internal fun zoomBy(factor: Float) {
+        fontScale = (fontScale * factor).coerceIn(MIN_FONT_SCALE, MAX_FONT_SCALE)
+    }
 
     /**
      * `revealFindMatch`'s scroll — center [row] in the viewport, release
@@ -331,6 +507,15 @@ class TerminalSurfaceState internal constructor(
             programmaticScrolls -= 1
         }
     }
+
+    /**
+     * The "scroll to live" affordance — jump to the write edge and re-arm
+     * the follow-live pin (the oracle's scrollToBottom button).
+     */
+    suspend fun scrollToLive() {
+        scrollToBottom()
+        stickToBottom = scrollState.maxValue - scrollState.value < stickThresholdPx
+    }
 }
 
 @Composable
@@ -357,7 +542,29 @@ private const val STICK_THRESHOLD_DP = 48
 private const val CURSOR_ALPHA = 0.35f
 private const val CURSOR_BLINK_MS = 530L
 
+/** Pinch-zoom bounds — enough range to matter without degenerate cells. */
+private const val MIN_FONT_SCALE = 0.6f
+private const val MAX_FONT_SCALE = 2.5f
+
+private const val MAX_MENU_LINKS = 3
+private const val MENU_LABEL_MAX = 44
+
 private class CellMetrics(val cellWidth: Float, val rowHeight: Float)
+
+/** Long-press menu anchor — viewport offset, the row under it, its links. */
+private class TerminalMenuTarget(
+    val offset: Offset,
+    val rowText: String,
+    val links: List<String>,
+)
+
+/** A row's printable text — trailing whitespace is draw padding, not content. */
+private fun TerminalRowUi.plainText(): String =
+    spans.joinToString("") { it.text }.trimEnd()
+
+/** Long URLs crowd a menu — keep scheme + host + the path head. */
+private fun shortenMenuLabel(href: String): String =
+    if (href.length <= MENU_LABEL_MAX) href else href.take(MENU_LABEL_MAX - 1) + "…"
 
 /**
  * Row → AnnotatedString: SGR fields → [SpanStyle], links underlined.

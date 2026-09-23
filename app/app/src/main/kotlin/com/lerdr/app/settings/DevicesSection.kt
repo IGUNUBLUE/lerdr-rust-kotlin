@@ -4,7 +4,10 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -459,47 +462,94 @@ private fun DeviceRow(
 ) {
     val spacing = LerdrTheme.spacing
     HorizontalDivider()
-    Row(
-        verticalAlignment = Alignment.Top,
-        horizontalArrangement = Arrangement.spacedBy(spacing.small),
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
             // .device-row: padding .8rem 0
             .padding(vertical = spacing.small + spacing.extraSmall),
     ) {
-        Column(Modifier.weight(1f)) {
+        // The oracle's `@media (max-width: 36rem)`: narrow rows drop the
+        // actions below the metadata so a thumb gets the whole row.
+        val wide = maxWidth >= WIDE_DEVICE_ROW_MIN
+        Column {
             Row(
-                verticalAlignment = Alignment.CenterVertically,
+                verticalAlignment = Alignment.Top,
                 horizontalArrangement = Arrangement.spacedBy(spacing.small),
             ) {
-                Text(
-                    device.name,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold,
+                DeviceMeta(
+                    device = device,
+                    isCurrent = isCurrent,
+                    formatDate = formatDate,
+                    modifier = Modifier.weight(1f),
                 )
-                if (isCurrent) Pill("This device")
-                if (device.revoked) {
-                    Pill("Revoked", color = MaterialTheme.colorScheme.error)
+                if (canAdminister && wide) {
+                    Column {
+                        RenameRevokeButtons(onRename, onRevoke, enabled)
+                    }
                 }
             }
-            // dl margin: .55rem 0 0
-            Spacer(Modifier.height(spacing.small))
-            Row(horizontalArrangement = Arrangement.spacedBy(spacing.medium)) {
-                MetaItem("Role", if (device.role == DeviceRole.CONTROLLER) "Controller" else "Reader")
-                MetaItem("Paired", formatDate(device.pairedAtEpochMs))
-                MetaItem("Last seen", formatDate(device.lastSeenAtEpochMs))
-            }
-        }
-        if (canAdminister) {
-            Column {
-                TextButton(onClick = onRename, enabled = enabled) {
-                    Text("Rename")
-                }
-                TextButton(onClick = onRevoke, enabled = enabled) {
-                    Text("Revoke", color = MaterialTheme.colorScheme.error)
+            if (canAdminister && !wide) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(spacing.small),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    RenameRevokeButtons(onRename, onRevoke, enabled, Modifier.weight(1f))
                 }
             }
         }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DeviceMeta(
+    device: DeviceUi,
+    isCurrent: Boolean,
+    formatDate: (Long?) -> String,
+    modifier: Modifier = Modifier,
+) {
+    val spacing = LerdrTheme.spacing
+    Column(modifier) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(spacing.small),
+        ) {
+            Text(
+                device.name,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            if (isCurrent) Pill("This device")
+            if (device.revoked) {
+                Pill("Revoked", color = MaterialTheme.colorScheme.error)
+            }
+        }
+        // dl margin: .55rem 0 0 — `flex-wrap: wrap` becomes FlowRow so a
+        // long timestamp wraps the whole item instead of shredding it.
+        Spacer(Modifier.height(spacing.small))
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(spacing.medium),
+            verticalArrangement = Arrangement.spacedBy(spacing.extraSmall),
+        ) {
+            MetaItem("Role", if (device.role == DeviceRole.CONTROLLER) "Controller" else "Reader")
+            MetaItem("Paired", formatDate(device.pairedAtEpochMs))
+            MetaItem("Last seen", formatDate(device.lastSeenAtEpochMs))
+        }
+    }
+}
+
+@Composable
+private fun RenameRevokeButtons(
+    onRename: () -> Unit,
+    onRevoke: () -> Unit,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    TextButton(onClick = onRename, enabled = enabled, modifier = modifier) {
+        Text("Rename")
+    }
+    TextButton(onClick = onRevoke, enabled = enabled, modifier = modifier) {
+        Text("Revoke", color = MaterialTheme.colorScheme.error)
     }
 }
 
@@ -843,3 +893,6 @@ private fun DevicesContentPreview() {
         )
     }
 }
+
+/** Oracle `@media (max-width: 36rem)` — the device-row side/below breakpoint. */
+private val WIDE_DEVICE_ROW_MIN = 576.dp

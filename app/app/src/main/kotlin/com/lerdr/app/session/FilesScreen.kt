@@ -140,6 +140,8 @@ fun FilesContent(
                     }
                 },
                 onBack = onBack,
+                provider = uiState.provider,
+                active = uiState.connected,
                 tabsPaneId = tabsPaneId,
                 onSelectTab = { onSelectTab(it.paneId) },
                 trailing = {
@@ -815,6 +817,7 @@ private fun FilesContentPreview() {
             uiState = FilesUiState(
                 paneId = "sd::%1",
                 title = "claude",
+                provider = "claude",
                 breadcrumb = "lerdr · main · sd",
                 connected = true,
                 loading = false,

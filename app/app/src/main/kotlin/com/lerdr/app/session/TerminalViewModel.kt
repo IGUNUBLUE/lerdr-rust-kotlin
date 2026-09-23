@@ -21,6 +21,8 @@ data class TerminalUiState(
     val paneId: String,
     val title: String = "",
     val breadcrumb: String = "",
+    /** Normalized agent identity ("claude", "codex"…) — top-bar logo. */
+    val provider: String? = null,
     /** "lease 92×42" or the agent status — the chip in the top bar. */
     val statusLabel: String = "",
     val connected: Boolean = false,
@@ -89,6 +91,7 @@ class TerminalViewModel(
         TerminalUiState(
             paneId = paneId,
             title = agent?.name ?: agent?.agent ?: paneId.substringAfter("::"),
+            provider = agent?.agent?.takeIf { it.isNotEmpty() },
             breadcrumb = breadcrumbOf(agent),
             statusLabel = if (snapshot != null && snapshot.columns > 0) {
                 if (snapshot.rows > 0) {

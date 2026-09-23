@@ -31,6 +31,9 @@ class FakeRelaySessionHandle(
     private val _state = MutableStateFlow<RelaySession.SessionState>(RelaySession.SessionState.Idle)
     override val state: StateFlow<RelaySession.SessionState> = _state
 
+    private val _rttMs = MutableStateFlow(-1L)
+    override val rttMs: StateFlow<Long> = _rttMs
+
     private val incomingChannel = Channel<JsonObject>(Channel.UNLIMITED)
     override val incoming: Flow<JsonObject> = incomingChannel.receiveAsFlow()
 
