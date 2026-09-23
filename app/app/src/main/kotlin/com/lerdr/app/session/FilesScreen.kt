@@ -2,6 +2,7 @@ package com.lerdr.app.session
 
 import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -40,13 +41,20 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.PreviewLightDark
 import androidx.compose.ui.unit.dp
@@ -60,6 +68,7 @@ import com.lerdr.core.designsystem.theme.LerdrTextStyles
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import dagger.hilt.android.EntryPointAccessors
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
@@ -194,6 +203,8 @@ private fun BrowserToolbar(
     onFilterChange: (String) -> Unit,
 ) {
     val spacing = LerdrTheme.spacing
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
     Column(modifier = Modifier.padding(horizontal = spacing.medium)) {
         LerdrSegmentedControl(
             options = FilesSection.entries.map { section ->
@@ -207,6 +218,28 @@ private fun BrowserToolbar(
             onSelect = { onSelectSection(FilesSection.entries[it]) },
             modifier = Modifier.fillMaxWidth(),
         )
+        // docs/04 Details: the cwd chip — tap copies the workspace root.
+        uiState.tree?.root?.takeIf { it.isNotEmpty() }?.let { root ->
+            MetaChip(
+                label = root,
+                description = "Working directory",
+                onClick = {
+                    scope.launch {
+                        clipboard.setClipEntry(
+                            ClipEntry(
+                                android.content.ClipData.newPlainText(
+                                    "Workspace path",
+                                    root,
+                                ),
+                            ),
+                        )
+                    }
+                },
+                modifier = Modifier
+                    .padding(top = spacing.small)
+                    .testTag("files:cwd"),
+            )
+        }
         uiState.git?.takeIf { it.available }?.let { git ->
             Row(
                 horizontalArrangement = Arrangement.spacedBy(spacing.small),
@@ -243,15 +276,35 @@ private fun BrowserToolbar(
 }
 
 @Composable
-private fun MetaChip(label: String, description: String) {
+private fun MetaChip(
+    label: String,
+    description: String,
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
+) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
         shape = CircleShape,
+        modifier = modifier
+            .semantics { contentDescription = description }
+            .then(
+                if (onClick != null) {
+                    Modifier.clickable(
+                        onClickLabel = "Copy $description",
+                        role = Role.Button,
+                        onClick = onClick,
+                    )
+                } else {
+                    Modifier
+                },
+            ),
     ) {
         Text(
             label,
             style = MaterialTheme.typography.labelMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(
                 horizontal = LerdrTheme.spacing.small,
                 vertical = LerdrTheme.spacing.extraSmall,

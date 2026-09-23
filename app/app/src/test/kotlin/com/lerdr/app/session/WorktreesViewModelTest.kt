@@ -15,6 +15,8 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import lerdr.core.data.DeviceRole
+import lerdr.core.data.RelayDeviceCredential
 import lerdr.core.data.RelayEndpoint
 import lerdr.core.data.RelayRegistry
 import lerdr.core.protocol.LerdrJson
@@ -678,11 +680,28 @@ class WorkspaceTabsViewModelTest {
         ): String =
             """{"pane_id":"$rawPaneId","raw_pane_id":"$rawPaneId","terminal_id":"t$rawPaneId","server_session_id":"ss$rawPaneId","generation":3,"agent":"claude","name":"$tabLabel","status":"working","cwd":"/home/u/lerdr","project":"lerdr","workspace_id":"$workspaceId","tab_id":"$tabId","tab_label":"$tabLabel","tab_number":$tabNumber,"tab_order":$tabOrder,"updated_at":$updatedAt}"""
 
+        fun credential(role: DeviceRole) = RelayDeviceCredential(
+            id = "cred-1",
+            version = 1,
+            secret = java.util.Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(ByteArray(32) { it.toByte() }),
+            deviceId = "dev-1",
+            role = role,
+            locale = "en",
+            issuedAtEpochMs = 1_000L,
+        )
+
         /**
          * Three panes in two tabs of `w1` plus a stray pane in `w2` —
          * connected, inventory ready, `tab_reorder` capable.
          */
         suspend fun connectReady(capabilities: String = "\"tab_reorder\"") {
+            // `canControl` reads `authByRelay`, which only `start()`'s
+            // records collector fills; `start()`'s reconcile tears down
+            // sessions for unregistered endpoints, so upsert first.
+            registry.upsert(endpoint)
+            credentials.seed("r1", credential(DeviceRole.CONTROLLER))
+            repository.start()
             repository.connect(endpoint)
             handle().connect()
             handle().emit(
@@ -699,7 +718,7 @@ class WorkspaceTabsViewModelTest {
         }
 
         fun viewModel(): WorkspaceTabsViewModel =
-            WorkspaceTabsViewModel(paneId, repository).also {
+            WorkspaceTabsViewModel(paneId, repository, workspaces).also {
                 testScope.backgroundScope.launch { it.uiState.collect { } }
             }
     }
