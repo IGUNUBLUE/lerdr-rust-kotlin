@@ -431,6 +431,7 @@ class DevicesViewModel(
     // ── invitation + qr parsing (oracle-strict) ───────────────────────
 
     /** The relay's `invitation` payload after validation. */
+    @Immutable
     private data class ParsedInvitation(
         val id: String,
         val version: Long,

@@ -141,6 +141,7 @@ class PushPolicyViewModel(
     /** Relay this VM serves — empty until the section composes. */
     private val boundRelay = MutableStateFlow("")
 
+    @Immutable
     private data class Local(
         val relayId: String = "",
         val policy: PushPolicyUi? = null,

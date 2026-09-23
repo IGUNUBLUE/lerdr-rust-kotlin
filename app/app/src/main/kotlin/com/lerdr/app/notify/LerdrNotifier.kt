@@ -38,17 +38,23 @@ class LerdrNotifier @Inject constructor(
                         NotifyChannel.AGENT_ATTENTION.id,
                         "Agents needing attention",
                         NotificationManager.IMPORTANCE_HIGH,
-                    ),
+                    ).apply {
+                        description = "Approvals and questions waiting on you"
+                    },
                     NotificationChannel(
                         NotifyChannel.AGENT_ACTIVITY.id,
                         "Agent activity",
                         NotificationManager.IMPORTANCE_LOW,
-                    ),
+                    ).apply {
+                        description = "Completions and other FYI transitions"
+                    },
                     NotificationChannel(
                         NotifyChannel.SERVICE.id,
                         "Background connection",
                         NotificationManager.IMPORTANCE_LOW,
-                    ),
+                    ).apply {
+                        description = "Keeps relay sessions alive while backgrounded"
+                    },
                 ),
             )
     }
@@ -81,6 +87,7 @@ class LerdrNotifier @Inject constructor(
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val notification = NotificationCompat.Builder(context, command.channel.id)
+            // Alpha-only status-bar glyph — never the launcher artwork.
             .setSmallIcon(com.lerdr.app.R.drawable.ic_notification)
             .setContentTitle(command.title)
             .setContentText(command.body)
@@ -88,6 +95,9 @@ class LerdrNotifier @Inject constructor(
             .setAutoCancel(true)
             .setOnlyAlertOnce(command.onlyAlertOnce)
             .apply {
+                if (command.channel == NotifyChannel.AGENT_ACTIVITY) {
+                    setCategory(NotificationCompat.CATEGORY_STATUS)
+                }
                 if (command.inboxLines.isNotEmpty()) {
                     val style = NotificationCompat.InboxStyle()
                     command.inboxLines.forEach(style::addLine)

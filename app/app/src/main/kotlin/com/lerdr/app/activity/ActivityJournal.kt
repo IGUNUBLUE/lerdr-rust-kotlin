@@ -191,6 +191,7 @@ class ActivityJournal @Inject constructor(
     }
 
     /** The rendered slice of a [RelayConnection] — equal signatures never re-log. */
+    @Immutable
     private data class Signature(
         val status: RelayStatus,
         val authRejected: Boolean,

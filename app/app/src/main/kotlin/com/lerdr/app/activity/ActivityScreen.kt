@@ -43,6 +43,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.PreviewLightDark
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -194,7 +197,13 @@ fun ActivityContent(
 
 @Composable
 private fun ActivityRow(item: ActivityItemUi) {
+    // One merged node in a polite live region — a status change announces
+    // as a single utterance ("Connected · workstation · 14:01 · 1m ago")
+    // instead of child-by-child (docs/04 §Accessibility).
     ListItem(
+        modifier = Modifier.semantics(mergeDescendants = true) {
+            liveRegion = LiveRegionMode.Polite
+        },
         headlineContent = {
             Text(item.headline, maxLines = 1, overflow = TextOverflow.Ellipsis)
         },

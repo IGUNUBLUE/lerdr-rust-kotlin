@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsOff
@@ -25,16 +26,19 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.PreviewLightDark
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.lerdr.core.designsystem.components.liveRegionPolite
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import dagger.hilt.android.EntryPointAccessors
 import java.time.OffsetDateTime
@@ -80,6 +84,7 @@ fun PushPolicySection(
     )
 }
 
+@Immutable
 private data class CategoryUi(val key: String, val label: String, val detail: String)
 
 /** Oracle `CATEGORY_LABELS`/`CONFIGURABLE_CATEGORIES` — the four editable categories. */
@@ -251,13 +256,21 @@ private fun PolicyControls(
 ) {
     val spacing = LerdrTheme.spacing
     CONFIGURABLE_CATEGORIES.forEach { category ->
+        // Row-owned toggle — the whole row is the touch target and reads
+        // as one "on/off" Switch; the trailing Switch is display-only.
         ListItem(
+            modifier = Modifier.toggleable(
+                value = policy.categories[category.key] == true,
+                enabled = enabled,
+                role = Role.Switch,
+                onValueChange = { onCategoryChange(category.key, it) },
+            ),
             headlineContent = { Text(category.label) },
             supportingContent = { Text(category.detail) },
             trailingContent = {
                 Switch(
                     checked = policy.categories[category.key] == true,
-                    onCheckedChange = { onCategoryChange(category.key, it) },
+                    onCheckedChange = null,
                     enabled = enabled,
                 )
             },
@@ -303,6 +316,12 @@ private fun PolicyControls(
         colors = cardItemColors(),
     )
     ListItem(
+        modifier = Modifier.toggleable(
+            value = policy.updateOnce,
+            enabled = enabled,
+            role = Role.Switch,
+            onValueChange = onUpdateOnce,
+        ),
         headlineContent = { Text("Update alerts") },
         supportingContent = {
             Text("Only the first notification per relay version reaches this device.")
@@ -310,7 +329,7 @@ private fun PolicyControls(
         trailingContent = {
             Switch(
                 checked = policy.updateOnce,
-                onCheckedChange = onUpdateOnce,
+                onCheckedChange = null,
                 enabled = enabled,
             )
         },
@@ -322,7 +341,9 @@ private fun PolicyControls(
             error,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.error,
-            modifier = Modifier.padding(horizontal = spacing.medium),
+            modifier = Modifier
+                .liveRegionPolite()
+                .padding(horizontal = spacing.medium),
         )
     }
 

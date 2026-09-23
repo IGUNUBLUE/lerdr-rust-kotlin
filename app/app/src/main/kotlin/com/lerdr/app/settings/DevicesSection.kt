@@ -56,6 +56,7 @@ import androidx.compose.ui.tooling.preview.PreviewLightDark
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.lerdr.core.designsystem.components.liveRegionPolite
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import dagger.hilt.android.EntryPointAccessors
 import java.text.DateFormat
@@ -189,7 +190,11 @@ fun DevicesContent(
 
             // ── oracle `status` line — success or failure text ────────
             uiState.status?.let { status ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    // Action outcomes announce politely when they appear.
+                    modifier = Modifier.liveRegionPolite(),
+                ) {
                     Text(
                         status,
                         style = MaterialTheme.typography.bodySmall,

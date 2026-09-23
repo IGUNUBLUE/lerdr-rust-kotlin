@@ -120,12 +120,14 @@ class SpeechViewModel(
 
     private val lastError = MutableStateFlow<String?>(null)
 
+    @Immutable
     private class PrefBits(
         val enabled: Boolean,
         val language: String,
         val player: SpeechPlayerState,
     )
 
+    @Immutable
     private class RelayBits(
         val connection: RelayConnection?,
         val catalog: SpeechVoicesMessage?,

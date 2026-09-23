@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material3.Card
@@ -33,6 +34,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -40,6 +42,7 @@ import com.lerdr.app.speech.SPEECH_LANGUAGES
 import com.lerdr.app.speech.SpeechEntryPoint
 import com.lerdr.app.speech.SpeechPhase
 import com.lerdr.app.speech.speechLanguageLabel
+import com.lerdr.core.designsystem.components.liveRegionPolite
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import dagger.hilt.android.EntryPointAccessors
 
@@ -100,7 +103,14 @@ fun SpeechSectionContent(
     Column(modifier = modifier.fillMaxWidth()) {
         SpeechSectionHeader()
 
+        // Row-owned toggle: Role.Switch announces "on/off" once and the
+        // whole row is the touch target; the Switch renders state only.
         ListItem(
+            modifier = Modifier.toggleable(
+                value = uiState.enabled,
+                role = Role.Switch,
+                onValueChange = onEnabledChange,
+            ),
             headlineContent = { Text("Read responses aloud") },
             supportingContent = {
                 Text(
@@ -120,7 +130,7 @@ fun SpeechSectionContent(
                 )
             },
             trailingContent = {
-                Switch(checked = uiState.enabled, onCheckedChange = onEnabledChange)
+                Switch(checked = uiState.enabled, onCheckedChange = null)
             },
         )
 
@@ -156,7 +166,9 @@ fun SpeechSectionContent(
         uiState.lastError?.let { error ->
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.padding(horizontal = spacing.medium),
+                modifier = Modifier
+                    .liveRegionPolite()
+                    .padding(horizontal = spacing.medium),
             ) {
                 Text(
                     error,
@@ -257,7 +269,10 @@ private fun LanguagePicker(
     }
 }
 
-/** Small status/warning line under a control — the oracle's `p.hint`. */
+/**
+ * Small status/warning line under a control — the oracle's `p.hint`.
+ * Polite live region: appearing/changing hints announce to screen readers.
+ */
 @Composable
 private fun SpeechHint(
     text: String,
@@ -269,7 +284,9 @@ private fun SpeechHint(
         text,
         style = MaterialTheme.typography.bodySmall,
         color = color,
-        modifier = modifier.padding(vertical = LerdrTheme.spacing.extraSmall),
+        modifier = modifier
+            .liveRegionPolite()
+            .padding(vertical = LerdrTheme.spacing.extraSmall),
     )
 }
 

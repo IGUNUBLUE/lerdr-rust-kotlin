@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.ButtonGroup
 import androidx.compose.material3.ButtonGroupDefaults
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
@@ -71,6 +72,8 @@ fun LerdrButtonGroup(
 /**
  * Segmented single-select control — the `Feed | Terminal | Files` switch on
  * the agent session top bar. Wraps the stable single-choice segmented row.
+ * The selected segment carries the mockup's light-blue pill on dark text —
+ * `primary`/`onPrimary` — with the segment border blended into the fill.
  */
 @Composable
 fun LerdrSegmentedControl(
@@ -81,6 +84,11 @@ fun LerdrSegmentedControl(
     enabled: Boolean = true,
     enabledOptions: List<Boolean> = List(options.size) { true },
 ) {
+    val selectedColors = SegmentedButtonDefaults.colors(
+        activeContainerColor = MaterialTheme.colorScheme.primary,
+        activeContentColor = MaterialTheme.colorScheme.onPrimary,
+        activeBorderColor = MaterialTheme.colorScheme.primary,
+    )
     SingleChoiceSegmentedButtonRow(modifier = modifier) {
         options.forEachIndexed { index, label ->
             SegmentedButton(
@@ -90,6 +98,7 @@ fun LerdrSegmentedControl(
                     index = index,
                     count = options.size,
                 ),
+                colors = selectedColors,
                 enabled = enabled && enabledOptions.getOrElse(index) { true },
                 label = { Text(label) },
             )

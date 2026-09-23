@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.Dns
@@ -54,6 +55,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.PreviewLightDark
@@ -231,7 +233,15 @@ fun SettingsContent(
                 SectionHeader(title = "Security")
             }
             item(key = "security-app-lock") {
+                // Whole row toggles — the canonical settings Switch pattern:
+                // the row owns the interaction (Role.Switch announces
+                // "on/off"), the Switch renders state only.
                 ListItem(
+                    modifier = Modifier.toggleable(
+                        value = uiState.appLockEnabled,
+                        role = Role.Switch,
+                        onValueChange = onAppLockChange,
+                    ),
                     headlineContent = { Text("App lock") },
                     supportingContent = {
                         Text(
@@ -256,7 +266,7 @@ fun SettingsContent(
                     trailingContent = {
                         Switch(
                             checked = uiState.appLockEnabled,
-                            onCheckedChange = onAppLockChange,
+                            onCheckedChange = null,
                         )
                     },
                 )

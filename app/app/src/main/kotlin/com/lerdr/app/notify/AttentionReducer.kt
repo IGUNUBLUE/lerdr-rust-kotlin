@@ -1,5 +1,6 @@
 package com.lerdr.app.notify
 
+import androidx.compose.runtime.Immutable
 import java.net.URLEncoder
 import lerdr.core.model.BlockedMessage
 import lerdr.core.store.Agent
@@ -47,6 +48,7 @@ enum class AttentionSignal {
  * Android side ([LerdrNotifier]) stays a dumb executor and tests assert on
  * text, not mocks.
  */
+@Immutable
 sealed interface NotificationCommand {
     val notificationId: Int
 
@@ -94,10 +96,10 @@ object NotifyIds {
  * `lerdr://` URIs carried by tap PendingIntents.
  *
  * `lerdr://agent?pane_id=<clientPaneId>` is the pane-targeted form the
- * notification contract owns. The navigation module's `LerdrDeepLinks` only
- * routes `lerdr://pair` today — an unknown `lerdr://` host resolves to null
- * and MainActivity falls back to Home, so these links degrade to mission
- * control until the `agent` host is routed to `LerdrKey.AgentFeed`.
+ * notification contract owns. `LerdrDeepLinks.match` routes it to
+ * `LerdrKey.AgentFeed` and `lerdr://agents` to Home, so a tap lands directly
+ * in the relevant session; unknown `lerdr://` hosts resolve to null and
+ * MainActivity falls back to mission control.
  */
 object NotifyDeepLinks {
     const val AGENT = "lerdr://agent"
@@ -209,6 +211,7 @@ object AttentionReducer {
 
     // ── signal derivation ─────────────────────────────────────────────
 
+    @Immutable
     private class Row(val agent: Agent, val signal: AttentionSignal, val key: String)
 
     /** paneId → notified state, in snapshot order for deterministic output. */

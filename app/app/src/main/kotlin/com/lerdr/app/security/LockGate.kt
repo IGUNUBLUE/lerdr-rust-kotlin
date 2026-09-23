@@ -37,6 +37,7 @@ import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lerdr.app.R
+import com.lerdr.core.designsystem.components.liveRegionPolite
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import dagger.hilt.android.EntryPointAccessors
 
@@ -122,6 +123,8 @@ private fun LockedSurface(onUnlock: () -> Unit) {
                 "Locked — verify to continue",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                // Announces when the gate covers the app.
+                modifier = Modifier.liveRegionPolite(),
             )
             Spacer(Modifier.height(spacing.large))
             Button(onClick = onUnlock) {

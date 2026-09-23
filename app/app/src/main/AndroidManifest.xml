@@ -20,6 +20,7 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="Lerdr"
         android:theme="@style/Theme.Lerdr"
+        android:enableOnBackInvokedCallback="true"
         android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
@@ -35,6 +36,15 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="lerdr" android:host="pair" />
+            </intent-filter>
+            <!-- Session links: lerdr://agent?pane_id=… (notification taps and
+                 external shares); lerdr://agents lands on mission control. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="lerdr" android:host="agent" />
+                <data android:scheme="lerdr" android:host="agents" />
             </intent-filter>
         </activity>
 

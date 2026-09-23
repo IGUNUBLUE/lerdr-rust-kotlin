@@ -1,5 +1,6 @@
 package com.lerdr.navigation
 
+import androidx.compose.runtime.Immutable
 import androidx.navigation3.runtime.NavKey
 import kotlinx.serialization.Serializable
 
@@ -8,9 +9,10 @@ import kotlinx.serialization.Serializable
  *
  * All keys are `@Serializable` so the back stack survives config changes and
  * process death via `rememberLerdrBackStack`. Top-level destinations
- * ([Home], [Activity], [Settings]) sit on the bottom bar; everything else
+ * ([Home], [Computers], [Activity], [Settings]) sit on the bottom bar; everything else
  * stacks on top with predictive back.
  */
+@Immutable
 @Serializable
 sealed interface LerdrKey : NavKey {
 
@@ -58,6 +60,7 @@ sealed interface LerdrKey : NavKey {
  * §A.2). Two shapes exist: `setup` alone is the relay-token bootstrap;
  * `setup` + `invite` is a device invitation.
  */
+@Immutable
 @Serializable
 data class SetupLink(
     /** Invitation secret or raw relay token (43-char b64url for invites). */
