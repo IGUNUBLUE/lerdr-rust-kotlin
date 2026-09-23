@@ -641,3 +641,54 @@ Critical correctness/security pass ahead of the feature wave:
 - **Danger tokens** — `extendedColors.danger/onDanger/dangerContainer/
   onDangerContainer` (muted maroon, not saturated `errorContainer`) for
   deny/stop/destructive actions.
+
+## Round 15 — Wave-1 feature wave (2026)
+
+Five parallel streams closed the audit's UI-reach gaps; all mutations gate
+on `canControl` (the oracle's `readOnlyRelayIds` behavior).
+
+- **Home triage** — needs-you cards answer inline via `respond` /
+  `answer_question` (the rail no longer navigates away to triage);
+  expanding "New" FAB opens agent-launch (`agent_start`) and
+  workspace-create sheets (with a `list_directories` browser and
+  plain-cwd fallback when `directory_browser` is absent); swipe
+  end-to-start on an agent row requests `agent_stop`; latency bands and
+  a real empty state on Agents; Computers rows carry transport/RTT.
+- **Feed** — `session/feed/`: markdown rendering (headings, lists, code
+  fences with copy), per-tool icon tiles + expandable payloads (error
+  results no longer show a checkmark), full question forms
+  (multi-select, Other text, navigate/clarify), in-feed find with
+  n-of-m navigation, slash-command menu fed by `list_slash_commands`,
+  snackbar error surface, color-coded triage (Allow green / Always
+  slate / Deny maroon) with the warning header, periwinkle user
+  bubbles. `copy_agent_response` reachable from Manage.
+  Fixed a real production bug: `FeedViewModel`'s slash catalog never
+  fired — cache fields were declared after `init`, so the combine
+  collector read a null backing field during construction and died on
+  an NPE (SupervisorJob swallowed it silently).
+- **Terminal** — `send_secret` input path (password transform,
+  non-saveable draft, never routed to `send_text`), `no_echo` prompt
+  banner with capability gate + unsupported-relay guidance, reader
+  lock-down (chips/Ctrl/IME disabled, hint chip), amber lease chip,
+  pane meta row (leased cols×rows, truncation, no-echo marker), wired
+  find bar, 48dp targets, Ctrl latch semantics.
+- **Session chrome** — `session/manage/` sheet (rename/restart/clear/
+  stop/copy-response, confirm-replaces-list, reader = metadata only),
+  inline title editor → `agent_rename`, statusVariant morphing chip
+  (lease→amber, attention→pulsing cookie, error→danger corner),
+  workspace tab long-press menu (`tab_reorder`, `workspace_rename`,
+  `workspace_close` with `action_id`-correlated group escalation +
+  live drift cancel), workspace create sheet, copiable cwd chip in
+  Files.
+- **Cross-cutting** — `enableOnBackInvokedCallback` + `lerdr://agent(s)`
+  deep links; shared-axis-X pushes with directional session-mode slide
+  and fade-through tab switches (MDC recipe, emphasized easing);
+  `LerdrStatus`/`LerdrStatusDot`/`LerdrStatusChip` morphing status
+  (attention pulses); segmented pill selected = primary/onPrimary;
+  live-region helpers on activity rows / lock gate / settings errors;
+  row-owned switch semantics; notification channel descriptions +
+  CATEGORY_STATUS; @Immutable audit on nav keys and VM aggregates.
+
+Still open (next wave): voice input, attachment ingress UX, update
+check, diagnostics screen, OSC-52 clipboard, hardware-keyboard map,
+swipe-to-switch-pane, workspace-row reorder surface.
