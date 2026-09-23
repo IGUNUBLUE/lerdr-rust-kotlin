@@ -63,3 +63,21 @@ Installed via `npx skills add` (`.agents/skills/`, lockfile
 | `rust-async-patterns` | Tokio/async patterns reference (wshobson/agents) |
 | `navigation-3` | Nav3 graphs, scenes, deep links (official android/skills) |
 | `testing-setup` | Android test strategy/harnesses (official android/skills) |
+
+Vendored from user-global (`.agents/skills/`, committed directly — not
+in `skills-lock.json`; `_shared/` holds their shared references):
+
+| Skill | When |
+|---|---|
+| `android-cli` | `android` CLI: devices, emulators, SDK, docs |
+| `chained-pr` | Split large PRs into chained review slices |
+| `cognitive-doc-design` | Low-cognitive-load docs (guides, RFCs, onboarding) |
+| `context7-mcp` | Library/framework API docs lookup |
+| `find-skills` | Discover and install skills |
+| `judgment-day` | Blind dual review with bounded fix rounds |
+| `mobile-android-design` | M3/Compose design patterns |
+| `no-commit-attribution` | No agent attribution in commits/PRs |
+| `skill-creator` | Author new skills |
+| `skill-improver` | Audit/upgrade existing skills |
+| `skill-registry` | Reindex skill triggers after changes |
+| `work-unit-commits` | Plan commits as reviewable work units |
