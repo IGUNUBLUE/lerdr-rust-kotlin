@@ -882,6 +882,15 @@ are recorded as **removed upstream, not ported** (roadmap annotated);
 the v3 wire names stay reserved and `app_deploy_status` remains a
 parseable frame with no emitter, matching post-removal oracle behavior.
 
+**Removal scope clarification** — upstream deleted *transports and the
+app-deploy stage*, not the relay's local binary/HTTP surface. `/health`,
+`/healthz` JSON, `/readyz`, `RELAY_INSTANCE_ID`, `update-worker`, and
+`speech-voices` are transport-independent: `common.sh`'s health-wait
+parses the `/healthz` JSON fields, `tailscale-serve.sh` probes it, the
+self-update worker health-checks it post-swap, and `install_update` is a
+live routed action the oracle still ships. Those remain planned work
+(S9), not part of the skipped web/gateway surface.
+
 ### Resolved this round
 
 - **`session_name` title resolver** (`conversation/resolver.rs`) —
