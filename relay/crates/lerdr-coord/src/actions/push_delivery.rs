@@ -712,8 +712,13 @@ pub(crate) async fn drain_once<S: PushSender>(
             }
         }
     }
-    // `finish` — prune recovery runs even on a cancelled/failed pass.
-    push.recover_pruned(&results, now)?;
+    // `finish` — prune recovery runs even on a cancelled/failed pass;
+    // `finish`'s `flush()` then persists the pass's queue mutations
+    // once. A persist failure masks the recovery error like the
+    // oracle's `persistErr` preference.
+    let recover_result = push.recover_pruned(&results, now);
+    push.flush_queue()?;
+    recover_result?;
     // `RunOnce` skips the epilogue when `processDue` returned an
     // error (`finish(ctx.Err())`/`finish(err)` propagate first). A
     // cancelled pass reports like the oracle's `Run` filter
@@ -724,7 +729,7 @@ pub(crate) async fn drain_once<S: PushSender>(
     if cancelled {
         return Ok(results);
     }
-    push.sweep_keys(&results);
+    push.sweep_keys(&results)?;
     Ok(results)
 }
 
@@ -1487,5 +1492,334 @@ mod tests {
         // The scheme check fires before any dial — no network touched.
         let outcome = sender.send(&subscription, b"{}").await;
         assert!(matches!(outcome, Err(SendError::Local(_))));
+    }
+
+    // -- durable queue (`queue.json`) --------------------------------------
+
+    /// Read the on-disk queue as raw JSON for shape assertions.
+    fn queue_file(dir: &tempfile::TempDir) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("queue.json")).unwrap())
+            .unwrap()
+    }
+
+    /// `TestRecoveredManagerWaitsForAuthoritativeReconcile` — a
+    /// persisted entry survives reopen, stays gated until `reconcile`
+    /// supplies the authoritative inventory, then delivers even though
+    /// its `due_at` is long past.
+    #[tokio::test]
+    async fn restart_gates_recovered_entry_until_reconcile() {
+        let dir = tempfile::tempdir().unwrap();
+        let push = Push::new(dir.path()).unwrap();
+        push.subscribe(sub("device-1", "https://fcm.googleapis.com/one"), &[])
+            .unwrap();
+        let now = Timestamp::now();
+        let key = question_key("device-1", "evt-1");
+        publish(&push, key.clone(), now); // due at now+2s settle
+        assert!(dir.path().join("queue.json").exists());
+        drop(push);
+
+        // Reopen — the queue recovered; `reconciled` stays shut.
+        let push = Push::new(dir.path()).unwrap();
+        assert_eq!(push.recovered_keys(), vec![key.clone()]);
+        assert!(!push.is_reconciled());
+        let sender = Arc::new(StubSender::default());
+        let past_due = now.add_ns(10 * 1_000_000_000); // well past due_at
+        let results = drain_once(&push, &sender, past_due, &cancel())
+            .await
+            .unwrap();
+        assert!(results.is_empty(), "unreconciled pass must no-op");
+        assert!(sender.calls().is_empty());
+        assert!(push.has_entries_for(&key));
+
+        // The authoritative inventory keeps the key → gate opens and
+        // the past-due entry delivers on the very next pass.
+        push.reconcile(std::slice::from_ref(&key)).unwrap();
+        let results = drain_once(&push, &sender, past_due, &cancel())
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].disposition, Disposition::Accepted);
+        assert_eq!(sender.calls(), vec!["https://fcm.googleapis.com/one"]);
+
+        // `finish` persisted the move into `delivered` — the
+        // retraction ledger lives on disk now.
+        let file = queue_file(&dir);
+        assert_eq!(file["entries"].as_object().unwrap().len(), 0);
+        let delivered = file["delivered"].as_object().unwrap();
+        assert_eq!(delivered.len(), 1);
+        let record = delivered.values().next().unwrap();
+        assert_eq!(record["key"]["event_id"], "evt-1");
+        assert_eq!(
+            record["subscription"]["endpoint"],
+            "https://fcm.googleapis.com/one"
+        );
+        assert!(record["accepted_at"].is_string());
+
+        // A third open recovers the delivered marker — it re-gates
+        // (`activeKeys` includes delivered rows) and `reconcile` with
+        // the key still current resolves clean with nothing to send.
+        let push = Push::new(dir.path()).unwrap();
+        assert!(!push.is_reconciled());
+        assert_eq!(push.recovered_keys(), vec![key.clone()]);
+        push.reconcile(&[key]).unwrap();
+        let results = drain_once(&push, &sender, past_due, &cancel())
+            .await
+            .unwrap();
+        assert!(results.is_empty());
+        assert_eq!(sender.calls().len(), 1);
+    }
+
+    /// A recovered key absent from the authoritative inventory is
+    /// retracted, not delivered — `Reconcile` → `Resolve` → retract
+    /// event queued + persisted.
+    #[tokio::test]
+    async fn restart_retracts_recovered_key_absent_from_inventory() {
+        let dir = tempfile::tempdir().unwrap();
+        let push = Push::new(dir.path()).unwrap();
+        push.subscribe(sub("device-1", "https://fcm.googleapis.com/one"), &[])
+            .unwrap();
+        let now = Timestamp::now();
+        let key = question_key("device-1", "evt-1");
+        publish(&push, key.clone(), now);
+        drop(push);
+
+        let push = Push::new(dir.path()).unwrap();
+        // The pane is gone in the inventory → the pending entry is
+        // cancelled; nothing to retract (no delivered record).
+        push.reconcile(&[]).unwrap();
+        assert!(!push.has_entries_for(&key));
+        let file = queue_file(&dir);
+        assert_eq!(file["entries"].as_object().unwrap().len(), 0);
+        let sender = Arc::new(StubSender::default());
+        let results = drain_once(&push, &sender, now.add_ns(10 * 1_000_000_000), &cancel())
+            .await
+            .unwrap();
+        assert!(results.is_empty());
+        assert!(sender.calls().is_empty());
+    }
+
+    /// `delivered`-marker retraction across restart: accept a
+    /// delivery, reopen, reconcile the key out — the retract send
+    /// still happens because the delivered record persisted.
+    #[tokio::test]
+    async fn restart_retracts_delivered_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let push = Push::new(dir.path()).unwrap();
+        push.subscribe(sub("device-1", "https://fcm.googleapis.com/one"), &[])
+            .unwrap();
+        let now = Timestamp::now();
+        let key = question_key("device-1", "evt-1");
+        let due = publish_due(&push, key.clone(), now);
+        let sender = Arc::new(StubSender::default());
+        let results = drain_once(&push, &sender, due, &cancel()).await.unwrap();
+        assert_eq!(results[0].disposition, Disposition::Accepted);
+        drop(push);
+
+        // Reopen: the delivered row recovers; reconcile drops the key
+        // from the inventory → `resolve` queues a retract event.
+        let push = Push::new(dir.path()).unwrap();
+        push.reconcile(&[]).unwrap();
+        let results = drain_once(&push, &sender, Timestamp::now(), &cancel())
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].disposition, Disposition::Accepted);
+        assert!(
+            results[0].event.retract,
+            "the queued event is the retraction"
+        );
+        assert_eq!(sender.calls().len(), 2);
+        // Retraction finished → delivered row swept on disk too.
+        let file = queue_file(&dir);
+        assert_eq!(file["delivered"].as_object().unwrap().len(), 0);
+    }
+
+    /// publish → drop/reopen → deliver in `due_at` order.
+    #[tokio::test]
+    async fn restart_resumes_due_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let push = Push::new(dir.path()).unwrap();
+        push.subscribe(sub("device-1", "https://fcm.googleapis.com/one"), &[])
+            .unwrap();
+        let now = Timestamp::now();
+        let key_b = question_key("device-1", "evt-b");
+        let key_a = question_key("device-1", "evt-a");
+        // `evt-b` created first but due later (settle rides on
+        // created_at); `evt-a` is due first.
+        publish(&push, key_b.clone(), now);
+        publish(&push, key_a.clone(), now.add_ns(-500_000_000));
+        drop(push);
+
+        let push = Push::new(dir.path()).unwrap();
+        push.reconcile(&[key_a.clone(), key_b.clone()]).unwrap();
+        let sender = Arc::new(StubSender::default());
+        let results = drain_once(&push, &sender, now.add_ns(10 * 1_000_000_000), &cancel())
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results
+            .iter()
+            .all(|r| r.disposition == Disposition::Accepted));
+        // `(due_at, id)` order — `evt-a` first.
+        assert_eq!(results[0].key.event_id, "evt-a");
+        assert_eq!(results[1].key.event_id, "evt-b");
+    }
+
+    /// Backoff state is durable: a retrying entry's `attempts` +
+    /// `due_at` persist, so a restarted queue honors the same backoff
+    /// window instead of redelivering early.
+    #[tokio::test]
+    async fn restart_preserves_retry_backoff() {
+        let dir = tempfile::tempdir().unwrap();
+        let push = Push::new(dir.path()).unwrap();
+        push.subscribe(sub("device-1", "https://fcm.googleapis.com/one"), &[])
+            .unwrap();
+        let now = Timestamp::now();
+        let key = question_key("device-1", "evt-1");
+        let due = publish_due(&push, key.clone(), now);
+        let sender = Arc::new(StubSender::with_outcomes(vec![
+            Err(SendError::Status(503)),
+            Ok(()),
+        ]));
+        let results = drain_once(&push, &sender, due, &cancel()).await.unwrap();
+        assert_eq!(results[0].disposition, Disposition::Retrying);
+        assert_eq!(results[0].attempts, 1);
+        let next = results[0].next_attempt.unwrap();
+        assert_eq!(next, due.add_ns(1_000_000_000));
+        // The reschedule landed on disk through `flush_queue`.
+        let file = queue_file(&dir);
+        let entry = file["entries"]
+            .as_object()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap();
+        assert_eq!(entry["attempts"], 1);
+        drop(push);
+
+        // Reopen — backoff survives: pre-`next` pass is a no-op even
+        // though the entry exists.
+        let push = Push::new(dir.path()).unwrap();
+        push.reconcile(std::slice::from_ref(&key)).unwrap();
+        let results = drain_once(&push, &sender, due.add_ns(500_000_000), &cancel())
+            .await
+            .unwrap();
+        assert!(results.is_empty());
+        assert_eq!(sender.calls().len(), 1, "no send before next_attempt");
+        let results = drain_once(&push, &sender, next, &cancel()).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].disposition, Disposition::Accepted);
+        assert_eq!(results[0].attempts, 2);
+    }
+
+    /// The 410 prune persists: subscription removal and the fallback
+    /// requeue both land on disk, so a restarted queue delivers to the
+    /// retained endpoint only.
+    #[tokio::test]
+    async fn restart_preserves_prune_and_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let push = Push::new(dir.path()).unwrap();
+        push.subscribe(sub("device-1", "https://fcm.googleapis.com/old"), &[])
+            .unwrap();
+        push.subscribe(sub("device-1", "https://fcm.googleapis.com/new"), &[])
+            .unwrap();
+        let now = Timestamp::now();
+        let key = question_key("device-1", "evt-1");
+        let due = publish_due(&push, key.clone(), now); // lands on "new"
+        let sender = Arc::new(StubSender::with_outcomes(vec![
+            Err(SendError::Status(410)),
+            Ok(()),
+        ]));
+        let results = drain_once(&push, &sender, due, &cancel()).await.unwrap();
+        assert_eq!(results[0].disposition, Disposition::Pruned);
+        // `subscriptions.json` lost "new"; `queue.json` holds the
+        // requeued entry on "old".
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &std::fs::read_to_string(dir.path().join("subscriptions.json")).unwrap()
+            )
+            .unwrap()["subscriptions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let entry = queue_file(&dir)["entries"]
+            .as_object()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            entry["subscription"]["endpoint"],
+            "https://fcm.googleapis.com/old"
+        );
+        drop(push);
+
+        let push = Push::new(dir.path()).unwrap();
+        let subs = push.subscriptions();
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0].endpoint, "https://fcm.googleapis.com/old");
+        push.reconcile(&[key]).unwrap();
+        let results = drain_once(&push, &sender, due, &cancel()).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].disposition, Disposition::Accepted);
+        assert_eq!(
+            sender.calls(),
+            vec![
+                "https://fcm.googleapis.com/new",
+                "https://fcm.googleapis.com/old"
+            ]
+        );
+    }
+
+    /// A restart with nothing queued opens reconciled immediately —
+    /// `reconciled = len(recovered) == 0`.
+    #[tokio::test]
+    async fn restart_with_empty_queue_opens_reconciled() {
+        let dir = tempfile::tempdir().unwrap();
+        let push = Push::new(dir.path()).unwrap();
+        assert!(push.is_reconciled());
+        push.subscribe(sub("device-1", "https://fcm.googleapis.com/one"), &[])
+            .unwrap();
+        drop(push);
+        let push = Push::new(dir.path()).unwrap();
+        assert!(push.is_reconciled(), "subscriptions alone don't gate");
+    }
+
+    /// Under paused time the 250ms tick can never fire — a delivery
+    /// lands only because `publish` raised `wake`. Mirrors the
+    /// oracle's buffered `m.signal()` wakeup.
+    #[tokio::test(start_paused = true)]
+    async fn worker_wakes_on_publish_under_paused_time() {
+        let push = Push::default();
+        push.subscribe(sub("device-1", "https://fcm.googleapis.com/one"), &[])
+            .unwrap();
+        let sender = Arc::new(StubSender::default());
+        let token = cancel();
+        let handle = spawn_worker(push.clone(), sender.clone(), token.clone());
+        // created_at in the past → the entry is already due; the wall
+        // clock (Timestamp::now) is what the drain reads, while tokio's
+        // paused clock governs the ticker — so only the `wake` notify
+        // can trigger this drain.
+        publish(
+            &push,
+            question_key("device-1", "evt-1"),
+            Timestamp::now().add_ns(-10 * 1_000_000_000),
+        );
+        for _ in 0..1000 {
+            tokio::task::yield_now().await;
+            if !sender.calls().is_empty() {
+                break;
+            }
+        }
+        assert_eq!(sender.calls(), vec!["https://fcm.googleapis.com/one"]);
+        // A tick after the fact finds an empty queue.
+        tokio::time::advance(Duration::from_millis(300)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(sender.calls().len(), 1);
+        token.cancel();
+        handle.await.unwrap();
     }
 }
