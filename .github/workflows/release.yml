@@ -166,10 +166,14 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
+      # Runner ships the SDK under $ANDROID_HOME; setup-android@v3 asks
+      # for the removed 'tools' package — resolve sdkmanager directly.
       - name: Install platform + build tools
         run: |
-          sdkmanager 'platforms;android-37.2' 'build-tools;37.0.0'
+          SDKMGR="$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | sort -V | tail -1)"
+          test -x "$SDKMGR" || { echo "sdkmanager not found under $ANDROID_HOME"; exit 1; }
+          yes | "$SDKMGR" --licenses >/dev/null || true
+          "$SDKMGR" --sdk_root="$ANDROID_HOME" 'platforms;android-37.2' 'build-tools;37.0.0'
       - uses: gradle/actions/setup-gradle@v4
       - name: Build universal release APK
         run: ./gradlew --console=plain :app:assembleRelease
