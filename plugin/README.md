@@ -149,5 +149,6 @@ SIGUSR1 re-arm of the setup invitation and `relay.pid` beside `relay.env`.
 - Release tarball carries `scripts/` instead of `relay/` and no `web/` bundle
   or LICENSE yet; `web_hash`/`bundle_hash` manifest fields are kept for
   contract parity (the binary defines what they hash).
-- `speech-voices.sh` not ported — no speech subsystem in the Rust relay yet.
+- `speech-voices.sh` not ported — unnecessary: the binary's `speech-voices`
+  subcommand the script wrapped is implemented natively.
 - `version` is `0.0.0`, synced to the workspace crates.

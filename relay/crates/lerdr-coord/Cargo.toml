@@ -29,6 +29,9 @@ clap = { version = "4.5", features = ["derive"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 qrcode = { version = "0.14", default-features = false }
 gethostname = "0.5"
+# update-worker: flock(2) on update.lock + killpg TERM/KILL for timed-out
+# installs (the oracle's syscall.Flock / syscall.Kill(-pgid, …)).
+libc = "0.2"
 rand = "0.9"
 url = "2"
 base64 = { workspace = true }

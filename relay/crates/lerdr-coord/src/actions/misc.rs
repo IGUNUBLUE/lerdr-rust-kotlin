@@ -95,7 +95,7 @@ fn runtime_dir() -> PathBuf {
 }
 
 /// `filepath.Dir` — a bare filename resolves to `.`.
-fn dirname(path: &str) -> PathBuf {
+pub(crate) fn dirname(path: &str) -> PathBuf {
     let parent = Path::new(path).parent().unwrap_or_else(|| Path::new(""));
     if parent.as_os_str().is_empty() {
         PathBuf::from(".")
@@ -116,7 +116,7 @@ fn adopt_legacy_dir(dir: PathBuf, legacy: PathBuf) -> PathBuf {
 
 /// `os.MkdirAll(dir, mode)` — the mode applies to every directory the
 /// call creates; existing directories keep their permissions.
-fn mkdir_all(path: &Path, mode: u32) -> std::io::Result<()> {
+pub(crate) fn mkdir_all(path: &Path, mode: u32) -> std::io::Result<()> {
     use std::os::unix::fs::DirBuilderExt;
     std::fs::DirBuilder::new()
         .recursive(true)
@@ -136,12 +136,12 @@ fn expand_tilde(path: &str, home: &Path) -> String {
 }
 
 /// `compact` — whitespace-collapsed, rune-limited.
-fn compact(value: &str, limit: usize) -> String {
+pub(crate) fn compact(value: &str, limit: usize) -> String {
     let collapsed = value.split_whitespace().collect::<Vec<_>>().join(" ");
     collapsed.chars().take(limit).collect()
 }
 
-fn now_unix() -> i64 {
+pub(crate) fn now_unix() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -156,7 +156,7 @@ fn now_nanos() -> u128 {
 }
 
 /// `time.Now().UTC().Format(RFC3339)` — civil conversion, no time crate.
-fn now_rfc3339() -> String {
+pub(crate) fn now_rfc3339() -> String {
     let secs = now_unix();
     let days = secs.div_euclid(86_400);
     let tod = secs.rem_euclid(86_400);
@@ -191,54 +191,57 @@ fn is_zero(value: &i64) -> bool {
 
 /// `update.State` — the persisted `update-state.json` shape. `eligible`
 /// and `can_install` are emitted unconditionally, like the Go struct.
+/// `pub(crate)` for [`crate::update_worker`], which owns the write side.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
-struct UpdateState {
-    state: String,
+pub(crate) struct UpdateState {
+    pub(crate) state: String,
     #[serde(skip_serializing_if = "String::is_empty")]
-    current_version: String,
+    pub(crate) current_version: String,
     #[serde(skip_serializing_if = "String::is_empty")]
-    current_revision: String,
+    pub(crate) current_revision: String,
     #[serde(skip_serializing_if = "String::is_empty")]
-    available_version: String,
+    pub(crate) available_version: String,
     #[serde(skip_serializing_if = "String::is_empty")]
-    available_revision: String,
+    pub(crate) available_revision: String,
     #[serde(skip_serializing_if = "String::is_empty")]
-    upstream_version: String,
+    pub(crate) upstream_version: String,
     #[serde(skip_serializing_if = "String::is_empty")]
-    upstream_revision: String,
+    pub(crate) upstream_revision: String,
     #[serde(skip_serializing_if = "String::is_empty")]
-    target_version: String,
+    pub(crate) target_version: String,
     #[serde(skip_serializing_if = "String::is_empty")]
-    target_revision: String,
+    pub(crate) target_revision: String,
     #[serde(skip_serializing_if = "String::is_empty")]
-    target: String,
+    pub(crate) target: String,
     #[serde(skip_serializing_if = "is_zero")]
-    checked_at: i64,
+    pub(crate) checked_at: i64,
     #[serde(skip_serializing_if = "String::is_empty")]
-    started_at: String,
+    pub(crate) started_at: String,
     #[serde(skip_serializing_if = "String::is_empty")]
-    finished_at: String,
+    pub(crate) finished_at: String,
     #[serde(skip_serializing_if = "String::is_empty")]
-    mode: String,
-    eligible: bool,
-    can_install: bool,
+    pub(crate) mode: String,
+    pub(crate) eligible: bool,
+    pub(crate) can_install: bool,
     #[serde(skip_serializing_if = "String::is_empty")]
-    reason: String,
+    pub(crate) reason: String,
     #[serde(skip_serializing_if = "String::is_empty")]
-    error: String,
+    pub(crate) error: String,
 }
 
 /// `update.Job` — the transient `update-job-<ns>.json` payload the worker
-/// consumes.
-#[derive(Debug, serde::Serialize)]
-struct UpdateJob {
-    release_root: String,
-    herdr_bin: String,
-    target_version: String,
-    target_revision: String,
-    state_path: String,
-    health_url: String,
+/// consumes. `serde(default)` matches `json.Unmarshal`: absent keys leave
+/// zero values, which [`crate::update_worker`] validation then rejects.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub(crate) struct UpdateJob {
+    pub(crate) release_root: String,
+    pub(crate) herdr_bin: String,
+    pub(crate) target_version: String,
+    pub(crate) target_revision: String,
+    pub(crate) state_path: String,
+    pub(crate) health_url: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -256,10 +259,9 @@ const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 /// `updateStartupGrace`.
 const STARTUP_GRACE_SECS: i64 = 30;
 /// Whether this binary ships the `update-worker` subcommand the launcher
-/// spawns. It does not yet — the schedule/launch path is kept for parity
-/// but `eligibility` reports the capability gap instead of letting a
-/// doomed transient unit report `scheduled` and die.
-const UPDATE_WORKER_SUPPORTED: bool = false;
+/// spawns — it does (`crate::update_worker`, the `internal/update`
+/// `Worker.Run` port).
+const UPDATE_WORKER_SUPPORTED: bool = true;
 /// `workerEnvironmentKeys`.
 const WORKER_ENV_KEYS: [&str; 3] = [
     "LERDR_RELAY_ENV",
@@ -736,9 +738,9 @@ impl UpdateManager {
                 "The Herdr executable is unavailable".to_owned(),
             );
         }
-        // The `update-worker` subcommand is not implemented in this
-        // binary, so no managed update could ever run — surface that as
-        // ineligibility rather than a failed schedule attempt.
+        // `supportedWorker` — without the `update-worker` subcommand a
+        // scheduled update could never run; with it this leg is
+        // `(true, "plugin", "")` as the oracle.
         if !UPDATE_WORKER_SUPPORTED {
             return (
                 false,
@@ -972,7 +974,7 @@ fn transient_update_state(value: &str) -> bool {
 }
 
 /// `validRevision` — exactly 40 hex characters.
-fn valid_revision(value: &str) -> bool {
+pub(crate) fn valid_revision(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
@@ -982,7 +984,7 @@ fn short_revision(value: &str) -> String {
 }
 
 /// `semverPattern` — `X.Y.Z`, no leading zeros.
-fn semver_valid(value: &str) -> bool {
+pub(crate) fn semver_valid(value: &str) -> bool {
     parse_semver(value).is_some()
 }
 
@@ -1029,7 +1031,7 @@ fn current_target() -> String {
 }
 
 /// `url.PathEscape` for a path segment — unreserved + sub-delims + `:@`.
-fn path_escape(value: &str) -> String {
+pub(crate) fn path_escape(value: &str) -> String {
     const KEEP: &[u8] =
         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~!$&'()*+,;=:@";
     let mut out = String::new();
@@ -1118,7 +1120,10 @@ fn github_token_file() -> PathBuf {
 }
 
 /// `writeJSONAtomic` — temp in the same dir, 0600, write+sync, rename.
-fn write_json_atomic<T: serde::Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+pub(crate) fn write_json_atomic<T: serde::Serialize>(
+    path: &Path,
+    value: &T,
+) -> std::io::Result<()> {
     let data = serde_json::to_vec_pretty(value).map_err(std::io::Error::other)?;
     let mut data = data;
     data.push(b'\n');
@@ -1146,7 +1151,7 @@ fn write_json_atomic<T: serde::Serialize>(path: &Path, value: &T) -> std::io::Re
 }
 
 /// `writeState` — atomic write plus a directory fsync.
-fn write_state(path: &Path, state: &UpdateState) -> std::io::Result<()> {
+pub(crate) fn write_state(path: &Path, state: &UpdateState) -> std::io::Result<()> {
     write_json_atomic(path, state)?;
     if let Ok(dir) = std::fs::File::open(path.parent().unwrap_or_else(|| Path::new("."))) {
         let _ = dir.sync_all();
@@ -1155,7 +1160,7 @@ fn write_state(path: &Path, state: &UpdateState) -> std::io::Result<()> {
 }
 
 /// `readState`.
-fn read_state(path: &Path) -> std::io::Result<UpdateState> {
+pub(crate) fn read_state(path: &Path) -> std::io::Result<UpdateState> {
     let data = std::fs::read(path)?;
     serde_json::from_slice(&data).map_err(std::io::Error::other)
 }

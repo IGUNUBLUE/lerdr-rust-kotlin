@@ -39,6 +39,9 @@ pub struct Config {
     pub device_auth_dir: PathBuf,
     /// `cfg.RearmBootstrap`.
     pub rearm_bootstrap: bool,
+    /// `cfg.InstanceID` — `RELAY_INSTANCE_ID`, echoed back in
+    /// `X-Herdr-Relay-Instance` and the healthz `instance` key.
+    pub instance_id: String,
     /// `cfg.LogLevel` — validated `debug`/`info`/`warn`/`error`.
     pub log_level: Option<String>,
     /// The `ws(s)://` origin printed inside pairing links (`relay=` param).
@@ -106,6 +109,8 @@ pub fn resolve(
         .filter(|t| !t.is_empty());
     let rearm_bootstrap =
         cli.rearm_bootstrap || relay_env_bool_or(vars, "RELAY_REARM_BOOTSTRAP", false);
+    // `InstanceID: relayEnv("RELAY_INSTANCE_ID")` — env-only, no flag.
+    let instance_id = relay_env(vars, "RELAY_INSTANCE_ID").unwrap_or_default();
     let log_level = match relay_env(vars, "RELAY_LOG_LEVEL") {
         Some(raw) => match raw.trim().to_lowercase().as_str() {
             "" | "info" => None,
@@ -172,6 +177,7 @@ pub fn resolve(
         runtime_dir,
         device_auth_dir,
         rearm_bootstrap,
+        instance_id,
         log_level,
         advertised_url,
     })
@@ -343,6 +349,23 @@ mod tests {
         let cfg = resolve(&vars, &no_dirs(), &cli).unwrap();
         assert_eq!(cfg.port, 8443);
         assert_eq!(cfg.device_auth_dir, Path::new("/tmp/devices"));
+    }
+
+    #[test]
+    fn instance_id_is_env_only() {
+        // `InstanceID: relayEnv("RELAY_INSTANCE_ID")` — no flag, LERDR
+        // beats HERDR, empty/unset resolves to "".
+        let cfg = resolve_env(&[
+            ("HOME", "/h"),
+            ("LERDR_RELAY_INSTANCE_ID", "lerdr-1"),
+            ("HERDR_RELAY_INSTANCE_ID", "herdr-1"),
+        ])
+        .unwrap();
+        assert_eq!(cfg.instance_id, "lerdr-1");
+        let cfg = resolve_env(&[("HOME", "/h"), ("HERDR_RELAY_INSTANCE_ID", "herdr-1")]).unwrap();
+        assert_eq!(cfg.instance_id, "herdr-1");
+        let cfg = resolve_env(&[("HOME", "/h")]).unwrap();
+        assert_eq!(cfg.instance_id, "");
     }
 
     #[test]
