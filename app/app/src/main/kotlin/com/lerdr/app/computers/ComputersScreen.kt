@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -18,8 +19,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -27,6 +30,7 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -34,7 +38,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.PreviewLightDark
 import androidx.compose.ui.unit.dp
@@ -53,7 +59,8 @@ import dagger.hilt.android.EntryPointAccessors
  * Computers tab — the connected Herdr relays as a first-class destination
  * (the mission-control carousel promoted to a real tab; see docs/04
  * §Navigation model). Read-only glance: fine management (reconnect /
- * forget / rename / revoke) stays on Settings → Devices.
+ * forget / rename / revoke) stays on Settings → Devices. Pairing is the
+ * FAB; an empty relay list renders the "pair your first computer" CTA.
  */
 @Composable
 fun ComputersScreen(
@@ -63,10 +70,9 @@ fun ComputersScreen(
 ) {
     val appContext = LocalContext.current.applicationContext
     val viewModel: HomeViewModel = viewModel {
-        HomeViewModel(
+        val entryPoint =
             EntryPointAccessors.fromApplication(appContext, AppEntryPoint::class.java)
-                .homeRepository(),
-        )
+        HomeViewModel(entryPoint.homeRepository(), entryPoint.sessionRepository())
     }
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     ComputersContent(
@@ -141,24 +147,111 @@ fun ComputersContent(
             }
         },
     ) { innerPadding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(
-                top = innerPadding.calculateTopPadding(),
-                bottom = innerPadding.calculateBottomPadding() + spacing.medium,
-            ),
-            verticalArrangement = Arrangement.spacedBy(spacing.small),
-        ) {
-            items(relays, key = { it.relayId }) { relay ->
-                ComputerRow(
-                    relay = relay,
-                    onClick = onManageDevices,
-                    modifier = Modifier.padding(horizontal = spacing.medium),
-                )
+        if (relays.isEmpty()) {
+            ComputersEmptyState(
+                onPairDevice = onPairDevice,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .padding(horizontal = spacing.large),
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(
+                    top = innerPadding.calculateTopPadding(),
+                    bottom = innerPadding.calculateBottomPadding() + spacing.medium,
+                ),
+                verticalArrangement = Arrangement.spacedBy(spacing.small),
+            ) {
+                items(relays, key = { it.relayId }) { relay ->
+                    ComputerRow(
+                        relay = relay,
+                        onClick = onManageDevices,
+                        modifier = Modifier.padding(horizontal = spacing.medium),
+                    )
+                }
             }
         }
     }
 }
+
+/**
+ * docs/04 §Computers empty state — an expressive stand-in illustration
+ * (large tinted monitor glyph in a tonal circle) plus the "pair your
+ * first computer" CTA into the QR scanner.
+ */
+@Composable
+fun ComputersEmptyState(
+    onPairDevice: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+        modifier = modifier,
+    ) {
+        Surface(
+            color = MaterialTheme.colorScheme.secondaryContainer,
+            shape = CircleShape,
+            modifier = Modifier.size(120.dp),
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    Icons.Default.Dns,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.size(56.dp),
+                )
+            }
+        }
+        Spacer(Modifier.height(LerdrTheme.spacing.large))
+        Text(
+            "No computers yet",
+            style = MaterialTheme.typography.titleLarge,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(LerdrTheme.spacing.small))
+        Text(
+            "Pair this phone with a computer running the relay to see " +
+                "its agents here.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(LerdrTheme.spacing.large))
+        Button(onClick = onPairDevice) {
+            Icon(
+                Icons.Default.QrCodeScanner,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(LerdrTheme.spacing.small))
+            Text("Pair your first computer")
+        }
+    }
+}
+
+/** RTT quality band — drives the status chip's tint on a connected row. */
+enum class LatencyBand { GOOD, FAIR, POOR }
+
+/**
+ * Latency bands for a connected relay's keepalive RTT: under 50 ms is a
+ * healthy LAN-grade hop, under 150 ms is workable WAN, beyond that the
+ * pane stream feels sluggish. Offline or unmeasured (`rttMs < 0`) relays
+ * have no band — they must never tint as [LatencyBand.GOOD].
+ */
+internal fun latencyBand(connected: Boolean, rttMs: Long): LatencyBand? {
+    if (!connected || rttMs < 0) return null
+    return when {
+        rttMs < RTT_GOOD_MS -> LatencyBand.GOOD
+        rttMs < RTT_FAIR_MS -> LatencyBand.FAIR
+        else -> LatencyBand.POOR
+    }
+}
+
+private const val RTT_GOOD_MS = 50L
+private const val RTT_FAIR_MS = 150L
 
 @Composable
 private fun ComputerRow(
@@ -211,15 +304,60 @@ private fun ComputerRow(
                 )
             }
             Spacer(Modifier.width(LerdrTheme.spacing.small))
-            val count = relay.agentCount
-            if (count > 0) {
-                Text(
-                    if (count == 1) "1 agent" else "$count agents",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            Column(horizontalAlignment = Alignment.End) {
+                LatencyChip(relay = relay)
+                val count = relay.agentCount
+                if (count > 0) {
+                    Text(
+                        if (count == 1) "1 agent" else "$count agents",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = LerdrTheme.spacing.extraSmall),
+                    )
+                }
             }
         }
+    }
+}
+
+/**
+ * The status chip — RTT label tinted by [latencyBand] when connected;
+ * "offline"/"connecting…"/unmeasured stay neutral so a dead relay never
+ * reads as a healthy one.
+ */
+@Composable
+private fun LatencyChip(relay: RelayCardUi) {
+    val colors = LerdrTheme.extendedColors
+    val band = latencyBand(relay.connected, relay.rttMs)
+    val container: Color
+    val content: Color
+    when (band) {
+        LatencyBand.GOOD -> {
+            container = colors.workingContainer
+            content = colors.onWorkingContainer
+        }
+        LatencyBand.FAIR -> {
+            container = colors.attentionContainer
+            content = colors.onAttentionContainer
+        }
+        LatencyBand.POOR -> {
+            container = colors.dangerContainer
+            content = colors.onDangerContainer
+        }
+        null -> {
+            container = MaterialTheme.colorScheme.surfaceContainerHighest
+            content = MaterialTheme.colorScheme.onSurfaceVariant
+        }
+    }
+    Surface(color = container, contentColor = content, shape = CircleShape) {
+        Text(
+            relay.statusLabel,
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.padding(
+                horizontal = LerdrTheme.spacing.small,
+                vertical = LerdrTheme.spacing.extraSmall,
+            ),
+        )
     }
 }
 
@@ -229,10 +367,29 @@ private fun ComputersContentPreview() {
     LerdrTheme {
         ComputersContent(
             relays = listOf(
-                RelayCardUi("sd", "sd", "tailscale", "12ms", 4, connected = true),
-                RelayCardUi("workstation", "workstation", "gateway", "81ms", 0, connected = false),
+                RelayCardUi("sd", "sd", "tailscale", "12ms", 4, connected = true, rttMs = 12),
+                RelayCardUi("lan", "lan-box", "direct", "94ms", 2, connected = true, rttMs = 94),
+                RelayCardUi("wan", "wan-host", "tls", "212ms", 1, connected = true, rttMs = 212),
+                RelayCardUi(
+                    "workstation", "workstation", "gateway", "offline", 0,
+                    connected = false, rttMs = -1,
+                ),
             ),
-            relaySummary = "2 computers · tailscale",
+            relaySummary = "4 computers · 1 offline",
+            onSelectTopLevel = {},
+            onPairDevice = {},
+            onManageDevices = {},
+        )
+    }
+}
+
+@PreviewLightDark
+@Composable
+private fun ComputersEmptyPreview() {
+    LerdrTheme {
+        ComputersContent(
+            relays = emptyList(),
+            relaySummary = "",
             onSelectTopLevel = {},
             onPairDevice = {},
             onManageDevices = {},

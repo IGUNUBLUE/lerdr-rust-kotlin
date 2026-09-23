@@ -16,8 +16,9 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * Roborazzi coverage for the Computers tab — one connected relay and one
- * offline relay, plus the empty state.
+ * Roborazzi coverage for the Computers tab — latency-band chips
+ * (good/fair/poor), connected + offline + unmeasured variants, and the
+ * empty state with the pair-device CTA.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = com.lerdr.app.TestApp::class)
@@ -61,6 +62,34 @@ class ComputersScreenScreenshotTest {
                             statusLabel = "12ms",
                             agentCount = 4,
                             connected = true,
+                            rttMs = 12,
+                        ),
+                        RelayCardUi(
+                            relayId = "lan",
+                            label = "lan-box",
+                            transport = "direct",
+                            statusLabel = "94ms",
+                            agentCount = 2,
+                            connected = true,
+                            rttMs = 94,
+                        ),
+                        RelayCardUi(
+                            relayId = "wan",
+                            label = "wan-host",
+                            transport = "tls",
+                            statusLabel = "212ms",
+                            agentCount = 1,
+                            connected = true,
+                            rttMs = 212,
+                        ),
+                        RelayCardUi(
+                            relayId = "unmeasured",
+                            label = "unmeasured",
+                            transport = "direct",
+                            statusLabel = "connected",
+                            agentCount = 0,
+                            connected = true,
+                            rttMs = -1,
                         ),
                         RelayCardUi(
                             relayId = "workstation",
@@ -69,9 +98,10 @@ class ComputersScreenScreenshotTest {
                             statusLabel = "offline",
                             agentCount = 0,
                             connected = false,
+                            rttMs = -1,
                         ),
                     ),
-                    relaySummary = "2 computers · tailscale",
+                    relaySummary = "5 computers · 1 offline",
                     onSelectTopLevel = {},
                     onPairDevice = {},
                     onManageDevices = {},

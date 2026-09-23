@@ -18,6 +18,8 @@ import lerdr.core.store.AgentStore
 import lerdr.core.store.ConnectionStore
 import lerdr.core.store.RelayConnection
 import lerdr.core.store.RelayStatus
+import lerdr.core.store.RelayWorkspace
+import lerdr.core.store.WorkspaceStore
 import lerdr.core.store.agentNeedsInspection
 import lerdr.core.store.agentNeedsResponse
 import lerdr.core.store.agentStatusGroup
@@ -28,18 +30,30 @@ import lerdr.core.store.sortedAgents
 /**
  * Home data seam — repositories expose `Flow`, never suspend-gets
  * (see .devin/skills/android-app). [RealHomeRepository] folds
- * `core:store`'s AgentStore + ConnectionStore + RelayRegistry into
- * [HomeUiState]; [FakeHomeRepository] survives only as a test fixture.
+ * `core:store`'s AgentStore + ConnectionStore + WorkspaceStore +
+ * RelayRegistry into [HomeUiState]; [FakeHomeRepository] survives only as a
+ * test fixture.
  */
 interface HomeRepository {
     val uiState: Flow<HomeUiState>
 }
 
+/** One projection's raw inputs — bundles the five-store combine. */
+private data class HomeInputs(
+    val agents: List<Agent>,
+    val connections: Map<String, RelayConnection>,
+    val relays: List<RelayEndpoint>,
+    val workspaces: List<RelayWorkspace>,
+    val activities: List<com.lerdr.app.session.RelayActivity>,
+)
+
 /**
  * Mission-control projection: needs-you rail from blocked/question agents,
- * working/idle groups from the oracle's status grouping, relay strip from
- * the configured endpoints × live connection rows. A 30 s ticker re-derives
- * the relative-age labels while subscribed.
+ * working/idle agents grouped by `relay ▸ workspace` (the oracle's
+ * `workspaceGroups`), relay strip from the configured endpoints × live
+ * connection rows. `agentStore.responding` folds the in-flight answer set
+ * onto attention cards; a 30 s ticker re-derives the relative-age labels
+ * while subscribed.
  */
 @Singleton
 class RealHomeRepository @Inject constructor(
@@ -47,6 +61,7 @@ class RealHomeRepository @Inject constructor(
     private val connectionStore: ConnectionStore,
     private val relayRegistry: RelayRegistry,
     private val sessions: SessionRepository,
+    private val workspaceStore: WorkspaceStore,
     private val now: () -> Long = System::currentTimeMillis,
 ) : HomeRepository {
 
@@ -58,22 +73,29 @@ class RealHomeRepository @Inject constructor(
     }
 
     override val uiState: Flow<HomeUiState> = combine(
-        agentStore.agents,
-        connectionStore.connections,
-        relayRegistry.relays,
-        sessions.activities,
-        ticker,
-    ) { agents, connections, relays, activities, _ ->
-        project(agents, connections, relays, activities, now())
+        combine(
+            agentStore.agents,
+            connectionStore.connections,
+            relayRegistry.relays,
+            workspaceStore.workspaces,
+            sessions.activities,
+            ::HomeInputs,
+        ),
+        combine(sessions.responding, ticker) { responding, _ -> responding },
+    ) { inputs, responding ->
+        project(inputs, responding, now())
     }
 
     private fun project(
-        agents: List<Agent>,
-        connections: Map<String, RelayConnection>,
-        relays: List<RelayEndpoint>,
-        activities: List<com.lerdr.app.session.RelayActivity>,
+        inputs: HomeInputs,
+        responding: Set<String>,
         at: Long,
     ): HomeUiState {
+        val agents = inputs.agents
+        val connections = inputs.connections
+        val relays = inputs.relays
+        val workspaces = inputs.workspaces
+        val activities = inputs.activities
         val sorted = sortedAgents(agents)
         val lastActivity = activities
             .filter { it.entry.paneId.isNotEmpty() }
@@ -85,16 +107,20 @@ class RealHomeRepository @Inject constructor(
             relaySummary = relaySummary(relays, connections),
             needsYou = sorted
                 .filter { agentNeedsResponse(it) || agentNeedsInspection(it) }
-                .map { it.toAttentionCard(at) },
+                .map { it.toAttentionCard(at, responding) },
             working = sorted
                 .filter { agentStatusGroup(it) == AgentStatusGroup.WORKING }
-                .map { it.toListItem(working = true, at = at, activity = lastActivity[it.paneId]) },
+                .toGroups(workspaces) {
+                    it.toListItem(working = true, at = at, activity = lastActivity[it.paneId])
+                },
             idle = sorted
                 .filter {
                     !agentNeedsResponse(it) && !agentNeedsInspection(it) &&
                         agentStatusGroup(it) != AgentStatusGroup.WORKING
                 }
-                .map { it.toListItem(working = false, at = at, activity = lastActivity[it.paneId]) },
+                .toGroups(workspaces) {
+                    it.toListItem(working = false, at = at, activity = lastActivity[it.paneId])
+                },
             relays = relays.map { endpoint ->
                 val connection = connections[endpoint.id]
                 RelayCardUi(
@@ -109,9 +135,75 @@ class RealHomeRepository @Inject constructor(
                     },
                     agentCount = agents.count { it.relayId == endpoint.id },
                     connected = connection?.status == RelayStatus.CONNECTED,
+                    rttMs = connection?.rttMs ?: -1,
                 )
             },
         )
+    }
+
+    /**
+     * The oracle's `workspaceGroups` (`workspaces.ts`): bucket agents by
+     * `workspaceIdentity` (`workspace_id`, else `cwd`, else the pane's raw
+     * id), prefer the `workspaces` snapshot's label, then order groups by
+     * recency → label → host. Status sections group independently, matching
+     * the oracle's per-status `workspaceGroupTrees` split.
+     */
+    private fun List<Agent>.toGroups(
+        workspaces: List<RelayWorkspace>,
+        map: (Agent) -> AgentListItemUi,
+    ): List<AgentGroupUi> {
+        val records = workspaces.associateBy {
+            it.relayId + "\u0000" + it.workspaceId
+        }
+        // Order groups like the oracle: newest member activity first, then
+        // label, then host — case-insensitive so ordering stays stable.
+        return groupBy(::workspaceIdentity)
+            .entries
+            .sortedWith(
+                compareByDescending<Map.Entry<String, List<Agent>>> { (_, members) ->
+                    members.maxOf { it.lastActiveAt ?: it.updatedAt }
+                }.thenBy { (_, members) -> groupLabel(members).lowercase() }
+                    .thenBy { (_, members) -> members.first().relayLabel.lowercase() },
+            )
+            .map { (key, members) ->
+                val record = records[key]
+                AgentGroupUi(
+                    key = key,
+                    relayLabel = record?.relayLabel
+                        ?: members.first().relayLabel,
+                    label = record?.label ?: groupLabel(members),
+                    agents = members.map(map),
+                )
+            }
+    }
+
+    /**
+     * `workspaceIdentity` — `relay_id + \u0000 + (workspace_id || cwd ||
+     * raw_pane_id || pane_id)`: an agent without a workspace lands in a
+     * per-cwd group, one without either in a singleton pane group.
+     */
+    private fun workspaceIdentity(agent: Agent): String =
+        agent.relayId + "\u0000" + (
+            agent.workspaceId.ifEmpty {
+                agent.cwd?.takeIf { it.isNotEmpty() }
+                    ?: agent.rawPaneId.ifEmpty { agent.paneId }
+            }
+            )
+
+    /**
+     * The oracle's `groupLabel` — sole distinct project, else sole distinct
+     * cwd basename, else the first tab label, else "Workspace".
+     */
+    private fun groupLabel(agents: List<Agent>): String {
+        val projects = agents
+            .map { it.project.orEmpty() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+        if (projects.size == 1) return projects.single()
+        val cwdNames = agents.map { pathBase(it.cwd.orEmpty()) }.distinct()
+        if (cwdNames.size == 1) return cwdNames.single()
+        return agents.firstNotNullOfOrNull { it.tabLabel.takeIf(String::isNotEmpty) }
+            ?: "Workspace"
     }
 
     private fun relaySummary(
@@ -124,7 +216,10 @@ class RealHomeRepository @Inject constructor(
         if (connecting > 0) append(" · $connecting connecting")
     }
 
-    private fun Agent.toAttentionCard(at: Long): AttentionCardUi {
+    private fun Agent.toAttentionCard(
+        at: Long,
+        responding: Set<String>,
+    ): AttentionCardUi {
         val kind = when (attentionKind(this)) {
             BlockedMessage.ATTENTION_APPROVAL -> AttentionKind.APPROVAL
             BlockedMessage.ATTENTION_QUESTION -> AttentionKind.QUESTION
@@ -135,14 +230,31 @@ class RealHomeRepository @Inject constructor(
             AttentionKind.QUESTION -> "question"
             AttentionKind.CHAT -> "attention"
         }
-        val optionLabels = options ?: interaction?.options?.map { it.label }.orEmpty()
+        // `approvalOptions` — capable + ≥ 2 real labels, full list so the UI
+        // can score the deny tone against the true last index.
+        val approvalOptions = if (kind == AttentionKind.APPROVAL) {
+            options?.filter { it.isNotEmpty() }?.takeIf { it.size >= 2 }
+        } else {
+            null
+        }
+        // `questionInteraction` — a usable single/multi-select payload.
+        val question = interaction?.takeIf {
+            kind == AttentionKind.QUESTION &&
+                it.kindOrNull != null &&
+                it.id.isNotEmpty() && it.question.isNotEmpty() &&
+                it.options.isNotEmpty()
+        }
         return AttentionCardUi(
             paneId = paneId,
+            relayId = relayId,
             agentLabel = displayLabel(),
             kind = kind,
             metaLabel = "$kindLabel · ${ageLabel(at - (lastActiveAt ?: updatedAt))}",
-            prompt = prompt ?: interaction?.question ?: command ?: "",
-            options = optionLabels.take(MAX_ATTENTION_OPTIONS),
+            prompt = prompt ?: question?.question ?: command ?: "",
+            options = approvalOptions.orEmpty(),
+            interaction = question,
+            responding = paneId in responding,
+            controllable = sessions.canControl(relayId),
             provider = agent?.takeIf { it.isNotEmpty() },
         )
     }
@@ -156,22 +268,26 @@ class RealHomeRepository @Inject constructor(
         return if (working) {
             AgentListItemUi(
                 paneId = paneId,
+                relayId = relayId,
                 title = displayLabel(),
                 statusLine = activity?.summary?.takeIf { it.isNotEmpty() }
                     ?: prompt ?: command ?: statusText,
                 activityLabel = statusText,
                 elapsedLabel = elapsedLabel(at - (lastActiveAt ?: updatedAt)),
                 working = true,
+                controllable = sessions.canControl(relayId),
                 provider = agent?.takeIf { it.isNotEmpty() },
             )
         } else {
             AgentListItemUi(
                 paneId = paneId,
+                relayId = relayId,
                 title = displayLabel(),
                 statusLine = "$statusText · ${ageLabel(at - (lastActiveAt ?: updatedAt))} ago",
                 activityLabel = null,
                 elapsedLabel = "idle",
                 working = false,
+                controllable = sessions.canControl(relayId),
                 provider = agent?.takeIf { it.isNotEmpty() },
             )
         }
@@ -207,6 +323,16 @@ class RealHomeRepository @Inject constructor(
 
     private companion object {
         const val AGE_TICK_MS = 30_000L
-        const val MAX_ATTENTION_OPTIONS = 3
     }
 }
+
+/**
+ * `pathBase` — basename of a filesystem path, both separators, trailing
+ * slashes stripped; "workspace" when nothing remains (the oracle's
+ * WorkspaceManager fallback).
+ */
+internal fun pathBase(path: String): String =
+    path.trimEnd('/', '\\')
+        .split('/', '\\')
+        .filter { it.isNotEmpty() }
+        .lastOrNull() ?: "workspace"

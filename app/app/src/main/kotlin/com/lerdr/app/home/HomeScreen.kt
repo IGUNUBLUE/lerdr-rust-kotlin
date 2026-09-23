@@ -1,6 +1,8 @@
 package com.lerdr.app.home
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,33 +18,59 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.PreviewLightDark
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -50,15 +78,21 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lerdr.app.di.AppEntryPoint
 import com.lerdr.app.ui.ProviderBadge
 import com.lerdr.core.designsystem.components.LerdrNavItem
-import dagger.hilt.android.EntryPointAccessors
 import com.lerdr.core.designsystem.components.LerdrShortNavigationBar
 import com.lerdr.core.designsystem.components.LerdrWavyProgressIndicator
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import com.lerdr.navigation.LerdrKey
+import dagger.hilt.android.EntryPointAccessors
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.merge
+import lerdr.core.model.Interaction
+import lerdr.core.model.Option
 
 /**
- * Mission control (docs/04 §Home): needs-you rail, agents grouped by
- * activity, bottom nav. [HomeScreen] owns the ViewModel seam;
+ * Mission control (docs/04 §Home): needs-you rail with inline answers,
+ * agents grouped by `relay ▸ workspace`, an expandable "New" FAB hosting
+ * the launch sheets, bottom nav. [HomeScreen] owns the ViewModel seam;
  * [HomeContent] is pure state → previews and Roborazzi shots stay honest.
  */
 @Composable
@@ -66,22 +100,70 @@ fun HomeScreen(
     onOpenAgent: (String) -> Unit,
     onSelectTopLevel: (LerdrKey) -> Unit,
 ) {
-    // hilt-navigation-compose is absent — pull the bound repository
+    // hilt-navigation-compose is absent — pull the bound repositories
     // through the singleton entry point.
     val appContext = LocalContext.current.applicationContext
+    val entryPoint = remember {
+        EntryPointAccessors.fromApplication(appContext, AppEntryPoint::class.java)
+    }
     val viewModel: HomeViewModel = viewModel {
-        HomeViewModel(
-            EntryPointAccessors.fromApplication(appContext, AppEntryPoint::class.java)
-                .homeRepository(),
+        HomeViewModel(entryPoint.homeRepository(), entryPoint.sessionRepository())
+    }
+    val launchViewModel: LaunchViewModel = viewModel(key = "home-launch") {
+        val launch = EntryPointAccessors.fromApplication(
+            appContext,
+            LaunchEntryPoint::class.java,
         )
+        LaunchViewModel(launch.sessionRepository(), launch.workspaceStore())
     }
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    var sheet by rememberSaveable { mutableStateOf<HomeSheet?>(null) }
+    val messages = remember(viewModel, launchViewModel) {
+        merge(viewModel.messages, launchViewModel.messages)
+    }
+    LaunchedEffect(launchViewModel) {
+        launchViewModel.events.collect { event ->
+            when (event) {
+                is LaunchViewModel.LaunchEvent.Launched -> {
+                    sheet = null
+                    onOpenAgent(event.paneId)
+                }
+                LaunchViewModel.LaunchEvent.Dismissed -> sheet = null
+            }
+        }
+    }
     HomeContent(
         uiState = uiState,
         onOpenAgent = onOpenAgent,
         onSelectTopLevel = onSelectTopLevel,
+        onRespond = viewModel::respond,
+        onAnswerOption = viewModel::answerQuestion,
+        onStopAgent = viewModel::stopAgent,
+        onNewAgent = {
+            launchViewModel.beginAgent()
+            sheet = HomeSheet.AGENT
+        },
+        onNewWorkspace = {
+            launchViewModel.beginWorkspace()
+            sheet = HomeSheet.WORKSPACE
+        },
+        messages = messages,
     )
+    when (sheet) {
+        HomeSheet.AGENT -> NewAgentSheet(
+            viewModel = launchViewModel,
+            onDismiss = { sheet = null },
+        )
+        HomeSheet.WORKSPACE -> NewWorkspaceSheet(
+            viewModel = launchViewModel,
+            onDismiss = { sheet = null },
+        )
+        null -> Unit
+    }
 }
+
+/** Which launch sheet the Home FAB opened. */
+private enum class HomeSheet { AGENT, WORKSPACE }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -89,8 +171,22 @@ fun HomeContent(
     uiState: HomeUiState,
     onOpenAgent: (String) -> Unit,
     onSelectTopLevel: (LerdrKey) -> Unit,
+    onRespond: (AttentionCardUi, Int) -> Unit = { _, _ -> },
+    onAnswerOption: (AttentionCardUi, Int) -> Unit = { _, _ -> },
+    onStopAgent: (AgentListItemUi) -> Unit = {},
+    onNewAgent: () -> Unit = {},
+    onNewWorkspace: () -> Unit = {},
+    messages: Flow<String> = emptyFlow(),
 ) {
     val spacing = LerdrTheme.spacing
+    val snackbarHostState = remember { SnackbarHostState() }
+    var pendingStop by remember { mutableStateOf<AgentListItemUi?>(null) }
+    var fabExpanded by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(messages) {
+        messages.collect { snackbarHostState.showSnackbar(it) }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -143,6 +239,15 @@ fun HomeContent(
                 ),
             )
         },
+        floatingActionButton = {
+            HomeFabMenu(
+                expanded = fabExpanded,
+                onExpandedChange = { fabExpanded = it },
+                onNewAgent = onNewAgent,
+                onNewWorkspace = onNewWorkspace,
+            )
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { innerPadding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
@@ -177,6 +282,10 @@ fun HomeContent(
                             AttentionCard(
                                 card = card,
                                 onOpen = { onOpenAgent(card.paneId) },
+                                onRespond = { index -> onRespond(card, index) },
+                                onAnswerOption = { index ->
+                                    onAnswerOption(card, index)
+                                },
                             )
                         }
                     }
@@ -186,7 +295,7 @@ fun HomeContent(
             if (uiState.working.isNotEmpty()) {
                 item(key = "working-header") {
                     SectionHeader(
-                        label = "WORKING · ${uiState.working.size}",
+                        label = "WORKING · ${uiState.working.sumOf { it.agents.size }}",
                         color = LerdrTheme.extendedColors.working,
                         leading = {
                             StatusDot(color = LerdrTheme.extendedColors.working)
@@ -194,32 +303,164 @@ fun HomeContent(
                         modifier = Modifier.padding(horizontal = spacing.medium),
                     )
                 }
-                items(uiState.working, key = { it.paneId }) { agent ->
-                    AgentRow(
-                        agent = agent,
-                        onClick = { onOpenAgent(agent.paneId) },
-                        modifier = Modifier.padding(horizontal = spacing.medium),
-                    )
+                uiState.working.forEach { group ->
+                    item(key = "working-group:${group.key}") {
+                        GroupHeader(
+                            group = group,
+                            modifier = Modifier.padding(horizontal = spacing.medium),
+                        )
+                    }
+                    items(group.agents, key = { "working:${it.paneId}" }) { agent ->
+                        SwipeableAgentRow(
+                            agent = agent,
+                            onOpen = { onOpenAgent(agent.paneId) },
+                            onRequestStop = { pendingStop = agent },
+                            modifier = Modifier.padding(horizontal = spacing.medium),
+                        )
+                    }
                 }
             }
 
             if (uiState.idle.isNotEmpty()) {
                 item(key = "idle-header") {
                     SectionHeader(
-                        label = "IDLE · ${uiState.idle.size}",
+                        label = "IDLE · ${uiState.idle.sumOf { it.agents.size }}",
                         color = LerdrTheme.extendedColors.idle,
                         modifier = Modifier.padding(horizontal = spacing.medium),
                     )
                 }
-                items(uiState.idle, key = { it.paneId }) { agent ->
-                    AgentRow(
-                        agent = agent,
-                        onClick = { onOpenAgent(agent.paneId) },
-                        modifier = Modifier.padding(horizontal = spacing.medium),
-                    )
+                uiState.idle.forEach { group ->
+                    item(key = "idle-group:${group.key}") {
+                        GroupHeader(
+                            group = group,
+                            modifier = Modifier.padding(horizontal = spacing.medium),
+                        )
+                    }
+                    items(group.agents, key = { "idle:${it.paneId}" }) { agent ->
+                        SwipeableAgentRow(
+                            agent = agent,
+                            onOpen = { onOpenAgent(agent.paneId) },
+                            onRequestStop = { pendingStop = agent },
+                            modifier = Modifier.padding(horizontal = spacing.medium),
+                        )
+                    }
                 }
             }
+        }
+    }
 
+    pendingStop?.let { agent ->
+        StopAgentDialog(
+            agent = agent,
+            onConfirm = {
+                pendingStop = null
+                onStopAgent(agent)
+            },
+            onDismiss = { pendingStop = null },
+        )
+    }
+}
+
+/**
+ * The expanding "New" FAB — docs/04's `FloatingActionButtonMenu` pattern
+ * (labeled "New agent"/"New workspace" mini-actions over a toggle FAB);
+ * the M3E widget itself lives only on core:designsystem's expressive
+ * artifact, so Home composes the same speed-dial shape by hand.
+ */
+@Composable
+fun HomeFabMenu(
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    onNewAgent: () -> Unit,
+    onNewWorkspace: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val spacing = LerdrTheme.spacing
+    Column(
+        horizontalAlignment = Alignment.End,
+        verticalArrangement = Arrangement.spacedBy(spacing.small),
+        modifier = modifier,
+    ) {
+        AnimatedVisibility(visible = expanded) {
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(spacing.small),
+            ) {
+                FabMenuItem(
+                    label = "New workspace",
+                    icon = {
+                        Icon(Icons.Default.CreateNewFolder, contentDescription = null)
+                    },
+                    onClick = {
+                        onExpandedChange(false)
+                        onNewWorkspace()
+                    },
+                )
+                FabMenuItem(
+                    label = "New agent",
+                    icon = { Icon(Icons.Default.SmartToy, contentDescription = null) },
+                    onClick = {
+                        onExpandedChange(false)
+                        onNewAgent()
+                    },
+                )
+            }
+        }
+        FloatingActionButton(
+            onClick = { onExpandedChange(!expanded) },
+        ) {
+            Icon(
+                imageVector = if (expanded) Icons.Default.Close else Icons.Default.Add,
+                contentDescription = if (expanded) {
+                    "Close actions"
+                } else {
+                    "New agent or workspace"
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun FabMenuItem(
+    label: String,
+    icon: @Composable () -> Unit,
+    onClick: () -> Unit,
+) {
+    // One click target for label + circle — a real SmallFloatingActionButton
+    // nested in a clickable row would double the semantics.
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(LerdrTheme.spacing.small),
+        modifier = Modifier
+            .clip(MaterialTheme.shapes.medium)
+            .clickable(onClickLabel = label, role = Role.Button, onClick = onClick),
+    ) {
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            contentColor = MaterialTheme.colorScheme.onSurface,
+            shape = MaterialTheme.shapes.medium,
+        ) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.padding(
+                    horizontal = LerdrTheme.spacing.small,
+                    vertical = LerdrTheme.spacing.extraSmall,
+                ),
+            )
+        }
+        Surface(
+            color = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            shape = CircleShape,
+        ) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.size(40.dp),
+            ) {
+                icon()
+            }
         }
     }
 }
@@ -248,7 +489,7 @@ private fun LiveChip(modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun StatusDot(color: androidx.compose.ui.graphics.Color) {
+private fun StatusDot(color: Color) {
     Box(
         modifier = Modifier
             .size(8.dp)
@@ -260,7 +501,7 @@ private fun StatusDot(color: androidx.compose.ui.graphics.Color) {
 @Composable
 private fun SectionHeader(
     label: String,
-    color: androidx.compose.ui.graphics.Color,
+    color: Color,
     modifier: Modifier = Modifier,
     leading: (@Composable () -> Unit)? = null,
 ) {
@@ -281,10 +522,56 @@ private fun SectionHeader(
     }
 }
 
+/** "relay ▸ workspace" — one group's subheader inside a status section. */
+@Composable
+private fun GroupHeader(
+    group: AgentGroupUi,
+    modifier: Modifier = Modifier,
+) {
+    Text(
+        "${group.relayLabel} ▸ ${group.label}",
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = modifier.padding(top = LerdrTheme.spacing.extraSmall),
+    )
+}
+
+private enum class ApprovalTone { APPROVE, TRUST, DENY }
+
+/**
+ * The oracle's `approvalButtonTone` — the last option or a deny-ish label is
+ * destructive; "always/trust/configure" choices get the trust tint.
+ */
+private fun approvalTone(option: String, index: Int, total: Int): ApprovalTone {
+    val value = option.trim().lowercase()
+    if (index == total - 1 || DENY_WORDS.containsMatchIn(value)) return ApprovalTone.DENY
+    if (TRUST_WORDS.containsMatchIn(value)) return ApprovalTone.TRUST
+    return ApprovalTone.APPROVE
+}
+
+private val DENY_WORDS = Regex("\\b(no|deny|reject|cancel|exit)\\b")
+private val TRUST_WORDS = Regex("\\b(always|trust|don't ask|dont ask|configure|edit|amend)\\b")
+
+/** The oracle truncates option labels past 48 chars. */
+private fun optionLabel(option: String): String =
+    if (option.length > 48) option.take(45) + "…" else option
+
+/**
+ * A needs-you card — a blocked agent with its answer affordances inline.
+ * The card is a polite live region so a newly-blocked agent announces
+ * itself; [responding] swaps buttons for the oracle's "Waiting for agent…"
+ * status; [AttentionCardUi.controllable] hides mutating buttons for
+ * readers while keeping card navigation.
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AttentionCard(
     card: AttentionCardUi,
     onOpen: () -> Unit,
+    onRespond: (Int) -> Unit,
+    onAnswerOption: (Int) -> Unit,
 ) {
     val colors = LerdrTheme.extendedColors
     val container = when (card.kind) {
@@ -296,7 +583,9 @@ private fun AttentionCard(
         onClick = onOpen,
         colors = CardDefaults.cardColors(containerColor = container),
         shape = MaterialTheme.shapes.large,
-        modifier = Modifier.width(320.dp),
+        modifier = Modifier
+            .width(320.dp)
+            .semantics { liveRegion = LiveRegionMode.Polite },
     ) {
         Column(
             modifier = Modifier.padding(LerdrTheme.spacing.medium),
@@ -325,37 +614,211 @@ private fun AttentionCard(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(LerdrTheme.spacing.small)) {
-                card.options.forEachIndexed { index, option ->
-                    val isPrimary = index == 0 && card.kind == AttentionKind.APPROVAL
-                    val isDestructive = card.kind == AttentionKind.APPROVAL &&
-                        index == card.options.lastIndex
-                    when {
-                        isPrimary -> Button(
-                            onClick = onOpen,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = colors.working,
-                                contentColor = colors.onWorking,
-                            ),
+            when {
+                card.responding -> Text(
+                    "Waiting for agent…",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                card.kind == AttentionKind.APPROVAL && card.controllable &&
+                    card.options.isNotEmpty() -> Row(
+                    horizontalArrangement = Arrangement.spacedBy(LerdrTheme.spacing.small),
+                ) {
+                    card.options.take(MAX_INLINE_OPTIONS).forEachIndexed { index, option ->
+                        ApprovalButton(
+                            option = optionLabel(option),
+                            tone = approvalTone(option, index, card.options.size),
+                            onClick = { onRespond(index) },
                             modifier = Modifier.weight(1f),
-                        ) { Text(option) }
-                        isDestructive -> FilledTonalButton(
-                            onClick = onOpen,
-                            colors = ButtonDefaults.filledTonalButtonColors(
-                                containerColor = MaterialTheme.colorScheme.errorContainer,
-                                contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                            ),
-                            modifier = Modifier.weight(1f),
-                        ) { Text(option) }
-                        else -> FilledTonalButton(
-                            onClick = onOpen,
-                            modifier = Modifier.weight(1f),
-                        ) { Text(option) }
+                        )
                     }
+                }
+                card.controllable && card.quickOptions.isNotEmpty() -> FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(LerdrTheme.spacing.small),
+                    verticalArrangement = Arrangement.spacedBy(
+                        LerdrTheme.spacing.extraSmall,
+                    ),
+                ) {
+                    card.quickOptions.forEach { option ->
+                        AssistChip(
+                            onClick = { onAnswerOption(option.index) },
+                            label = {
+                                Text(
+                                    optionLabel(option.label),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            },
+                        )
+                    }
+                }
+                card.chooseLabel != null -> FilledTonalButton(onClick = onOpen) {
+                    Text(card.chooseLabel.orEmpty())
                 }
             }
         }
     }
+}
+
+@Composable
+private fun ApprovalButton(
+    option: String,
+    tone: ApprovalTone,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = LerdrTheme.extendedColors
+    when (tone) {
+        ApprovalTone.APPROVE -> Button(
+            onClick = onClick,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = colors.working,
+                contentColor = colors.onWorking,
+            ),
+            modifier = modifier,
+        ) { Text(option, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+        ApprovalTone.TRUST -> FilledTonalButton(
+            onClick = onClick,
+            colors = ButtonDefaults.filledTonalButtonColors(
+                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+            ),
+            modifier = modifier,
+        ) { Text(option, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+        ApprovalTone.DENY -> FilledTonalButton(
+            onClick = onClick,
+            colors = ButtonDefaults.filledTonalButtonColors(
+                containerColor = colors.dangerContainer,
+                contentColor = colors.onDangerContainer,
+            ),
+            modifier = modifier,
+        ) { Text(option, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+    }
+}
+
+/**
+ * Agent row with the swipe affordances: start→end opens the session,
+ * end→start asks for the stop confirmation (readers never see the stop
+ * side). The row never actually dismisses — the store owns membership.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SwipeableAgentRow(
+    agent: AgentListItemUi,
+    onOpen: () -> Unit,
+    onRequestStop: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val dismissState = rememberSwipeToDismissBoxState(
+        confirmValueChange = { value ->
+            when (value) {
+                SwipeToDismissBoxValue.StartToEnd -> onOpen()
+                SwipeToDismissBoxValue.EndToStart -> onRequestStop()
+                SwipeToDismissBoxValue.Settled -> {}
+            }
+            false
+        },
+    )
+    SwipeToDismissBox(
+        state = dismissState,
+        modifier = modifier,
+        enableDismissFromEndToStart = agent.controllable,
+        backgroundContent = {
+            // `dismissDirection` is Settled when idle — fall back to the
+            // anchor the drag would land on so the tint previews early.
+            val direction = dismissState.dismissDirection
+                .takeIf { it != SwipeToDismissBoxValue.Settled }
+                ?: dismissState.targetValue
+            SwipeBackground(direction = direction)
+        },
+    ) {
+        AgentRow(agent = agent, onClick = onOpen)
+    }
+}
+
+@Composable
+private fun SwipeBackground(direction: SwipeToDismissBoxValue) {
+    val colors = LerdrTheme.extendedColors
+    when (direction) {
+        SwipeToDismissBoxValue.StartToEnd -> Box(
+            contentAlignment = Alignment.CenterStart,
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(MaterialTheme.shapes.medium)
+                .background(MaterialTheme.colorScheme.primaryContainer)
+                .padding(start = LerdrTheme.spacing.large),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.Terminal,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+                Spacer(Modifier.width(LerdrTheme.spacing.small))
+                Text(
+                    "Open",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+            }
+        }
+        SwipeToDismissBoxValue.EndToStart -> Box(
+            contentAlignment = Alignment.CenterEnd,
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(MaterialTheme.shapes.medium)
+                .background(colors.dangerContainer)
+                .padding(end = LerdrTheme.spacing.large),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.Stop,
+                    contentDescription = null,
+                    tint = colors.onDangerContainer,
+                )
+                Spacer(Modifier.width(LerdrTheme.spacing.small))
+                Text(
+                    "Stop",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = colors.onDangerContainer,
+                )
+            }
+        }
+        else -> Box(Modifier.fillMaxSize())
+    }
+}
+
+/**
+ * The oracle's ManageDialog stop confirmation — "Stop this agent? Its pane
+ * closes on the computer." with a danger confirm.
+ */
+@Composable
+fun StopAgentDialog(
+    agent: AgentListItemUi,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Stop agent") },
+        text = {
+            Text("Stop this agent? Its pane closes on the computer.")
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = LerdrTheme.extendedColors.danger,
+                    contentColor = LerdrTheme.extendedColors.onDanger,
+                ),
+            ) {
+                Text("Confirm Stop")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
 }
 
 @Composable
@@ -441,6 +904,8 @@ private fun AgentAvatar(provider: String?, label: String) {
     ProviderBadge(provider = provider, label = label)
 }
 
+private const val MAX_INLINE_OPTIONS = 3
+
 @PreviewLightDark
 @Composable
 private fun HomeContentPreview() {
@@ -471,56 +936,109 @@ private val previewHomeUiState = HomeUiState(
     needsYou = listOf(
         AttentionCardUi(
             paneId = "sd::%1",
+            relayId = "sd",
             agentLabel = "claude · lerdr",
             kind = AttentionKind.APPROVAL,
             metaLabel = "approval · 40s",
             prompt = "Run go test ./internal/… ?",
             options = listOf("Allow", "Deny"),
+            controllable = true,
             provider = "claude",
         ),
         AttentionCardUi(
             paneId = "sd::%2",
+            relayId = "sd",
             agentLabel = "devin · herdr",
             kind = AttentionKind.QUESTION,
             metaLabel = "question · 3 options",
             prompt = "Which module should own the delta cache?",
-            options = listOf("Answer →"),
+            interaction = Interaction(
+                id = "q1",
+                kind = "single_select",
+                question = "Which module should own the delta cache?",
+                options = listOf(
+                    Option(index = 0, label = "core:store"),
+                    Option(index = 1, label = "session"),
+                    Option(index = 2, label = "relay"),
+                ),
+                other = lerdr.core.model.Other(hidden = true),
+                questionTotal = 1,
+            ),
+            controllable = true,
             provider = "devin",
         ),
     ),
     working = listOf(
-        AgentListItemUi(
-            paneId = "sd::%3",
-            title = "claude · api-server",
-            statusLine = "Editing handler.go",
-            activityLabel = "running tests…",
-            elapsedLabel = "1:24",
-            working = true,
-            provider = "claude",
+        AgentGroupUi(
+            key = "sd\u0000lerdr",
+            relayLabel = "sd",
+            label = "lerdr",
+            agents = listOf(
+                AgentListItemUi(
+                    paneId = "sd::%3",
+                    relayId = "sd",
+                    title = "claude · api-server",
+                    statusLine = "Editing handler.go",
+                    activityLabel = "running tests…",
+                    elapsedLabel = "1:24",
+                    working = true,
+                    controllable = true,
+                    provider = "claude",
+                ),
+                AgentListItemUi(
+                    paneId = "sd::%4",
+                    relayId = "sd",
+                    title = "pi · dotfiles",
+                    statusLine = "Bash: git rebase",
+                    activityLabel = "writing migration.sql",
+                    elapsedLabel = "0:37",
+                    working = true,
+                    controllable = true,
+                    provider = "pi",
+                ),
+            ),
         ),
-        AgentListItemUi(
-            paneId = "sd::%4",
-            title = "pi · dotfiles",
-            statusLine = "Bash: git rebase",
-            activityLabel = "writing migration.sql",
-            elapsedLabel = "0:37",
-            working = true,
-            provider = "pi",
+        AgentGroupUi(
+            key = "workstation\u0000herdr",
+            relayLabel = "workstation",
+            label = "herdr",
+            agents = listOf(
+                AgentListItemUi(
+                    paneId = "workstation::%1",
+                    relayId = "workstation",
+                    title = "devin · herdr",
+                    statusLine = "Watching relay logs",
+                    activityLabel = "tail -f relay.log",
+                    elapsedLabel = "0:12",
+                    working = true,
+                    controllable = true,
+                    provider = "devin",
+                ),
+            ),
         ),
     ),
     idle = listOf(
-        AgentListItemUi(
-            paneId = "sd::%5",
-            title = "codex · web",
-            statusLine = "ready · 12m ago",
-            activityLabel = null,
-            elapsedLabel = "idle",
-            working = false,
-            provider = "codex",
+        AgentGroupUi(
+            key = "sd\u0000web",
+            relayLabel = "sd",
+            label = "web",
+            agents = listOf(
+                AgentListItemUi(
+                    paneId = "sd::%5",
+                    relayId = "sd",
+                    title = "codex · web",
+                    statusLine = "ready · 12m ago",
+                    activityLabel = null,
+                    elapsedLabel = "idle",
+                    working = false,
+                    controllable = true,
+                    provider = "codex",
+                ),
+            ),
         ),
     ),
     relays = listOf(
-        RelayCardUi("sd", "sd", "tailscale", "12ms", 4, connected = true),
-        RelayCardUi("workstation", "workstation", "gateway", "81ms", 0, connected = true),
+        RelayCardUi("sd", "sd", "tailscale", "12ms", 4, connected = true, rttMs = 12),
+        RelayCardUi("workstation", "workstation", "gateway", "81ms", 0, connected = true, rttMs = 81),
     ),
 )

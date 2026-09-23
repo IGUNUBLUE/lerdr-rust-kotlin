@@ -2,6 +2,9 @@ package com.lerdr.app.home
 
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import lerdr.core.model.Interaction
+import lerdr.core.model.Option
+import lerdr.core.model.Other
 
 /**
  * Preview-quality fixture matching docs/mockup.png — test/double only;
@@ -16,47 +19,86 @@ class FakeHomeRepository : HomeRepository {
             needsYou = listOf(
                 AttentionCardUi(
                     paneId = "sd::%1",
+                    relayId = "sd",
                     agentLabel = "claude · lerdr",
                     kind = AttentionKind.APPROVAL,
                     metaLabel = "approval · 40s",
                     prompt = "Run go test ./internal/… ?",
                     options = listOf("Allow", "Deny"),
+                    controllable = true,
+                    provider = "claude",
                 ),
                 AttentionCardUi(
                     paneId = "sd::%2",
+                    relayId = "sd",
                     agentLabel = "devin · herdr",
                     kind = AttentionKind.QUESTION,
                     metaLabel = "question · 3 options",
                     prompt = "Which module should own the delta cache?",
-                    options = listOf("Answer →"),
+                    interaction = Interaction(
+                        id = "q1",
+                        kind = "single_select",
+                        question = "Which module should own the delta cache?",
+                        options = listOf(
+                            Option(index = 0, label = "core:store"),
+                            Option(index = 1, label = "session"),
+                            Option(index = 2, label = "relay"),
+                        ),
+                        other = Other(hidden = true),
+                        questionTotal = 1,
+                    ),
+                    controllable = true,
+                    provider = "devin",
                 ),
             ),
             working = listOf(
-                AgentListItemUi(
-                    paneId = "sd::%3",
-                    title = "hermes · api-server",
-                    statusLine = "Editing handler.go",
-                    activityLabel = "running tests…",
-                    elapsedLabel = "1:24",
-                    working = true,
-                ),
-                AgentListItemUi(
-                    paneId = "sd::%4",
-                    title = "pi · dotfiles",
-                    statusLine = "Bash: git rebase",
-                    activityLabel = "writing migration.sql",
-                    elapsedLabel = "0:37",
-                    working = true,
+                AgentGroupUi(
+                    key = "sd\u0000lerdr",
+                    relayLabel = "sd",
+                    label = "lerdr",
+                    agents = listOf(
+                        AgentListItemUi(
+                            paneId = "sd::%3",
+                            relayId = "sd",
+                            title = "hermes · api-server",
+                            statusLine = "Editing handler.go",
+                            activityLabel = "running tests…",
+                            elapsedLabel = "1:24",
+                            working = true,
+                            controllable = true,
+                        ),
+                        AgentListItemUi(
+                            paneId = "sd::%4",
+                            relayId = "sd",
+                            title = "pi · dotfiles",
+                            statusLine = "Bash: git rebase",
+                            activityLabel = "writing migration.sql",
+                            elapsedLabel = "0:37",
+                            working = true,
+                            controllable = true,
+                            provider = "pi",
+                        ),
+                    ),
                 ),
             ),
             idle = listOf(
-                AgentListItemUi(
-                    paneId = "sd::%5",
-                    title = "codex · web",
-                    statusLine = "ready · 12m ago",
-                    activityLabel = null,
-                    elapsedLabel = "idle",
-                    working = false,
+                AgentGroupUi(
+                    key = "sd\u0000web",
+                    relayLabel = "sd",
+                    label = "web",
+                    agents = listOf(
+                        AgentListItemUi(
+                            paneId = "sd::%5",
+                            relayId = "sd",
+                            title = "codex · web",
+                            statusLine = "ready · 12m ago",
+                            activityLabel = null,
+                            elapsedLabel = "idle",
+                            working = false,
+                            controllable = true,
+                            provider = "codex",
+                        ),
+                    ),
                 ),
             ),
             relays = listOf(
@@ -64,9 +106,10 @@ class FakeHomeRepository : HomeRepository {
                     relayId = "sd",
                     label = "sd",
                     transport = "tls",
-                    statusLabel = "connected",
+                    statusLabel = "12ms",
                     agentCount = 4,
                     connected = true,
+                    rttMs = 12,
                 ),
                 RelayCardUi(
                     relayId = "workstation",
