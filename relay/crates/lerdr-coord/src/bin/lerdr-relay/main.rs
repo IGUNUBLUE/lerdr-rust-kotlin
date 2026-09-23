@@ -11,12 +11,12 @@ mod bootstrap;
 mod config;
 mod hooks;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::{Args, Parser, Subcommand};
-use lerdr_coord::{ClientSinkLookup, HerdRouterFactory, TopologyActor};
+use lerdr_coord::{release, ClientSinkLookup, HerdRouterFactory, TopologyActor};
 use lerdr_core::audit;
 use lerdr_herdr::Client;
 use lerdr_relay::auth::BootstrapRearm;
@@ -84,6 +84,74 @@ enum Commands {
         /// Runtime directory override [default: resolved like serve].
         #[arg(long)]
         runtime_dir: Option<PathBuf>,
+    },
+    /// Verify a release directory against its release-manifest.json and
+    /// print the manifest. `internal/release.Verify` + the identity checks
+    /// from cmd/lerdr.
+    VerifyRelease {
+        /// Expected os/architecture [default: this binary's target].
+        #[arg(long)]
+        target: Option<String>,
+        /// Expected release version.
+        #[arg(long)]
+        version: Option<String>,
+        /// Expected release revision.
+        #[arg(long)]
+        revision: Option<String>,
+        /// Allow a build-host tool to verify another target's bundle.
+        #[arg(long)]
+        allow_cross_target: bool,
+        /// Release directory [default: the running binary's directory].
+        #[arg(value_name = "DIRECTORY")]
+        directory: Option<PathBuf>,
+    },
+    /// Write release-manifest.json for a staged release tree and print it.
+    /// `internal/release.Build` — `release-manifest DIRECTORY VERSION
+    /// REVISION os/arch`.
+    ReleaseManifest {
+        /// Staged release tree to manifest.
+        #[arg(value_name = "DIRECTORY")]
+        directory: PathBuf,
+        /// Release version stamp.
+        #[arg(value_name = "VERSION")]
+        version: String,
+        /// Release revision stamp.
+        #[arg(value_name = "REVISION")]
+        revision: String,
+        /// Target os/arch (e.g. linux/amd64).
+        #[arg(value_name = "OS/ARCH")]
+        target: String,
+    },
+    /// Point RELEASE_ROOT/current at a verified RELEASE_DIRECTORY
+    /// (temp symlink + rename — `internal/update.Activate`).
+    ActivateRelease {
+        /// Install root holding `releases/` and the `current` link.
+        #[arg(value_name = "RELEASE_ROOT")]
+        release_root: PathBuf,
+        /// The release directory to activate (must verify first).
+        #[arg(value_name = "RELEASE_DIRECTORY")]
+        release_directory: PathBuf,
+    },
+    /// Verify a release tree, then strip write permission across it so the
+    /// installed bundle stays immutable (`internal/release.Seal`).
+    SealRelease {
+        /// Release directory to seal.
+        #[arg(value_name = "RELEASE_DIRECTORY")]
+        release_directory: PathBuf,
+    },
+    /// Remove stale verified releases under RELEASE_ROOT/releases, keeping
+    /// CURRENT_RELEASE (and PREVIOUS_RELEASE for rollback) —
+    /// `internal/update.PruneOldReleases`.
+    PruneReleases {
+        /// Install root holding `releases/`.
+        #[arg(value_name = "RELEASE_ROOT")]
+        release_root: PathBuf,
+        /// The active release directory to keep.
+        #[arg(value_name = "CURRENT_RELEASE")]
+        current_release: PathBuf,
+        /// The rollback release directory to keep.
+        #[arg(value_name = "PREVIOUS_RELEASE")]
+        previous_release: Option<PathBuf>,
     },
 }
 
@@ -165,15 +233,18 @@ fn main() -> ExitCode {
 fn run_hook(command: Commands) -> ExitCode {
     let result: Result<(), BoxError> = match command {
         Commands::Version { json } => {
-            let version = lerdr_coord::release_version();
-            let revision = option_env!("LERDR_REVISION").unwrap_or("dev");
+            let stamp = lerdr_coord::release::binary_stamp();
             if json {
                 println!(
                     "{}",
-                    serde_json::json!({"version": version, "revision": revision})
+                    serde_json::json!({
+                        "version": stamp.version,
+                        "revision": stamp.revision,
+                        "target": stamp.target,
+                    })
                 );
             } else {
-                println!("lerdr {version} ({revision})");
+                println!("lerdr {} ({})", stamp.version, stamp.revision);
             }
             Ok(())
         }
@@ -213,6 +284,50 @@ fn run_hook(command: Commands) -> ExitCode {
             };
             hooks::support(&dir).map_err(Into::into)
         }
+        Commands::VerifyRelease {
+            target,
+            version,
+            revision,
+            allow_cross_target,
+            directory,
+        } => verify_release(directory, target, version, revision, allow_cross_target),
+        Commands::ReleaseManifest {
+            directory,
+            version,
+            revision,
+            target,
+        } => {
+            let manifest = match release::build(&directory, &version, &revision, &target) {
+                Ok(manifest) => manifest,
+                Err(error) => return fail(Box::new(error)),
+            };
+            match serde_json::to_string(&manifest) {
+                Ok(encoded) => println!("{encoded}"),
+                Err(error) => return fail(Box::new(error)),
+            }
+            Ok(())
+        }
+        Commands::ActivateRelease {
+            release_root,
+            release_directory,
+        } => {
+            if let Err(error) = release::verify(&release_directory, &release::current_target()) {
+                return fail(format!("refusing to activate invalid release: {error}").into());
+            }
+            release::activate(&release_root, &release_directory).map_err(Into::into)
+        }
+        Commands::SealRelease { release_directory } => {
+            release::seal(&release_directory).map_err(Into::into)
+        }
+        Commands::PruneReleases {
+            release_root,
+            current_release,
+            previous_release,
+        } => {
+            let mut keep = vec![current_release];
+            keep.extend(previous_release);
+            release::prune_old_releases(&release_root, &keep).map_err(Into::into)
+        }
         Commands::Serve(_) => unreachable!("serve handled in main"),
     };
     match result {
@@ -221,8 +336,61 @@ fn run_hook(command: Commands) -> ExitCode {
     }
 }
 
+/// `verify-release` — `release.Verify` then the oracle's
+/// `verifyReleaseIdentity`: the expected-* flags are candidate checks on
+/// top of the binary's own stamp (which is always authoritative).
+fn verify_release(
+    directory: Option<PathBuf>,
+    target: Option<String>,
+    version: Option<String>,
+    revision: Option<String>,
+    allow_cross_target: bool,
+) -> Result<(), BoxError> {
+    if allow_cross_target && (version.is_some() || revision.is_some()) {
+        return Err(Box::new(UsageError(
+            "--allow-cross-target cannot be combined with --version or --revision candidate checks"
+                .to_string(),
+        )));
+    }
+    let root = match directory {
+        Some(directory) => directory,
+        None => std::env::current_exe()?
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default(),
+    };
+    let expected_target = target.unwrap_or_else(release::current_target);
+    let manifest = release::verify(&root, &expected_target)?;
+    release::verify_identity(
+        &manifest,
+        version.as_deref().unwrap_or_default(),
+        revision.as_deref().unwrap_or_default(),
+        &expected_target,
+        allow_cross_target,
+        &release::binary_stamp(),
+    )?;
+    println!("{}", serde_json::to_string(&manifest)?);
+    Ok(())
+}
+
+/// Usage-class failure — exit 2, matching the oracle's `flag.ContinueOnError`
+/// contract for bad flag combinations (clap already exits 2 on shape errors).
+#[derive(Debug)]
+struct UsageError(String);
+
+impl std::fmt::Display for UsageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for UsageError {}
+
 fn fail(error: BoxError) -> ExitCode {
     eprintln!("lerdr-relay: {error:#}");
+    if error.is::<UsageError>() {
+        return ExitCode::from(2);
+    }
     ExitCode::FAILURE
 }
 
@@ -477,10 +645,18 @@ fn spawn_support_writer(cfg: &config::Config, shutdown: CancellationToken) {
 
 fn write_support_state(runtime_dir: &std::path::Path) {
     use std::io::Write;
-    let state = serde_json::json!({
+    let stamp = release::binary_stamp();
+    // `filepath.Dir(os.Executable())` — the directory the running binary
+    // was executed from (canonical on Linux via /proc/self/exe).
+    let release_directory = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        .map(|dir| dir.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut state = serde_json::json!({
         "generated_at": chrono_free_timestamp(),
-        "version": lerdr_coord::release_version(),
-        "revision": option_env!("LERDR_REVISION").unwrap_or("dev"),
+        "version": stamp.version,
+        "revision": stamp.revision,
         "protocol": 3,
         "readiness": "serving",
         "inventory": {},
@@ -490,6 +666,11 @@ fn write_support_state(runtime_dir: &std::path::Path) {
         "poll_failures": 0,
         "recent_errors": [],
     });
+    // `release_directory,omitempty` — omitted when the executable path is
+    // unknowable, matching the oracle's support snapshot.
+    if !release_directory.is_empty() {
+        state["release_directory"] = serde_json::Value::String(release_directory);
+    }
     let Ok(data) = serde_json::to_string_pretty(&state) else {
         return;
     };
