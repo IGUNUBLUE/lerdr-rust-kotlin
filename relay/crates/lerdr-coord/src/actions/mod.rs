@@ -21,6 +21,7 @@ pub(crate) mod misc;
 pub(crate) mod profiles;
 pub(crate) mod push;
 pub(crate) mod push_delivery;
+pub(crate) mod push_queue;
 pub(crate) mod questions;
 pub(crate) mod speech;
 pub(crate) mod tabs;
