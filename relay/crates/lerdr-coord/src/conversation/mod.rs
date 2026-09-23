@@ -15,6 +15,8 @@
 //!   agent env vars, discovered profiles, home defaults last).
 //! - [`reader`] — `Reader` with the bounded tuple→location cache and the flat
 //!   `read_with_project` path.
+//! - [`resolver`] — `Resolver`, the `session.Resolver` port that turns a
+//!   located transcript into the `session_name` projected on agent state.
 //! - [`claude`] — `continued-in` chain resolution + namespaced entry ids.
 //! - [`sqlite`], [`opencode`], [`hermes`] — the `sqlite3` CLI readers (same
 //!   subprocess strategy as the oracle; no SQLite crate needed).
@@ -37,6 +39,7 @@ pub(crate) mod omo;
 pub(crate) mod opencode;
 pub(crate) mod reader;
 pub(crate) mod records;
+pub(crate) mod resolver;
 pub(crate) mod roots;
 pub(crate) mod sqlite;
 pub(crate) mod types;
@@ -44,6 +47,7 @@ pub(crate) mod util;
 
 pub use browser::ConversationBrowser;
 pub use reader::{supported, Error, Reader};
+pub use resolver::Resolver;
 pub use types::{
     BrowseDiagnostics, BrowseError, BrowseMode, BrowsePage, BrowseProgress, BrowseRequest,
     BrowseScope, BrowseState, Entry, Location, OmoTodoPhase, OmoTodoState, OmoTodoTask, Page,

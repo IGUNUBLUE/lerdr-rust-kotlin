@@ -36,6 +36,7 @@ use tracing::Instrument;
 use crate::actions::{self, ActionContext};
 use crate::actor::TopologyHandle;
 use crate::snapshot::topology_broadcast;
+use crate::topology::Topology;
 use crate::watches::{
     display_source, format_wire, pane_lines, read_format, watch_interval, WatchDeps, WatchSet,
     WatchSpec,
@@ -113,6 +114,15 @@ impl HerdRouterFactory {
         // transition enrichment + `blocked` broadcasts + push/activity
         // side effects + the history capture loop, all off the committed
         // `AcceptOutcome` feed.
+        let conversations = Arc::new(crate::conversation::Reader::new(
+            actions::conversation::home_dir(),
+        ));
+        // `session.NewResolverWithReader` — the title resolver shares the
+        // reader so `session_name` and `get_conversation_history` agree on
+        // transcript locations; the topology commit consults it per row.
+        handle.set_resolver(Arc::new(crate::conversation::Resolver::with_reader(
+            conversations.clone(),
+        )));
         crate::classify::projector::spawn(crate::classify::projector::ProjectorDeps {
             handle: handle.clone(),
             questions: questions.clone(),
@@ -120,9 +130,7 @@ impl HerdRouterFactory {
             activities: activities.clone(),
             push: push.clone(),
             notices: notices.clone(),
-            conversations: Arc::new(crate::conversation::Reader::new(
-                actions::conversation::home_dir(),
-            )),
+            conversations,
             cancel: cancel.clone(),
         });
         Self {
@@ -986,27 +994,17 @@ impl HerdRouter {
                     // distinct error strings in that order.
                     {
                         let t = topology.borrow();
-                        if t.generation_of(&pane_id) != generation {
-                            return vec![
-                                pane_read_error_frame(
-                                    &pane_id,
-                                    format_wire(format),
-                                    "The agent pane was replaced while it was being read",
-                                    target.clone(),
-                                ),
-                                receipt(&rid, &aid, ActionReceiptPhase::CONFIRMED, None),
-                            ];
-                        }
-                        if t.content_rev_of(&pane_id) != content_rev {
-                            return vec![
-                                pane_read_error_frame(
-                                    &pane_id,
-                                    format_wire(format),
-                                    "The agent state changed while the pane was being read",
-                                    target.clone(),
-                                ),
-                                receipt(&rid, &aid, ActionReceiptPhase::CONFIRMED, None),
-                            ];
+                        if let Some(frames) = mid_read_fence(
+                            &t,
+                            &pane_id,
+                            generation,
+                            content_rev,
+                            format_wire(format),
+                            target.clone(),
+                            &rid,
+                            &aid,
+                        ) {
+                            return frames;
                         }
                     }
                     let settling = viewport_only
@@ -1194,6 +1192,47 @@ fn read_pane_frame(
         no_echo_prompt: semantics.no_echo_prompt.clone(),
         ..PaneContent::default()
     }))
+}
+
+/// `HandleReadPane`'s mid-read fences (dispatch.go:1120-1145) — checked
+/// after `pane.read` resolves against the pre-read captures: `Generation`
+/// drift answers the `replaced` error, `ContentRevision` drift the
+/// `changed` error, in that order. `None` means the committed view held
+/// for the read's duration and the content frame may ship.
+#[allow(clippy::too_many_arguments)]
+fn mid_read_fence(
+    topology: &Topology,
+    pane_id: &str,
+    generation: i64,
+    content_rev: i64,
+    format: &'static str,
+    target: Option<lerdr_core::protocol::TargetRef>,
+    request_id: &str,
+    action_id: &str,
+) -> Option<Vec<Outbound>> {
+    if topology.generation_of(pane_id) != generation {
+        return Some(vec![
+            pane_read_error_frame(
+                pane_id,
+                format,
+                "The agent pane was replaced while it was being read",
+                target,
+            ),
+            receipt(request_id, action_id, ActionReceiptPhase::CONFIRMED, None),
+        ]);
+    }
+    if topology.content_rev_of(pane_id) != content_rev {
+        return Some(vec![
+            pane_read_error_frame(
+                pane_id,
+                format,
+                "The agent state changed while the pane was being read",
+                target,
+            ),
+            receipt(request_id, action_id, ActionReceiptPhase::CONFIRMED, None),
+        ]);
+    }
+    None
 }
 
 /// `HandleReadPane`'s failure shape (`dispatch.go:1144-1155`) — a
@@ -1414,6 +1453,108 @@ mod tests {
             ),
             Outbound::PaneContent(_)
         ));
+    }
+
+    /// `HandleReadPane`'s mid-read fence ordering (dispatch.go:1120-1145):
+    /// a committed row that only moved `content_rev` answers the `changed`
+    /// error; a generation move answers `replaced` — and wins when both
+    /// moved (the oracle checks generation first). Deterministic version
+    /// of the race: the swapped topologies stand in for a commit landing
+    /// while `pane.read` was in flight.
+    #[test]
+    fn mid_read_fence_orders_replaced_before_changed() {
+        use lerdr_herdr::{AgentInfo, AgentStatus, SessionSnapshot};
+
+        let snapshot = |cwd: &str, present: bool| SessionSnapshot {
+            agents: if present {
+                vec![AgentInfo {
+                    pane_id: "wE:pE".into(),
+                    terminal_id: "term_E".into(),
+                    workspace_id: "wE".into(),
+                    tab_id: "wE:tE".into(),
+                    agent_status: AgentStatus::Working,
+                    cwd: Some(cwd.into()),
+                    ..AgentInfo::default()
+                }]
+            } else {
+                Vec::new()
+            },
+            ..SessionSnapshot::default()
+        };
+
+        // The read captured (generation, content_rev) off this committed
+        // view before `pane.read` left.
+        let mut committed = Topology::default();
+        committed.accept(snapshot("/one", true));
+        let generation = committed.generation_of("wE:pE");
+        let content_rev = committed.content_rev_of("wE:pE");
+
+        // The committed view held — the fence passes and the read ships.
+        assert!(mid_read_fence(
+            &committed,
+            "wE:pE",
+            generation,
+            content_rev,
+            "text",
+            None,
+            "r1",
+            "a1"
+        )
+        .is_none());
+
+        // A cwd commit bumps `content_rev` only → the `changed` error.
+        let mut changed = Topology::default();
+        changed.accept(snapshot("/one", true));
+        changed.accept(snapshot("/two", true));
+        let frames = mid_read_fence(
+            &changed,
+            "wE:pE",
+            generation,
+            content_rev,
+            "text",
+            None,
+            "r1",
+            "a1",
+        )
+        .expect("content_rev drift fences the read");
+        match &frames[0] {
+            Outbound::PaneContent(m) => assert_eq!(
+                m.error.as_deref(),
+                Some("The agent state changed while the pane was being read")
+            ),
+            other => panic!("expected pane_content, got {other:?}"),
+        }
+        match &frames[1] {
+            Outbound::ActionReceipt(m) => {
+                assert_eq!(m.receipt.as_ref().unwrap().phase.as_str(), "confirmed")
+            }
+            other => panic!("expected action_receipt, got {other:?}"),
+        }
+
+        // The pane disappearing bumps `generation` (and clears the cell,
+        // moving `content_rev` too) — `replaced` still wins: the oracle
+        // checks generation before content revision.
+        let mut gone = Topology::default();
+        gone.accept(snapshot("/one", true));
+        gone.accept(snapshot("/two", false));
+        let frames = mid_read_fence(
+            &gone,
+            "wE:pE",
+            generation,
+            content_rev,
+            "text",
+            None,
+            "r1",
+            "a1",
+        )
+        .expect("generation drift fences the read");
+        match &frames[0] {
+            Outbound::PaneContent(m) => assert_eq!(
+                m.error.as_deref(),
+                Some("The agent pane was replaced while it was being read")
+            ),
+            other => panic!("expected pane_content, got {other:?}"),
+        }
     }
 
     /// Malformed wire fingerprints are a miss, never an error: wrong
