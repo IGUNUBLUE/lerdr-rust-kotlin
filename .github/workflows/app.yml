@@ -1,0 +1,43 @@
+name: App
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "app/**"
+      - "fixtures/**"
+      - ".github/workflows/app.yml"
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: unit tests + assembleDebug
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: Install platform + build tools
+        run: |
+          sdkmanager 'platforms;android-37.2' 'build-tools;37.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+      # JVM modules use :test; Android-library modules and :app use
+      # testDebugUnitTest (AGENTS.md task floors). assembleDebug keeps the
+      # debug artifact buildable on every change.
+      - name: Unit tests
+        run: >-
+          ./gradlew --console=plain
+          :core:model:test :core:protocol:test :core:e2ee:test
+          :core:terminal:test :core:testing:test :core:transport:test
+          :core:store:test :core:conversation:test
+          :core:designsystem:testDebugUnitTest :core:data:testDebugUnitTest
+          :navigation:testDebugUnitTest :app:testDebugUnitTest
+        working-directory: app
+      - name: assembleDebug
+        run: ./gradlew --console=plain :app:assembleDebug
+        working-directory: app

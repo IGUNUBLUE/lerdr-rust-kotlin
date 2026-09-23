@@ -6,42 +6,13 @@ on:
   pull_request:
 
 jobs:
+  # Envelope/schema validation only — the Rust and Kotlin harnesses that
+  # consume these fixtures run under relay.yml and app.yml (which also gate
+  # on fixtures/** changes). Keeping this workflow to the fast schema pass
+  # avoids running the same cargo/gradle suites twice per PR.
   schema:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Validate fixture suite envelopes
         run: python3 tools/validate_fixtures.py fixtures
-
-  rust:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: fmt
-        run: cargo fmt --check
-        working-directory: relay
-      - name: clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-        working-directory: relay
-      - name: test (fixture conformance + units)
-        run: cargo test --workspace
-        working-directory: relay
-
-  kotlin:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-      - uses: android-actions/setup-android@v3
-      - name: Install platform + build tools
-        run: |
-          sdkmanager 'platforms;android-37.2' 'build-tools;37.0.0'
-      - uses: gradle/actions/setup-gradle@v4
-      - name: Unit tests + assemble
-        run: ./gradlew test assembleDebug --console=plain
-        working-directory: app
