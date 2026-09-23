@@ -291,26 +291,28 @@ fn tree_for(workspace: &str) -> Result<Tree, String> {
             break;
         }
     }
-    entries.sort_by(|a, b| {
-        let parent_a = Path::new(&a.path).parent().map(|p| p.to_path_buf());
-        let parent_b = Path::new(&b.path).parent().map(|p| p.to_path_buf());
-        if parent_a != parent_b {
-            return a.path.cmp(&b.path);
-        }
-        if a.kind != b.kind {
-            return if a.kind == "directory" {
-                std::cmp::Ordering::Less
-            } else {
-                std::cmp::Ordering::Greater
-            };
-        }
-        a.name.to_lowercase().cmp(&b.name.to_lowercase())
-    });
+    entries.sort_by(|a, b| tree_key(a).cmp(&tree_key(b)));
     Ok(Tree {
         root: root.to_string_lossy().into_owned(),
         entries,
         truncated,
     })
+}
+
+/// Sort key — one value per entry, so the order is total by construction:
+/// depth-first over `/`-separated components; directories rank before
+/// files at every level (ancestor components always rank as directories);
+/// names compare case-insensitively, raw name breaks case-variant ties.
+fn tree_key(entry: &TreeEntry) -> Vec<(u8, String, &str)> {
+    let segs: Vec<&str> = entry.path.split('/').collect();
+    let last = segs.len() - 1;
+    segs.iter()
+        .enumerate()
+        .map(|(i, seg)| {
+            let rank = u8::from(i == last && entry.kind != "directory");
+            (rank, seg.to_lowercase(), *seg)
+        })
+        .collect()
 }
 
 fn slash_path(path: &Path) -> String {
@@ -714,6 +716,26 @@ mod tests {
         assert!(paths.contains(&"src/main.rs"));
         assert!(!paths.iter().any(|p| p.starts_with("node_modules")));
         assert!(!paths.iter().any(|p| p.starts_with("link")));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn tree_sort_is_total_with_mixed_case_dirs() {
+        // Regression: the old comparator keyed same-parent pairs by
+        // lowercase name but cross-parent pairs by raw path — `p/a` <
+        // `p/B` (name) while `p/B` < `p/C/k` < `p/a` (path) — a cycle the
+        // sort detected as a non-total order and panicked on. The key must
+        // be a single per-entry value: DFS, directories first at each
+        // level, names compared case-insensitively.
+        let dir = tempdir("tree-sort");
+        let p = dir.join("p");
+        std::fs::create_dir_all(p.join("C")).unwrap();
+        std::fs::write(p.join("a"), b"").unwrap();
+        std::fs::write(p.join("B"), b"").unwrap();
+        std::fs::write(p.join("C/k"), b"").unwrap();
+        let tree = tree_for(dir.to_str().unwrap()).expect("tree");
+        let paths: Vec<&str> = tree.entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, ["p", "p/C", "p/C/k", "p/a", "p/B"]);
         std::fs::remove_dir_all(&dir).ok();
     }
 
