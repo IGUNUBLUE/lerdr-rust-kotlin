@@ -1,0 +1,81 @@
+name: Relay
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "relay/**"
+      - "fixtures/**"
+      - "tools/**"
+      - "plugin/herdr-plugin.toml"
+      - "scripts/check-version-sync.sh"
+      - ".github/workflows/relay.yml"
+  workflow_dispatch:
+
+jobs:
+  fmt:
+    name: cargo fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --check
+        working-directory: relay
+
+  clippy:
+    name: cargo clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: relay
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        working-directory: relay
+
+  test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: relay
+      - run: cargo test --workspace --locked
+        working-directory: relay
+
+  # Advisory until the dep tree fits the declared floor: icu_* (via url→idna)
+  # already require rustc ≥1.88 while workspace rust-version says 1.85 —
+  # reconcile by raising the floor or pinning compatible versions, then drop
+  # continue-on-error.
+  msrv:
+    name: rust-version floor (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - id: floor
+        run: |
+          v="$(sed -n 's/^rust-version = "\([^"]*\)"/\1/p' relay/Cargo.toml | head -1)"
+          test -n "$v" || { echo "no workspace rust-version" >&2; exit 1; }
+          echo "toolchain=$v" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.floor.outputs.toolchain }}
+      # Check, not test: the shipped crates must compile at the floor.
+      - run: cargo check --workspace --all-targets --locked
+        working-directory: relay
+
+  version-sync:
+    name: herdr-plugin.toml ↔ crate versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: scripts/check-version-sync.sh

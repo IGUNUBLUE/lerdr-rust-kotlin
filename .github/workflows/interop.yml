@@ -1,0 +1,210 @@
+name: Interop
+
+# Shadow self-parity is hermetic (rust relay vs rust relay through the fake
+# Herdr) and runs in normal CI. Everything that needs a real Herdr socket or
+# the Go oracle checkout is manual-only — never on PRs.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "relay/**"
+      - "tools/shadow/**"
+      - "fixtures/**"
+      - ".github/workflows/interop.yml"
+  pull_request:
+    paths:
+      - "relay/**"
+      - "tools/shadow/**"
+      - "fixtures/**"
+      - ".github/workflows/interop.yml"
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: >-
+          Runner label for jobs that need a live Herdr socket or the Go
+          oracle checkout (self-hosted dev machine).
+        required: false
+        default: "self-hosted"
+        type: string
+      oracle:
+        description: Path to the Go oracle checkout on the runner (LERDR_ORACLE).
+        required: false
+        default: "~/Projects/lerdr"
+        type: string
+      go_relay:
+        description: Also run InteropTest against the running Go oracle relay (ws://127.0.0.1:8375).
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  shadow-self:
+    name: shadow-diff self-parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: relay
+      - name: shadow_diff --mode self
+        run: >-
+          python3 tools/shadow/shadow_diff.py --mode self
+          --keep --run-dir "$RUNNER_TEMP/shadow-self"
+      - name: Upload shadow run dir
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: shadow-self-run
+          path: ${{ runner.temp }}/shadow-self
+          retention-days: 7
+
+  shadow-go:
+    name: shadow-diff vs Go oracle
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 45
+    env:
+      LERDR_ORACLE: ${{ inputs.oracle }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Require the Go oracle checkout
+        run: |
+          case "$LERDR_ORACLE" in
+            "~/"*) LERDR_ORACLE="$HOME/${LERDR_ORACLE#"~/"}" ;;
+          esac
+          echo "LERDR_ORACLE=$LERDR_ORACLE" >> "$GITHUB_ENV"
+          test -d "$LERDR_ORACLE" && test -f "$LERDR_ORACLE/go.mod" || {
+            echo "::error::shadow --mode go needs a runner with the Go oracle checked out." >&2
+            echo "::error::Set the 'oracle' input / LERDR_ORACLE; the oracle is never modified." >&2
+            exit 1
+          }
+          command -v go >/dev/null || {
+            echo "::error::go toolchain missing — the shadow driver builds the oracle's cmd/lerdr" >&2
+            exit 1
+          }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: relay
+      - name: shadow_diff --mode go
+        run: >-
+          python3 tools/shadow/shadow_diff.py --mode go
+          --keep --run-dir "$RUNNER_TEMP/shadow-go"
+      - name: Upload shadow run dir
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: shadow-go-run
+          path: ${{ runner.temp }}/shadow-go
+          retention-days: 7
+
+  # The documented live gates (AGENTS.md). They need a machine with a real
+  # Herdr socket — and for InteropTest, the running Go oracle relay — so they
+  # only exist as a manual dispatch onto a runner that provides both.
+  live:
+    name: live gates (real Herdr socket)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Require a Herdr socket
+        run: |
+          # Mirror lerdr_herdr::default_socket_path: HERDR_SOCKET_PATH >
+          # XDG_CONFIG_HOME/herdr > ~/.config/herdr.
+          sock="${HERDR_SOCKET_PATH:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr/herdr.sock}"
+          test -S "$sock" || {
+            echo "::error::no Herdr socket at $sock — run on a host where herdr is up" >&2
+            exit 1
+          }
+          echo "herdr socket: $sock"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: relay
+      - name: lerdr-herdr live (HERDR_LIVE)
+        env:
+          HERDR_LIVE: "1"
+        run: cargo test -p lerdr-herdr --test live -- --nocapture
+        working-directory: relay
+      - name: lerdr-coord live (LERDR_LIVE)
+        env:
+          LERDR_LIVE: "1"
+        run: cargo test -p lerdr-coord --test live -- --nocapture
+        working-directory: relay
+      - name: Build lerdr-relay for the app interop tests
+        run: cargo build --bin lerdr-relay
+        working-directory: relay
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: RustInteropTest (LERDR_RUST_INTEROP)
+        env:
+          LERDR_RUST_INTEROP: "1"
+          LERDR_RELAY_BIN: ${{ github.workspace }}/relay/target/debug/lerdr-relay
+        run: ./gradlew --console=plain :core:transport:test --tests RustInteropTest
+        working-directory: app
+      - name: InteropTest vs Go relay (LERDR_INTEROP)
+        if: inputs.go_relay
+        env:
+          LERDR_INTEROP: "1"
+        run: ./gradlew --console=plain :core:transport:test --tests InteropTest
+        working-directory: app
+
+  # Hermetic on hosted runners: the job builds lerdr-relay, starts it on
+  # 127.0.0.1:8377 with a generated 32-byte bootstrap token, then runs the
+  # documented LERDR_PROBE gate against it.
+  probe:
+    name: wire probe vs Rust relay
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: relay
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: Install platform + build tools
+        run: |
+          sdkmanager 'platforms;android-37.2' 'build-tools;37.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build + start lerdr-relay on 127.0.0.1:8377
+        run: |
+          cargo build --bin lerdr-relay
+          token="$(python3 -c 'import secrets,string; print("".join(secrets.choice(string.ascii_letters+string.digits) for _ in range(32)))')"
+          echo "LERDR_PROBE_TOKEN=$token" >> "$GITHUB_ENV"
+          runtime_dir="$(mktemp -d)"
+          XDG_CONFIG_HOME="$runtime_dir/config" \
+            LERDR_RELAY_TOKEN="$token" \
+            LERDR_RELAY_PORT=8377 \
+            "$GITHUB_WORKSPACE/relay/target/debug/lerdr-relay" serve \
+            > "$RUNNER_TEMP/lerdr-relay.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/lerdr-relay.pid"
+          for i in $(seq 1 100); do
+            curl -sf http://127.0.0.1:8377/healthz >/dev/null && break
+            sleep 0.1
+          done
+          curl -sf http://127.0.0.1:8377/healthz >/dev/null
+        working-directory: relay
+      - name: WireProbeTest (LERDR_PROBE)
+        env:
+          LERDR_PROBE: "1"
+        run: >-
+          ./gradlew --console=plain :core:transport:test
+          --tests WireProbeTest --rerun-tasks
+        working-directory: app
+      - name: Relay log
+        if: always()
+        run: cat "$RUNNER_TEMP/lerdr-relay.log" || true

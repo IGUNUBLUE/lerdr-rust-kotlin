@@ -1,0 +1,316 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  verify:
+    name: Require green checks + synced versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - name: Versions must agree with the tag
+        run: scripts/check-version-sync.sh "$GITHUB_REF_NAME"
+      - name: Require successful check workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Every check workflow that ran for the tagged commit must be green.
+          # A workflow with no run for this SHA was path-filtered out — there
+          # is nothing to verify, so absence does not block the release.
+          deadline=$((SECONDS + 1800))
+          while (( SECONDS < deadline )); do
+            pending=0
+            for workflow in fixture-check.yml relay.yml app.yml; do
+              state="$(
+                gh run list \
+                  --repo "$GITHUB_REPOSITORY" \
+                  --workflow "$workflow" \
+                  --commit "$GITHUB_SHA" \
+                  --limit 20 \
+                  --json status,conclusion \
+                  --jq '
+                    if length == 0 then "absent"
+                    elif any(.[]; .conclusion == "success") then "success"
+                    elif any(.[]; .status != "completed") then "pending"
+                    else "failed"
+                    end
+                  '
+              )"
+              case "$state" in
+                absent|success) ;;
+                pending) pending=1 ;;
+                failed)
+                  echo "Tagged commit $GITHUB_SHA has no successful $workflow run." >&2
+                  exit 1
+                  ;;
+              esac
+            done
+            [ "$pending" -eq 0 ] && exit 0
+            sleep 15
+          done
+          echo "Timed out waiting for check workflows on tagged commit $GITHUB_SHA." >&2
+          exit 1
+
+  build:
+    name: Build release bundle (${{ matrix.target }})
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux/amd64
+            slug: linux-amd64
+            rust_target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: linux/arm64
+            slug: linux-arm64
+            rust_target: aarch64-unknown-linux-musl
+          - runner: macos-15-intel
+            target: darwin/amd64
+            slug: darwin-amd64
+            rust_target: x86_64-apple-darwin
+          - runner: macos-15
+            target: darwin/arm64
+            slug: darwin-arm64
+            rust_target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: relay
+          key: release-${{ matrix.slug }}
+      # ring (via reqwest→rustls) compiles C sources for the musl target and
+      # rustc links through a C driver — musl-tools provides musl-gcc on the
+      # native-arch runners; package-release.sh pins CC_* and
+      # CARGO_TARGET_*_LINKER to it. Darwin legs build on their native macOS
+      # runners (no cross toolchain needed).
+      - name: Install musl toolchain
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+      - name: Package release bundle
+        env:
+          LERDR_RELEASE_TARGETS: ${{ matrix.target }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          plugin/scripts/package-release.sh "$version" "$GITHUB_SHA" dist/release
+          mv dist/release/checksums.txt "dist/release/checksums-${{ matrix.slug }}.txt"
+          ls -la dist/release/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-bundle-${{ matrix.slug }}
+          path: dist/release/
+          retention-days: 1
+          if-no-files-found: error
+
+  native-smoke:
+    name: Native release smoke (${{ matrix.target }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux/amd64
+            slug: linux-amd64
+          - runner: ubuntu-24.04-arm
+            target: linux/arm64
+            slug: linux-arm64
+          - runner: macos-15-intel
+            target: darwin/amd64
+            slug: darwin-amd64
+          - runner: macos-15
+            target: darwin/arm64
+            slug: darwin-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-bundle-${{ matrix.slug }}
+          path: dist/release
+      - name: Exercise packaged relay on its native target
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          plugin/scripts/check-installed-release.sh \
+            "dist/release/lerdr-relay_${version}_${{ matrix.target }}.tar.gz" \
+            "dist/release/checksums-${{ matrix.slug }}.txt" \
+            "$version" "$GITHUB_SHA" "${{ matrix.target }}"
+
+  android-apk:
+    name: Android APK (universal)
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: Install platform + build tools
+        run: |
+          sdkmanager 'platforms;android-37.2' 'build-tools;37.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build universal release APK
+        run: ./gradlew --console=plain :app:assembleRelease
+        working-directory: app
+      # No signing config ships in the repo — the APK is zipaligned and
+      # published unsigned (a `-unsigned.apk` suffix marks it). When the
+      # ANDROID_KEYSTORE_* secrets are configured the signed artifact is
+      # uploaded as lerdr_<version>_universal.apk instead.
+      - name: Align and sign APK
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          unsigned="app/app/build/outputs/apk/release/app-release-unsigned.apk"
+          test -f "$unsigned"
+          build_tools="$ANDROID_HOME/build-tools/37.0.0"
+          mkdir -p dist/release dist/android
+          aligned="dist/android/app-release-aligned.apk"
+          "$build_tools/zipalign" -p -f 4 "$unsigned" "$aligned"
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            cp "$aligned" "dist/android/lerdr_${version}_universal-unsigned.apk"
+            echo "ANDROID_KEYSTORE_BASE64 is not configured; uploaded the aligned unsigned APK only." >&2
+            exit 0
+          fi
+          umask 077
+          keystore="$RUNNER_TEMP/android-release.jks"
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$keystore"
+          "$build_tools/apksigner" sign \
+            --ks "$keystore" \
+            --ks-pass "pass:$ANDROID_KEYSTORE_PASSWORD" \
+            --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --key-pass "pass:$ANDROID_KEY_PASSWORD" \
+            --out "dist/release/lerdr_${version}_universal.apk" \
+            "$aligned"
+          "$build_tools/apksigner" verify --print-certs "dist/release/lerdr_${version}_universal.apk"
+          rm -f "$keystore"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: android-apk
+          path: |
+            dist/release/lerdr_*.apk
+            dist/android/lerdr_*-unsigned.apk
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs: [verify, build, native-smoke, android-apk]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-bundle-*
+          path: dist/release
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: android-apk
+          path: dist
+      - name: Merge per-target checksums
+        run: |
+          cat dist/release/checksums-*.txt > dist/release/checksums.txt
+          rm -f dist/release/checksums-*.txt
+          cat dist/release/checksums.txt
+      - name: Publish verified complete bundles
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Tags only ever cut from main; a tag on a side branch ships as a
+          # prerelease so the in-app update check (which skips prereleases)
+          # never offers it. Promotion flips it with
+          # `gh release edit --prerelease=false --latest`.
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            on_main=1
+          else
+            # 1 means "not on main"; any other status is a real git failure.
+            status=$?
+            test "$status" -eq 1 || exit "$status"
+            on_main=0
+          fi
+          assets=(
+            dist/release/checksums.txt
+            dist/release/lerdr-relay_*.tar.gz
+          )
+          for apk in dist/release/lerdr_*.apk; do
+            [ -e "$apk" ] && assets+=("$apk")
+          done
+          if prerelease="$(
+            gh release view "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json isPrerelease \
+              --jq .isPrerelease 2>/dev/null
+          )"; then
+            # Re-running the workflow for the same tag replaces the bundles —
+            # every bundle embeds the commit it was built from, so stale
+            # assets must never survive a rebuild.
+            if [ "$prerelease" = false ] && [ "$on_main" -eq 0 ]; then
+              echo "Release $GITHUB_REF_NAME is already promoted; refusing to republish it from a commit that is not on main." >&2
+              exit 1
+            fi
+            if [ "$on_main" -eq 1 ]; then
+              visibility=(--latest --prerelease=false)
+            else
+              visibility=(--prerelease)
+            fi
+            notes="$(
+              gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+                -f tag_name="$GITHUB_REF_NAME" \
+                -f target_commitish="$GITHUB_SHA" \
+                --jq .body
+            )"
+            gh release edit "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --notes "$notes" \
+              "${visibility[@]}"
+            gh release upload "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber \
+              "${assets[@]}"
+            exit 0
+          fi
+          if [ "$on_main" -eq 1 ]; then
+            visibility=(--latest)
+          else
+            visibility=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --generate-notes \
+            "${visibility[@]}" \
+            "${assets[@]}"

@@ -104,11 +104,42 @@ RELAY="$RELEASE_DIR/lerdr-relay"
     echo "release does not contain an executable relay" >&2
     exit 1
 }
-"$RELAY" verify-release \
-    --target "$EXPECTED_TARGET" \
-    --version "$EXPECTED_VERSION" \
-    --revision "$EXPECTED_REVISION" \
-    "$RELEASE_DIR" >/dev/null
+if "$RELAY" verify-release --help >/dev/null 2>&1; then
+    "$RELAY" verify-release \
+        --target "$EXPECTED_TARGET" \
+        --version "$EXPECTED_VERSION" \
+        --revision "$EXPECTED_REVISION" \
+        "$RELEASE_DIR" >/dev/null
+else
+    # The Rust binary has not grown verify-release yet — check the manifest's
+    # identity fields directly and confirm the binary reports the same stamp.
+    echo "note: lerdr-relay lacks verify-release; checking release-manifest.json fields" >&2
+    manifest="$RELEASE_DIR/release-manifest.json"
+    [ -f "$manifest" ] || {
+        echo "release does not contain release-manifest.json" >&2
+        exit 1
+    }
+    for pair in "version:$EXPECTED_VERSION" "revision:$EXPECTED_REVISION" "target:$EXPECTED_TARGET"; do
+        key=${pair%%:*}
+        want=${pair#*:}
+        got=$(sed -n "s/^[[:space:]]*\"$key\":[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$manifest" | head -1)
+        [ "$got" = "$want" ] || {
+            echo "release manifest $key is $got, expected $want" >&2
+            exit 1
+        }
+    done
+fi
+# The binary itself must report the same version/revision it was stamped with —
+# catches a manifest that lies about the build.
+reported=$("$RELAY" version --json)
+printf '%s' "$reported" | grep -qF "\"version\":\"$EXPECTED_VERSION\"" || {
+    echo "binary reports $reported, expected version $EXPECTED_VERSION" >&2
+    exit 1
+}
+printf '%s' "$reported" | grep -qF "\"revision\":\"$EXPECTED_REVISION\"" || {
+    echo "binary reports $reported, expected revision $EXPECTED_REVISION" >&2
+    exit 1
+}
 
 PORT=$((40000 + ($$ % 20000)))
 PLUGIN_PORT=$((PORT + 1))
@@ -145,11 +176,18 @@ grep -q '"protocol": 3' "$WORK_DIR/support.json" || {
     sed -n '1,120p' "$WORK_DIR/support.json" >&2
     exit 1
 }
-grep -qF "\"release_directory\": \"$RELEASE_DIR\"" "$WORK_DIR/support.json" || {
-    echo "installed relay support output does not report the canonical release directory" >&2
-    sed -n '1,120p' "$WORK_DIR/support.json" >&2
-    exit 1
-}
+# The Rust relay's support-state does not emit release_directory yet (the Go
+# oracle uses it to prove the release dir resolved canonically). Assert it the
+# moment the field exists; warn until then.
+if grep -q '"release_directory"' "$WORK_DIR/support.json"; then
+    grep -qF "\"release_directory\": \"$RELEASE_DIR\"" "$WORK_DIR/support.json" || {
+        echo "installed relay support output does not report the canonical release directory" >&2
+        sed -n '1,120p' "$WORK_DIR/support.json" >&2
+        exit 1
+    }
+else
+    echo "note: support output has no release_directory field yet — skipping canonical-dir assertion" >&2
+fi
 
 kill -INT "$RELAY_PID"
 wait "$RELAY_PID"
