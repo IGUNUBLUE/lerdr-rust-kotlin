@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -100,6 +101,12 @@ class HomeViewModelTest {
         private val origin = "ws://192.168.1.5:7474"
 
         fun pump() = testScope.runCurrent()
+
+        /** Runs the pull-refresh window out under virtual time. */
+        fun advance(ms: Long) {
+            testScope.advanceTimeBy(ms)
+            testScope.runCurrent()
+        }
 
         /** Poll on a real clock — registry reconcile rides DataStore IO. */
         fun awaitHandle(origin: String = this.origin): FakeRelaySessionHandle {
@@ -293,5 +300,63 @@ class HomeViewModelTest {
         assertThat(
             h.sentFrames().map { it["type"]?.jsonPrimitive?.content },
         ).doesNotContain("respond")
+    }
+
+    // ── pull-to-refresh (`refresh_agents` fan-out + 900 ms window) ────
+
+    @Test
+    fun `refreshInventory sends refresh_agents and holds the window`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        h.pump()
+
+        h.viewModel.refreshInventory()
+        h.pump()
+
+        assertThat(
+            h.sentFrames().map { it["type"]?.jsonPrimitive?.content },
+        ).contains("refresh_agents")
+        assertThat(h.viewModel.inventoryRefreshing.value).isTrue()
+
+        // The window lapses — the indicator clears and refresh re-arms.
+        h.advance(HomeViewModel.INVENTORY_REFRESH_WINDOW_MS + 1)
+        assertThat(h.viewModel.inventoryRefreshing.value).isFalse()
+    }
+
+    @Test
+    fun `a second pull inside the refresh window is a no-op`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        h.pump()
+
+        h.viewModel.refreshInventory()
+        h.pump()
+        val frames = h.sentFrames().size
+
+        h.viewModel.refreshInventory()
+        h.pump()
+
+        assertThat(h.sentFrames()).hasSize(frames)
+        assertThat(h.viewModel.inventoryRefreshing.value).isTrue()
+
+        // After the window the gesture re-arms — a new pull fans out again.
+        h.advance(HomeViewModel.INVENTORY_REFRESH_WINDOW_MS + 1)
+        h.viewModel.refreshInventory()
+        h.pump()
+        assertThat(
+            h.sentFrames().count {
+                it["type"]?.jsonPrimitive?.content == "refresh_agents"
+            },
+        ).isEqualTo(2)
+    }
+
+    @Test
+    fun `refreshInventory works without any connected relay`() = runTest {
+        val h = Harness(this, tmp.root)
+        // No `connectReady` — the oracle fires regardless; disconnected
+        // endpoints simply get re-dialed by the repository seam.
+        h.viewModel.refreshInventory()
+        h.pump()
+        assertThat(h.viewModel.inventoryRefreshing.value).isTrue()
     }
 }

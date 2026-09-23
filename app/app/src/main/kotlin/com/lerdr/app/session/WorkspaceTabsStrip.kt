@@ -22,6 +22,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -121,6 +122,15 @@ data class WorkspaceTabsUiState(
     val canControl: Boolean = false,
     /** `workspace_management` capability — rename/close/create visibility. */
     val managementAvailable: Boolean = false,
+    /**
+     * `workspace_reorder` reach — the viewed workspace is a top-level tree
+     * on a relay holding ≥2 of them (linked-worktree children ride their
+     * parent's block; like the oracle's manager they never move alone).
+     */
+    val workspaceReorderAvailable: Boolean = false,
+    /** Edge gates for the move actions — false at the list's ends. */
+    val canMoveWorkspaceUp: Boolean = false,
+    val canMoveWorkspaceDown: Boolean = false,
     /** `directory_browser` capability — the create sheet's folder picker. */
     val directoryBrowserAvailable: Boolean = false,
     /** Tab whose overflow menu is open (long-press). */
@@ -221,6 +231,56 @@ internal fun workspaceGroupIds(
     return listOf(primary.workspaceId) + children.map { it.workspaceId }
 }
 
+/**
+ * One row of the oracle's WorkspaceManager list — a top-level workspace
+ * plus its linked-worktree block (`workspaceIds`, primary first). The
+ * `workspace_reorder` wire form moves the whole block at once.
+ */
+internal data class WorkspaceTreeUi(
+    val workspace: RelayWorkspace,
+    val workspaceIds: List<String>,
+)
+
+/**
+ * `relayWorkspaceTrees` (`frontend/src/lib/workspaces.ts`) — the relay's
+ * top-level workspaces in snapshot order. A linked worktree whose
+ * `repo_key` resolves to a primary on the same relay nests under it and
+ * never stands as its own row; children sort by `number, label`.
+ */
+internal fun workspaceTrees(workspaces: List<RelayWorkspace>): List<WorkspaceTreeUi> {
+    val parentByRepo = HashMap<String, RelayWorkspace>()
+    for (workspace in workspaces) {
+        val worktree = workspace.worktree
+        if (worktree != null && !worktree.isLinkedWorktree && worktree.repoKey.isNotEmpty()) {
+            parentByRepo[workspace.relayId + "\u0000" + worktree.repoKey] = workspace
+        }
+    }
+    val childrenByParent = HashMap<String, MutableList<RelayWorkspace>>()
+    val childIds = HashSet<String>()
+    for (workspace in workspaces) {
+        val worktree = workspace.worktree
+        if (worktree?.isLinkedWorktree != true || worktree.repoKey.isEmpty()) continue
+        val parent = parentByRepo[workspace.relayId + "\u0000" + worktree.repoKey]
+            ?: continue
+        if (parent.workspaceId == workspace.workspaceId) continue
+        val key = parent.relayId + "\u0000" + parent.workspaceId
+        childrenByParent.getOrPut(key) { mutableListOf() }.add(workspace)
+        childIds.add(workspace.relayId + "\u0000" + workspace.workspaceId)
+    }
+    return workspaces
+        .filter { (it.relayId + "\u0000" + it.workspaceId) !in childIds }
+        .map { workspace ->
+            val nested = childrenByParent[workspace.relayId + "\u0000" + workspace.workspaceId]
+                .orEmpty()
+                .sortedWith(compareBy({ it.number }, { it.label }))
+            WorkspaceTreeUi(
+                workspace = workspace,
+                workspaceIds = listOf(workspace.workspaceId) +
+                    nested.map { it.workspaceId },
+            )
+        }
+}
+
 /** Oracle `pathBase` — a path's last segment for the workspace label. */
 internal fun pathBaseOf(path: String): String =
     path.trimEnd('/', '\\').split('/', '\\')
@@ -261,6 +321,14 @@ class WorkspaceTabsViewModel(
     private data class PendingOrder(val workspaceId: String, val order: List<String>)
 
     /**
+     * `pendingWorkspaceOrder` — the optimistic ROOT order (one id per
+     * tree, like the oracle's `order`); it survives until the `agents`
+     * snapshot confirms it or a membership change invalidates it. The
+     * oracle keys it by relay; this VM is already relay-scoped.
+     */
+    private data class PendingWorkspaceOrder(val order: List<String>)
+
+    /**
      * One in-flight close watch — mutations serialize behind `busy`, so a
      * single slot is enough (the worktree remove watch's precedent).
      */
@@ -281,6 +349,7 @@ class WorkspaceTabsViewModel(
         val status: String? = null,
         val statusError: Boolean = false,
         val pending: PendingOrder? = null,
+        val workspacePending: PendingWorkspaceOrder? = null,
         val renameOpen: Boolean = false,
         val renameDraft: String = "",
         val confirmClose: Boolean = false,
@@ -324,6 +393,14 @@ class WorkspaceTabsViewModel(
         val workspace = allWorkspaces.firstOrNull {
             it.relayId == relayId && it.workspaceId == workspaceId
         }
+        // `displayWorkspaceTrees` — the relay's top-level rows in snapshot
+        // order, pending reorder applied; the viewed workspace reorders
+        // only as a tree root.
+        val trees = displayWorkspaceTrees(
+            allWorkspaces.filter { it.relayId == relayId },
+            local.workspacePending,
+        )
+        val treeIndex = trees.indexOfFirst { it.workspace.workspaceId == workspaceId }
         WorkspaceTabsUiState(
             tabs = tabs,
             // Grouping key of the viewed agent: `tab_id || pane_id`.
@@ -334,6 +411,9 @@ class WorkspaceTabsViewModel(
             canControl = sessions.canControl(relayId),
             managementAvailable = connection?.capabilities
                 ?.contains(WORKSPACE_MANAGEMENT_CAPABILITY) == true,
+            workspaceReorderAvailable = treeIndex >= 0 && trees.size > 1,
+            canMoveWorkspaceUp = treeIndex > 0,
+            canMoveWorkspaceDown = treeIndex >= 0 && treeIndex < trees.size - 1,
             directoryBrowserAvailable = connection?.capabilities
                 ?.contains(DIRECTORY_BROWSER_CAPABILITY) == true,
             menuTabId = local.menuTabId,
@@ -382,6 +462,22 @@ class WorkspaceTabsViewModel(
                     ids.toSet() != pending.order.toSet()
                 ) {
                     local.update { it.copy(pending = null) }
+                }
+            }
+        }
+        // `pendingWorkspaceOrder` lifecycle — same rule as the tab order:
+        // a snapshot whose root order matches confirms it; a membership
+        // change (created/closed workspace) invalidates it outright.
+        viewModelScope.launch {
+            workspaces.workspaces.collect { list ->
+                val pending = local.value.workspacePending ?: return@collect
+                val roots = workspaceTrees(list.filter { it.relayId == relayId })
+                    .map { it.workspace.workspaceId }
+                if (roots == pending.order ||
+                    roots.size != pending.order.size ||
+                    roots.toSet() != pending.order.toSet()
+                ) {
+                    local.update { it.copy(workspacePending = null) }
                 }
             }
         }
@@ -548,6 +644,100 @@ class WorkspaceTabsViewModel(
                         busy = false,
                         pending = null,
                         error = failure.message ?: "Tab order could not be updated",
+                    )
+                }
+            }
+        }
+    }
+
+    // ── workspace reorder ─────────────────────────────────────────────
+
+    /**
+     * `displayWorkspaceTrees` — snapshot trees re-sorted by the pending
+     * optimistic order (roots only; unknown roots sink to the tail).
+     */
+    private fun displayWorkspaceTrees(
+        relayWorkspaces: List<RelayWorkspace>,
+        pending: PendingWorkspaceOrder?,
+    ): List<WorkspaceTreeUi> {
+        val trees = workspaceTrees(relayWorkspaces)
+        if (pending == null) return trees
+        val rank = pending.order.withIndex().associate { (i, id) -> id to i }
+        return trees.sortedBy { rank[it.workspace.workspaceId] ?: Int.MAX_VALUE }
+    }
+
+    /**
+     * `handleWorkspaceOrderKey`/`commitWorkspaceReorder` — the oracle
+     * manager's Alt+Arrow move, as a menu action. The viewed workspace's
+     * tree block swaps with the sibling above/below; `workspace_ids`
+     * carries the whole linked-worktree block and `before_workspace_id`
+     * the neighbour it lands before (`""` at the tail). `movingWorkspace`
+     * is `busy` — mutations serialize behind it.
+     */
+    fun moveWorkspace(delta: Int) {
+        val state = uiState.value
+        if (state.busy || delta == 0 || !state.canControl) return
+        if (!state.managementAvailable) {
+            local.update {
+                it.copy(error = "This relay does not support workspace management")
+            }
+            return
+        }
+        val self = sessions.agents.value.firstOrNull { it.paneId == paneId }
+            ?: return
+        val workspaceId = self.workspaceId.takeIf { it.isNotEmpty() } ?: return
+        val relayWorkspaces = workspaces.workspaces.value
+            .filter { it.relayId == relayId }
+        val trees = displayWorkspaceTrees(relayWorkspaces, local.value.workspacePending)
+        val index = trees.indexOfFirst { it.workspace.workspaceId == workspaceId }
+        val insertIndex = index + delta
+        if (index < 0 || insertIndex !in trees.indices) return
+        val tree = trees[index]
+        val others = trees.filter { it.workspace.workspaceId != workspaceId }
+        val beforeWorkspaceId =
+            others.getOrNull(insertIndex)?.workspace?.workspaceId.orEmpty()
+        // Root ids only — the pending order's shape in the oracle.
+        val order = others.take(insertIndex).map { it.workspace.workspaceId } +
+            workspaceId +
+            others.drop(insertIndex).map { it.workspace.workspaceId }
+        // `insert_index` for the legacy wire form addresses the flat
+        // workspace list (linked children included), not the tree list.
+        val legacyInsertIndex = if (beforeWorkspaceId.isNotEmpty()) {
+            relayWorkspaces.indexOfFirst { it.workspaceId == beforeWorkspaceId }
+        } else {
+            relayWorkspaces.size
+        }
+        local.update {
+            it.copy(
+                menuTabId = null,
+                busy = true,
+                status = null,
+                workspacePending = PendingWorkspaceOrder(order),
+            )
+        }
+        viewModelScope.launch {
+            try {
+                sessions.reorderWorkspaceBlock(
+                    relayId = relayId,
+                    workspaceIds = tree.workspaceIds,
+                    beforeWorkspaceId = beforeWorkspaceId,
+                    legacyInsertIndex = legacyInsertIndex,
+                )
+                local.update {
+                    it.copy(
+                        busy = false,
+                        status = "Moved ${tree.workspace.label}.",
+                        statusError = false,
+                    )
+                }
+            } catch (failure: Exception) {
+                local.update {
+                    it.copy(
+                        busy = false,
+                        workspacePending = null,
+                        status = failure.message
+                            ?: "Workspace order could not be updated",
+                        statusError = true,
                     )
                 }
             }
@@ -964,6 +1154,7 @@ fun WorkspaceTabsStrip(
         onOpenMenu = { tab -> viewModel.openMenu(tab.tabId) },
         onDismissMenu = viewModel::dismissMenu,
         onMoveTab = viewModel::moveTab,
+        onMoveWorkspace = viewModel::moveWorkspace,
         onRequestRename = viewModel::requestRename,
         onRenameDraftChange = viewModel::onRenameDraftChange,
         onConfirmRename = viewModel::confirmRename,
@@ -991,6 +1182,7 @@ fun WorkspaceTabsStripContent(
     onOpenMenu: (WorkspaceTabUi) -> Unit,
     onDismissMenu: () -> Unit,
     onMoveTab: (tabId: String, delta: Int) -> Unit,
+    onMoveWorkspace: (delta: Int) -> Unit,
     onRequestRename: () -> Unit,
     onRenameDraftChange: (String) -> Unit,
     onConfirmRename: () -> Unit,
@@ -1073,6 +1265,39 @@ fun WorkspaceTabsStripContent(
                             }
                         }
                         if (uiState.managementAvailable) {
+                            if (uiState.workspaceReorderAvailable) {
+                                DropdownMenuItem(
+                                    text = { Text("Move workspace up") },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Default.KeyboardArrowUp,
+                                            contentDescription = null,
+                                        )
+                                    },
+                                    enabled = uiState.canMoveWorkspaceUp &&
+                                        !uiState.busy,
+                                    onClick = { onMoveWorkspace(-1) },
+                                    modifier = Modifier.testTag(
+                                        WorkspaceTabsStripTags.MOVE_WORKSPACE_UP,
+                                    ),
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Move workspace down") },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Default.KeyboardArrowDown,
+                                            contentDescription = null,
+                                        )
+                                    },
+                                    enabled = uiState.canMoveWorkspaceDown &&
+                                        !uiState.busy,
+                                    onClick = { onMoveWorkspace(1) },
+                                    modifier = Modifier.testTag(
+                                        WorkspaceTabsStripTags.MOVE_WORKSPACE_DOWN,
+                                    ),
+                                )
+                                HorizontalDivider()
+                            }
                             DropdownMenuItem(
                                 text = { Text("Rename workspace") },
                                 enabled = !uiState.busy,
@@ -1599,6 +1824,8 @@ object WorkspaceTabsStripTags {
     const val STATUS = "workspace-tabs:status"
     const val RENAME = "workspace-tabs:rename"
     const val CLOSE = "workspace-tabs:close"
+    const val MOVE_WORKSPACE_UP = "workspace-tabs:move-workspace-up"
+    const val MOVE_WORKSPACE_DOWN = "workspace-tabs:move-workspace-down"
     const val RENAME_FIELD = "workspace-tabs:rename-field"
     const val RENAME_CONFIRM = "workspace-tabs:rename-confirm"
     const val CLOSE_CONFIRM = "workspace-tabs:close-confirm"
@@ -1632,11 +1859,15 @@ private fun WorkspaceTabsStripContentPreview() {
                     reorderAvailable = true,
                     canControl = true,
                     managementAvailable = true,
+                    workspaceReorderAvailable = true,
+                    canMoveWorkspaceUp = false,
+                    canMoveWorkspaceDown = true,
                 ),
                 onSelectTab = {},
                 onOpenMenu = {},
                 onDismissMenu = {},
                 onMoveTab = { _, _ -> },
+                onMoveWorkspace = {},
                 onRequestRename = {},
                 onRenameDraftChange = {},
                 onConfirmRename = {},

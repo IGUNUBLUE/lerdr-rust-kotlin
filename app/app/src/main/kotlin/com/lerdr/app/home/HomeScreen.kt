@@ -52,6 +52,9 @@ import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -64,7 +67,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.liveRegion
@@ -118,6 +123,7 @@ fun HomeScreen(
         LaunchViewModel(launch.sessionRepository(), launch.workspaceStore())
     }
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val refreshing by viewModel.inventoryRefreshing.collectAsStateWithLifecycle()
     var sheet by rememberSaveable { mutableStateOf<HomeSheet?>(null) }
     val messages = remember(viewModel, launchViewModel) {
         merge(viewModel.messages, launchViewModel.messages)
@@ -148,6 +154,8 @@ fun HomeScreen(
             launchViewModel.beginWorkspace()
             sheet = HomeSheet.WORKSPACE
         },
+        refreshing = refreshing,
+        onRefreshInventory = viewModel::refreshInventory,
         messages = messages,
     )
     when (sheet) {
@@ -177,6 +185,8 @@ fun HomeContent(
     onStopAgent: (AgentListItemUi) -> Unit = {},
     onNewAgent: () -> Unit = {},
     onNewWorkspace: () -> Unit = {},
+    refreshing: Boolean = false,
+    onRefreshInventory: () -> Unit = {},
     messages: Flow<String> = emptyFlow(),
 ) {
     val spacing = LerdrTheme.spacing
@@ -250,115 +260,144 @@ fun HomeContent(
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { innerPadding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(
-                top = innerPadding.calculateTopPadding(),
-                bottom = innerPadding.calculateBottomPadding() + spacing.medium,
-            ),
-            verticalArrangement = Arrangement.spacedBy(spacing.small),
-        ) {
-            if (uiState.needsYou.isNotEmpty()) {
-                item(key = "needs-you-header") {
-                    SectionHeader(
-                        label = "NEEDS YOU · ${uiState.needsYou.size}",
-                        color = LerdrTheme.extendedColors.attention,
-                        leading = {
-                            Icon(
-                                Icons.Default.Warning,
-                                contentDescription = null,
-                                tint = LerdrTheme.extendedColors.attention,
-                                modifier = Modifier.size(16.dp),
-                            )
-                        },
-                        modifier = Modifier.padding(horizontal = spacing.medium),
-                    )
+        // The oracle's pull-to-refresh (AgentList.svelte): the gesture arms
+        // only at scroll top — PullToRefreshBox's nested scroll gives that
+        // for free — releases past threshold fire `requestInventoryRefresh`
+        // plus the trigger haptic. `refreshing` is the ~900 ms hold window.
+        val pullState = rememberPullToRefreshState()
+        val haptic = LocalHapticFeedback.current
+        PullToRefreshBox(
+            isRefreshing = refreshing,
+            onRefresh = {
+                if (!refreshing) {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onRefreshInventory()
                 }
-                item(key = "needs-you-rail") {
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = spacing.medium),
-                        horizontalArrangement = Arrangement.spacedBy(spacing.small),
-                    ) {
-                        items(uiState.needsYou, key = { it.paneId }) { card ->
-                            AttentionCard(
-                                card = card,
-                                onOpen = { onOpenAgent(card.paneId) },
-                                onRespond = { index -> onRespond(card, index) },
-                                onAnswerOption = { index ->
-                                    onAnswerOption(card, index)
-                                },
+            },
+            state = pullState,
+            modifier = Modifier.fillMaxSize(),
+            indicator = {
+                PullToRefreshDefaults.Indicator(
+                    state = pullState,
+                    isRefreshing = refreshing,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        // The box underlaps the top app bar — drop the cue
+                        // into the list's own top inset.
+                        .padding(top = innerPadding.calculateTopPadding()),
+                )
+            },
+        ) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(
+                    top = innerPadding.calculateTopPadding(),
+                    bottom = innerPadding.calculateBottomPadding() + spacing.medium,
+                ),
+                verticalArrangement = Arrangement.spacedBy(spacing.small),
+            ) {
+                if (uiState.needsYou.isNotEmpty()) {
+                    item(key = "needs-you-header") {
+                        SectionHeader(
+                            label = "NEEDS YOU · ${uiState.needsYou.size}",
+                            color = LerdrTheme.extendedColors.attention,
+                            leading = {
+                                Icon(
+                                    Icons.Default.Warning,
+                                    contentDescription = null,
+                                    tint = LerdrTheme.extendedColors.attention,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            },
+                            modifier = Modifier.padding(horizontal = spacing.medium),
+                        )
+                    }
+                    item(key = "needs-you-rail") {
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = spacing.medium),
+                            horizontalArrangement = Arrangement.spacedBy(spacing.small),
+                        ) {
+                            items(uiState.needsYou, key = { it.paneId }) { card ->
+                                AttentionCard(
+                                    card = card,
+                                    onOpen = { onOpenAgent(card.paneId) },
+                                    onRespond = { index -> onRespond(card, index) },
+                                    onAnswerOption = { index ->
+                                        onAnswerOption(card, index)
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (uiState.working.isNotEmpty()) {
+                    item(key = "working-header") {
+                        SectionHeader(
+                            label = "WORKING · ${uiState.working.sumOf { it.agents.size }}",
+                            color = LerdrTheme.extendedColors.working,
+                            leading = {
+                                StatusDot(color = LerdrTheme.extendedColors.working)
+                            },
+                            modifier = Modifier.padding(horizontal = spacing.medium),
+                        )
+                    }
+                    uiState.working.forEach { group ->
+                        item(key = "working-group:${group.key}") {
+                            GroupHeader(
+                                group = group,
+                                modifier = Modifier.padding(horizontal = spacing.medium),
+                            )
+                        }
+                        items(group.agents, key = { "working:${it.paneId}" }) { agent ->
+                            SwipeableAgentRow(
+                                agent = agent,
+                                onOpen = { onOpenAgent(agent.paneId) },
+                                onRequestStop = { pendingStop = agent },
+                                modifier = Modifier.padding(horizontal = spacing.medium),
                             )
                         }
                     }
                 }
-            }
 
-            if (uiState.working.isNotEmpty()) {
-                item(key = "working-header") {
-                    SectionHeader(
-                        label = "WORKING · ${uiState.working.sumOf { it.agents.size }}",
-                        color = LerdrTheme.extendedColors.working,
-                        leading = {
-                            StatusDot(color = LerdrTheme.extendedColors.working)
-                        },
-                        modifier = Modifier.padding(horizontal = spacing.medium),
-                    )
-                }
-                uiState.working.forEach { group ->
-                    item(key = "working-group:${group.key}") {
-                        GroupHeader(
-                            group = group,
+                if (uiState.idle.isNotEmpty()) {
+                    item(key = "idle-header") {
+                        SectionHeader(
+                            label = "IDLE · ${uiState.idle.sumOf { it.agents.size }}",
+                            color = LerdrTheme.extendedColors.idle,
                             modifier = Modifier.padding(horizontal = spacing.medium),
                         )
                     }
-                    items(group.agents, key = { "working:${it.paneId}" }) { agent ->
-                        SwipeableAgentRow(
-                            agent = agent,
-                            onOpen = { onOpenAgent(agent.paneId) },
-                            onRequestStop = { pendingStop = agent },
-                            modifier = Modifier.padding(horizontal = spacing.medium),
-                        )
+                    uiState.idle.forEach { group ->
+                        item(key = "idle-group:${group.key}") {
+                            GroupHeader(
+                                group = group,
+                                modifier = Modifier.padding(horizontal = spacing.medium),
+                            )
+                        }
+                        items(group.agents, key = { "idle:${it.paneId}" }) { agent ->
+                            SwipeableAgentRow(
+                                agent = agent,
+                                onOpen = { onOpenAgent(agent.paneId) },
+                                onRequestStop = { pendingStop = agent },
+                                modifier = Modifier.padding(horizontal = spacing.medium),
+                            )
+                        }
                     }
                 }
-            }
 
-            if (uiState.idle.isNotEmpty()) {
-                item(key = "idle-header") {
-                    SectionHeader(
-                        label = "IDLE · ${uiState.idle.sumOf { it.agents.size }}",
-                        color = LerdrTheme.extendedColors.idle,
-                        modifier = Modifier.padding(horizontal = spacing.medium),
-                    )
-                }
-                uiState.idle.forEach { group ->
-                    item(key = "idle-group:${group.key}") {
-                        GroupHeader(
-                            group = group,
-                            modifier = Modifier.padding(horizontal = spacing.medium),
+                if (uiState.needsYou.isEmpty() &&
+                    uiState.working.isEmpty() &&
+                    uiState.idle.isEmpty()
+                ) {
+                    item(key = "empty-state") {
+                        EmptyState(
+                            hasRelays = uiState.relays.isNotEmpty(),
+                            modifier = Modifier
+                                .fillParentMaxSize()
+                                .padding(horizontal = spacing.large),
                         )
                     }
-                    items(group.agents, key = { "idle:${it.paneId}" }) { agent ->
-                        SwipeableAgentRow(
-                            agent = agent,
-                            onOpen = { onOpenAgent(agent.paneId) },
-                            onRequestStop = { pendingStop = agent },
-                            modifier = Modifier.padding(horizontal = spacing.medium),
-                        )
-                    }
-                }
-            }
-
-            if (uiState.needsYou.isEmpty() &&
-                uiState.working.isEmpty() &&
-                uiState.idle.isEmpty()
-            ) {
-                item(key = "empty-state") {
-                    EmptyState(
-                        hasRelays = uiState.relays.isNotEmpty(),
-                        modifier = Modifier
-                            .fillParentMaxSize()
-                            .padding(horizontal = spacing.large),
-                    )
                 }
             }
         }

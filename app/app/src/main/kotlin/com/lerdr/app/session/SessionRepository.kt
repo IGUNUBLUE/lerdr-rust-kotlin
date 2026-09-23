@@ -1569,6 +1569,24 @@ class SessionRepository @Inject constructor(
         broadcast("{\"type\":\"refresh_agents\"}")
     }
 
+    /**
+     * `inventoryRefresh` — the oracle's pull-to-refresh action
+     * (`App.svelte` → `requestInventoryRefresh`): `refresh_agents` to
+     * every connected relay, plus `connect()` for registered endpoints
+     * currently `disconnected`.
+     */
+    fun inventoryRefresh() {
+        val disconnected = connectionStore.connections.value.values
+            .filter { it.status == RelayStatus.DISCONNECTED }
+            .map { it.relayId }
+            .toSet()
+        refreshAgents()
+        if (disconnected.isEmpty()) return
+        relayRegistry.relays.value
+            .filter { it.id in disconnected }
+            .forEach(::connect)
+    }
+
     /** `get_activity` fan-out — pull the relay's journal (limit 500). */
     fun requestActivities() {
         synchronized(lock) { sessions.keys.toList() }.forEach(::requestActivities)

@@ -14,6 +14,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import lerdr.core.data.DeviceRole
 import lerdr.core.data.RelayDeviceCredential
@@ -125,6 +126,7 @@ class SessionWorkspaceTabsViewModelTest {
             inventoryState: String = "ready",
             workspacesJson: String =
                 """[{"workspace_id":"w1","number":1,"label":"lerdr","focused":true,"pane_count":2,"tab_count":2,"active_tab_id":"tabA","agent_status":"working","cwd":"/home/u/lerdr"}]""",
+            agentWorkspaceId: String = "w1",
         ) {
             // Registry first — `start()`'s reconcile tears down sessions
             // whose endpoint is not registered.
@@ -140,7 +142,7 @@ class SessionWorkspaceTabsViewModelTest {
             )
             handle().emit(
                 json(
-                    """{"type":"agents","agents":[{"pane_id":"%1","raw_pane_id":"%1","terminal_id":"t1","server_session_id":"ss1","generation":3,"agent":"claude","name":"main","status":"working","cwd":"/home/u/lerdr","project":"lerdr","workspace_id":"w1","tab_id":"tabA","tab_label":"main","tab_number":1,"updated_at":100},{"pane_id":"%2","raw_pane_id":"%2","terminal_id":"t2","server_session_id":"ss1","generation":3,"agent":"codex","name":"tests","status":"idle","cwd":"/home/u/lerdr","project":"lerdr","workspace_id":"w1","tab_id":"tabB","tab_label":"tests","tab_number":2,"updated_at":100}]}""",
+                    """{"type":"agents","agents":[{"pane_id":"%1","raw_pane_id":"%1","terminal_id":"t1","server_session_id":"ss1","generation":3,"agent":"claude","name":"main","status":"working","cwd":"/home/u/lerdr","project":"lerdr","workspace_id":"$agentWorkspaceId","tab_id":"tabA","tab_label":"main","tab_number":1,"updated_at":100},{"pane_id":"%2","raw_pane_id":"%2","terminal_id":"t2","server_session_id":"ss1","generation":3,"agent":"codex","name":"tests","status":"idle","cwd":"/home/u/lerdr","project":"lerdr","workspace_id":"$agentWorkspaceId","tab_id":"tabB","tab_label":"tests","tab_number":2,"updated_at":100}]}""",
                 ),
             )
             handle().emit(
@@ -222,6 +224,7 @@ class SessionWorkspaceTabsViewModelTest {
         vm.requestClose()
         vm.requestCreate()
         vm.moveTab("tabA", 1)
+        vm.moveWorkspace(1)
         h.pump()
 
         val state = vm.uiState.value
@@ -233,6 +236,7 @@ class SessionWorkspaceTabsViewModelTest {
         assertThat(h.sentOf("workspace_close")).isEmpty()
         assertThat(h.sentOf("workspace_create")).isEmpty()
         assertThat(h.sentOf("tab_reorder")).isEmpty()
+        assertThat(h.sentOf("workspace_reorder")).isEmpty()
     }
 
     // ── rename ────────────────────────────────────────────────────────
@@ -474,7 +478,407 @@ class SessionWorkspaceTabsViewModelTest {
         assertThat(h.sentOf("workspace_create")).isEmpty()
     }
 
+    // ── workspace reorder (`workspace_reorder`) ───────────────────────
+
+    /** A plain top-level workspace row for the `workspaces` frame. */
+    private fun plainWorkspace(id: String, number: Int, label: String) =
+        """{"workspace_id":"$id","number":$number,"label":"$label","focused":true,"pane_count":2,"tab_count":2,"active_tab_id":"tabA","agent_status":"working","cwd":"/home/u/$label"}"""
+
+    /** A worktree-backed row — primaries anchor a linked-worktree block. */
+    private fun worktreeWorkspace(
+        id: String,
+        number: Int,
+        label: String,
+        repoKey: String,
+        linked: Boolean,
+    ) = """{"workspace_id":"$id","number":$number,"label":"$label","focused":false,"pane_count":0,"tab_count":0,"active_tab_id":"","agent_status":"idle","cwd":"/home/u/$label","worktree":{"repo_key":"$repoKey","repo_name":"$label","repo_root":"/home/u/$label","checkout_path":"/home/u/$label","is_linked_worktree":$linked}}"""
+
+    @Test
+    fun `move down sends the block form and applies the optimistic order`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady(
+            capabilities = "\"workspace_management\",\"workspace_reorder_block\"",
+            workspacesJson = "[" +
+                plainWorkspace("w1", 1, "lerdr") + "," +
+                plainWorkspace("w2", 2, "fix") + "]",
+        )
+        val vm = h.viewModel()
+        h.pump()
+
+        val initial = vm.uiState.value
+        assertThat(initial.workspaceReorderAvailable).isTrue()
+        assertThat(initial.canMoveWorkspaceUp).isFalse()
+        assertThat(initial.canMoveWorkspaceDown).isTrue()
+
+        vm.moveWorkspace(1)
+        h.pump()
+
+        val sent = h.lastRequest("workspace_reorder")
+        assertThat(sent["workspace_ids"]!!.jsonArray.map { it.jsonPrimitive.content })
+            .containsExactly("w1")
+        // Moved past the last sibling — the block appends to the tail;
+        // `""` is the field default so `omitempty` drops it from the wire.
+        assertThat(sent["before_workspace_id"]).isNull()
+        assertThat(sent["workspace_id"]).isNull()
+        assertThat(sent["insert_index"]).isNull()
+
+        // `pendingWorkspaceOrder` — the display order already moved w1
+        // to the tail, so the edge gates flip before the snapshot lands.
+        val optimistic = vm.uiState.value
+        assertThat(optimistic.canMoveWorkspaceUp).isTrue()
+        assertThat(optimistic.canMoveWorkspaceDown).isFalse()
+        assertThat(optimistic.menuTabId).isNull()
+
+        h.answerOk("workspace_reorder")
+        val done = vm.uiState.value
+        assertThat(done.status).isEqualTo("Moved lerdr.")
+        assertThat(done.statusError).isFalse()
+        // The wrapper re-requests the inventory like the oracle's store.
+        assertThat(h.sentOf("refresh_agents")).isNotEmpty()
+    }
+
+    @Test
+    fun `move up lands the block before the previous root`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady(
+            capabilities = "\"workspace_management\",\"workspace_reorder_block\"",
+            workspacesJson = "[" +
+                plainWorkspace("w1", 1, "lerdr") + "," +
+                plainWorkspace("w2", 2, "fix") + "," +
+                plainWorkspace("w3", 3, "docs") + "]",
+            agentWorkspaceId = "w2",
+        )
+        val vm = h.viewModel()
+        h.pump()
+
+        assertThat(vm.uiState.value.canMoveWorkspaceUp).isTrue()
+
+        vm.moveWorkspace(-1)
+        h.pump()
+
+        val sent = h.lastRequest("workspace_reorder")
+        assertThat(sent["workspace_ids"]!!.jsonArray.map { it.jsonPrimitive.content })
+            .containsExactly("w2")
+        assertThat(sent["before_workspace_id"]?.jsonPrimitive?.content).isEqualTo("w1")
+
+        // Pending order [w2, w1, w3] — w2 now sits at the head.
+        val optimistic = vm.uiState.value
+        assertThat(optimistic.canMoveWorkspaceUp).isFalse()
+        assertThat(optimistic.canMoveWorkspaceDown).isTrue()
+    }
+
+    @Test
+    fun `a linked worktree block moves as one unit`() = runTest {
+        val h = Harness(this, tmp.root)
+        // w1 anchors repo k1; w2 is its linked worktree; w3 is a second
+        // top-level row → trees [w1(w1,w2), w3].
+        h.connectReady(
+            capabilities = "\"workspace_management\",\"workspace_reorder_block\"",
+            workspacesJson = "[" +
+                worktreeWorkspace("w1", 1, "lerdr", "k1", linked = false) + "," +
+                worktreeWorkspace("w2", 2, "fix", "k1", linked = true) + "," +
+                plainWorkspace("w3", 3, "docs") + "]",
+        )
+        val vm = h.viewModel()
+        h.pump()
+
+        vm.moveWorkspace(1)
+        h.pump()
+
+        val sent = h.lastRequest("workspace_reorder")
+        // The whole block rides the move — primary first; the tail
+        // append leaves `before_workspace_id` at its `""` default.
+        assertThat(sent["workspace_ids"]!!.jsonArray.map { it.jsonPrimitive.content })
+            .containsExactly("w1", "w2").inOrder()
+        assertThat(sent["before_workspace_id"]).isNull()
+    }
+
+    @Test
+    fun `a legacy relay gets workspace_id plus the flat insert_index`() = runTest {
+        val h = Harness(this, tmp.root)
+        // No `workspace_reorder_block` — single-workspace legacy form.
+        h.connectReady(
+            capabilities = "\"workspace_management\"",
+            workspacesJson = "[" +
+                plainWorkspace("w1", 1, "lerdr") + "," +
+                plainWorkspace("w2", 2, "fix") + "]",
+        )
+        val vm = h.viewModel()
+        h.pump()
+
+        vm.moveWorkspace(1)
+        h.pump()
+
+        val sent = h.lastRequest("workspace_reorder")
+        assertThat(sent["workspace_id"]?.jsonPrimitive?.content).isEqualTo("w1")
+        // Appending — the flat list length, matching the oracle's
+        // `relayWorkspaces.length` fallback.
+        assertThat(sent["insert_index"]?.jsonPrimitive?.content).isEqualTo("2")
+        assertThat(sent["workspace_ids"]).isNull()
+        assertThat(sent["before_workspace_id"]).isNull()
+    }
+
+    @Test
+    fun `a linked block on a legacy relay reports the upgrade message`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady(
+            capabilities = "\"workspace_management\"",
+            workspacesJson = "[" +
+                worktreeWorkspace("w1", 1, "lerdr", "k1", linked = false) + "," +
+                worktreeWorkspace("w2", 2, "fix", "k1", linked = true) + "," +
+                plainWorkspace("w3", 3, "docs") + "]",
+        )
+        val vm = h.viewModel()
+        h.pump()
+
+        vm.moveWorkspace(1)
+        h.pump()
+
+        // The wrapper refuses a multi-id block without the capability.
+        assertThat(h.sentOf("workspace_reorder")).isEmpty()
+        val state = vm.uiState.value
+        assertThat(state.status)
+            .isEqualTo("Update Herdr to reorder a workspace with linked worktrees")
+        assertThat(state.statusError).isTrue()
+        // The optimistic order reverted — w1 sits at the head again.
+        assertThat(state.canMoveWorkspaceUp).isFalse()
+        assertThat(state.canMoveWorkspaceDown).isTrue()
+    }
+
+    @Test
+    fun `workspace moves need workspace_management`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady(
+            capabilities = "\"tab_reorder\",\"workspace_reorder_block\"",
+            workspacesJson = "[" +
+                plainWorkspace("w1", 1, "lerdr") + "," +
+                plainWorkspace("w2", 2, "fix") + "]",
+        )
+        val vm = h.viewModel()
+        h.pump()
+
+        assertThat(vm.uiState.value.managementAvailable).isFalse()
+        vm.moveWorkspace(1)
+        h.pump()
+
+        assertThat(h.sentOf("workspace_reorder")).isEmpty()
+        assertThat(vm.uiState.value.error)
+            .isEqualTo("This relay does not support workspace management")
+    }
+
+    @Test
+    fun `edge moves and lone workspaces send nothing`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        val vm = h.viewModel()
+        h.pump()
+
+        // One workspace — no reorder surface at all.
+        val solo = vm.uiState.value
+        assertThat(solo.workspaceReorderAvailable).isFalse()
+        assertThat(solo.canMoveWorkspaceUp).isFalse()
+        assertThat(solo.canMoveWorkspaceDown).isFalse()
+        vm.moveWorkspace(1)
+        vm.moveWorkspace(-1)
+        h.pump()
+        assertThat(h.sentOf("workspace_reorder")).isEmpty()
+    }
+
+    @Test
+    fun `the top workspace cannot move up`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady(
+            capabilities = "\"workspace_management\",\"workspace_reorder_block\"",
+            workspacesJson = "[" +
+                plainWorkspace("w1", 1, "lerdr") + "," +
+                plainWorkspace("w2", 2, "fix") + "]",
+        )
+        val vm = h.viewModel()
+        h.pump()
+
+        assertThat(vm.uiState.value.canMoveWorkspaceUp).isFalse()
+        vm.moveWorkspace(-1)
+        h.pump()
+        assertThat(h.sentOf("workspace_reorder")).isEmpty()
+    }
+
+    @Test
+    fun `a viewed linked worktree cannot reorder on its own`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady(
+            capabilities = "\"workspace_management\",\"workspace_reorder_block\"",
+            workspacesJson = "[" +
+                worktreeWorkspace("w1", 1, "lerdr", "k1", linked = false) + "," +
+                worktreeWorkspace("w2", 2, "fix", "k1", linked = true) + "," +
+                plainWorkspace("w3", 3, "docs") + "]",
+            agentWorkspaceId = "w2",
+        )
+        val vm = h.viewModel()
+        h.pump()
+
+        // w2 nests under w1's block — like the oracle's manager rows it
+        // is never its own move target.
+        val state = vm.uiState.value
+        assertThat(state.workspaceReorderAvailable).isFalse()
+        assertThat(state.canMoveWorkspaceUp).isFalse()
+        assertThat(state.canMoveWorkspaceDown).isFalse()
+        vm.moveWorkspace(-1)
+        vm.moveWorkspace(1)
+        h.pump()
+        assertThat(h.sentOf("workspace_reorder")).isEmpty()
+    }
+
+    @Test
+    fun `a failed reorder reverts the optimistic order`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady(
+            capabilities = "\"workspace_management\",\"workspace_reorder_block\"",
+            workspacesJson = "[" +
+                plainWorkspace("w1", 1, "lerdr") + "," +
+                plainWorkspace("w2", 2, "fix") + "]",
+        )
+        val vm = h.viewModel()
+        h.pump()
+
+        vm.moveWorkspace(1)
+        h.pump()
+        assertThat(vm.uiState.value.canMoveWorkspaceDown).isFalse()
+
+        h.answerFailed("workspace_reorder", "Relay rejected the reorder")
+
+        val state = vm.uiState.value
+        assertThat(state.status).isEqualTo("Relay rejected the reorder")
+        assertThat(state.statusError).isTrue()
+        // Pending cleared — w1 is back at the head.
+        assertThat(state.canMoveWorkspaceUp).isFalse()
+        assertThat(state.canMoveWorkspaceDown).isTrue()
+    }
+
+    @Test
+    fun `a changed workspace membership drops the pending order`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady(
+            capabilities = "\"workspace_management\",\"workspace_reorder_block\"",
+            workspacesJson = "[" +
+                plainWorkspace("w1", 1, "lerdr") + "," +
+                plainWorkspace("w2", 2, "fix") + "]",
+        )
+        val vm = h.viewModel()
+        h.pump()
+
+        vm.moveWorkspace(1)
+        h.pump()
+        assertThat(vm.uiState.value.canMoveWorkspaceUp).isTrue()
+        h.answerOk("workspace_reorder")
+
+        // The snapshot that lands carries a NEW row — the membership
+        // drift invalidates the optimism and the authoritative order
+        // puts w1 back at the head.
+        h.handle().emit(
+            json(
+                """{"type":"workspaces","workspaces":[""" +
+                    plainWorkspace("w1", 1, "lerdr") + "," +
+                    plainWorkspace("w2", 2, "fix") + "," +
+                    plainWorkspace("w3", 3, "docs") + "]}",
+            ),
+        )
+        h.pump()
+
+        val state = vm.uiState.value
+        assertThat(state.canMoveWorkspaceUp).isFalse()
+        assertThat(state.canMoveWorkspaceDown).isTrue()
+    }
+
+    @Test
+    fun `a confirming snapshot retires the pending order`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady(
+            capabilities = "\"workspace_management\",\"workspace_reorder_block\"",
+            workspacesJson = "[" +
+                plainWorkspace("w1", 1, "lerdr") + "," +
+                plainWorkspace("w2", 2, "fix") + "]",
+        )
+        val vm = h.viewModel()
+        h.pump()
+
+        vm.moveWorkspace(1)
+        h.pump()
+        h.answerOk("workspace_reorder")
+
+        // The daemon confirms the [w2, w1] order — the pending record
+        // clears and the projected gates stay identical.
+        h.handle().emit(
+            json(
+                """{"type":"workspaces","workspaces":[""" +
+                    plainWorkspace("w2", 2, "fix") + "," +
+                    plainWorkspace("w1", 1, "lerdr") + "]}",
+            ),
+        )
+        h.pump()
+
+        val state = vm.uiState.value
+        assertThat(state.canMoveWorkspaceUp).isTrue()
+        assertThat(state.canMoveWorkspaceDown).isFalse()
+    }
+
     // ── pure helpers ──────────────────────────────────────────────────
+
+    @Test
+    fun `workspaceTrees nests linked worktrees under their repo parent`() {
+        fun ws(id: String, number: Int, label: String, key: String, linked: Boolean) =
+            RelayWorkspace(
+                relayId = "r1",
+                relayLabel = "workstation",
+                workspaceId = id,
+                number = number,
+                label = label,
+                worktree = WorkspaceWorktree(
+                    repoKey = key,
+                    isLinkedWorktree = linked,
+                ),
+            )
+        val w1 = ws("w1", 1, "lerdr", "k1", linked = false)
+        // Children sort by (number, label) — w3 precedes w2.
+        val w2 = ws("w2", 3, "fix", "k1", linked = true)
+        val w3 = ws("w3", 2, "audit", "k1", linked = true)
+        val w4 = RelayWorkspace(
+            relayId = "r1",
+            relayLabel = "workstation",
+            workspaceId = "w4",
+            number = 4,
+            label = "docs",
+        )
+        val trees = workspaceTrees(listOf(w1, w2, w3, w4))
+        assertThat(trees.map { it.workspace.workspaceId })
+            .containsExactly("w1", "w4").inOrder()
+        assertThat(trees.first().workspaceIds)
+            .containsExactly("w1", "w3", "w2").inOrder()
+        assertThat(trees.last().workspaceIds).containsExactly("w4")
+    }
+
+    @Test
+    fun `workspaceTrees keeps an orphan linked worktree as a root`() {
+        val w1 = RelayWorkspace(
+            relayId = "r1",
+            relayLabel = "workstation",
+            workspaceId = "w1",
+            number = 1,
+            label = "lerdr",
+        )
+        // repo_key k9 has no primary on this relay — w2 stays top-level.
+        val w2 = RelayWorkspace(
+            relayId = "r1",
+            relayLabel = "workstation",
+            workspaceId = "w2",
+            number = 2,
+            label = "fix",
+            worktree = WorkspaceWorktree(repoKey = "k9", isLinkedWorktree = true),
+        )
+        val trees = workspaceTrees(listOf(w1, w2))
+        assertThat(trees.map { it.workspace.workspaceId })
+            .containsExactly("w1", "w2").inOrder()
+        assertThat(trees.last().workspaceIds).containsExactly("w2")
+    }
 
     @Test
     fun `workspaceGroupIds orders primary first then children`() {

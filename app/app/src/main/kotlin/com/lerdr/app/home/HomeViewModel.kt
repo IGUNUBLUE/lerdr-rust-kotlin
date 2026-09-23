@@ -3,11 +3,14 @@ package com.lerdr.app.home
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.lerdr.app.session.SessionRepository
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import lerdr.core.model.CommandResultMessage
@@ -37,6 +40,30 @@ class HomeViewModel(
     /** One-shot snackbar text — oracle `showToast` parity. */
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val messages: SharedFlow<String> = _messages.asSharedFlow()
+
+    /**
+     * The oracle's `pullRefreshing` — a fixed visual window that holds the
+     * pull indicator up briefly after a trigger and refuses re-arming
+     * while open (`touchStart` requires `!pullRefreshing`).
+     */
+    private val _inventoryRefreshing = MutableStateFlow(false)
+    val inventoryRefreshing: StateFlow<Boolean> = _inventoryRefreshing.asStateFlow()
+
+    /**
+     * Pull-to-refresh on the agent list — the oracle's
+     * `relayStore.requestInventoryRefresh()`: `refresh_agents` to every
+     * connected relay plus a redial of disconnected registry endpoints.
+     * A second trigger inside the window is a no-op.
+     */
+    fun refreshInventory() {
+        if (_inventoryRefreshing.value) return
+        _inventoryRefreshing.value = true
+        sessions.inventoryRefresh()
+        viewModelScope.launch {
+            delay(INVENTORY_REFRESH_WINDOW_MS)
+            _inventoryRefreshing.value = false
+        }
+    }
 
     /** `respond` — inline approval answer on a needs-you card. */
     fun respond(card: AttentionCardUi, index: Int) {
@@ -94,5 +121,10 @@ class HomeViewModel(
                 _messages.emit(failure.message ?: "Could not stop the agent")
             }
         }
+    }
+
+    companion object {
+        /** Oracle `setTimeout(…, 900)` — the pull indicator's hold window. */
+        const val INVENTORY_REFRESH_WINDOW_MS = 900L
     }
 }

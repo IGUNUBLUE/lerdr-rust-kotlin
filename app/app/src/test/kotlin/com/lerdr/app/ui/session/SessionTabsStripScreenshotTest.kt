@@ -62,6 +62,7 @@ class SessionTabsStripScreenshotTest {
                     onOpenMenu = {},
                     onDismissMenu = {},
                     onMoveTab = { _, _ -> },
+                    onMoveWorkspace = {},
                     onRequestRename = {},
                     onRenameDraftChange = {},
                     onConfirmRename = {},
@@ -96,6 +97,32 @@ class SessionTabsStripScreenshotTest {
     @Test
     fun strip_menuOpen() {
         show(baseState().copy(menuTabId = "tabB"))
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun strip_menuOpen_workspaceReorder() {
+        show(
+            baseState().copy(
+                menuTabId = "tabB",
+                workspaceReorderAvailable = true,
+                canMoveWorkspaceUp = true,
+                canMoveWorkspaceDown = true,
+            ),
+        )
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun strip_menuOpen_workspaceReorderEdge() {
+        show(
+            baseState().copy(
+                menuTabId = "tabB",
+                workspaceReorderAvailable = true,
+                canMoveWorkspaceUp = true,
+                canMoveWorkspaceDown = false,
+            ),
+        )
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
 
