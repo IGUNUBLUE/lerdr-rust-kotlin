@@ -29,6 +29,81 @@ From `api/herdr-api.schema.json` (protocol 22, 131 methods):
 with SchemaRegistry gating — a `HerdrCapabilities` struct consumed by
 feature flags, not per-call probing.
 
+## Herdr 0.9.1 capability audit (post-implementation, vs `api schema --json`)
+
+129 schema methods; the relay exercises 66. The remaining 63 decompose as:
+
+**Output revisions (upstream Discussion #1277, landed in 0.9.x)** —
+`pane.read`/`PaneInfo` carry `content_revision` (u64, seqlock-style: even
+when stable, odd mid-write; ops taking `content_revision` fail with
+`stale_content` on mismatch); `pane_output_changed{pane_id,workspace_id,
+revision}` is a subscription event; `events.wait`/`pane.wait_for_output`
+accept `min_revision`. `lerdr-herdr` already models all of it
+(`types.rs:616-724`) but `lerdr-coord` does not consume it — the watch
+path is still tick-polling with a `pane.*` invalidation fast path, and
+the mid-read fence counts the coordinator's own `content_rev` rather
+than the upstream revision. Both are **internal upgrades, no wire
+change**: (a) wake watched panes on `pane_output_changed` instead of /
+ahead of the poll tick; (b) pass the upstream `content_revision` through
+`pane.read` and treat `stale_content` as the fence-trip signal. Pane
+respawn resets the upstream counter — our generation fence already owns
+that axis; the two compose.
+
+**Remote navigation/focus** — `agent.focus`, `pane.focus`,
+`pane.focus_direction`, `tab.focus`, `workspace.focus`, `pane.zoom`,
+`pane.neighbor`, `pane.edges`: attention deep-link (phone tap → desktop
+jumps to the pane). Needs new wire actions → Phase-5/app coordination.
+
+**Pane/layout lifecycle** — `pane.{split,move,swap,resize,rename,close,
+get,current}`, `tab.{close,get}`, `layout.export`, `layout.
+set_split_ratio`, `pane.scroll`: remote layout management. Wire actions
+needed for app use.
+
+**Revision-validated content ops** — `pane.copy_search` (server-side
+search → `{matches,total}`), `pane.copy_motion`, `pane.selection.read`,
+`pane.edit_scrollback`, `pane.link.{resolve,activate}`: terminal
+search/selection/link-opening from the phone. `link.resolve`+
+`link.activate` are the programmatic complement to our `link_handlers`
+manifest regex.
+
+**Reporting/metadata** — `pane.report_metadata` (title, `display_agent`,
+`state_labels`, named `tokens`, `ttl_ms`+`seq` ordering),
+`workspace.report_metadata`, `pane.report_agent`,
+`pane.report_agent_session`, `pane.{release_agent,clear_agent_authority}`:
+these are where the projection's `tokens`/`state_labels` come from —
+**correction to spec-gaps: they are herdr-reported metadata, not Go-only
+inventions**; `PaneInfo` already deserializes them. Outbound use: the
+relay could annotate panes ("phone watching") or report semantic state
+for agents herdr doesn't detect.
+
+**Plugin driving** — `plugin.pane.{open,focus,close}`,
+`plugin.{enable,disable,link,unlink,list,log.list,action.list}`:
+open our own setup/status panes via socket instead of the CLI
+(`open-plugin-pane.sh` goes through `herdr` CLI today — socket path
+removes that dep); drive *other* plugins' actions from the phone.
+`HERDR_PLUGIN_CONTEXT_JSON` carries selected text, clicked URL, and
+link-handler fields — our link scripts already consume it.
+
+**Server/admin** — `server.reload_config`, `server.agent_manifests`,
+`server.reload_agent_manifests` (diagnostics screen: which detection
+rules are active), `integration.{install,uninstall}` (`list` already
+used), `server.live_handoff`, `server.stop` (dangerous — probably never
+expose), `client.window_title.{set,clear}` + `client_shell.surface.set`
+(desktop chrome: "phone connected" indicator — shell-surface is for
+herdr's own thin clients, not us).
+
+**Not worth it** — `pane.graphics.{set,info,clear}` (kitty/sixel — our
+read path carries text, not images), `popup.close`,
+`product_announcement.dismiss`, `release_notes.dismiss`,
+`pane.input.set` (right-click mode; misleading name), `agent.read`/
+`agent.send_keys` (agent-scoped duplicates of the pane ops we use).
+
+**Remote/federation note** — herdr's own remote path is SSH thin-client
++ `herdr machine` endpoint federation with `SCM_RIGHTS` live handoff.
+Our Tailscale relay is a parallel phone path, not a thin client — no
+conflict, but `server.live_handoff` explains why `agent.view.set` must
+be re-asserted after takeover (handoff moves PTY fds to a new server).
+
 ## Material 3 Expressive — verified state (Sept 2026)
 
 - Stable `material3` = **1.4.0 does NOT ship Expressive** — APIs removed
