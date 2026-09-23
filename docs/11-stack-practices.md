@@ -98,6 +98,18 @@ read path carries text, not images), `popup.close`,
 `pane.input.set` (right-click mode; misleading name), `agent.read`/
 `agent.send_keys` (agent-scoped duplicates of the pane ops we use).
 
+**Phase-5 wire candidates — app-side priority ranking (2026-09):**
+1. `focus` family (`agent.focus`/`pane.focus`/`workspace.focus`) — tap a
+   notification → desktop jumps to the pane. The app already deep-links
+   into sessions; the relay→herdr leg is what's missing.
+2. `pane.copy_search` / `pane.selection.read` — terminal find is
+   currently client-side over the served buffer; server-side search is
+   revision-validated and covers full scrollback.
+3. `pane.link.resolve` / `pane.link.activate` — programmatic link
+   handling complementing the manifest `link_handlers`.
+4. `layout.export` / `layout.apply` — workspace templates from the
+   phone; valuable, lower priority.
+
 **Remote/federation note** — herdr's own remote path is SSH thin-client
 + `herdr machine` endpoint federation with `SCM_RIGHTS` live handoff.
 Our Tailscale relay is a parallel phone path, not a thin client — no
