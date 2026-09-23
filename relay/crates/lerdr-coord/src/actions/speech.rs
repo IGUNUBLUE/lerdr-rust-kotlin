@@ -1663,9 +1663,10 @@ fn parse_pcm16_mono(raw: &[u8]) -> Result<(u32, Vec<i16>), String> {
     if sample_rate == 0 || data.len() < 2 {
         return Err("missing audio data".to_owned());
     }
-    let samples = data
-        .chunks_exact(2)
-        .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
+    let (pairs, _) = data.as_chunks::<2>();
+    let samples = pairs
+        .iter()
+        .map(|chunk| i16::from_le_bytes(*chunk))
         .collect();
     Ok((sample_rate, samples))
 }
