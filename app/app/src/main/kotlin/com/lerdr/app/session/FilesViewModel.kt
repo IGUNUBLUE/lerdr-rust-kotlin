@@ -1,5 +1,6 @@
 package com.lerdr.app.session
 
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.async
@@ -28,12 +29,14 @@ enum class FilesPreviewKind {
 }
 
 /** One breadcrumb segment — [dir] is "" for the workspace root. */
+@Immutable
 data class FilesBreadcrumb(
     val label: String,
     val dir: String,
 )
 
 /** Everything Files mode renders — tree browser, git changes, preview pane. */
+@Immutable
 data class FilesUiState(
     val paneId: String,
     val title: String = "",

@@ -51,6 +51,19 @@ object ReconnectPolicy {
     /** `E2EE_HANDSHAKE_TIMEOUT_MS` — open → server finish. */
     const val HANDSHAKE_TIMEOUT_MS = 10_000L
 
+    /**
+     * Inbound queue depth for one socket's raw frames — generous headroom
+     * for bursts while the decrypt loop drains; on overflow the socket dies
+     * and resync replays a consistent stream (frames can't be skipped).
+     */
+    const val FRAME_BUFFER_CAPACITY = 256
+
+    /**
+     * Decoded-message queue depth between `RelaySession` and its demux
+     * consumer — same overflow policy as [FRAME_BUFFER_CAPACITY].
+     */
+    const val INCOMING_BUFFER_CAPACITY = 256
+
     /** The keepalive/revalidation ping action — the relay always answers it. */
     const val HEALTH_CHECK_ACTION = "refresh_agents"
 

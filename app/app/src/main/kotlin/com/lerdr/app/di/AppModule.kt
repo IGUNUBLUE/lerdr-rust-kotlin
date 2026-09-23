@@ -16,12 +16,10 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
-import java.io.File
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import lerdr.core.data.AndroidKeystoreCipher
 import lerdr.core.data.CredentialStore
 import lerdr.core.data.DraftStore
 import lerdr.core.data.KeystoreCredentialStore
@@ -65,11 +63,7 @@ abstract class AppModule {
         fun keystoreCredentialStore(
             @ApplicationContext context: Context,
             @AppScope scope: CoroutineScope,
-        ): KeystoreCredentialStore = KeystoreCredentialStore(
-            file = File(context.filesDir, "device-credentials.bin"),
-            cipher = AndroidKeystoreCipher(),
-            scope = scope,
-        )
+        ): KeystoreCredentialStore = KeystoreCredentialStore.create(context, scope)
 
         @Provides
         @Singleton

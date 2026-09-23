@@ -51,7 +51,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -150,10 +152,26 @@ fun AgentFeedContent(
 ) {
     val spacing = LerdrTheme.spacing
     val listState = rememberLazyListState()
-    LaunchedEffect(uiState.entries.size) {
-        if (uiState.entries.isNotEmpty()) {
-            listState.animateScrollToItem(uiState.entries.lastIndex)
+    // Follow the tail only while the user is pinned to the bottom — a
+    // "Load older" prepend keeps its anchor via the stable item keys, and
+    // manual scroll-back must not yank the viewport down on new output.
+    val pinnedToBottom by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+            lastVisible >= info.totalItemsCount - 1
         }
+    }
+    // The tail key changes on a new last entry and on in-place text growth
+    // (streaming replies); prepends leave it untouched so no scroll fires.
+    val tailKey = uiState.entries.lastOrNull()?.let { "${it.id}:${it.text.length}" }
+    LaunchedEffect(tailKey, uiState.working, uiState.blocked != null) {
+        if (tailKey == null || !pinnedToBottom) return@LaunchedEffect
+        val lastIndex = (if (uiState.hasMoreHistory) 1 else 0) +
+            uiState.entries.size +
+            (if (uiState.blocked != null) 1 else 0) +
+            (if (uiState.working) 1 else 0) - 1
+        listState.animateScrollToItem(lastIndex.coerceAtLeast(0))
     }
     Scaffold(
         topBar = {

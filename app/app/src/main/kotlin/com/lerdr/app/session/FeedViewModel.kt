@@ -1,5 +1,6 @@
 package com.lerdr.app.session
 
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
@@ -26,6 +27,7 @@ import lerdr.core.store.agentStatusGroup
 import lerdr.core.store.rawBlocked
 
 /** Everything Feed mode renders — conversation page, blocker card, composer. */
+@Immutable
 data class FeedUiState(
     val paneId: String,
     /** Agent display name for the top bar. */

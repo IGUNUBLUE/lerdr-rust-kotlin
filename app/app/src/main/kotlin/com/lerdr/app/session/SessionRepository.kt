@@ -10,13 +10,16 @@ import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -143,6 +146,9 @@ class SessionRepository @Inject constructor(
     /** Panes the UI has open — watched intent, survives session recreation. */
     private val openPanes = LinkedHashSet<String>()
 
+    /** Bumped on every `panes` insert/remove so `paneSnapshot` re-resolves. */
+    private val paneGeneration = MutableStateFlow(0L)
+
     private val pendingRaw = ConcurrentHashMap<String, PendingRaw>()
 
     /** `pendingUploads` — `upload_*` requests answer on their own frame type. */
@@ -177,10 +183,49 @@ class SessionRepository @Inject constructor(
         }
     }
 
-    /** `setHidden` fan-out — hidden sessions retire keepalives per policy. */
+    /**
+     * `setHidden` fan-out — hidden sessions retire keepalives per policy, and
+     * open panes unwatch/re-watch with the app (`visibilitychange` parity:
+     * the `openPanes` intent survives, so resume re-arms watch + read).
+     */
     fun setHidden(hidden: Boolean) {
         synchronized(lock) { sessions.values.toList() }
             .forEach { it.handle.setHidden(hidden) }
+        if (_hidden.value == hidden) return
+        _hidden.value = hidden
+        synchronized(lock) { hiddenSince = if (hidden) System.currentTimeMillis() else 0L }
+        scope.launch {
+            val paneIds = synchronized(lock) { openPanes.toList() }
+            for (paneId in paneIds) {
+                val runtime = synchronized(lock) { panes[paneId] } ?: continue
+                runtime.mutex.withLock {
+                    val intents = if (hidden) {
+                        runtime.surface.unwatch()
+                    } else {
+                        runtime.surface.requestRead() + runtime.surface.watch()
+                    }
+                    dispatchIntents(runtime, intents)
+                }
+            }
+        }
+    }
+
+    /** App visibility — the terminal's lease renewal gates on it. */
+    val hidden: StateFlow<Boolean> get() = _hidden
+    private val _hidden = MutableStateFlow(false)
+
+    /** `hiddenAt` — when the app last went hidden; 0 while visible. */
+    @Volatile
+    private var hiddenSince = 0L
+
+    /**
+     * `paneLeaseRenewalAllowed` — a hidden app renews only within the 5 min
+     * grace; after it the relay TTL hands the pane's size back to the desktop.
+     */
+    fun paneLeaseRenewalAllowed(): Boolean {
+        if (!_hidden.value) return true
+        val since = synchronized(lock) { hiddenSince }
+        return since > 0 && System.currentTimeMillis() - since < PANE_LEASE_HIDDEN_GRACE_MS
     }
 
     /** `revalidateConnections` — foreground/wake/network-restore probe. */
@@ -239,7 +284,9 @@ class SessionRepository @Inject constructor(
             panes.values
                 .filter { it.relayId == runtime.endpoint.id }
                 .forEach { it.snapshots.value = null }
-            panes.values.removeAll { it.relayId == runtime.endpoint.id }
+            if (panes.values.removeAll { it.relayId == runtime.endpoint.id }) {
+                paneGeneration.value += 1
+            }
         }
     }
 
@@ -411,7 +458,9 @@ class SessionRepository @Inject constructor(
     /** `unwatchPane` — the terminal view left this pane. */
     suspend fun closePane(paneId: String) {
         synchronized(lock) { openPanes.remove(paneId) }
-        val runtime = synchronized(lock) { panes.remove(paneId) } ?: return
+        val runtime = synchronized(lock) {
+            panes.remove(paneId)?.also { paneGeneration.value += 1 }
+        } ?: return
         runtime.mutex.withLock {
             dispatchIntents(runtime, runtime.surface.unwatch())
             runtime.surface.reset()
@@ -427,11 +476,17 @@ class SessionRepository @Inject constructor(
         }
     }
 
-    /** The render seam — null until the first frame commits. */
-    fun paneSnapshot(paneId: String): Flow<PaneSurface.Snapshot?> = flow {
-        val runtime = synchronized(lock) { panes[paneId] }
-        if (runtime == null) emit(null) else runtime.snapshots.collect { emit(it) }
-    }
+    /**
+     * The render seam — null until the first frame commits. Re-resolves the
+     * runtime whenever the registry mutates so collectors survive runtime
+     * creation (collector racing `openPane`) and replacement (reconnect,
+     * `closePane`/`openPane` cycles) instead of pinning a dead runtime.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun paneSnapshot(paneId: String): Flow<PaneSurface.Snapshot?> =
+        paneGeneration.flatMapLatest {
+            synchronized(lock) { panes[paneId] }?.snapshots ?: flowOf(null)
+        }
 
     private fun paneRuntime(paneId: String): PaneRuntime? {
         val separator = paneId.indexOf("::")
@@ -439,7 +494,8 @@ class SessionRepository @Inject constructor(
         val relayId = paneId.substring(0, separator)
         synchronized(lock) { sessions[relayId] } ?: return null
         return synchronized(lock) {
-            panes.getOrPut(paneId) {
+            val isNew = paneId !in panes
+            val runtime = panes.getOrPut(paneId) {
                 PaneRuntime(
                     paneId = paneId,
                     relayId = relayId,
@@ -447,6 +503,8 @@ class SessionRepository @Inject constructor(
                     snapshots = MutableStateFlow(null),
                 )
             }
+            if (isNew) paneGeneration.value += 1
+            runtime
         }
     }
 
@@ -460,6 +518,9 @@ class SessionRepository @Inject constructor(
             openPanes.filter { it.startsWith("$relayId::") }
         }
         for (paneId in paneIds) {
+            // A hidden app stays unwatched — `setHidden(false)` re-arms on
+            // resume; resyncing here would leak watch traffic in background.
+            if (_hidden.value) return
             val runtime = paneRuntime(paneId) ?: continue
             runtime.mutex.withLock {
                 val intents = if (runtime.surface.watching) {
@@ -634,6 +695,203 @@ class SessionRepository @Inject constructor(
             Inbound(type = "send_text", text = text).withAgentTarget(agent),
             extras = stringExtras("activity_label" to activityLabel),
         )
+    }
+
+    /** `send_secret` — password-prompt answer; the relay never journals it. */
+    suspend fun sendSecret(paneId: String, text: String): CommandResultMessage {
+        val agent = requireAgent(paneId)
+        if (connectionStore.connectionNow(agent.relayId)
+                ?.capabilities?.contains(SECRET_CAPABILITY) != true
+        ) {
+            throw CommandException("This relay does not support password prompts")
+        }
+        if (text.isEmpty()) throw CommandException("Enter the password first")
+        return sendToAgent(agent, Inbound(type = "send_secret", text = text))
+    }
+
+    /** `copy_agent_response` — the relay answers with the rendered reply text. */
+    suspend fun copyAgentResponse(paneId: String): CommandResultMessage {
+        val agent = requireAgent(paneId)
+        return sendToAgent(
+            agent,
+            Inbound(type = "copy_agent_response"),
+            timeoutMs = COPY_RESPONSE_TIMEOUT_MS,
+        )
+    }
+
+    /** `tab_reorder` — move a pane within its workspace tab strip. */
+    suspend fun reorderTab(paneId: String, insertIndex: Int): CommandResultMessage {
+        val agent = requireAgent(paneId)
+        if (connectionStore.connectionNow(agent.relayId)
+                ?.capabilities?.contains(TAB_REORDER_CAPABILITY) != true
+        ) {
+            throw CommandException("This relay does not support tab ordering")
+        }
+        if (insertIndex < 0) throw CommandException("Tab position is invalid")
+        return sendToAgent(agent, Inbound(type = "tab_reorder", insertIndex = insertIndex))
+    }
+
+    // ── agent management ──────────────────────────────────────────────
+
+    /** `agent_start` — launch a profile into a workspace (relay-scoped). */
+    suspend fun startAgent(
+        relayId: String,
+        profileId: String,
+        name: String,
+        cwd: String,
+        prompt: String = "",
+        workspaceId: String = "",
+    ): CommandResultMessage = request(
+        relayId,
+        Inbound(
+            type = "agent_start",
+            profileId = profileId,
+            name = name,
+            cwd = cwd,
+            prompt = prompt,
+            workspaceId = workspaceId,
+        ),
+        timeoutMs = AGENT_START_TIMEOUT_MS,
+    )
+
+    /** `agent_rename` — retitle a running pane. */
+    suspend fun renameAgent(paneId: String, name: String): CommandResultMessage {
+        val agent = requireAgent(paneId)
+        return sendToAgent(agent, Inbound(type = "agent_rename", name = name))
+    }
+
+    /** `agent_restart` — respawn the pane's process in place. */
+    suspend fun restartAgent(paneId: String): CommandResultMessage {
+        val agent = requireAgent(paneId)
+        return sendToAgent(agent, Inbound(type = "agent_restart"))
+    }
+
+    /** `agent_clear` — wipe the pane's transcript (oracle's 45 s window). */
+    suspend fun clearAgent(paneId: String): CommandResultMessage {
+        val agent = requireAgent(paneId)
+        return sendToAgent(
+            agent,
+            Inbound(type = "agent_clear"),
+            timeoutMs = AGENT_CLEAR_TIMEOUT_MS,
+        )
+    }
+
+    /** `agent_stop` — terminate the pane's process. */
+    suspend fun stopAgent(paneId: String): CommandResultMessage {
+        val agent = requireAgent(paneId)
+        return sendToAgent(agent, Inbound(type = "agent_stop"))
+    }
+
+    // ── workspace management ──────────────────────────────────────────
+
+    private fun requireWorkspaceManagement(relayId: String) {
+        if (connectionStore.connectionNow(relayId)
+                ?.capabilities?.contains(WORKSPACE_MANAGEMENT_CAPABILITY) != true
+        ) {
+            throw CommandException("This relay does not support workspace management")
+        }
+    }
+
+    /** `workspace_create` — new workspace rooted at [cwd]. */
+    suspend fun createWorkspace(
+        relayId: String,
+        cwd: String,
+        label: String,
+    ): CommandResultMessage {
+        requireWorkspaceManagement(relayId)
+        val result = request(
+            relayId,
+            Inbound(type = "workspace_create", cwd = cwd, label = label),
+            timeoutMs = AGENT_START_TIMEOUT_MS,
+        )
+        refreshAgents()
+        return result
+    }
+
+    /** `workspace_rename` — retitle a workspace tab. */
+    suspend fun renameWorkspace(
+        relayId: String,
+        workspaceId: String,
+        label: String,
+    ): CommandResultMessage {
+        requireWorkspaceManagement(relayId)
+        val result = request(
+            relayId,
+            Inbound(type = "workspace_rename", workspaceId = workspaceId, label = label),
+        )
+        refreshAgents()
+        return result
+    }
+
+    /**
+     * `workspace_reorder` — block form (`workspace_ids` + `before_workspace_id`)
+     * when the relay advertises `workspace_reorder_block`, legacy
+     * single-workspace `insert_index` otherwise.
+     */
+    suspend fun reorderWorkspaceBlock(
+        relayId: String,
+        workspaceIds: List<String>,
+        beforeWorkspaceId: String,
+        legacyInsertIndex: Int,
+    ): CommandResultMessage {
+        requireWorkspaceManagement(relayId)
+        if (workspaceIds.isEmpty() || workspaceIds.size != workspaceIds.toSet().size) {
+            throw CommandException("Workspace selection is invalid")
+        }
+        val capabilities = connectionStore.connectionNow(relayId)?.capabilities.orEmpty()
+        val message = when {
+            WORKSPACE_REORDER_BLOCK_CAPABILITY in capabilities -> Inbound(
+                type = "workspace_reorder",
+                workspaceIds = workspaceIds,
+                beforeWorkspaceId = beforeWorkspaceId,
+            )
+            workspaceIds.size == 1 && legacyInsertIndex >= 0 -> Inbound(
+                type = "workspace_reorder",
+                workspaceId = workspaceIds.single(),
+                insertIndex = legacyInsertIndex,
+            )
+            else -> throw CommandException(
+                "Update Herdr to reorder a workspace with linked worktrees",
+            )
+        }
+        val result = request(relayId, message)
+        refreshAgents()
+        return result
+    }
+
+    /**
+     * `workspace_close` — optionally the whole linked-worktree group when
+     * [closeGroup] is set (the oracle's 30 s window).
+     */
+    suspend fun closeWorkspace(
+        relayId: String,
+        workspaceId: String,
+        closeGroup: Boolean = false,
+        expectedWorkspaceIds: List<String> = emptyList(),
+    ): CommandResultMessage {
+        requireWorkspaceManagement(relayId)
+        val result = request(
+            relayId,
+            Inbound(
+                type = "workspace_close",
+                workspaceId = workspaceId,
+                closeGroup = closeGroup,
+                expectedWorkspaceIds = if (closeGroup) expectedWorkspaceIds else emptyList(),
+            ),
+            timeoutMs = WORKSPACE_CLOSE_TIMEOUT_MS,
+        )
+        refreshAgents()
+        return result
+    }
+
+    /** `list_directories` — the launch-form directory browser. */
+    suspend fun listDirectories(relayId: String, path: String = ""): DirectoryListing {
+        val result = request(
+            relayId,
+            Inbound(type = "list_directories", path = path),
+            timeoutMs = LIST_DIRECTORIES_TIMEOUT_MS,
+        )
+        return parseDirectoryListing(result.data)
     }
 
     // ── attachment uploads ────────────────────────────────────────────
@@ -1313,6 +1571,17 @@ class SessionRepository @Inject constructor(
         const val CONVERSATION_TIMEOUT_MS = 20_000L
         const val WORKSPACE_TIMEOUT_MS = 20_000L
         const val WORKSPACE_INSPECTION_CAPABILITY = "workspace_inspection"
+        const val SECRET_CAPABILITY = "secret_input"
+        const val TAB_REORDER_CAPABILITY = "tab_reorder"
+        const val WORKSPACE_MANAGEMENT_CAPABILITY = "workspace_management"
+        const val WORKSPACE_REORDER_BLOCK_CAPABILITY = "workspace_reorder_block"
+        const val AGENT_START_TIMEOUT_MS = 45_000L
+        const val AGENT_CLEAR_TIMEOUT_MS = 45_000L
+        /** `PANE_LEASE_HIDDEN_GRACE_MS` — hidden renewals stop past this. */
+        const val PANE_LEASE_HIDDEN_GRACE_MS = 5 * 60_000L
+        const val WORKSPACE_CLOSE_TIMEOUT_MS = 30_000L
+        const val COPY_RESPONSE_TIMEOUT_MS = 15_000L
+        const val LIST_DIRECTORIES_TIMEOUT_MS = 10_000L
         /** `ATTACHMENT_UPLOAD_TIMEOUT_MS` — per-request, chunks included. */
         const val UPLOAD_TIMEOUT_MS = 60_000L
         const val ACTIVITY_LIMIT = 500

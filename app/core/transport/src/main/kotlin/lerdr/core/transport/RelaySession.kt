@@ -107,10 +107,14 @@ class RelaySession(
 
     /**
      * Decrypted server→client messages across connections. Single-consumer
-     * (the oracle has exactly one handler) and lossless: frames buffer until
-     * collected, so early `push_config` traffic survives subscription order.
+     * (the oracle has exactly one handler) and lossless within the bound:
+     * frames buffer until collected, so early `push_config` traffic survives
+     * subscription order. Overflow aborts the connection — frames can't be
+     * skipped mid-stream, so the next dial's resync replays a consistent
+     * snapshot instead of growing the queue without limit.
      */
-    private val incomingChannel = Channel<JsonObject>(Channel.UNLIMITED)
+    private val incomingChannel =
+        Channel<JsonObject>(ReconnectPolicy.INCOMING_BUFFER_CAPACITY)
     val incoming: kotlinx.coroutines.flow.Flow<JsonObject> = incomingChannel.receiveAsFlow()
 
     // The oracle's store holds exactly one message consumer; transport
@@ -500,7 +504,11 @@ class RelaySession(
             "action_receipt" -> handleActionReceipt(requestId, message)
             "error" -> handleApiError(requestId, message)
         }
-        incomingChannel.trySend(message)
+        if (incomingChannel.trySend(message).isFailure) {
+            // Demux stalled past the bound — the stream can't skip frames,
+            // so kill the socket; redial + resync replays consistent state.
+            currentConnection?.abort()
+        }
     }
 
     private fun handleCommandResult(requestId: String?, raw: JsonObject) {

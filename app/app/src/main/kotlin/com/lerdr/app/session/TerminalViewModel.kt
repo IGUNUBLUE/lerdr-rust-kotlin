@@ -1,11 +1,15 @@
 package com.lerdr.app.session
 
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.lerdr.app.ui.terminal.TerminalCursorUi
 import com.lerdr.app.ui.terminal.TerminalRowUi
 import com.lerdr.app.ui.terminal.parseTerminalRows
 import com.lerdr.app.ui.terminal.terminalCursor
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -17,6 +21,7 @@ import lerdr.core.store.RelayStatus
 import lerdr.core.terminal.PaneSurface
 
 /** Everything Terminal mode renders — pane snapshot + key/send actions. */
+@Immutable
 data class TerminalUiState(
     val paneId: String,
     val title: String = "",
@@ -61,6 +66,18 @@ class TerminalViewModel(
 
     private val relayId = paneId.substringBefore("::")
     private val lastError = MutableStateFlow<String?>(null)
+
+    /**
+     * The lease the relay applied (clamped to its bounds), renewed on the
+     * oracle's 10 s cadence — the relay TTL is ~120 s and the renewal is
+     * also what re-arms the lease after a reconnect dropped it. Volatile:
+     * written on viewModelScope, read on appScope.
+     */
+    @Volatile
+    private var leasedColumns = 0
+
+    @Volatile
+    private var leasedRows = 0
 
     // Parse cache keyed on the committed content — a metadata-only delta
     // bumps revision without touching `lines`, so the row list survives
@@ -117,13 +134,64 @@ class TerminalViewModel(
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TerminalUiState(paneId))
 
+    /**
+     * Renewal + resume-edge jobs ride [appScope], not viewModelScope: a
+     * repeating delay on Dispatchers.Main never lets `runTest`'s scheduler
+     * go idle, while the test's backgroundScope is exempt. onCleared cancels
+     * them explicitly since appScope outlives the ViewModel.
+     */
+    private var leaseLoopJob: Job? = null
+    private var reLeaseJob: Job? = null
+
     init {
         viewModelScope.launch { sessions.openPane(paneId) }
+        leaseLoopJob = appScope.launch {
+            while (true) {
+                delay(LEASE_REFRESH_MS)
+                // The oracle gates hidden renewals on a 5 min grace — after it
+                // the relay TTL hands the pane's size back to the desktop.
+                val columns = leasedColumns
+                if (columns > 0 && sessions.paneLeaseRenewalAllowed()) {
+                    try {
+                        sessions.leasePaneSize(paneId, columns, leasedRows)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        // Transient (disconnected, agent gone) — next tick retries.
+                    }
+                }
+            }
+        }
+        reLeaseJob = appScope.launch {
+            // Refocus parity: the moment the app is visible again the lease
+            // re-arms instead of waiting out the renewal interval.
+            sessions.hidden.collect { hidden ->
+                if (!hidden && leasedColumns > 0) {
+                    try {
+                        sessions.leasePaneSize(paneId, leasedColumns, leasedRows)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+        }
     }
 
     override fun onCleared() {
-        // viewModelScope is already cancelled here — the unwatch rides the app scope.
-        appScope.launch { sessions.closePane(paneId) }
+        leaseLoopJob?.cancel()
+        reLeaseJob?.cancel()
+        // viewModelScope is already cancelled here — release + unwatch ride
+        // the app scope, in order, so the lease drops before the runtime.
+        appScope.launch {
+            if (leasedColumns > 0) {
+                try {
+                    sessions.releasePaneSize(paneId)
+                } catch (_: Exception) {
+                }
+            }
+            sessions.closePane(paneId)
+        }
     }
 
     /** The view measured its grid — negotiate the lease with the relay. */
@@ -131,7 +199,9 @@ class TerminalViewModel(
         if (columns <= 0) return
         viewModelScope.launch {
             try {
-                sessions.leasePaneSize(paneId, columns, rows)
+                val (appliedColumns, appliedRows) = sessions.leasePaneSize(paneId, columns, rows)
+                leasedColumns = appliedColumns
+                leasedRows = appliedRows
             } catch (failure: Exception) {
                 lastError.value = failure.message
             }
@@ -190,5 +260,10 @@ class TerminalViewModel(
             agent.sessionName?.takeIf { it.isNotEmpty() },
             agent.relayLabel.takeIf { it.isNotEmpty() },
         ).joinToString(" · ")
+    }
+
+    private companion object {
+        /** The oracle's `PANE_SIZE_LEASE_REFRESH_MS` — 10 s against a ~120 s TTL. */
+        const val LEASE_REFRESH_MS = 10_000L
     }
 }

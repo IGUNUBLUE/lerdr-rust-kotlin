@@ -169,6 +169,47 @@ internal fun parseWorkspaceGitDiff(data: JsonElement?, path: String): WorkspaceG
     return WorkspaceGitDiff(path = path, diff = diff)
 }
 
+/** One `list_directories` child entry. */
+data class DirectoryEntry(
+    val name: String,
+    val path: String,
+)
+
+/**
+ * `list_directories` result — the launch-form directory browser
+ * (`frontend/src/lib/types.ts`: `{current:{path,label}, parent, directories}`).
+ */
+data class DirectoryListing(
+    val currentPath: String,
+    val currentLabel: String,
+    /** Absolute path of the parent directory; empty when at the root. */
+    val parent: String,
+    val directories: List<DirectoryEntry>,
+)
+
+internal fun parseDirectoryListing(data: JsonElement?): DirectoryListing {
+    val obj = data as? JsonObject
+    val current = obj?.get("current") as? JsonObject
+    val currentPath = current?.stringField("path")
+    if (obj == null || currentPath.isNullOrBlank()) {
+        throw CommandException("Relay returned an invalid directory listing")
+    }
+    val directories = obj["directories"] as? kotlinx.serialization.json.JsonArray
+    return DirectoryListing(
+        currentPath = currentPath,
+        currentLabel = current.stringField("label").orEmpty(),
+        parent = obj.stringField("parent").orEmpty(),
+        directories = directories.orEmpty().mapNotNull { element ->
+            val entry = element as? JsonObject ?: return@mapNotNull null
+            val path = entry.stringField("path") ?: return@mapNotNull null
+            DirectoryEntry(
+                name = entry.stringField("name") ?: path.substringAfterLast('/'),
+                path = path,
+            )
+        },
+    )
+}
+
 private fun JsonObject.stringField(name: String): String? =
     (this[name] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
 

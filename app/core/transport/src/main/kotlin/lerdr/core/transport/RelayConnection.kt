@@ -75,8 +75,12 @@ class RelayConnection(
     private val _state = MutableStateFlow<State>(State.Connecting)
     val state: StateFlow<State> = _state
 
-    /** Raw inbound text frames as delivered, before decryption. */
-    private val frames = Channel<ByteArray>(Channel.UNLIMITED)
+    /**
+     * Raw inbound text frames as delivered, before decryption. Bounded —
+     * a stalled decrypt loop can't let this grow without limit; overflow
+     * kills the socket so the next dial resyncs a consistent stream.
+     */
+    private val frames = Channel<ByteArray>(ReconnectPolicy.FRAME_BUFFER_CAPACITY)
 
     private val opened = CompletableDeferred<Response>()
     private val disconnect = CompletableDeferred<DisconnectReason>()
@@ -294,7 +298,13 @@ class RelayConnection(
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
-            frames.trySend(text.toByteArray(Charsets.UTF_8))
+            if (frames.trySend(text.toByteArray(Charsets.UTF_8)).isFailure) {
+                // Pane/command frames can't be skipped mid-stream — overflow
+                // means the consumer stalled, so drop the socket and let the
+                // supervisor redial + resync instead of buffering forever.
+                terminate(DisconnectReason("relay inbound queue overflow"))
+                webSocket.cancel()
+            }
         }
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
