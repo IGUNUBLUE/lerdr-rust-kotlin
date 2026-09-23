@@ -1,62 +1,97 @@
-# lerdr-rust-kotlin
+# lerdr
 
-Lerdr: relay in **Rust**, Android app in **Kotlin + Jetpack Compose
-(Material 3 Expressive)**. The product: your coding agents, live on the
-phone — sessions, questions, approvals, terminals, and workspace files,
-over an end-to-end encrypted channel.
+Your coding agents, live on your phone — sessions, questions, approvals,
+terminals, and workspace files, over an end-to-end encrypted channel.
 
-The repo is self-contained: `docs/` is the spec and the plan, and the
-committed golden vectors in `fixtures/` anchor the wire contract. There
-is no external reference implementation to track.
+A **Rust relay** + **Kotlin / Jetpack Compose (Material 3 Expressive)
+Android app** speaking `protocol v3` over `herdr-e2ee-v2`, backed by a
+[Herdr](https://github.com/0cv/herdr) host. Remote transport: Tailscale.
 
-## Why
+![mission-control mockup](docs/mockup.png)
 
-- **Rust**: one static binary per computer, no GC, with the concurrency
-  profile the relay needs (pane watches, per-client queues, coalescing)
-  — memory-auditable and cheap on modest machines.
-- **Native Kotlin**: no WebView. Real 60/120 fps rendering, native
-  gestures, a real terminal keyboard, notifications and platform
-  integrations without plugin IPC layers — an experience designed for
-  the phone that feels like sitting at the computer.
+## Why lerdr exists
 
-## The core idea
+I was inspired by [0cv/herdr-mobile-relay](https://github.com/0cv/herdr-mobile-relay)
+— the idea of reaching your coding agents from your phone. My first take
+kept the same stack (a Go relay) plus a Tauri-based mobile app. When I got
+access to Cognition's SWE-2 and wanted to put the model through a real
+test, I picked a stack I don't work in — Rust + Kotlin — and let the
+agents rebuild the product. That's how lerdr started.
 
-**The protocol is the boundary.** `protocol v3` over `herdr-e2ee-v2` is
-the frozen contract. The relay and the app evolve independently as long
-as both speak it; the golden vectors keep them honest byte-for-byte.
+The name: the iguana is an animal I've always found curious.
 
-## Documents
+## What it does
 
-| Doc | Contents |
+- **Mission-control home** — agents grouped by workspace with
+  working / attention / idle status, a needs-you rail with one-tap
+  approvals, per-relay connectivity.
+- **Session** — Feed (structured conversation, question and approval
+  cards), Terminal (full ANSI pane, key bar, find), Files (workspace
+  tree, preview, git status/diff).
+- **Pairing** — QR or `lerdr://pair` deep link; biometric lock; device
+  and relay management from Settings.
+- **E2EE** — P-256 handshake + AES-GCM sealed frames between the phone
+  and the relay, riding over Tailscale's WireGuard path.
+- **Frozen wire contract** — `protocol v3` is anchored by committed
+  golden vectors (`fixtures/`) and a determinism harness
+  (`tools/shadow/`): two fresh relays against one fake Herdr must emit
+  byte-identical normalized streams.
+
+## Run it
+
+### Relay — on the machine running Herdr
+
+```sh
+cd relay && cargo build --release -p lerdr-relay
+./target/release/lerdr-relay serve \
+    --host 127.0.0.1 --port 8377 --token <32-byte-secret>
+```
+
+### Tailscale transport
+
+```sh
+tailscale serve --bg --tcp=8377 tcp://localhost:8377
+# or the managed scripts: plugin/scripts/tailscale-serve.sh start
+```
+
+### Pair the app
+
+```sh
+./target/release/lerdr-relay qr        # prints a one-shot link/QR
+kill -USR1 <relay-pid>                 # re-arm a fresh invitation
+```
+
+Scan in the app → `1 computer · live`.
+
+### Android app
+
+```sh
+cd app && ./gradlew :app:assembleDebug   # JDK 17, Android SDK 37.2
+```
+
+### Releases
+
+Tag `v<x.y.z>` and `.github/workflows/release.yml` builds
+`lerdr-relay` tarballs (linux musl amd64/arm64, darwin amd64/arm64),
+`checksums.txt`, and the universal APK (signed when keystore secrets
+are configured). See [docs/release.md](docs/release.md).
+
+## Layout
+
+| Path | Contents |
 |---|---|
-| [00 — Inventory](docs/00-inventory.md) | Feature surface inventory: packages, actions, app features, native surface |
-| [01 — Research](docs/01-research.md) | Reference apps and what to copy from each |
-| [02 — Architecture](docs/02-architecture.md) | Rust crates, Kotlin modules, stack decisions |
-| [03 — Protocol](docs/03-protocol.md) | Wire contract: E2EE handshake, frames, actions, pane watch |
-| [04 — App design](docs/04-app-design.md) | UX spec with Material 3 Expressive, screen by screen |
-| [05 — Roadmap](docs/05-roadmap.md) | Phases, deliverables, cutover criteria |
-| [06 — Risks](docs/06-risks.md) | Technical risks and mitigations |
-| [07 — Execution prompt](docs/07-execution-prompt.md) | Copy-paste master prompt + per-phase loops |
-| [08 — Herdr boundary](docs/08-herdr-boundary.md) | Deep API contract + improved actor topology |
-| [09 — Plugin distribution](docs/09-plugin-distribution.md) | Shipping the Rust relay as a `lerdr.events` Herdr plugin |
-| [10 — Spec gaps](docs/10-spec-gaps.md) | Strict self-review: what is not yet specified, by severity |
-| [11 — Stack practices](docs/11-stack-practices.md) | Herdr API upgrades, M3E state, Kotlin/Rust testing + perf rules |
+| `relay/` | Rust workspace — axum WS server, per-pane watchers, send buffers, Herdr socket client, update worker |
+| `app/` | Kotlin + Compose M3E — nowinandroid-style modules (`:core:*`, `:app`) |
+| `docs/` | The spec: protocol, architecture, UX design, roadmap, spec-gaps |
+| `fixtures/` | Frozen golden vectors anchoring `protocol v3` |
+| `tools/shadow/` | Determinism harness (`rust-a` vs `rust-b` through one fake Herdr) |
+| `plugin/` | Herdr plugin manifest + operator scripts (install, tailscale-serve, release packaging) |
 
-Repo-level agent skills live in [`.devin/skills/`](.devin/skills/) —
-see [AGENTS.md](AGENTS.md).
+## Acknowledgements
 
-![App concept mockup](docs/mockup.png)
+Thanks to [0cv/herdr-mobile-relay](https://github.com/0cv/herdr-mobile-relay)
+for the original idea — this project exists because that one did.
 
-## Project rules
+## License
 
-- **Protocol stability first**: `protocol v3` / `herdr-e2ee-v2` is
-  frozen; improvements (binary codec on the E2EE path, compression,
-  metadata diffing) go into a deliberate Phase-5 revision — never by
-  drift.
-- **Golden vectors**: every cryptographic or parsing seam is pinned by
-  the committed fixtures in `fixtures/`; they change only with a
-  protocol revision.
-- **Capability completeness**: the app covers the full action catalog
-  documented in `docs/03-protocol.md` — the catalog is the checklist.
-- **Android-only client**: no PWA in scope. The Rust relay is a pure
-  WS+API backend — no `web/` asset pipeline.
+MIT — see [LICENSE](LICENSE).
