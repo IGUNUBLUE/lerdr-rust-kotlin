@@ -63,6 +63,8 @@ import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.launch
 import lerdr.core.data.DeviceRole
+import lerdr.core.model.HerdrFeatureStatus
+import lerdr.core.model.HerdrStatus
 
 /**
  * Devices settings section — the `DeviceSettings.svelte` port. Rendered once
@@ -214,6 +216,9 @@ fun DevicesContent(
                     }
                 }
             }
+
+            // ── Herdr status (oracle's per-relay version/warning lines) ─
+            HerdrBlock(uiState.herdrStatus)
 
             // ── relay self-update (oracle's per-relay update row) ─────
             RelayUpdateBlock(
@@ -607,6 +612,99 @@ private fun RelayUpdateBlock(
         }
     }
 }
+
+/**
+ * The oracle's Herdr block on the relay card (SettingsView.svelte):
+ * client/server versions, protocol + endpoint generation, the static
+ * recommendation hint, and the `herdrWarnings` feature line.
+ */
+@Composable
+private fun HerdrBlock(herdr: HerdrStatus?) {
+    val spacing = LerdrTheme.spacing
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    Column(verticalArrangement = Arrangement.spacedBy(spacing.extraSmall)) {
+        Text(
+            "Herdr client: ${herdr?.installedClientVersion?.ifEmpty { "unknown" } ?: "unknown"}",
+            style = MaterialTheme.typography.bodySmall,
+            color = muted,
+        )
+        Text(
+            buildString {
+                append("Herdr server: ")
+                append(
+                    herdr?.serverVersion?.ifEmpty { "unavailable/unknown" }
+                        ?: "unavailable/unknown",
+                )
+                if (herdr?.serverProtocolKnown == true) {
+                    append(" · protocol ").append(herdr.serverProtocol)
+                }
+                herdr?.endpointProtocolGeneration?.let {
+                    append(" · endpoint generation ").append(it)
+                }
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = muted,
+        )
+        Text(
+            "Herdr $HERDR_RECOMMENDED_VERSION recommended.",
+            style = MaterialTheme.typography.bodySmall,
+            color = muted,
+        )
+        herdrWarnings(herdr?.features.orEmpty()).takeIf { it.isNotEmpty() }?.let { warnings ->
+            Text(
+                warnings,
+                style = MaterialTheme.typography.bodySmall,
+                color = LerdrTheme.extendedColors.attention,
+                // Feature degradations announce politely when they appear.
+                modifier = Modifier.liveRegionPolite(),
+            )
+        }
+    }
+}
+
+/**
+ * The oracle's `herdrWarnings` — degrades server features into a joined
+ * " · "-separated line. `supported` entries and benign `unknown` states
+ * (not yet checked, never advertised) are filtered out.
+ */
+internal fun herdrWarnings(features: Map<String, HerdrFeatureStatus>): String =
+    features.entries
+        .filter { (_, feature) ->
+            if (feature.state == "supported") return@filter false
+            // Optional features may not be probed until used, or advertised
+            // at all — neither is evidence of a failed check or an
+            // incompatible server.
+            feature.state != "unknown" || feature.reason !in HERDR_BENIGN_REASONS
+        }
+        .joinToString(" · ") { (name, feature) ->
+            val label = HERDR_FEATURE_LABELS[name] ?: name
+            val message = when {
+                feature.state == "unsupported" ->
+                    if (feature.reason == "method_not_supported") {
+                        "Server upgrade needed"
+                    } else {
+                        "Server feature unavailable"
+                    }
+                feature.reason == "reconnect_required" ->
+                    "Rechecking after Herdr reconnect"
+                else -> "Could not check"
+            }
+            "$label: $message"
+        }
+
+private const val HERDR_RECOMMENDED_VERSION = "0.9.0"
+
+private val HERDR_FEATURE_LABELS = mapOf(
+    "ordinary_json" to "Herdr API",
+    "workspace.move_block" to "Workspace group reorder",
+    "workspace.reordered" to "Workspace reorder events",
+    "pane.read" to "Terminal reads",
+    "tab.move" to "Tab reorder",
+    "client_shell.endpoint" to "Client endpoint",
+    "direct_terminal" to "Direct terminal",
+)
+
+private val HERDR_BENIGN_REASONS = setOf("not_checked", "not_advertised")
 
 @Composable
 private fun RolePill(role: DeviceRole) {

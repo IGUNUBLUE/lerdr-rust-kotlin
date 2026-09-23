@@ -22,6 +22,7 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
 import lerdr.core.data.DeviceRole
+import lerdr.core.model.HerdrStatus
 import lerdr.core.model.Inbound
 import lerdr.core.model.UpdateState
 import lerdr.core.store.RelayStatus
@@ -101,6 +102,8 @@ data class DevicesUiState(
     val update: UpdateState? = null,
     /** `check_update`/`install_update` in flight — latches both buttons. */
     val updateBusy: Boolean = false,
+    /** Live `connection.herdrStatus` — versions + server feature states. */
+    val herdrStatus: HerdrStatus? = null,
 )
 
 /**
@@ -143,6 +146,7 @@ class DevicesViewModel(
                         update = connection?.update,
                         updateSupported = connection?.capabilities
                             ?.contains(SELF_UPDATE_CAPABILITY) == true,
+                        herdrStatus = connection?.herdrStatus,
                     )
                 }
                 if (now && !was) refresh()

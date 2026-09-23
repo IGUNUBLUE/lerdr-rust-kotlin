@@ -15,6 +15,8 @@ import com.lerdr.app.settings.InvitationUi
 import com.lerdr.app.settings.QrBitmapUi
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import lerdr.core.data.DeviceRole
+import lerdr.core.model.HerdrFeatureStatus
+import lerdr.core.model.HerdrStatus
 import lerdr.core.model.UpdateState
 import org.junit.Rule
 import org.junit.Test
@@ -245,6 +247,40 @@ class DevicesSectionScreenshotTest {
                 canAdminister = true,
                 fetched = true,
                 currentDeviceId = "dev-1",
+            ),
+        )
+    }
+
+    @Test
+    fun devices_herdr_warnings() {
+        content(
+            DevicesUiState(
+                relayLabel = "workstation",
+                connected = true,
+                canAdminister = true,
+                canInvite = true,
+                fetched = true,
+                currentDeviceId = "dev-1",
+                herdrStatus = HerdrStatus(
+                    installedClientVersion = "0.9.0",
+                    serverVersion = "0.8.2",
+                    serverProtocol = 3,
+                    serverProtocolKnown = true,
+                    endpointProtocolGeneration = 7,
+                    features = mapOf(
+                        "pane.read" to HerdrFeatureStatus(
+                            state = "supported",
+                        ),
+                        "workspace.move_block" to HerdrFeatureStatus(
+                            state = "unsupported",
+                            reason = "method_not_supported",
+                        ),
+                        "tab.move" to HerdrFeatureStatus(
+                            state = "degraded",
+                            reason = "reconnect_required",
+                        ),
+                    ),
+                ),
             ),
         )
     }
