@@ -1,5 +1,10 @@
 # lerdr
 
+> **Status: beta / in development.** Working end-to-end, but still
+> pre-release software — expect rough edges, moving pieces, and no
+> compatibility guarantees between versions yet. Releases are marked
+> pre-release on purpose.
+
 Your coding agents, live on your phone — sessions, questions, approvals,
 terminals, and workspace files, over an end-to-end encrypted channel.
 
