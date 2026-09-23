@@ -111,10 +111,7 @@ impl Topology {
     /// Install the capability/probe ledger the actor collected. Returns
     /// `true` (and bumps the revision so broadcasts republish
     /// `herdr_status`) when the map actually changed.
-    pub fn set_herdr_features(
-        &mut self,
-        features: BTreeMap<String, HerdrFeatureStatus>,
-    ) -> bool {
+    pub fn set_herdr_features(&mut self, features: BTreeMap<String, HerdrFeatureStatus>) -> bool {
         if self.herdr_features == features {
             return false;
         }
