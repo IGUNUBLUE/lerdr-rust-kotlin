@@ -493,6 +493,395 @@ pub struct PluginCommandLogInfo {
     pub finished_unix_ms: Option<u64>,
 }
 
+/// `plugin.pane.open` / `plugin.pane.focus` result payload.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PluginPaneInfo {
+    pub plugin_id: String,
+    pub entrypoint: String,
+    pub pane: PaneInfo,
+}
+
+/// Where a plugin pane opens (`plugin.pane.open`, `[[panes]]` manifests).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginPanePlacement {
+    #[default]
+    Overlay,
+    Popup,
+    Split,
+    Tab,
+    Zoomed,
+    #[serde(other)]
+    Unrecognized,
+}
+
+impl PluginPanePlacement {
+    /// CLI spelling (`--placement` on `plugin pane open`).
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "overlay" => Some(Self::Overlay),
+            "popup" => Some(Self::Popup),
+            "split" => Some(Self::Split),
+            "tab" => Some(Self::Tab),
+            "zoomed" => Some(Self::Zoomed),
+            _ => None,
+        }
+    }
+}
+
+/// Popup dimension: absolute cells or a `NN%` percentage of the terminal
+/// (`PopupSize` — integer `0..=65535` or string matching `^(100|[1-9][0-9]?)%$`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PopupSize {
+    /// Outer size in terminal cells, including the border.
+    Cells(u16),
+    /// Percentage of the terminal area (1–100).
+    Percent(u8),
+}
+
+impl PopupSize {
+    /// CLI spelling: `"80%"` → percent, `"120"` → cells.
+    pub fn parse(s: &str) -> Option<Self> {
+        if let Some(digits) = s.strip_suffix('%') {
+            return digits
+                .parse::<u8>()
+                .ok()
+                .filter(|p| (1..=100).contains(p))
+                .map(Self::Percent);
+        }
+        s.parse::<u16>().ok().map(Self::Cells)
+    }
+}
+
+impl Serialize for PopupSize {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            PopupSize::Cells(cells) => serializer.serialize_u64(u64::from(*cells)),
+            PopupSize::Percent(pct) => serializer.collect_str(&format_args!("{pct}%")),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for PopupSize {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match Value::deserialize(deserializer)? {
+            Value::Number(n) => n
+                .as_u64()
+                .and_then(|v| u16::try_from(v).ok())
+                .map(PopupSize::Cells)
+                .ok_or_else(|| serde::de::Error::custom("popup size out of range")),
+            Value::String(s) => PopupSize::parse(&s)
+                .filter(|p| matches!(p, PopupSize::Percent(_)))
+                .ok_or_else(|| serde::de::Error::custom("invalid popup size string")),
+            _ => Err(serde::de::Error::custom(
+                "popup size must be a cell count or a percentage string",
+            )),
+        }
+    }
+}
+
+/// `plugin.enable` / `plugin.disable` result payload — the installed
+/// plugin's manifest projection (`InstalledPluginInfo`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct InstalledPluginInfo {
+    pub plugin_id: String,
+    pub name: String,
+    pub version: String,
+    pub manifest_path: String,
+    pub plugin_root: String,
+    pub enabled: bool,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub min_herdr_version: String,
+    #[serde(default)]
+    pub platforms: Option<Vec<PluginPlatform>>,
+    #[serde(default)]
+    pub source: Option<PluginSourceInfo>,
+    #[serde(default)]
+    pub actions: Vec<PluginManifestAction>,
+    #[serde(default)]
+    pub panes: Vec<PluginManifestPane>,
+    #[serde(default)]
+    pub build: Vec<PluginManifestBuild>,
+    #[serde(default)]
+    pub startup: Vec<PluginManifestStartup>,
+    #[serde(default)]
+    pub events: Vec<PluginManifestEventHook>,
+    #[serde(default)]
+    pub link_handlers: Vec<PluginManifestLinkHandler>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+/// Platforms a plugin manifest entry may scope to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginPlatform {
+    Linux,
+    Macos,
+    Windows,
+    #[serde(other)]
+    Unrecognized,
+}
+
+/// How the plugin was installed (`local` link or `github` install).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginSourceKind {
+    #[default]
+    Local,
+    Github,
+    #[serde(other)]
+    Unrecognized,
+}
+
+/// Install provenance on [`InstalledPluginInfo`].
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PluginSourceInfo {
+    #[serde(default)]
+    pub kind: PluginSourceKind,
+    #[serde(default)]
+    pub installed_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub managed_path: Option<String>,
+    #[serde(default)]
+    pub owner: Option<String>,
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    pub requested_ref: Option<String>,
+    #[serde(default)]
+    pub resolved_commit: Option<String>,
+    #[serde(default)]
+    pub subdir: Option<String>,
+}
+
+/// One `[[actions]]` manifest entry.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PluginManifestAction {
+    pub id: String,
+    pub title: String,
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub contexts: Vec<PluginActionContext>,
+    #[serde(default)]
+    pub platforms: Option<Vec<PluginPlatform>>,
+}
+
+/// Invocation contexts a plugin action may declare.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginActionContext {
+    Global,
+    Workspace,
+    Tab,
+    Pane,
+    Selection,
+    #[serde(other)]
+    Unrecognized,
+}
+
+/// One `[[panes]]` manifest entry.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PluginManifestPane {
+    pub id: String,
+    pub title: String,
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub placement: PluginPanePlacement,
+    #[serde(default)]
+    pub width: Option<PopupSize>,
+    #[serde(default)]
+    pub height: Option<PopupSize>,
+    #[serde(default)]
+    pub platforms: Option<Vec<PluginPlatform>>,
+}
+
+/// One `[[build]]` manifest entry.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PluginManifestBuild {
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub platforms: Option<Vec<PluginPlatform>>,
+}
+
+/// One `[[startup]]` manifest entry.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PluginManifestStartup {
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub platforms: Option<Vec<PluginPlatform>>,
+}
+
+/// One `[[events]]` manifest entry.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PluginManifestEventHook {
+    pub on: String,
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub platforms: Option<Vec<PluginPlatform>>,
+}
+
+/// One `[[link_handlers]]` manifest entry.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PluginManifestLinkHandler {
+    pub id: String,
+    pub title: String,
+    pub pattern: String,
+    pub action: String,
+    #[serde(default)]
+    pub platforms: Option<Vec<PluginPlatform>>,
+}
+
+/// `server.reload_config` disposition.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigReloadStatus {
+    Applied,
+    Partial,
+    Failed,
+    #[default]
+    #[serde(other)]
+    Unrecognized,
+}
+
+/// `server.reload_config` result.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConfigReloadOutcome {
+    pub status: ConfigReloadStatus,
+    #[serde(default)]
+    pub diagnostics: Vec<String>,
+}
+
+/// `server.agent_manifests` result — detection-rule status plus the last
+/// check's bookkeeping (`null` until a check has run).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AgentManifestStatus {
+    #[serde(default)]
+    pub last_check_unix: Option<u64>,
+    #[serde(default)]
+    pub last_result: Option<String>,
+    #[serde(default)]
+    pub manifests: Vec<AgentManifestInfo>,
+}
+
+/// One agent-detection manifest's status (`server.agent_manifests` /
+/// `server.reload_agent_manifests` entries).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AgentManifestInfo {
+    pub agent: String,
+    pub source: String,
+    pub source_kind: String,
+    pub local_override_shadowing_remote: bool,
+    #[serde(default)]
+    pub active_version: Option<String>,
+    #[serde(default)]
+    pub cached_remote_version: Option<String>,
+    #[serde(default)]
+    pub remote_last_checked_unix: Option<u64>,
+    #[serde(default)]
+    pub remote_update_result: Option<String>,
+    #[serde(default)]
+    pub remote_update_error: Option<String>,
+    #[serde(default)]
+    pub warning: Option<String>,
+}
+
+/// `client.window_title.{set,clear}` disposition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientWindowTitleReason {
+    Set,
+    Cleared,
+    NoForegroundClient,
+    #[serde(other)]
+    Unrecognized,
+}
+
+/// `client.window_title.{set,clear}` result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClientWindowTitleOutcome {
+    pub changed: bool,
+    pub reason: ClientWindowTitleReason,
+}
+
+/// A Herdr agent integration `integration.{install,uninstall}` can target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntegrationTarget {
+    Pi,
+    Omp,
+    Claude,
+    Codex,
+    Copilot,
+    Devin,
+    Droid,
+    Kimi,
+    Opencode,
+    Kilo,
+    Hermes,
+    Qodercli,
+    Qwen,
+    Cursor,
+    Mastracode,
+    AntigravityCli,
+    Grok,
+    #[serde(other)]
+    Unrecognized,
+}
+
+impl IntegrationTarget {
+    /// CLI spelling (`integration install <target>`).
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "pi" => Some(Self::Pi),
+            "omp" => Some(Self::Omp),
+            "claude" => Some(Self::Claude),
+            "codex" => Some(Self::Codex),
+            "copilot" => Some(Self::Copilot),
+            "devin" => Some(Self::Devin),
+            "droid" => Some(Self::Droid),
+            "kimi" => Some(Self::Kimi),
+            "opencode" => Some(Self::Opencode),
+            "kilo" => Some(Self::Kilo),
+            "hermes" => Some(Self::Hermes),
+            "qodercli" => Some(Self::Qodercli),
+            "qwen" => Some(Self::Qwen),
+            "cursor" => Some(Self::Cursor),
+            "mastracode" => Some(Self::Mastracode),
+            "antigravity_cli" | "antigravity-cli" => Some(Self::AntigravityCli),
+            "grok" => Some(Self::Grok),
+            _ => None,
+        }
+    }
+}
+
+/// `integration.{install,uninstall}` `details` payload.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct IntegrationMessages {
+    #[serde(default)]
+    pub messages: Vec<String>,
+}
+
+/// `integration.install` result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IntegrationInstallOutcome {
+    pub target: IntegrationTarget,
+    pub details: IntegrationMessages,
+}
+
+/// `integration.uninstall` result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IntegrationUninstallOutcome {
+    pub target: IntegrationTarget,
+    pub details: IntegrationMessages,
+}
+
 // ---------------------------------------------------------------------------
 // Request params
 // ---------------------------------------------------------------------------
@@ -1024,4 +1413,125 @@ pub enum AgentViewSortOrder {
     Desc,
     #[serde(other)]
     Unrecognized,
+}
+
+/// `pane.report_metadata` params — merge relay-owned metadata onto a pane.
+/// `tokens`/`state_labels` merge per key (`None` token values delete the
+/// key); `ttl_ms` bounds the annotation's lifetime server-side and `seq`
+/// orders reports per `(pane_id, source)` — stale seqs are dropped.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct PaneReportMetadataParams {
+    pub pane_id: String,
+    /// Owning source identity (`"lerdr-relay"` for watch annotations).
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_agent: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub state_labels: BTreeMap<String, String>,
+    /// Merge-map of display tokens — `None` clears the key.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tokens: BTreeMap<String, Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
+    /// Restrict the report to rows whose `source` matches (default `""` =
+    /// the report applies to the pane regardless of agent source).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applies_to_source: Option<String>,
+    #[serde(default)]
+    pub clear_title: bool,
+    #[serde(default)]
+    pub clear_display_agent: bool,
+    #[serde(default)]
+    pub clear_state_labels: bool,
+}
+
+/// `workspace.report_metadata` params — `tokens` is required upstream
+/// (an empty map is legal and clears nothing).
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct WorkspaceReportMetadataParams {
+    pub workspace_id: String,
+    pub source: String,
+    /// Merge-map of display tokens — `None` clears the key.
+    pub tokens: BTreeMap<String, Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
+}
+
+/// `client.window_title.set` params.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ClientWindowTitleSetParams {
+    pub title: String,
+}
+
+/// `plugin.pane.open` params — open a manifest-declared pane entrypoint.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct PluginPaneOpenParams {
+    pub plugin_id: String,
+    pub entrypoint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_pane_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direction: Option<SplitDirection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<PluginPanePlacement>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<PopupSize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<PopupSize>,
+    /// `--focus` / `--no-focus` — `None` leaves the server default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus: Option<bool>,
+}
+
+/// `plugin.pane.focus` params.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PluginPaneFocusParams {
+    pub pane_id: String,
+}
+
+/// `plugin.pane.close` params.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PluginPaneCloseParams {
+    pub pane_id: String,
+}
+
+/// `plugin.enable` / `plugin.disable` params (`PluginSetEnabledParams`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PluginSetEnabledParams {
+    pub plugin_id: String,
+}
+
+/// `plugin.log.list` params — both fields optional upstream.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct PluginLogListParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+}
+
+/// `integration.install` params.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct IntegrationInstallParams {
+    pub target: IntegrationTarget,
+}
+
+/// `integration.uninstall` params.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct IntegrationUninstallParams {
+    pub target: IntegrationTarget,
 }

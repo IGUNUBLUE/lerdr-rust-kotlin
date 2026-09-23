@@ -83,6 +83,14 @@ pub mod features {
     /// `unsupported` (a partial family still serves the members Herdr
     /// ships).
     pub const FOCUS_METHODS: &[&str] = &[PANE_FOCUS, TAB_FOCUS, WORKSPACE_FOCUS, AGENT_FOCUS];
+    /// `pane.report_metadata` — the relay's watch annotation token.
+    pub const PANE_REPORT_METADATA: &str = "pane.report_metadata";
+    /// `workspace.report_metadata` — the connected-device count token.
+    pub const WORKSPACE_REPORT_METADATA: &str = "workspace.report_metadata";
+    /// `client.window_title.set` — "lerdr: N device(s)" on Herdr's chrome.
+    pub const CLIENT_WINDOW_TITLE_SET: &str = "client.window_title.set";
+    /// `client.window_title.clear` — restore the title on last disconnect.
+    pub const CLIENT_WINDOW_TITLE_CLEAR: &str = "client.window_title.clear";
 }
 
 /// Refusal codes that mean "the server does not implement this method" —
@@ -134,11 +142,15 @@ const TRACKED_METHODS: &[&str] = &[
     "agent.view.clear",
     "agent.view.set",
     "agent.wait",
+    "client.window_title.clear",
+    "client.window_title.set",
     "client_shell.surface.set",
     "command.invoke",
     "events.subscribe",
     "events.wait",
+    "integration.install",
     "integration.list",
+    "integration.uninstall",
     "layout.apply",
     "notification.show",
     "pane.close",
@@ -146,11 +158,21 @@ const TRACKED_METHODS: &[&str] = &[
     "pane.list",
     "pane.process_info",
     "pane.read",
+    "pane.report_metadata",
     "pane.send_input",
     "pane.send_keys",
     "pane.send_text",
     "pane.wait_for_output",
     "plugin.action.invoke",
+    "plugin.disable",
+    "plugin.enable",
+    "plugin.log.list",
+    "plugin.pane.close",
+    "plugin.pane.focus",
+    "plugin.pane.open",
+    "server.agent_manifests",
+    "server.reload_agent_manifests",
+    "server.reload_config",
     "session.snapshot",
     "tab.create",
     "tab.focus",
@@ -164,6 +186,7 @@ const TRACKED_METHODS: &[&str] = &[
     "workspace.move",
     "workspace.move_block",
     "workspace.rename",
+    "workspace.report_metadata",
     "worktree.create",
     "worktree.list",
     "worktree.open",
@@ -172,9 +195,12 @@ const TRACKED_METHODS: &[&str] = &[
 
 /// Methods whose call outcomes are recorded as observed evidence —
 /// `noteSocketFeature`'s call sites (`workspace.move_block`, `tab.move`,
-/// `pane.read`) plus `agent.view.set`, the projection the relay owns, and
-/// the Phase-5 focus family: an `unknown_method` refusal there retracts the
-/// advertised `focus` capability through `caps_update`.
+/// `pane.read`) plus `agent.view.set`, the projection the relay owns,
+/// the Phase-5 focus family (an `unknown_method` refusal there retracts
+/// the advertised `focus` capability through `caps_update`), and the
+/// tier-2 surface: every relay-driven call gets schema adjudication plus
+/// observed notes so an absent method stops being attempted after the
+/// first definitive refusal.
 pub(crate) const NOTED_METHODS: &[&str] = &[
     "workspace.move_block",
     "tab.move",
@@ -184,6 +210,21 @@ pub(crate) const NOTED_METHODS: &[&str] = &[
     "pane.focus",
     "tab.focus",
     "workspace.focus",
+    "pane.report_metadata",
+    "workspace.report_metadata",
+    "client.window_title.set",
+    "client.window_title.clear",
+    "plugin.pane.open",
+    "plugin.pane.focus",
+    "plugin.pane.close",
+    "plugin.enable",
+    "plugin.disable",
+    "plugin.log.list",
+    "server.reload_config",
+    "server.agent_manifests",
+    "server.reload_agent_manifests",
+    "integration.install",
+    "integration.uninstall",
 ];
 
 /// `supported` / `unsupported` / `unknown` — the wire strings verbatim.

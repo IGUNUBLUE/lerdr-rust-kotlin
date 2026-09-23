@@ -471,8 +471,12 @@ async fn handle_socket(shared: Arc<Shared>, socket: WebSocket, addr: SocketAddr)
         Some(DisconnectCredentials(Arc::new(move |requester, pairs| {
             shared_for_disconnect.disconnect_credentials(requester, pairs)
         })));
+    // `hub.Clients` watchers — the registry-size observer rides along
+    // (lerdr-coord drives `client.window_title` through it).
+    let clients_changed = config.clients_changed.clone();
     let registered_id = client_id.clone();
     shared.tracker.spawn(async move {
+        let clients_changed_on_register = clients_changed.clone();
         let register: OnConnect = Box::new(move |registration| {
             let mut registry = shared_for_register
                 .registry
@@ -493,6 +497,11 @@ async fn handle_socket(shared: Arc<Shared>, socket: WebSocket, addr: SocketAddr)
                 return;
             }
             registry.clients.insert(registered_id.clone(), registration);
+            let count = registry.clients.len();
+            drop(registry);
+            if let Some(hook) = &clients_changed_on_register {
+                hook.changed(count);
+            }
         });
         let end = serve_connection(
             WsIo::new(socket),
@@ -506,12 +515,14 @@ async fn handle_socket(shared: Arc<Shared>, socket: WebSocket, addr: SocketAddr)
         )
         .instrument(span)
         .await;
-        shared_for_task
-            .registry
-            .lock()
-            .expect("registry poisoned")
-            .clients
-            .remove(&client_id);
+        let count = {
+            let mut registry = shared_for_task.registry.lock().expect("registry poisoned");
+            registry.clients.remove(&client_id);
+            registry.clients.len()
+        };
+        if let Some(hook) = &clients_changed {
+            hook.changed(count);
+        }
         match &end {
             ConnectionEnd::HandshakeFailed(e) if e.peer_closed() => {
                 debug!(%client_id, "peer left during handshake")

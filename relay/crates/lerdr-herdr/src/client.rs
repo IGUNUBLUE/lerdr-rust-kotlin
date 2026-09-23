@@ -824,6 +824,241 @@ impl Client {
             .await
     }
 
+    // -- metadata reporting ---------------------------------------------------
+
+    /// `pane.report_metadata` — merge relay-owned metadata onto a pane:
+    /// tokens/state_labels merge per key (`None` token values delete it),
+    /// `ttl_ms` bounds the annotation server-side, `seq` orders reports per
+    /// `(pane_id, source)`. Answers `ok`.
+    pub async fn pane_report_metadata(
+        &self,
+        params: &PaneReportMetadataParams,
+    ) -> Result<(), HerdrError> {
+        self.call_result::<_, Value>("pane.report_metadata", params, "ok")
+            .await?;
+        Ok(())
+    }
+
+    /// `workspace.report_metadata` — same merge semantics at workspace
+    /// scope (`tokens` is required upstream, an empty map is legal).
+    pub async fn workspace_report_metadata(
+        &self,
+        params: &WorkspaceReportMetadataParams,
+    ) -> Result<(), HerdrError> {
+        self.call_result::<_, Value>("workspace.report_metadata", params, "ok")
+            .await?;
+        Ok(())
+    }
+
+    // -- client chrome --------------------------------------------------------
+
+    /// `client.window_title.set` — surface a title on Herdr's desktop
+    /// chrome ("lerdr: N device(s)" while phones are connected).
+    pub async fn client_window_title_set(
+        &self,
+        title: &str,
+    ) -> Result<ClientWindowTitleOutcome, HerdrError> {
+        self.call_result(
+            "client.window_title.set",
+            &ClientWindowTitleSetParams {
+                title: title.to_owned(),
+            },
+            "client_window_title",
+        )
+        .await
+    }
+
+    /// `client.window_title.clear` — restore the default title.
+    pub async fn client_window_title_clear(&self) -> Result<ClientWindowTitleOutcome, HerdrError> {
+        self.call_result(
+            "client.window_title.clear",
+            &json!({}),
+            "client_window_title",
+        )
+        .await
+    }
+
+    // -- server admin ---------------------------------------------------------
+
+    /// `server.reload_config` — re-read `config.toml` in place.
+    pub async fn server_reload_config(&self) -> Result<ConfigReloadOutcome, HerdrError> {
+        self.call_result("server.reload_config", &json!({}), "config_reload")
+            .await
+    }
+
+    /// `server.agent_manifests` — agent-detection manifest status.
+    pub async fn server_agent_manifests(&self) -> Result<AgentManifestStatus, HerdrError> {
+        self.call_result(
+            "server.agent_manifests",
+            &json!({}),
+            "agent_manifest_status",
+        )
+        .await
+    }
+
+    /// `server.reload_agent_manifests` — reload remote/local manifests and
+    /// return the refreshed status rows.
+    pub async fn server_reload_agent_manifests(
+        &self,
+    ) -> Result<Vec<AgentManifestInfo>, HerdrError> {
+        #[derive(serde::Deserialize)]
+        struct R {
+            manifests: Vec<AgentManifestInfo>,
+        }
+        Ok(self
+            .call_result::<_, R>(
+                "server.reload_agent_manifests",
+                &json!({}),
+                "agent_manifest_reload",
+            )
+            .await?
+            .manifests)
+    }
+
+    // -- integrations ---------------------------------------------------------
+
+    /// `integration.install` — install a Herdr agent integration's hooks
+    /// into its target CLI.
+    pub async fn integration_install(
+        &self,
+        target: IntegrationTarget,
+    ) -> Result<IntegrationInstallOutcome, HerdrError> {
+        self.call_result(
+            "integration.install",
+            &IntegrationInstallParams { target },
+            "integration_install",
+        )
+        .await
+    }
+
+    /// `integration.uninstall` — remove an integration's hooks.
+    pub async fn integration_uninstall(
+        &self,
+        target: IntegrationTarget,
+    ) -> Result<IntegrationUninstallOutcome, HerdrError> {
+        self.call_result(
+            "integration.uninstall",
+            &IntegrationUninstallParams { target },
+            "integration_uninstall",
+        )
+        .await
+    }
+
+    // -- plugin driving ---------------------------------------------------------
+
+    /// `plugin.pane.open` — open a manifest-declared pane entrypoint.
+    /// Returns the opened pane's record (`plugin_pane_opened`).
+    pub async fn plugin_pane_open(
+        &self,
+        params: &PluginPaneOpenParams,
+    ) -> Result<PluginPaneInfo, HerdrError> {
+        #[derive(serde::Deserialize)]
+        struct R {
+            plugin_pane: PluginPaneInfo,
+        }
+        Ok(self
+            .call_result::<_, R>("plugin.pane.open", params, "plugin_pane_opened")
+            .await?
+            .plugin_pane)
+    }
+
+    /// `plugin.pane.focus` — focus an open plugin pane.
+    pub async fn plugin_pane_focus(&self, pane_id: &str) -> Result<PluginPaneInfo, HerdrError> {
+        #[derive(serde::Deserialize)]
+        struct R {
+            plugin_pane: PluginPaneInfo,
+        }
+        Ok(self
+            .call_result::<_, R>(
+                "plugin.pane.focus",
+                &PluginPaneFocusParams {
+                    pane_id: pane_id.to_owned(),
+                },
+                "plugin_pane_focused",
+            )
+            .await?
+            .plugin_pane)
+    }
+
+    /// `plugin.pane.close` — close an open plugin pane; returns the closed
+    /// `pane_id` echo.
+    pub async fn plugin_pane_close(&self, pane_id: &str) -> Result<String, HerdrError> {
+        #[derive(serde::Deserialize)]
+        struct R {
+            pane_id: String,
+        }
+        Ok(self
+            .call_result::<_, R>(
+                "plugin.pane.close",
+                &PluginPaneCloseParams {
+                    pane_id: pane_id.to_owned(),
+                },
+                "plugin_pane_closed",
+            )
+            .await?
+            .pane_id)
+    }
+
+    /// `plugin.enable` — enable an installed plugin.
+    pub async fn plugin_enable(&self, plugin_id: &str) -> Result<InstalledPluginInfo, HerdrError> {
+        #[derive(serde::Deserialize)]
+        struct R {
+            plugin: InstalledPluginInfo,
+        }
+        Ok(self
+            .call_result::<_, R>(
+                "plugin.enable",
+                &PluginSetEnabledParams {
+                    plugin_id: plugin_id.to_owned(),
+                },
+                "plugin_enabled",
+            )
+            .await?
+            .plugin)
+    }
+
+    /// `plugin.disable` — disable an installed plugin.
+    pub async fn plugin_disable(&self, plugin_id: &str) -> Result<InstalledPluginInfo, HerdrError> {
+        #[derive(serde::Deserialize)]
+        struct R {
+            plugin: InstalledPluginInfo,
+        }
+        Ok(self
+            .call_result::<_, R>(
+                "plugin.disable",
+                &PluginSetEnabledParams {
+                    plugin_id: plugin_id.to_owned(),
+                },
+                "plugin_disabled",
+            )
+            .await?
+            .plugin)
+    }
+
+    /// `plugin.log.list` — the plugin command log (optionally scoped to one
+    /// plugin, newest entries last; `limit` caps the count).
+    pub async fn plugin_log_list(
+        &self,
+        plugin_id: Option<&str>,
+        limit: Option<u64>,
+    ) -> Result<Vec<PluginCommandLogInfo>, HerdrError> {
+        #[derive(serde::Deserialize)]
+        struct R {
+            logs: Vec<PluginCommandLogInfo>,
+        }
+        Ok(self
+            .call_result::<_, R>(
+                "plugin.log.list",
+                &PluginLogListParams {
+                    plugin_id: plugin_id.map(str::to_owned),
+                    limit,
+                },
+                "plugin_log_list",
+            )
+            .await?
+            .logs)
+    }
+
     // -- events -------------------------------------------------------------
 
     /// `events.subscribe` — perform the handshake and return the live event

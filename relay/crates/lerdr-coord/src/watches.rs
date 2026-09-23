@@ -417,6 +417,12 @@ impl WatchSet {
         }
     }
 
+    /// Live watch pane ids — session teardown reports them to the
+    /// metadata annotator before `stop_all` drains the map.
+    pub fn pane_ids(&self) -> Vec<String> {
+        self.entries.keys().cloned().collect()
+    }
+
     /// Session teardown — stop everything.
     pub fn stop_all(&mut self) {
         for (_, entry) in self.entries.drain() {
