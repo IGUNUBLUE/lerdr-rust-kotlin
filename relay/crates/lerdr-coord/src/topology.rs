@@ -1195,7 +1195,7 @@ mod tests {
             tab_id: format!("wE:t_{pane_id}"),
             agent_status: status,
             agent: Some("claude".into()),
-            cwd: Some("/home/l/project".into()),
+            cwd: Some("/home/user/project".into()),
             ..AgentInfo::default()
         }
     }
