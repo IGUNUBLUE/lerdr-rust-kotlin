@@ -965,3 +965,36 @@ against.
 - **Phase 5** — untouched by design (binary inner codec, zstd,
   conversation subscriptions, binary chunks, capability-negotiation
   revision).
+
+## Round 16 — S9: binary surface completion (2026)
+
+- **HTTP health surface** — `/health` (text `ok` +
+  `X-Herdr-Relay-Instance`), `/healthz` JSON (`status`/`readiness`/
+  `inventory`/`instance`/`version`/`release_version`/`revision`/
+  `protocol`), `/readyz` (200 `ready` vs 503 `unavailable`). Live
+  inventory reaches the handlers through `InventoryProbeFn` — a closure
+  over the topology `watch::Receiver` installed via `Relay::with_health`,
+  same shared-cell idiom as `ResolverSlot`. `serving` is the oracle's
+  one-way `s.ready` latch. Verified live: healthz reports real inventory
+  state against the running Herdr socket. Declared omission: `bundle_*`
+  keys (no web handler exists to stamp them).
+- **`instance_id`** — `Config` reads `RELAY_INSTANCE_ID` via `relay_env`
+  (`LERDR_` > `HERDR_`), env-only like the oracle.
+- **`update-worker` subcommand** — detached job runner ported
+  (`update_worker.rs`, ~1.6k LOC + 13 tests): reads the persisted
+  `update-job-*.json`, downloads/extracts the release archive, verifies
+  the manifest, health-checks `job.health_url` post-swap, writes terminal
+  state. `UPDATE_WORKER_SUPPORTED` flipped true — `install_update`
+  eligibility now reports the worker available. Divergences: archive name
+  is `lerdr-relay_*` only (Go asset names would install the wrong binary);
+  HTTP via `curl --max-time` + `\n%{http_code}` trailer; extraction via
+  `tar` with the oracle's caps enforced; no in-worker rollback (plugin
+  install owns the swap — `failed` is terminal, job file retained).
+- **`speech-voices` CLI** — `lerdr-relay speech-voices
+  {list|missing|install|reinstall-runtime|remove} [--languages …]`
+  sharing the wire actions' `Catalog`/`SystemEngine`; Go-flag binding
+  forms and usage-error exit-2 contract pinned by tests. Plugin README's
+  stale "no speech subsystem" note corrected.
+
+Verification: 358 coord tests + 4 health integration tests green,
+fmt/clippy clean, live smoke of all three endpoints.
