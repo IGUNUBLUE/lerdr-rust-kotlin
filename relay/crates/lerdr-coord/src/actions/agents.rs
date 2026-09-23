@@ -284,11 +284,12 @@ async fn clear_inner(ctx: &ActionContext, request_id: &str, message: &Inbound) -
 
 /// `requestAgentRefresh` — no command result: the keepalive semantics are
 /// "push the committed topology now and re-read". The frames come from the
-/// admission-time snapshot; `handle.refresh()` queues the authoritative
-/// re-read that the forwarder publishes on arrival.
+/// admission-time snapshot (`sendRequestedAgentRefreshes` pushes the
+/// committed inventory to the requester); `handle.refresh()` queues the
+/// authoritative re-read that the forwarder publishes on arrival.
 pub(crate) async fn refresh_agents(ctx: ActionContext) -> Vec<lerdr_core::protocol::Outbound> {
     ctx.handle.refresh().await;
-    crate::snapshot::topology_broadcast(&ctx.topology)
+    crate::snapshot::committed_inventory(&ctx.topology)
 }
 
 // ── lifecycle.go ─────────────────────────────────────────────────────────
@@ -961,7 +962,6 @@ mod tests {
                 tokio_util::sync::CancellationToken::new(),
             ),
             leases: crate::actions::leases::Leases::new(client.clone()),
-            acks: crate::actions::Acks::default(),
             profiles: crate::actions::profiles::Resolver::with_config_home(config_home.to_owned()),
             questions: crate::actions::questions::Questions::default(),
             uploads: crate::actions::uploads::Uploads::new(

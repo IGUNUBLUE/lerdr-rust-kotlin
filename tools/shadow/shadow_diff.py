@@ -371,10 +371,16 @@ def main() -> int:
 
         ports = {side: free_port() for side, _ in sides}
         plugin_ports = {side: free_port() for side, _ in sides}
+        traces = {}
         for side, kind in sides:
+            # Each relay starts only just before its own run: the fake's
+            # control.emit broadcasts to every held events.subscribe
+            # connection, so a relay already up during the other side's
+            # run would process those transitions too — its per-pane
+            # ledgers and activity journal would be pre-advanced and the
+            # second run could never reproduce the first.
             h.start_relay(side, kind, ports[side], plugin_ports[side])
-
-        traces = {side: h.run_client(side, ports[side], scenario) for side, _ in sides}
+            traces[side] = h.run_client(side, ports[side], scenario)
         rc = h.diff(traces[sides[0][0]], traces[sides[1][0]])
         return rc
     finally:

@@ -47,12 +47,12 @@ use crate::watches::{
 pub type ClientSinkLookup = Arc<dyn Fn(&str) -> Option<ClientSink> + Send + Sync>;
 
 /// Cross-session action state — the oracle's singletons (`paneSizeM`,
-/// the acknowledgment ledger, the profile resolver, the question store,
-/// the upload manager, the activity journal) live once per relay,
-/// not once per connection.
+/// the profile resolver, the question store, the upload manager, the
+/// activity journal, `history.Manager`) live once per relay, not once
+/// per connection. The acknowledgment ledger is `Topology`'s shared
+/// attention cells — no separate singleton.
 struct ActionShared {
     leases: actions::leases::Leases,
-    acks: actions::Acks,
     profiles: actions::profiles::Resolver,
     questions: actions::questions::Questions,
     uploads: actions::uploads::Uploads,
@@ -60,6 +60,9 @@ struct ActionShared {
     push: actions::push::Push,
     speech: actions::speech::Speech,
     notices: actions::Notices,
+    /// `s.historyM` — the claude-like transcript merge ledger; shared with
+    /// the transition projector's capture loop.
+    history: crate::history::Manager,
     /// `s.auditLog` — spawned handlers append `result` rows here; the
     /// session layer owns `attempt` rows and admin results.
     audit: Option<Arc<audit::AuditLog>>,
@@ -93,27 +96,49 @@ impl HerdRouterFactory {
     ) -> Self {
         let leases = actions::leases::Leases::new(handle.client.clone());
         leases.spawn_sweeper(cancel.clone());
+        let questions = actions::questions::Questions::default();
+        let activities = actions::activity::Journal::open(&runtime_dir.join("activity"))
+            .unwrap_or_else(|err| {
+                tracing::warn!("activity journal unavailable ({err}); running in-memory");
+                actions::activity::Journal::default()
+            });
+        let push = actions::push::Push::new(&runtime_dir.join("push")).unwrap_or_else(|err| {
+            tracing::warn!("push persistence unavailable ({err}); running in-memory");
+            actions::push::Push::default()
+        });
+        // `history.NewManager(cfg.CacheDir)` — the merge/capture ledger.
+        let history = crate::history::Manager::new(&runtime_dir);
+        let notices = actions::Notices::default();
+        // `s.SetOnTransition`/`transitionTasks` — the semantic projector:
+        // transition enrichment + `blocked` broadcasts + push/activity
+        // side effects + the history capture loop, all off the committed
+        // `AcceptOutcome` feed.
+        crate::classify::projector::spawn(crate::classify::projector::ProjectorDeps {
+            handle: handle.clone(),
+            questions: questions.clone(),
+            history: history.clone(),
+            activities: activities.clone(),
+            push: push.clone(),
+            notices: notices.clone(),
+            conversations: Arc::new(crate::conversation::Reader::new(
+                actions::conversation::home_dir(),
+            )),
+            cancel: cancel.clone(),
+        });
         Self {
             handle,
             sink_of,
             cancel,
             shared: Arc::new(ActionShared {
                 leases,
-                acks: actions::Acks::default(),
                 profiles: actions::profiles::Resolver::new(),
-                questions: actions::questions::Questions::default(),
+                questions,
                 uploads: actions::uploads::Uploads::new(runtime_dir.join("uploads")),
-                activities: actions::activity::Journal::open(&runtime_dir.join("activity"))
-                    .unwrap_or_else(|err| {
-                        tracing::warn!("activity journal unavailable ({err}); running in-memory");
-                        actions::activity::Journal::default()
-                    }),
-                push: actions::push::Push::new(&runtime_dir.join("push")).unwrap_or_else(|err| {
-                    tracing::warn!("push persistence unavailable ({err}); running in-memory");
-                    actions::push::Push::default()
-                }),
+                activities,
+                push,
                 speech: actions::speech::Speech::default(),
-                notices: actions::Notices::default(),
+                notices,
+                history,
                 audit,
             }),
         }
@@ -304,7 +329,6 @@ impl HerdRouter {
             topology: self.handle.topology.borrow().clone(),
             handle: self.handle.clone(),
             leases: self.shared.leases.clone(),
-            acks: self.shared.acks.clone(),
             profiles: self.shared.profiles.clone(),
             questions: self.shared.questions.clone(),
             uploads: self.shared.uploads.clone(),
@@ -909,14 +933,22 @@ impl HerdRouter {
         // The oracle's `read_pane` supersedes the watch (`stopPaneWatch`) —
         // otherwise the watch could race a frame past this read's answer.
         self.watches.stop(&pane_id);
-        // `HandleReadPane` acknowledges the pane — the local half of that
-        // is the ledger record at the pane's current `state_change_seq`.
-        if let Some(agent) = self.handle.topology.borrow().pane_of(&pane_id) {
-            self.shared.acks.record(&pane_id, agent.state_change_seq);
-        }
+        // `HandleReadPane` opens with `handleAcknowledge(requestID, paneID)`
+        // (dispatch.go:1107) — the shared-ledger ack, the `agent_update`
+        // broadcast on a displayed-status change, and the `d.fail` row for
+        // a gone pane all ride inside.
+        actions::acknowledge_pane_state(
+            &self.handle,
+            &self.shared.notices,
+            &self.shared.activities,
+            &pane_id,
+            &request_id,
+        );
         let client = self.handle.client.clone();
         let leases = self.shared.leases.clone();
         let topology = self.handle.topology.clone();
+        let questions = self.shared.questions.clone();
+        let history = self.shared.history.clone();
         // `HandleReadPane` — `intValue(message["lines"], 30)` clamped to
         // `1..=10000` (`dispatch.go:1106-1112`).
         let lines = pane_lines(message);
@@ -936,10 +968,11 @@ impl HerdRouter {
             } else {
                 None
             };
-            let (generation, agent) = {
+            let (generation, content_rev, agent) = {
                 let t = topology.borrow();
                 (
                     t.generation_of(&pane_id),
+                    t.content_rev_of(&pane_id),
                     t.pane_of(&pane_id)
                         .and_then(|a| a.agent.clone())
                         .unwrap_or_default(),
@@ -948,19 +981,33 @@ impl HerdRouter {
             let source = display_source(format, viewport_only, &agent);
             match client.pane_read(&pane_id, source, lines, format).await {
                 Ok(read) => {
-                    // `HandleReadPane`'s mid-read fences — generation is
-                    // the portable half; the oracle's `ContentRevision`
-                    // leg has no Rust counterpart (doc 10).
-                    if topology.borrow().generation_of(&pane_id) != generation {
-                        return vec![
-                            pane_read_error_frame(
-                                &pane_id,
-                                format_wire(format),
-                                "The agent pane was replaced while it was being read",
-                                target.clone(),
-                            ),
-                            receipt(&rid, &aid, ActionReceiptPhase::CONFIRMED, None),
-                        ];
+                    // `HandleReadPane`'s mid-read fences — `Generation`
+                    // (`replaced`) then `ContentRevision` (`changed`),
+                    // distinct error strings in that order.
+                    {
+                        let t = topology.borrow();
+                        if t.generation_of(&pane_id) != generation {
+                            return vec![
+                                pane_read_error_frame(
+                                    &pane_id,
+                                    format_wire(format),
+                                    "The agent pane was replaced while it was being read",
+                                    target.clone(),
+                                ),
+                                receipt(&rid, &aid, ActionReceiptPhase::CONFIRMED, None),
+                            ];
+                        }
+                        if t.content_rev_of(&pane_id) != content_rev {
+                            return vec![
+                                pane_read_error_frame(
+                                    &pane_id,
+                                    format_wire(format),
+                                    "The agent state changed while the pane was being read",
+                                    target.clone(),
+                                ),
+                                receipt(&rid, &aid, ActionReceiptPhase::CONFIRMED, None),
+                            ];
+                        }
                     }
                     let settling = viewport_only
                         && leases
@@ -977,6 +1024,9 @@ impl HerdRouter {
                             viewport_only,
                             viewport_rows,
                             settling,
+                            &agent,
+                            &questions,
+                            &history,
                         ),
                         receipt(&rid, &aid, ActionReceiptPhase::CONFIRMED, None),
                     ]
@@ -1030,12 +1080,13 @@ impl HerdRouter {
             pane_id,
             spec,
             WatchDeps {
+                handle: self.handle.clone(),
                 leases: self.shared.leases.clone(),
-                topology: self.handle.topology.clone(),
-                acks: self.shared.acks.clone(),
-                client: self.handle.client.clone(),
+                questions: self.shared.questions.clone(),
+                history: self.shared.history.clone(),
+                activities: self.shared.activities.clone(),
+                notices: self.shared.notices.clone(),
                 sink: Arc::new(sink),
-                invalidations: self.handle.invalidations.clone(),
                 cancel: self.cancel.clone(),
             },
         );
@@ -1068,15 +1119,13 @@ fn non_empty(s: &str) -> Option<String> {
     (!s.is_empty()).then(|| s.to_owned())
 }
 
-/// The `read_pane` result frame (`unchangedPaneResponse`): `pane_unchanged`
-/// when the wire `content_fingerprint` equals the fresh read's,
-/// `pane_content` otherwise — including absent/malformed wire values, since
-/// equality against the canonical computed fingerprint is the entire
-/// validation. `target` echoes the request's when present (the oracle
+/// The `read_pane` result frame — `preparePaneResponse`
+/// (server.go:2757-2817) + `unchangedPaneResponse`. The wire
+/// `content_fingerprint` compares against the *prepared* content's
+/// fingerprint (the merged/semantic view the client holds), not the raw
+/// read's. `target` echoes the request's when present (the oracle
 /// assigns `resp["target"]` only then; `pane_unchanged` emits the key
-/// either way — `null` when absent). `interaction`/`question_layout` ride
-/// as the oracle's un-classified seeds (`null`/`false` — the
-/// classification projection is a declared gap, doc 10).
+/// either way — `null` when absent).
 #[allow(clippy::too_many_arguments)]
 fn read_pane_frame(
     pane_id: &str,
@@ -1088,21 +1137,37 @@ fn read_pane_frame(
     viewport_only: bool,
     viewport_rows: Option<i64>,
     resize_settling: bool,
+    agent: &str,
+    questions: &actions::questions::Questions,
+    history: &crate::history::Manager,
 ) -> Outbound {
     // `capPaneContentLines` — Herdr's scrollback sources can over-read;
-    // the cap is what `content` AND the fingerprint both see.
-    let content = crate::watches::cap_pane_content_lines(&read.text, lines);
-    let computed = crate::content_fingerprint(content);
+    // the cap is what classification and the merge both see.
+    let capped = crate::watches::cap_pane_content_lines(&read.text, lines);
+    // `preparePaneResponse` — classify the capped raw read, record/fill
+    // custom answers, merge claude-like history, `noecho.Match` the tail.
+    let prepared = crate::classify::store::prepare_pane_response(
+        pane_id,
+        capped,
+        read.truncated,
+        agent,
+        viewport_only,
+        lines,
+        questions,
+        history,
+    );
+    let computed = crate::content_fingerprint(&prepared.content);
     if fingerprint == Some(computed.as_str()) {
         return crate::watches::pane_unchanged(pane_id, &computed, target);
     }
+    let semantics = &prepared.semantics;
     Outbound::PaneContent(Box::new(PaneContent {
         r#type: "pane_content".to_owned(),
         pane_id: Some(pane_id.to_owned()),
-        content: Some(content.to_owned()),
+        content: Some(prepared.content.clone()),
         content_fingerprint: Some(computed),
         format: Some(format_wire(format).to_owned()),
-        truncated: Some(read.truncated),
+        truncated: Some(prepared.truncated),
         target: target.map(lerdr_core::json::MaybeNull::Value),
         // `HandleReadPane` emits `viewport_only` unconditionally
         // (`terminalColumns > 0` — false included).
@@ -1112,8 +1177,21 @@ fn read_pane_frame(
         // rows into scrollback — frames read inside the settle window
         // must not commit as history.
         resize_settling: (viewport_only && resize_settling).then_some(true),
-        interaction: Some(lerdr_core::json::MaybeNull::Null),
-        question_layout: Some(false),
+        attention_kind: Some(semantics.attention_kind.to_owned()),
+        prompt: Some(semantics.prompt.clone()),
+        command: Some(semantics.command.clone()),
+        options: Some(if semantics.options.is_empty() {
+            lerdr_core::json::MaybeNull::Null
+        } else {
+            lerdr_core::json::MaybeNull::Value(semantics.options.clone())
+        }),
+        interaction: Some(match &semantics.interaction {
+            Some(interaction) => lerdr_core::json::MaybeNull::Value(interaction.clone()),
+            None => lerdr_core::json::MaybeNull::Null,
+        }),
+        question_layout: Some(semantics.question_layout),
+        no_echo: Some(semantics.no_echo),
+        no_echo_prompt: semantics.no_echo_prompt.clone(),
         ..PaneContent::default()
     }))
 }
@@ -1280,6 +1358,9 @@ mod tests {
             false,
             None,
             false,
+            "",
+            &actions::questions::Questions::default(),
+            &crate::history::Manager::in_memory(),
         );
         match frame {
             Outbound::PaneUnchanged(m) => {
@@ -1304,6 +1385,9 @@ mod tests {
             false,
             None,
             false,
+            "",
+            &actions::questions::Questions::default(),
+            &crate::history::Manager::in_memory(),
         );
         match frame {
             Outbound::PaneContent(m) => {
@@ -1323,7 +1407,10 @@ mod tests {
                 None,
                 false,
                 None,
-                false
+                false,
+                "",
+                &actions::questions::Questions::default(),
+                &crate::history::Manager::in_memory(),
             ),
             Outbound::PaneContent(_)
         ));
@@ -1354,6 +1441,9 @@ mod tests {
                         false,
                         None,
                         false,
+                        "",
+                        &actions::questions::Questions::default(),
+                        &crate::history::Manager::in_memory(),
                     ),
                     Outbound::PaneContent(_)
                 ),
@@ -1383,6 +1473,9 @@ mod tests {
             false,
             None,
             false,
+            "",
+            &actions::questions::Questions::default(),
+            &crate::history::Manager::in_memory(),
         ) {
             Outbound::PaneUnchanged(m) => {
                 assert!(matches!(m.target, Some(MaybeNull::Value(_))))
@@ -1399,6 +1492,9 @@ mod tests {
             false,
             None,
             false,
+            "",
+            &actions::questions::Questions::default(),
+            &crate::history::Manager::in_memory(),
         ) {
             Outbound::PaneContent(m) => {
                 assert!(matches!(m.target, Some(MaybeNull::Value(_))))

@@ -78,10 +78,10 @@ const MAX_PUSH_PAYLOAD_BYTES: usize = 3993;
 const MAX_IDENTIFIER_BYTES: usize = 256;
 const PUSH_TEST_INTERVAL: Duration = Duration::from_secs(10);
 
-const CATEGORY_ATTENTION: &str = "attention";
-const CATEGORY_QUESTION: &str = "question";
-const CATEGORY_BRIEF: &str = "brief";
-const CATEGORY_FINISHED: &str = "finished";
+pub(crate) const CATEGORY_ATTENTION: &str = "attention";
+pub(crate) const CATEGORY_QUESTION: &str = "question";
+pub(crate) const CATEGORY_BRIEF: &str = "brief";
+pub(crate) const CATEGORY_FINISHED: &str = "finished";
 const CATEGORY_UPDATE: &str = "update";
 const CATEGORY_TEST: &str = "test";
 const ALLOWED_CATEGORIES: [&str; 6] = [
@@ -93,9 +93,9 @@ const ALLOWED_CATEGORIES: [&str; 6] = [
     CATEGORY_TEST,
 ];
 
-const PREVIEW_HIDDEN: &str = "hidden";
-const PREVIEW_QUESTION: &str = "question";
-const PREVIEW_BRIEF: &str = "brief";
+pub(crate) const PREVIEW_HIDDEN: &str = "hidden";
+pub(crate) const PREVIEW_QUESTION: &str = "question";
+pub(crate) const PREVIEW_BRIEF: &str = "brief";
 
 const PLATFORM_OTHER: &str = "other";
 const REFERENCE_KEY_SIZE: usize = 32;
@@ -437,7 +437,7 @@ impl PushEventKey {
     }
 
     /// `key.Target()` — the pane the notification deep-links into.
-    fn target(&self) -> TargetRef {
+    pub(crate) fn target(&self) -> TargetRef {
         TargetRef {
             server_session_id: self.server_session_id.clone(),
             pane_id: self.pane_id.clone(),
@@ -2855,7 +2855,6 @@ pub(crate) async fn open_ref(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actions::Acks;
     use crate::topology::Topology;
     use crate::TopologyActor;
     use lerdr_herdr::AgentInfo;
@@ -2872,7 +2871,6 @@ mod tests {
             topology: Arc::new(topology),
             handle: TopologyActor::spawn(client.clone(), cancel),
             leases: crate::actions::leases::Leases::new(client),
-            acks: Acks::default(),
             profiles: crate::actions::profiles::Resolver::with_config_home(
                 tempfile::tempdir().expect("tempdir").keep(),
             ),

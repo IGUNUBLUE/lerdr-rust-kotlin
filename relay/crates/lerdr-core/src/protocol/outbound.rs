@@ -480,11 +480,15 @@ pub struct AgentUpdateMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attention_kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -495,6 +499,8 @@ pub struct AgentUpdateMessage {
     pub project: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_pane_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -507,6 +513,8 @@ pub struct AgentUpdateMessage {
     pub tab_label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tab_number: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_id: Option<String>,
     /// Envelope discriminator. Constructors set the canonical constant.
     #[serde(default, deserialize_with = "de_default")]
     pub r#type: String,

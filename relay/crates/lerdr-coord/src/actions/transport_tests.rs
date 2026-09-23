@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use crate::topology::Topology;
 use crate::TopologyActor;
 
-use super::{leases::Leases, profiles::Resolver, Acks, ActionContext};
+use super::{leases::Leases, profiles::Resolver, ActionContext};
 
 /// One scripted connection outcome.
 enum Step {
@@ -192,7 +192,6 @@ fn context_with_client(
     ActionContext {
         handle: TopologyActor::spawn(client.clone(), CancellationToken::new()),
         leases: Leases::new(client.clone()),
-        acks: Acks::default(),
         profiles: Resolver::with_config_home(tempfile::tempdir().expect("tempdir").keep()),
         questions: crate::actions::questions::Questions::default(),
         uploads: crate::actions::uploads::Uploads::new(
@@ -697,7 +696,6 @@ async fn agent_start_argv_lifecycle_matches_oracle_call_sequence() {
         ActionContext {
             handle: TopologyActor::spawn(client.clone(), CancellationToken::new()),
             leases: Leases::new(client.clone()),
-            acks: Acks::default(),
             profiles: Resolver::with_config_home(config_home.path().to_owned()),
             questions: crate::actions::questions::Questions::default(),
             uploads: crate::actions::uploads::Uploads::new(
@@ -811,7 +809,6 @@ async fn agent_start_kind_retries_pane_busy() {
         ActionContext {
             handle: TopologyActor::spawn(client.clone(), CancellationToken::new()),
             leases: Leases::new(client.clone()),
-            acks: Acks::default(),
             profiles: Resolver::with_config_home(tempfile::tempdir().expect("tempdir").keep()),
             questions: crate::actions::questions::Questions::default(),
             uploads: crate::actions::uploads::Uploads::new(

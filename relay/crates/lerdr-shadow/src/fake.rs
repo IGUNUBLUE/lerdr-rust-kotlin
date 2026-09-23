@@ -23,6 +23,10 @@
 //! | `workspace.move_block`    | `workspace_move_block_failed` (probe → supported) |
 //! | `tab.move`                | `tab_not_found` (probe → supported)         |
 //! | `control.set`             | `{"type":"ok"}` — sets `content[pane_id]`   |
+//! | `control.set_pane`        | `{"type":"ok"}` — merges `fields` into the  |
+//! |                           | live `panes`/`agents` records (no tab/      |
+//! |                           | workspace rollup — those only move on       |
+//! |                           | `tab.*`/`workspace.*` events in the oracle) |
 //! | `control.emit`            | `{"type":"ok","delivered":N}` — broadcasts  |
 //! |                           | `{"event":name,"data":…}` to subscribers    |
 //! | anything else             | `unknown_method` error                      |
@@ -41,6 +45,14 @@
 //!   pane. The next read observes the new text, which is what lets a watch
 //!   emit a delta. Reset content to a known baseline at the top of a
 //!   scenario: the socket fake is shared across both runs of a diff.
+//! - `control.set_pane {pane_id, fields}` — merges `fields` into the live
+//!   `panes`/`agents` records for the pane. Tab/workspace records stay
+//!   untouched: the oracle's event cache only mutates those on
+//!   `tab.*`/`workspace.*` events, so a snapshot-side rollup would diverge
+//!   the two relays. The relays only observe the mutation on the next
+//!   `session.snapshot`/`agent.list`/`pane.list`, so pair it with a
+//!   `control.emit` of a topology event (`pane_updated`,
+//!   `pane_agent_detected`) to drive lifecycle transitions.
 //! - `control.emit {name, data}` — pushes one NDJSON event frame,
 //!   `{"event":"<name>","data":<data>}` (the exact envelope both relays'
 //!   event clients decode — Go `herdr.Event`, Rust `lerdr_herdr::Event`),
@@ -146,30 +158,6 @@ impl StateFile {
             .clone()
             .unwrap_or_else(|| json!({"health_check": true}))
     }
-
-    fn snapshot(&self) -> Value {
-        let mut snap = json!({
-            "version": self.version,
-            "protocol": self.protocol,
-            "workspaces": self.workspaces,
-            "tabs": self.tabs,
-            "panes": self.panes,
-            "layouts": self.socket.layouts,
-            "agents": self.socket.agents,
-        });
-        if let Value::Object(map) = &mut snap {
-            if let Some(id) = &self.socket.focused_workspace_id {
-                map.insert("focused_workspace_id".into(), json!(id));
-            }
-            if let Some(id) = &self.socket.focused_tab_id {
-                map.insert("focused_tab_id".into(), json!(id));
-            }
-            if let Some(id) = &self.socket.focused_pane_id {
-                map.insert("focused_pane_id".into(), json!(id));
-            }
-        }
-        snap
-    }
 }
 
 /// The mutable runtime — everything `control.*` calls touch. `StateFile`
@@ -178,9 +166,24 @@ pub struct Live {
     /// `pane_id` → current `pane.read` text — `control.set` writes,
     /// `pane.read` reads.
     content: Mutex<BTreeMap<String, String>>,
+    /// The served topology records — `panes`, `socket.agents`, `tabs`,
+    /// `workspaces` as raw JSON values so `control.set_pane` can merge
+    /// arbitrary fields (e.g. `agent_status`) without a typed schema.
+    /// `session.snapshot`, `pane.list`, `agent.list`, `tab.list`,
+    /// `workspace.list`, and `pane.read`'s record echo all read these —
+    /// a mutation is what both relays' next snapshot/list observes.
+    topology: Mutex<Topology>,
     /// Raw event frames (`{"event":…,"data":…}`) broadcast to every held
     /// `events.subscribe` connection — `control.emit` sends.
     events: broadcast::Sender<Value>,
+}
+
+/// The live half of `StateFile`'s topology records.
+struct Topology {
+    panes: Vec<Value>,
+    agents: Vec<Value>,
+    tabs: Vec<Value>,
+    workspaces: Vec<Value>,
 }
 
 /// Event-channel capacity per subscriber — a burst buffer, not a queue of
@@ -191,8 +194,41 @@ impl Live {
     fn new(state: &StateFile) -> Self {
         Self {
             content: Mutex::new(state.content.clone()),
+            topology: Mutex::new(Topology {
+                panes: state.panes.clone(),
+                agents: state.socket.agents.clone(),
+                tabs: state.tabs.clone(),
+                workspaces: state.workspaces.clone(),
+            }),
             events: broadcast::channel(EVENT_CHANNEL).0,
         }
+    }
+
+    /// `StateFile::snapshot` over the live records — `control.set_pane`
+    /// mutations are what a re-read observes.
+    fn snapshot(&self, state: &StateFile) -> Value {
+        let topology = self.topology.lock().expect("topology mutex");
+        let mut snap = json!({
+            "version": state.version,
+            "protocol": state.protocol,
+            "workspaces": topology.workspaces,
+            "tabs": topology.tabs,
+            "panes": topology.panes,
+            "layouts": state.socket.layouts,
+            "agents": topology.agents,
+        });
+        if let Value::Object(map) = &mut snap {
+            if let Some(id) = &state.socket.focused_workspace_id {
+                map.insert("focused_workspace_id".into(), json!(id));
+            }
+            if let Some(id) = &state.socket.focused_tab_id {
+                map.insert("focused_tab_id".into(), json!(id));
+            }
+            if let Some(id) = &state.socket.focused_pane_id {
+                map.insert("focused_pane_id".into(), json!(id));
+            }
+        }
+        snap
     }
 }
 
@@ -226,26 +262,37 @@ fn dispatch(state: &StateFile, live: &Live, method: &str, params: &Map<String, V
         "events.subscribe" => Ok(json!({"type": "subscription_started"})),
         "session.snapshot" => Ok(json!({
             "type": "session_snapshot",
-            "snapshot": state.snapshot(),
+            "snapshot": live.snapshot(state),
         })),
-        "agent.list" => Ok(json!({"type": "agent_list", "agents": state.socket.agents})),
-        "pane.list" => Ok(json!({"type": "pane_list", "panes": state.panes})),
-        "workspace.list" => Ok(json!({"type": "workspace_list", "workspaces": state.workspaces})),
+        "agent.list" => Ok(json!({
+            "type": "agent_list",
+            "agents": live.topology.lock().expect("topology mutex").agents,
+        })),
+        "pane.list" => Ok(json!({
+            "type": "pane_list",
+            "panes": live.topology.lock().expect("topology mutex").panes,
+        })),
+        "workspace.list" => Ok(json!({
+            "type": "workspace_list",
+            "workspaces": live.topology.lock().expect("topology mutex").workspaces,
+        })),
         "tab.list" => {
+            let topology = live.topology.lock().expect("topology mutex");
             let tabs: Vec<Value> = match params.get("workspace_id").and_then(Value::as_str) {
-                Some(ws) if !ws.is_empty() => state
+                Some(ws) if !ws.is_empty() => topology
                     .tabs
                     .iter()
                     .filter(|t| t.get("workspace_id").and_then(Value::as_str) == Some(ws))
                     .cloned()
                     .collect(),
-                _ => state.tabs.clone(),
+                _ => topology.tabs.clone(),
             };
             Ok(json!({"type": "tab_list", "tabs": tabs}))
         }
         "pane.read" => pane_read(state, live, params),
         "pane.send_input" | "pane.send_text" | "pane.send_keys" => Ok(json!({"type": "ok"})),
         "control.set" => control_set(live, params),
+        "control.set_pane" => control_set_pane(live, params),
         "control.emit" => control_emit(live, params),
         "worktree.list" => worktree_list(state, params),
         // Capability probes (the Go client interprets these codes as
@@ -282,6 +329,53 @@ fn control_set(live: &Live, params: &Map<String, Value>) -> Dispatch {
         .lock()
         .expect("content mutex")
         .insert(pane_id.to_owned(), text.to_owned());
+    Ok(json!({"type": "ok"}))
+}
+
+/// `control.set_pane {pane_id, fields}` — merge `fields` into the live
+/// `panes[]` and `agents[]` records keyed on `pane_id`, so the next
+/// `session.snapshot`/`pane.list`/`agent.list`/`pane.read` serves the
+/// mutation. Tab/workspace records stay untouched: the oracle's event
+/// cache only mutates those on `tab.*`/`workspace.*` events (there is no
+/// status rollup event), so a snapshot-side rollup would diverge the two
+/// relays. Pair with a `control.emit` `pane_updated` /
+/// `pane_agent_detected` to make the change observable as an event.
+fn control_set_pane(live: &Live, params: &Map<String, Value>) -> Dispatch {
+    let pane_id = params.get("pane_id").and_then(Value::as_str).unwrap_or("");
+    if pane_id.is_empty() {
+        return Err((
+            "invalid_params".to_owned(),
+            "control.set_pane requires pane_id".to_owned(),
+        ));
+    }
+    let Some(fields) = params.get("fields").and_then(Value::as_object) else {
+        return Err((
+            "invalid_params".to_owned(),
+            "control.set_pane requires a fields object".to_owned(),
+        ));
+    };
+    let mut topology = live.topology.lock().expect("topology mutex");
+    // Reborrow once — field splits through the guard's `DerefMut` can't
+    // chain two `iter_mut`s off `topology.<field>` in one expression.
+    let topology = &mut *topology;
+    let mut matched = false;
+    for record in topology.panes.iter_mut().chain(topology.agents.iter_mut()) {
+        if record.get("pane_id").and_then(Value::as_str) != Some(pane_id) {
+            continue;
+        }
+        matched = true;
+        if let Value::Object(map) = record {
+            for (key, value) in fields {
+                map.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    if !matched {
+        return Err((
+            "pane_not_found".to_owned(),
+            format!("pane {pane_id} not found"),
+        ));
+    }
     Ok(json!({"type": "ok"}))
 }
 
@@ -323,10 +417,14 @@ fn pane_read(state: &StateFile, live: &Live, params: &Map<String, Value>) -> Dis
     if let Some(over) = state.socket.pane_read.get(pane_id) {
         return Ok(json!({"type": "pane_read", "read": over}));
     }
-    let pane = state
-        .panes
-        .iter()
-        .find(|p| p.get("pane_id").and_then(Value::as_str) == Some(pane_id));
+    let pane = {
+        let topology = live.topology.lock().expect("topology mutex");
+        topology
+            .panes
+            .iter()
+            .find(|p| p.get("pane_id").and_then(Value::as_str) == Some(pane_id))
+            .cloned()
+    };
     let Some(pane) = pane else {
         return Err((
             "pane_not_found".to_owned(),
@@ -642,6 +740,61 @@ mod tests {
             &l,
             "pane.read",
             &Map::from_iter([("pane_id".into(), json!("nope"))])
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn set_pane_mutates_served_topology() {
+        let s = state();
+        let l = live(&s);
+        dispatch(
+            &s,
+            &l,
+            "control.set_pane",
+            &Map::from_iter([
+                ("pane_id".into(), json!("wE:p1")),
+                (
+                    "fields".into(),
+                    json!({"agent_status": "blocked", "revision": 8}),
+                ),
+            ]),
+        )
+        .unwrap();
+        // Every list/snapshot surface observes the mutation.
+        let snap = dispatch(&s, &l, "session.snapshot", &Map::new()).unwrap();
+        assert_eq!(snap["snapshot"]["agents"][0]["agent_status"], "blocked");
+        assert_eq!(snap["snapshot"]["panes"][0]["revision"], 8);
+        assert_eq!(
+            dispatch(&s, &l, "pane.list", &Map::new()).unwrap()["panes"][0]["agent_status"],
+            "blocked"
+        );
+        assert_eq!(
+            dispatch(&s, &l, "agent.list", &Map::new()).unwrap()["agents"][0]["agent_status"],
+            "blocked"
+        );
+        // No tab/workspace rollup — the oracle's event cache only mutates
+        // those records on `tab.*`/`workspace.*` events, so a snapshot-side
+        // rollup would diverge the two relays.
+        assert!(
+            snap["snapshot"]["tabs"][0].get("agent_status").is_none(),
+            "tab record stays untouched"
+        );
+        assert!(
+            snap["snapshot"]["workspaces"][0]
+                .get("agent_status")
+                .is_none(),
+            "workspace record stays untouched"
+        );
+        // Unknown pane ids are an error, not a silent no-op.
+        assert!(dispatch(
+            &s,
+            &l,
+            "control.set_pane",
+            &Map::from_iter([
+                ("pane_id".into(), json!("nope")),
+                ("fields".into(), json!({"agent_status": "blocked"})),
+            ]),
         )
         .is_err());
     }

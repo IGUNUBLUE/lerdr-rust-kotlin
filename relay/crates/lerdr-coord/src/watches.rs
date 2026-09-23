@@ -53,18 +53,19 @@ use lerdr_core::json::MaybeNull;
 use lerdr_core::protocol::{
     Inbound, Outbound, PaneContent, PaneDelta, PaneResync, PaneUnchanged, TargetRef,
 };
-use lerdr_herdr::{Client, ReadFormat, ReadSource};
+use lerdr_herdr::{ReadFormat, ReadSource};
 use lerdr_relay::session::ClientSink;
 use sha2::{Digest, Sha256};
-use tokio::sync::{broadcast, mpsc, watch};
+use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn, Instrument};
 
-use crate::actions::{leases::Leases, Acks};
-use crate::actor::Invalidation;
+use crate::actions::{leases::Leases, questions::Questions, Notices};
+use crate::actor::{Invalidation, TopologyHandle};
+use crate::classify::store::{prepare_pane_response, PaneSemantics};
 use crate::fingerprint::content_fingerprint;
-use crate::topology::Topology;
+use crate::history::Manager as HistoryManager;
 
 /// `paneWatchAckTimeout` — the oracle's gate reset window.
 pub const ACK_TIMEOUT: Duration = Duration::from_secs(4);
@@ -195,28 +196,56 @@ pub(crate) fn cap_pane_content_lines(content: &str, limit: u32) -> &str {
 }
 
 /// `paneFrameFingerprint` (server.go:2832-2881) — frame-level identity
-/// the unchanged-check runs on. The oracle hashes
+/// the watch's unchanged-check runs on. The oracle's tagged hash walks
 /// `{content, format, truncated, viewport_only, viewport_rows,
 /// resize_settling, attention_kind, prompt, command, options,
-/// interaction, question_layout}`; here the content fingerprint stands
-/// in for `content`, `format` is fixed per watch, and the
-/// attention/classification fields are unprojected (doc 10) — so a
-/// metadata-only change (`truncated`, lease/viewport flags, settle
-/// window expiry) still moves the fingerprint and emits the copy-delta.
-/// Internal only — never on the wire.
-fn frame_fingerprint(
-    content_fingerprint: &str,
-    truncated: bool,
-    viewport_only: bool,
-    viewport_rows: Option<i64>,
-    resize_settling: bool,
-) -> String {
+/// interaction, question_layout}` — `writeField` writes a tag byte
+/// (0 absent, 1 string, 2 bool, 3 JSON), the u64-LE length, then the
+/// bytes. Internal only — never on the wire — but kept field-faithful so
+/// a metadata- or semantics-only change moves the fingerprint and emits
+/// the copy-delta exactly like the oracle.
+fn frame_fingerprint(frame: &WatchFrame, format: ReadFormat) -> String {
     let mut digest = Sha256::new();
-    digest.update(content_fingerprint.as_bytes());
-    for flag in [truncated, viewport_only, resize_settling] {
-        digest.update([u8::from(flag)]);
+    let mut write_field = |tag: u8, data: &[u8]| {
+        digest.update([tag]);
+        digest.update((data.len() as u64).to_le_bytes());
+        digest.update(data);
+    };
+    write_field(1, frame.content.as_bytes());
+    write_field(1, format_wire(format).as_bytes());
+    write_field(2, &[u8::from(frame.truncated)]);
+    write_field(2, &[u8::from(frame.viewport_only)]);
+    match frame.viewport_rows {
+        // `response["viewport_rows"]` absent (no active rows lease) → the
+        // `nil` tag; present → `json.Marshal(int64)` (decimal).
+        Some(rows) if rows > 0 => write_field(3, rows.to_string().as_bytes()),
+        _ => write_field(0, &[]),
     }
-    digest.update(viewport_rows.unwrap_or_default().to_le_bytes());
+    // `resize_settling` is only ever *set* to true — absent otherwise,
+    // so a clear flag hashes as the `nil` tag, not a false bool.
+    if frame.resize_settling {
+        write_field(2, &[1]);
+    } else {
+        write_field(0, &[]);
+    }
+    let semantics = &frame.semantics;
+    write_field(1, semantics.attention_kind.as_bytes());
+    write_field(1, semantics.prompt.as_bytes());
+    write_field(1, semantics.command.as_bytes());
+    // `[]string(nil)`/`nil *Interaction` both marshal as `null` under
+    // the `default` arm — the typed-nil interface never hits `case nil`.
+    let options_json = if semantics.options.is_empty() {
+        b"null".to_vec()
+    } else {
+        serde_json::to_vec(&semantics.options).unwrap_or_else(|_| b"null".to_vec())
+    };
+    write_field(3, &options_json);
+    let interaction_json = match &semantics.interaction {
+        Some(interaction) => serde_json::to_vec(interaction).unwrap_or_else(|_| b"null".to_vec()),
+        None => b"null".to_vec(),
+    };
+    write_field(3, &interaction_json);
+    write_field(2, &[u8::from(semantics.question_layout)]);
     hex::encode(&digest.finalize()[..8])
 }
 
@@ -259,23 +288,28 @@ pub(crate) struct WatchSpec {
 
 /// The ambient handles `readPaneWatchFrame`/`pollPaneWatch` reach for
 /// beyond the spec — the lease ledger (`applyPaneReadLease` →
-/// `viewport_only`/`viewport_rows`/`resize_settling`), the topology feed
-/// (`isClaudeAgent` source choice, the mid-read generation fence, the
-/// `AcknowledgePane` sequence), the ack ledger (`HandleReadPane`'s
-/// `handleAcknowledge` half), and the runtime endpoints (Herdr client,
-/// this client's push sink, the `pane.updated` invalidation feed, the
-/// session kill switch).
+/// `viewport_only`/`viewport_rows`/`resize_settling`), the topology
+/// handle (the live committed view: `isClaudeAgent` source choice, the
+/// mid-read generation/content fences, `classification_agent`, and the
+/// `AcknowledgePane` + `wake` halves of `handleAcknowledge`), the
+/// semantic side channels (`customAnswers`, `history.Manager`, the
+/// `agent_update` broadcast), and the runtime endpoints (this client's
+/// push sink + the session kill switch).
 #[derive(Clone)]
 pub(crate) struct WatchDeps {
+    pub(crate) handle: TopologyHandle,
     pub(crate) leases: Leases,
-    pub(crate) topology: watch::Receiver<Arc<Topology>>,
-    pub(crate) acks: Acks,
-    /// Herdr endpoint the probe/read RPCs run on.
-    pub(crate) client: Client,
+    /// `s.state`'s custom-answer store — `classify_semantics` records and
+    /// fills through it.
+    pub(crate) questions: Questions,
+    /// `s.historyM` — the claude-like transcript merge ledger.
+    pub(crate) history: HistoryManager,
+    /// `d.journal` — `handleAcknowledge`'s `d.fail` row on a gone pane.
+    pub(crate) activities: crate::actions::activity::Journal,
+    /// `d.broadcast` — `agent_update` when the ack moves displayed status.
+    pub(crate) notices: Notices,
     /// This client's push endpoint.
     pub(crate) sink: Arc<dyn FrameSink>,
-    /// `pane.updated` feed — `start` subscribes per watch.
-    pub(crate) invalidations: broadcast::Sender<Invalidation>,
     /// Session-scoped kill switch.
     pub(crate) cancel: CancellationToken,
 }
@@ -329,7 +363,7 @@ impl WatchSet {
         }
         let (ctl_tx, ctl_rx) = mpsc::channel(WATCH_CTL_QUEUE);
         let id = pane_id.clone();
-        let invalidations = deps.invalidations.subscribe();
+        let invalidations = deps.handle.invalidations.subscribe();
         let task = tokio::spawn(
             watch_loop(pane_id, spec, deps, invalidations, ctl_rx)
                 .instrument(tracing::info_span!("pane_watch", pane = %id)),
@@ -383,16 +417,23 @@ impl WatchSet {
 
 /// `paneWatchFrame` (pane_watch.go:31-38) — one read distilled for the
 /// gate: content + its wire fingerprint, the frame-level fingerprint
-/// `paneWatchUpdate` skips on, the emitted metadata, and the settle flag
-/// `paneWatchNeedsFrameRead` keeps re-reading on.
+/// `paneWatchUpdate` skips on, the emitted metadata + semantic fields,
+/// the classification agent `paneWatchNeedsFrameRead` re-reads on, and
+/// the settle flag.
 struct WatchFrame {
     content: String,
     content_fingerprint: String,
     frame_fingerprint: String,
+    /// `classificationAgent` — the `s.agentInfo` value the frame's
+    /// classification was computed under; a change forces a re-read.
+    classification_agent: String,
     truncated: bool,
     viewport_only: bool,
     viewport_rows: Option<i64>,
     resize_settling: bool,
+    /// `preparePaneResponse`'s semantic half — emitted verbatim on full
+    /// frames and copied onto deltas like every other response key.
+    semantics: PaneSemantics,
 }
 
 /// The watch task's frame state.
@@ -410,6 +451,11 @@ struct WatchState {
     /// read inside the resize-settle window every tick full-reads, so
     /// the flag's clearing itself pushes a metadata delta.
     sent_resize_settling: bool,
+    /// `acknowledged.classificationAgent` — the agent the committed
+    /// frame's classification was computed under; a topology change to
+    /// a different provider re-reads even when the probe fingerprint
+    /// holds (`paneWatchNeedsFrameRead`'s second leg).
+    sent_classification_agent: String,
     /// `watch.probeFingerprint` — the last `visible`-probe content
     /// fingerprint; empty forces the next tick's full read. Cleared on
     /// ack timeout and resync.
@@ -437,6 +483,7 @@ impl WatchState {
             sent_content: String::new(),
             sent_frame_fingerprint: String::new(),
             sent_resize_settling: false,
+            sent_classification_agent: String::new(),
             probe_fingerprint: String::new(),
             acked_fingerprint: String::new(),
             pending_ack: false,
@@ -452,6 +499,7 @@ impl WatchState {
         self.sent_content = frame.content.clone();
         self.sent_frame_fingerprint = frame.frame_fingerprint.clone();
         self.sent_resize_settling = frame.resize_settling;
+        self.sent_classification_agent = frame.classification_agent.clone();
         self.gate();
     }
 
@@ -645,26 +693,34 @@ async fn poll(pane_id: &str, spec: &WatchSpec, deps: &WatchDeps, state: &mut Wat
     // `HandleProbePane` (dispatch.go:1169-1191) — `pane.read` on the
     // `visible` source at a fixed 500 lines in the watch's format,
     // fenced on the pane's generation mid-read.
-    let generation = deps.topology.borrow().generation_of(pane_id);
+    let generation = deps.handle.topology.borrow().generation_of(pane_id);
     let Ok(probe) = deps
+        .handle
         .client
         .pane_read(pane_id, ReadSource::Visible, PROBE_LINES, spec.format)
         .await
     else {
         return;
     };
-    if deps.topology.borrow().generation_of(pane_id) != generation {
+    let (generation_now, classification_agent) = {
+        let topology = deps.handle.topology.borrow();
+        (
+            topology.generation_of(pane_id),
+            topology.classification_agent(pane_id),
+        )
+    };
+    if generation_now != generation {
         return;
     }
     let probe_fingerprint = content_fingerprint(&probe.text);
-    // `paneWatchNeedsFrameRead` (pane_watch.go:248-259): an empty or moved
-    // probe reads; a committed `resize_settling` frame keeps reading
-    // until the flag clears. (The oracle's third leg —
-    // `acknowledged.classificationAgent != current` — has no Rust
-    // counterpart: no classification projection exists, doc 10.)
+    // `paneWatchNeedsFrameRead` (pane_watch.go:248-259): an empty or
+    // moved probe reads; a committed `resize_settling` frame or a
+    // `classificationAgent` change keeps reading until both clear.
     let needs_read = state.probe_fingerprint.is_empty()
         || probe_fingerprint != state.probe_fingerprint
-        || state.sent_resize_settling;
+        || state.sent_resize_settling
+        || (!state.sent_frame_fingerprint.is_empty()
+            && state.sent_classification_agent != classification_agent);
     if !needs_read {
         return;
     }
@@ -686,19 +742,30 @@ async fn poll(pane_id: &str, spec: &WatchSpec, deps: &WatchDeps, state: &mut Wat
 /// nil` paths send nothing either: the initial loop retries, the poll
 /// just ends).
 async fn read_watch_frame(pane_id: &str, spec: &WatchSpec, deps: &WatchDeps) -> Option<WatchFrame> {
-    let (generation, agent, seq) = {
-        let topology = deps.topology.borrow();
-        let info = topology.pane_of(pane_id);
+    let (generation, content_rev, agent, classification_agent) = {
+        let topology = deps.handle.topology.borrow();
         (
             topology.generation_of(pane_id),
-            info.and_then(|a| a.agent.clone()).unwrap_or_default(),
-            info.map(|a| a.state_change_seq),
+            topology.content_rev_of(pane_id),
+            topology
+                .pane_of(pane_id)
+                .and_then(|a| a.agent.clone())
+                .unwrap_or_default(),
+            topology.classification_agent(pane_id),
         )
     };
-    // `handleAcknowledge` — every `HandleReadPane` acks the pane.
-    if let Some(seq) = seq {
-        deps.acks.record(pane_id, seq);
-    }
+    // `handleAcknowledge` — every `HandleReadPane` acks the pane through
+    // the shared ledger; the `agent_update` broadcast + `wake` ride
+    // inside when the displayed status moved. `paneWatchFrame` builds no
+    // `request_id`, so a gone-pane failure row carries `""` like the
+    // oracle's `stringValue(message, "request_id")` miss.
+    crate::actions::acknowledge_pane_state(
+        &deps.handle,
+        &deps.notices,
+        &deps.activities,
+        pane_id,
+        "",
+    );
     // `applyPaneReadLease` — an active size lease marks the read
     // viewport-only and carries `viewport_rows`; client-sent
     // `terminal_columns`/`terminal_rows` are ignored wholesale (the
@@ -710,6 +777,7 @@ async fn read_watch_frame(pane_id: &str, spec: &WatchSpec, deps: &WatchDeps) -> 
         None
     };
     let read = deps
+        .handle
         .client
         .pane_read(
             pane_id,
@@ -719,37 +787,50 @@ async fn read_watch_frame(pane_id: &str, spec: &WatchSpec, deps: &WatchDeps) -> 
         )
         .await
         .ok()?;
-    // `HandleReadPane`'s mid-read fences — generation is the portable
-    // half; the oracle's `ContentRevision` check has no Rust counterpart
-    // (doc 10).
-    if deps.topology.borrow().generation_of(pane_id) != generation {
-        return None;
+    // `HandleReadPane`'s mid-read fences — generation (`replaced`) and
+    // `ContentRevision` (`changed`).
+    {
+        let topology = deps.handle.topology.borrow();
+        if topology.generation_of(pane_id) != generation
+            || topology.content_rev_of(pane_id) != content_rev
+        {
+            return None;
+        }
     }
-    // `classifyPaneResponse` (server.go:2791-2797) — viewport reads taken
-    // inside the settle window are flagged so the app won't commit
-    // possibly-redrawn rows as history.
+    // `classifyPaneResponse`'s settle flag — viewport reads inside the
+    // window are flagged so the app won't commit possibly-redrawn rows.
     let resize_settling = viewport_only
         && deps
             .leases
             .resized_within(pane_id, crate::actions::leases::RESIZE_SETTLE_WINDOW)
             .await;
-    let content = cap_pane_content_lines(&read.text, spec.lines).to_owned();
-    let content_fingerprint = content_fingerprint(&content);
-    Some(WatchFrame {
-        frame_fingerprint: frame_fingerprint(
-            &content_fingerprint,
-            read.truncated,
-            viewport_only,
-            viewport_rows,
-            resize_settling,
-        ),
-        content,
+    // `preparePaneResponse` — classify the capped raw read, merge
+    // claude-like history when warranted, `noecho.Match` the tail.
+    let capped = cap_pane_content_lines(&read.text, spec.lines);
+    let prepared = prepare_pane_response(
+        pane_id,
+        capped,
+        read.truncated,
+        &classification_agent,
+        viewport_only,
+        spec.lines,
+        &deps.questions,
+        &deps.history,
+    );
+    let content_fingerprint = content_fingerprint(&prepared.content);
+    let mut frame = WatchFrame {
+        frame_fingerprint: String::new(),
+        classification_agent,
+        content: prepared.content,
         content_fingerprint,
-        truncated: read.truncated,
+        truncated: prepared.truncated,
         viewport_only,
         viewport_rows,
         resize_settling,
-    })
+        semantics: prepared.semantics,
+    };
+    frame.frame_fingerprint = frame_fingerprint(&frame, spec.format);
+    Some(frame)
 }
 
 /// `paneWatchUpdate` (pane_watch.go:325-351) — pick and push the right
@@ -766,11 +847,16 @@ fn send_frame(
         return;
     }
     // `acknowledged.frameFingerprint == current.frameFingerprint` → nil:
-    // identical frames — content AND metadata — don't re-send.
+    // identical frames — content AND metadata — don't re-send, but the
+    // oracle still adopts the read as `acknowledged` — a `pane_applied`
+    // echoing it then reads as a dup, not a foreign resync.
     if !state.force_full
         && !state.sent_frame_fingerprint.is_empty()
         && frame.frame_fingerprint == state.sent_frame_fingerprint
     {
+        state.sent_classification_agent = frame.classification_agent.clone();
+        state.sent_resize_settling = frame.resize_settling;
+        state.acked_fingerprint = frame.content_fingerprint.clone();
         return;
     }
 
@@ -816,10 +902,9 @@ fn send_frame(
 }
 
 /// The full `pane_content` watch frame — `paneWatchUpdate`'s
-/// `ack_required` branch. `interaction`/`question_layout` ride as the
-/// oracle's un-classified seeds (`null`/`false` — the classification
-/// projection is a declared gap, doc 10).
+/// `ack_required` branch — every `preparePaneResponse` key included.
 fn full_frame(pane_id: &str, spec: &WatchSpec, frame: &WatchFrame) -> Outbound {
+    let semantics = &frame.semantics;
     Outbound::PaneContent(Box::new(PaneContent {
         r#type: "pane_content".to_owned(),
         pane_id: Some(pane_id.to_owned()),
@@ -835,8 +920,21 @@ fn full_frame(pane_id: &str, spec: &WatchSpec, frame: &WatchFrame) -> Outbound {
             None
         },
         resize_settling: frame.resize_settling.then_some(true),
-        interaction: Some(MaybeNull::Null),
-        question_layout: Some(false),
+        attention_kind: Some(semantics.attention_kind.to_owned()),
+        prompt: Some(semantics.prompt.clone()),
+        command: Some(semantics.command.clone()),
+        options: Some(if semantics.options.is_empty() {
+            MaybeNull::Null
+        } else {
+            MaybeNull::Value(semantics.options.clone())
+        }),
+        interaction: Some(match &semantics.interaction {
+            Some(interaction) => MaybeNull::Value(interaction.clone()),
+            None => MaybeNull::Null,
+        }),
+        question_layout: Some(semantics.question_layout),
+        no_echo: Some(semantics.no_echo),
+        no_echo_prompt: semantics.no_echo_prompt.clone(),
         target: Some(MaybeNull::Value(spec.target.clone())),
         ..PaneContent::default()
     }))
@@ -853,6 +951,7 @@ fn delta_frame(
     base_fingerprint: String,
     segments: Vec<delta::Segment>,
 ) -> Outbound {
+    let semantics = &frame.semantics;
     Outbound::PaneDelta(Box::new(PaneDelta {
         r#type: "pane_delta".to_owned(),
         pane_id: Some(pane_id.to_owned()),
@@ -867,8 +966,21 @@ fn delta_frame(
             None
         },
         resize_settling: frame.resize_settling.then_some(true),
-        interaction: Some(MaybeNull::Null),
-        question_layout: Some(false),
+        attention_kind: Some(semantics.attention_kind.to_owned()),
+        prompt: Some(semantics.prompt.clone()),
+        command: Some(semantics.command.clone()),
+        options: Some(if semantics.options.is_empty() {
+            MaybeNull::Null
+        } else {
+            MaybeNull::Value(semantics.options.clone())
+        }),
+        interaction: Some(match &semantics.interaction {
+            Some(interaction) => MaybeNull::Value(interaction.clone()),
+            None => MaybeNull::Null,
+        }),
+        question_layout: Some(semantics.question_layout),
+        no_echo: Some(semantics.no_echo),
+        no_echo_prompt: semantics.no_echo_prompt.clone(),
         segments: Some(MaybeNull::Value(segments)),
         target: Some(MaybeNull::Value(spec.target.clone())),
         ..PaneDelta::default()
@@ -895,7 +1007,8 @@ pub fn pane_unchanged(pane_id: &str, fingerprint: &str, target: Option<TargetRef
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
-    use lerdr_herdr::{BoxIo, ClientConfig, Event, Transport};
+    use crate::topology::Topology;
+    use lerdr_herdr::{BoxIo, Client, ClientConfig, Event, Transport};
     use serde_json::{json, Value};
     use std::collections::VecDeque;
     use std::future::Future;
@@ -1054,7 +1167,7 @@ pub(crate) mod test_support {
         }
     }
 
-    /// `WatchDeps` over an empty topology + fresh lease/ack ledgers —
+    /// `WatchDeps` over an empty topology + fresh shared ledgers —
     /// the fake client answers the reads; nothing else consults them.
     pub(crate) fn deps(
         client: &Client,
@@ -1063,12 +1176,17 @@ pub(crate) mod test_support {
         cancel: CancellationToken,
     ) -> WatchDeps {
         WatchDeps {
+            handle: TopologyHandle::for_test(
+                client.clone(),
+                Arc::new(Topology::default()),
+                invalidations.clone(),
+            ),
             leases: Leases::new(client.clone()),
-            topology: watch::channel(Arc::new(Topology::default())).1,
-            acks: Acks::default(),
-            client: client.clone(),
+            questions: Questions::default(),
+            history: HistoryManager::in_memory(),
+            activities: crate::actions::activity::Journal::default(),
+            notices: Notices::default(),
             sink,
-            invalidations: invalidations.clone(),
             cancel,
         }
     }
@@ -1782,20 +1900,20 @@ mod tests {
         let (sink, mut rx) = recording_sink();
         let spec = spec(30, Duration::from_millis(250), None);
         let mut state = WatchState::new();
-        let frame = |truncated: bool| WatchFrame {
-            content: "v1\n".to_owned(),
-            content_fingerprint: content_fingerprint("v1\n"),
-            frame_fingerprint: frame_fingerprint(
-                &content_fingerprint("v1\n"),
+        let frame = |truncated: bool| {
+            let mut frame = WatchFrame {
+                content: "v1\n".to_owned(),
+                content_fingerprint: content_fingerprint("v1\n"),
+                frame_fingerprint: String::new(),
+                classification_agent: String::new(),
                 truncated,
-                false,
-                None,
-                false,
-            ),
-            truncated,
-            viewport_only: false,
-            viewport_rows: None,
-            resize_settling: false,
+                viewport_only: false,
+                viewport_rows: None,
+                resize_settling: false,
+                semantics: PaneSemantics::default(),
+            };
+            frame.frame_fingerprint = frame_fingerprint(&frame, ReadFormat::Text);
+            frame
         };
 
         // First frame — full + ack gate.

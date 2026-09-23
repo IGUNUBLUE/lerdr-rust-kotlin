@@ -27,7 +27,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use lerdr_core::json::{MaybeNull, RawJson};
 use lerdr_core::protocol::{
-    error_codes, ActionReceiptPhase, Inbound, InventoryStatusMessage, Outbound, UpdateStatusMessage,
+    error_codes, ActionReceiptPhase, Inbound, Outbound, UpdateStatusMessage,
 };
 use lerdr_core::sendbuffer::MAX_OUTBOUND_MESSAGE_BYTES;
 use lerdr_herdr::AgentInfo;
@@ -1556,37 +1556,17 @@ pub(crate) async fn slash_commands(
 }
 
 /// `inventory_status` — the typed frame the client already consumes,
-/// then the result/receipt pair. Derivation mirrors `inventoryStatusLocked`:
-/// a committed snapshot is `ready`; a stale view after a committed
-/// snapshot is `command_failed` + `stale`; never-synced is `starting`.
-/// Attempt/success timestamps are not tracked — they serialize as 0.
+/// then the result/receipt pair. The committed view's poll ledger drives
+/// the same `inventoryStatusLocked` projection the broadcast uses.
 pub(crate) async fn inventory_status(
     ctx: ActionContext,
     request_id: &str,
     action_id: &str,
     _message: &Inbound,
 ) -> Vec<Outbound> {
-    let (state, error_code, message, stale) = if !ctx.topology.stale {
-        ("ready", "", "", false)
-    } else if ctx.topology.revision > 0 {
-        (
-            "error",
-            "command_failed",
-            "Unable to read the current Herdr agent inventory.",
-            true,
-        )
-    } else {
-        ("starting", "", "", false)
-    };
-    let mut frames = vec![Outbound::InventoryStatus(InventoryStatusMessage {
-        r#type: "inventory_status".to_owned(),
-        state: Some(state.to_owned()),
-        error_code: Some(error_code.to_owned()),
-        message: Some(message.to_owned()),
-        last_attempt_at: Some(0),
-        last_success_at: Some(0),
-        stale: Some(stale),
-    })];
+    let mut frames = vec![Outbound::InventoryStatus(
+        crate::snapshot::inventory_status(&ctx.topology),
+    )];
     frames.extend(Outcome::completed("", None).frames(request_id, "inventory_status", action_id));
     frames
 }

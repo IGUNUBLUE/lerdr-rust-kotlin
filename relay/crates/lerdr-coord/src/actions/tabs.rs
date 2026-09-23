@@ -141,16 +141,22 @@ pub(crate) async fn tab_reorder(
     outcome.frames(request_id, "tab_reorder", action_id)
 }
 
-/// `handleAcknowledge` — local-only: the pane must exist in the projected
-/// agent table, then the ack rides the ledger at the pane's current
-/// `state_change_seq`. Called directly by the router for `acknowledge_pane`
-/// and by `read_pane` (the oracle acknowledges inside `HandleReadPane`).
-pub(crate) fn acknowledge(ctx: &ActionContext, pane_id: &str) -> Outcome {
-    let Some(agent) = ctx.topology.pane_of(pane_id) else {
-        return Outcome::failed(pane_id, "Agent is unavailable");
-    };
-    ctx.acks.record(pane_id, agent.state_change_seq);
-    Outcome::completed(pane_id, None)
+/// `handleAcknowledge` (dispatch.go:619-636) — the shared
+/// [`acknowledge_pane_state`] half records the ack, journals the failure
+/// row for a gone pane, wakes the poller, and broadcasts `agent_update`
+/// on a displayed-status change; the routed command just maps the result.
+pub(crate) fn acknowledge(ctx: &ActionContext, request_id: &str, pane_id: &str) -> Outcome {
+    if super::acknowledge_pane_state(
+        &ctx.handle,
+        &ctx.notices,
+        &ctx.activities,
+        pane_id,
+        request_id,
+    ) {
+        Outcome::completed(pane_id, None)
+    } else {
+        Outcome::failed(pane_id, "Agent is unavailable")
+    }
 }
 
 /// `handleAcknowledge` as a full frame pair for the routed action.
@@ -168,7 +174,7 @@ pub(crate) async fn acknowledge_pane(
             action_id,
         );
     }
-    acknowledge(&ctx, pane_id).frames(request_id, "acknowledge_pane", action_id)
+    acknowledge(&ctx, request_id, pane_id).frames(request_id, "acknowledge_pane", action_id)
 }
 
 /// `d.state.Agent(paneID).TabID`.

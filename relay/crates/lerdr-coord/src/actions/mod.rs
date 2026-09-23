@@ -70,9 +70,6 @@ pub(crate) struct ActionContext {
     pub topology: Arc<Topology>,
     pub handle: TopologyHandle,
     pub leases: leases::Leases,
-    /// Pane acknowledgment ledger — `handleAcknowledge`'s local triage
-    /// approximation (see [`tabs::acknowledge`]).
-    pub acks: Acks,
     /// Agent launch profile resolver — the `profiles.Resolver` port; lives
     /// behind a handle because `agent_start`/`agent_clear` share it.
     pub profiles: profiles::Resolver,
@@ -167,9 +164,9 @@ pub(crate) fn audit_attribution(topology: &Topology, pane_id: &str) -> audit::At
 }
 
 /// `recordActivity` — commit one journal row with the pane attribution the
-/// oracle reads out of `d.state.Agent(paneID)`. Our topology projects the
-/// agent name and session reference but not project/host, so those fields
-/// stay empty.
+/// oracle reads out of `d.state.Agent(paneID)`: the detected agent name,
+/// `Project` (`filepath.Base(cwd)` — the same derivation the topology
+/// projection uses), the relay's short hostname, and the agent session id.
 pub(crate) fn record_activity(
     ctx: &ActionContext,
     kind: &str,
@@ -190,7 +187,12 @@ pub(crate) fn record_activity(
             .as_ref()
             .map(|s| s.value.clone())
             .unwrap_or_default();
-        entry = entry.with_attribution(&name, "", "", &session);
+        entry = entry.with_attribution(
+            &name,
+            &crate::topology::project_of(agent.cwd.as_deref().unwrap_or_default()),
+            &crate::topology::hostname_short(),
+            &session,
+        );
     }
     ctx.activities.record(entry);
 }
@@ -218,7 +220,12 @@ pub(crate) fn record_activity_extract(
             .as_ref()
             .map(|s| s.value.clone())
             .unwrap_or_default();
-        entry = entry.with_attribution(&name, "", "", &session);
+        entry = entry.with_attribution(
+            &name,
+            &crate::topology::project_of(agent.cwd.as_deref().unwrap_or_default()),
+            &crate::topology::hostname_short(),
+            &session,
+        );
     }
     ctx.activities.record(entry);
 }
@@ -239,37 +246,62 @@ pub(crate) fn record_failure(
     record_activity(ctx, action, "failed", summary, pane_id, request_id);
 }
 
-/// The acknowledgment ledger — `state.AcknowledgePane`'s local half.
+/// `handleAcknowledge` (dispatch.go:619-636) — `DisplayedStatus` →
+/// `AcknowledgePane` → `wake` → `agent_update` on a displayed-status
+/// change. The attention ledger is shared across topology snapshots, so
+/// the ack on the latest borrow is the committed write.
 ///
-/// An ack binds a pane to the `state_change_seq` it carried when the client
-/// saw it: a later sequence re-opens attention. The projection that would
-/// consume it (`attention_kind` on `agents`/`pane_content`) does not exist
-/// yet — the ledger is still authoritative for *recording* so the port can
-/// consult it without another state shape change.
-#[derive(Clone, Default)]
-pub(crate) struct Acks(Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>);
-
-impl Acks {
-    /// `AcknowledgePane` — record the seq the client acknowledged.
-    pub(crate) fn record(&self, pane_id: &str, seq: u64) {
-        self.0
-            .lock()
-            .expect("acks poisoned")
-            .insert(pane_id.to_owned(), seq);
+/// A gone pane is `d.fail("acknowledge_pane", "Agent is unavailable")`:
+/// the journal row lands even when the caller discards the result
+/// (`HandleReadPane`, `readPaneWatchFrame`). Returns whether the pane was
+/// live — the routed `acknowledge_pane` maps `false` to its `Outcome`.
+pub(crate) fn acknowledge_pane_state(
+    handle: &TopologyHandle,
+    notices: &Notices,
+    activities: &activity::Journal,
+    pane_id: &str,
+    request_id: &str,
+) -> bool {
+    let topology = handle.topology.borrow();
+    let Some((before, after, state_rev)) = topology.acknowledge(pane_id) else {
+        // `d.fail` — `recordActivity(action, "failed", …)`; a gone pane has
+        // no attribution row to attach (the oracle's `d.state.Agent` is nil).
+        activities.record(activity::NewEntry::action(
+            "acknowledge_pane",
+            "failed",
+            "acknowledge pane failed: Agent is unavailable",
+            pane_id,
+            request_id,
+        ));
+        return false;
+    };
+    // `d.wake()` — the poller poke; here a topology re-read request.
+    handle.try_refresh();
+    if before == after {
+        return true;
     }
-
-    /// Whether the pane's current `state_change_seq` is already
-    /// acknowledged.
-    #[allow(dead_code)] // consumed once the attention projection lands
-    pub(crate) fn acknowledged(&self, pane_id: &str, seq: u64) -> bool {
-        self.0.lock().expect("acks poisoned").get(pane_id) == Some(&seq)
-    }
-
-    /// `profiles.Forget`-style cleanup when a pane goes away.
-    #[allow(dead_code)]
-    pub(crate) fn forget(&self, pane_id: &str) {
-        self.0.lock().expect("acks poisoned").remove(pane_id);
-    }
+    // The broadcast body (dispatch.go:627-633) plus `broadcastCommitted`'s
+    // envelope keys (server.go:3597-3608): `server_session_id`,
+    // `generation`, `terminal_id`, `agent_session_id`.
+    let info = topology.pane_of(pane_id);
+    let frame = Outbound::AgentUpdate(lerdr_core::protocol::AgentUpdateMessage {
+        r#type: "agent_update".to_owned(),
+        pane_id: Some(pane_id.to_owned()),
+        // `raw_pane_id: paneID` — the display pane id verbatim, not the
+        // raw Herdr id the inventory broadcast uses.
+        raw_pane_id: Some(pane_id.to_owned()),
+        status: Some(after),
+        pane_revision: Some(state_rev),
+        server_session_id: Some("primary".to_owned()),
+        generation: Some(topology.generation_of(pane_id)),
+        terminal_id: info.map(|i| i.terminal_id.clone()),
+        agent_session_id: info
+            .and_then(|i| i.agent_session.as_ref())
+            .map(|s| s.value.trim().to_owned()),
+        ..Default::default()
+    });
+    notices.send(frame, String::new());
+    true
 }
 
 /// The oracle's `CommandResult` plus the terminal receipt it implies.

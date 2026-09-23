@@ -37,8 +37,10 @@
 
 mod actions;
 mod actor;
+mod classify;
 pub mod conversation;
 mod fingerprint;
+mod history;
 mod router;
 mod snapshot;
 mod topology;

@@ -3760,7 +3760,6 @@ mod tests {
             handle: TopologyActor::spawn(client.clone(), CancellationToken::new()),
             topology: Arc::new(topology),
             leases: crate::actions::leases::Leases::new(client.clone()),
-            acks: crate::actions::Acks::default(),
             profiles: crate::actions::profiles::Resolver::with_config_home(dir.join("profiles")),
             questions: crate::actions::questions::Questions::default(),
             uploads: Uploads::new(dir.join("uploads")),

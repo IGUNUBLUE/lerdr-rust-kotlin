@@ -16,8 +16,7 @@
   "compare": {
     "drop_types": [
       "e2ee_server_hello",
-      "action_receipt",
-      "inventory_status"
+      "action_receipt"
     ],
     "unordered_types": [
       "push_config",
@@ -49,6 +48,8 @@
       "ts",
       "idle_since",
       "last_active_at",
+      "last_attempt_at",
+      "last_success_at",
       "received_at_ms",
       "content_fingerprint",
       "base_fingerprint",
@@ -78,14 +79,7 @@
         "capabilities"
       ],
       "agents": [
-        "activity_seq",
         "pane_revision",
-        "project",
-        "raw_pane_id",
-        "tab_label",
-        "tab_number",
-        "tab_order",
-        "updated_at",
         "tokens",
         "state_labels"
       ],
@@ -93,34 +87,6 @@
         "cwd",
         "tokens",
         "worktree"
-      ],
-      "activity": [
-        "project",
-        "session",
-        "session_name",
-        "host"
-      ],
-      "activity_history": [
-        "project",
-        "session",
-        "session_name",
-        "host"
-      ],
-      "pane_content": [
-        "attention_kind",
-        "command",
-        "no_echo",
-        "no_echo_prompt",
-        "options",
-        "prompt"
-      ],
-      "pane_delta": [
-        "attention_kind",
-        "command",
-        "no_echo",
-        "no_echo_prompt",
-        "options",
-        "prompt"
       ]
     },
     "map_keys": [
@@ -144,11 +110,11 @@
     ],
     "async_dedupe": true,
     "notes": [
-      "action_receipt is Rust's v3 dispatch-evidence addition — Go has no counterpart; dropped (census still shows it).",
-      "inventory_status is a Go-only inventory-poller frame; dropped.",
+      "action_receipt is Rust's v3 dispatch-evidence addition \u2014 Go has no counterpart; dropped (census still shows it).",
+      "inventory_status compares the full six-key projection (state/error_code/message/stale + both timestamps); last_attempt_at/last_success_at are wall-clock volatile.",
       "Watch frames compare {type,pane_id,ack_required,content/segments,format,truncated,viewport_only/viewport_rows,resize_settling,interaction,question_layout,target}: fingerprints (content_fingerprint, base_fingerprint) are content-derived and dropped globally.",
-      "pane_content/pane_delta drop only Go's classification/no-echo projection keys (attention_kind, prompt, command, options, no_echo, no_echo_prompt) — Rust emits format, truncated, viewport_only/viewport_rows, resize_settling, interaction:null and question_layout:false on watch pushes like the oracle's unclassified seeds.",
-      "Go's watch is ticker-driven; Rust's is tick + invalidation-assisted — the pane_updated emit is a wake nudge, not a requirement, and arrival timing inside the collect window is scheduler-owned.",
+      "pane_content/pane_delta compare the full semantic projection for real \u2014 attention_kind/prompt/command/options/no_echo/no_echo_prompt/interaction/question_layout all land from the shared classify+noecho pass.",
+      "Go's watch is ticker-driven; Rust's is tick + invalidation-assisted \u2014 the pane_updated emit is a wake nudge, not a requirement, and arrival timing inside the collect window is scheduler-owned.",
       "Go pushes an empty activity_history at connect; drop_matches removes only the null-activities variant.",
       "control.set seeds pane content before watch_pane so the shared fake is deterministic across both runs of a diff."
     ],

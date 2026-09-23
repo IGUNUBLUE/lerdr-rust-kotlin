@@ -53,18 +53,30 @@ pub fn compose_snapshot(topology: &Topology) -> Vec<Outbound> {
     ]
 }
 
-/// `inventoryStatusMessage` (server.go:2657) — the snapshot poll is the
-/// inventory: `ready` while fresh, `stale` while the event stream is down.
-/// `last_attempt_at`/`error_code`/`message` stay unset — the oracle fills
-/// them from its poll ledger; `last_success_at` is the accepted-snapshot
-/// time (`committedInventoryStatus`).
-fn inventory_status(topology: &Topology) -> InventoryStatusMessage {
+/// `inventoryStatusLocked` + `inventoryStatusMessage` (state.go:247-269,
+/// server.go:2657-2667) — all six keys emit unconditionally; `stale` is
+/// derived (`state != "ready" && lastSuccessAt != 0`), never stored. The
+/// `stale` *transport* flag is a different axis — a reconnecting event
+/// stream does not make the committed inventory unready in the oracle
+/// (polls keep running), so it feeds `herdr_status.health_check`, not
+/// this frame. Attempt/success timestamps marshal as Unix *seconds*
+/// (`lastAttemptAt.Unix()`), not the millis the ledger keeps.
+pub(crate) fn inventory_status(topology: &Topology) -> InventoryStatusMessage {
+    let state = if topology.inventory_ready {
+        "ready"
+    } else if !topology.inventory_error_code.is_empty() {
+        "error"
+    } else {
+        "starting"
+    };
     InventoryStatusMessage {
-        state: Some("ready".to_owned()),
-        stale: Some(topology.stale),
-        last_success_at: (topology.accepted_at > 0).then_some(topology.accepted_at),
+        state: Some(state.to_owned()),
+        error_code: Some(topology.inventory_error_code.clone()),
+        message: Some(topology.inventory_message.clone()),
+        last_attempt_at: Some(topology.attempted_at / 1000),
+        last_success_at: Some(topology.accepted_at / 1000),
+        stale: Some(state != "ready" && topology.accepted_at > 0),
         r#type: "inventory_status".to_owned(),
-        ..InventoryStatusMessage::default()
     }
 }
 
@@ -75,7 +87,7 @@ fn inventory_status(topology: &Topology) -> InventoryStatusMessage {
 /// the oracle's `herdrStatusPayload` always allocates it, and the Kotlin
 /// model types it non-nullable — `null` fails decode, drops `push_config`,
 /// and the inventory gate then swallows every `agents`/`workspaces` frame.
-fn herdr_status(topology: &Topology) -> HerdrStatus {
+pub(crate) fn herdr_status(topology: &Topology) -> HerdrStatus {
     HerdrStatus {
         server_version: topology.snapshot.version.clone(),
         server_protocol: topology.snapshot.protocol as i64,
@@ -86,24 +98,250 @@ fn herdr_status(topology: &Topology) -> HerdrStatus {
     }
 }
 
-/// Broadcast frames for one topology revision — the per-connection
-/// forwarder sends these when the watch fires (all replaceable, so a burst
-/// of revisions coalesces in the client's send buffer).
-pub fn topology_broadcast(topology: &Arc<Topology>) -> Vec<Outbound> {
-    vec![
-        Outbound::HerdrStatus(HerdrStatusMessage {
-            status: Some(MaybeNull::Value(herdr_status(topology))),
+/// The `stateViewMu` triple (server.go:3420-3424) plus the `herdr_status`
+/// payload — what the last broadcast carried, diffed against on the next
+/// publish. Relay-global like the oracle's: one publish decision per
+/// commit fans the same frame set out to every client.
+///
+/// Two oracle behaviors fold into the comparison:
+///
+/// - `agentSnapshotsEqual` zeroes `StateRevision` before marshaling, so
+///   `pane_revision` churn alone never republishes — mirrored by zeroing
+///   the projected rows' `pane_revision` before serialization.
+/// - `mergeAgentSnapshot` keeps the published row when an incoming row's
+///   `StateRevision` regresses — a no-op here because commit epochs only
+///   increase, and `broadcastCommitted`'s `agent_update`/`blocked`
+///   delta-merge into `agentView` has no counterpart (Rust's delta frames
+///   never touch this view).
+#[derive(Debug, Default)]
+pub(crate) struct PublishedView {
+    agents: Vec<u8>,
+    workspaces: Vec<u8>,
+    /// `inventoryStatusChanged`'s key set — `state`, `error_code`,
+    /// `message`, `stale` — timestamps are metadata, not a wire trigger.
+    inventory: (Option<String>, Option<String>, Option<String>, Option<bool>),
+    /// `herdr_status` payload bytes — the oracle emits that frame only
+    /// through the capability-change callback; payload-diff dedup is the
+    /// equivalent gate here.
+    herdr_status: Vec<u8>,
+}
+
+/// `publishCurrentInventory` (server.go:3435-3514): diff the committed
+/// projection against the published view, emit only what changed, then
+/// update the view — `[inventory_status?] + [agents?] + [workspaces?]`
+/// in the oracle's batch order, with `herdr_status` appended when its
+/// payload moved (the capability callback is a separate broadcast there).
+/// `readyRecovery` — a `ready` state following a non-`ready` publish —
+/// forces the `agents`+`workspaces` legs like the oracle's.
+pub(crate) fn broadcast_diff(topology: &Topology, view: &mut PublishedView) -> Vec<Outbound> {
+    let status = inventory_status(topology);
+    let inventory_key = (
+        status.state.clone(),
+        status.error_code.clone(),
+        status.message.clone(),
+        status.stale,
+    );
+    // `agentSnapshotsEqual` — `StateRevision` is the commit epoch, not a
+    // wire-change trigger.
+    let mut agents = topology.agents();
+    for agent in &mut agents {
+        agent.pane_revision = 0;
+    }
+    let agents_json = serde_json::to_vec(&agents).unwrap_or_default();
+    let workspaces = topology.workspaces();
+    let workspaces_json = serde_json::to_vec(&workspaces).unwrap_or_default();
+    let herdr = herdr_status(topology);
+    let herdr_json = serde_json::to_vec(&herdr).unwrap_or_default();
+
+    let status_changed = view.inventory != inventory_key;
+    let ready_recovery =
+        status.state.as_deref() == Some("ready") && view.inventory.0.as_deref() != Some("ready");
+    let send_agents = view.agents != agents_json || ready_recovery;
+    let send_workspaces = view.workspaces != workspaces_json || ready_recovery;
+    let send_herdr = view.herdr_status != herdr_json;
+
+    let mut frames = Vec::with_capacity(4);
+    if status_changed {
+        frames.push(Outbound::InventoryStatus(status));
+    }
+    if send_agents {
+        frames.push(Outbound::Agents(AgentsMessage {
+            agents: Some(MaybeNull::Value(agents)),
+            r#type: "agents".to_owned(),
+        }));
+    }
+    if send_workspaces {
+        frames.push(Outbound::Workspaces(WorkspacesMessage {
+            workspaces: Some(MaybeNull::Value(workspaces)),
+            r#type: "workspaces".to_owned(),
+        }));
+    }
+    if send_herdr {
+        frames.push(Outbound::HerdrStatus(HerdrStatusMessage {
+            status: Some(MaybeNull::Value(herdr)),
             r#type: "herdr_status".to_owned(),
             ..HerdrStatusMessage::default()
+        }));
+    }
+
+    // The oracle's `commit` closure: the inventory view always refreshes;
+    // the row views advance with their (possibly forced) publishes.
+    view.inventory = inventory_key;
+    if send_agents {
+        view.agents = agents_json;
+    }
+    if send_workspaces {
+        view.workspaces = workspaces_json;
+    }
+    if send_herdr {
+        view.herdr_status = herdr_json;
+    }
+    frames
+}
+
+/// Broadcast frames for one topology revision — the dedup'd batch the
+/// actor stamped on this view (`publishCurrentInventory` parity). All
+/// entries are replaceable, so a burst of revisions coalesces in the
+/// client's send buffer.
+pub fn topology_broadcast(topology: &Arc<Topology>) -> Vec<Outbound> {
+    topology.broadcast_frames.clone()
+}
+
+/// `sendRequestedAgentRefreshes`'s per-client push (server.go:2618-2628)
+/// — `inventory_status` + `agents` + `workspaces` of the committed view,
+/// sent unconditionally to the requester (explicit refresh requests are
+/// answered with the full rows, not the dedup'd broadcast batch).
+pub(crate) fn committed_inventory(topology: &Topology) -> Vec<Outbound> {
+    vec![
+        Outbound::InventoryStatus(inventory_status(topology)),
+        Outbound::Agents(AgentsMessage {
+            agents: Some(MaybeNull::Value(topology.agents())),
+            r#type: "agents".to_owned(),
         }),
         Outbound::Workspaces(WorkspacesMessage {
             workspaces: Some(MaybeNull::Value(topology.workspaces())),
             r#type: "workspaces".to_owned(),
         }),
-        Outbound::Agents(AgentsMessage {
-            agents: Some(MaybeNull::Value(topology.agents())),
-            r#type: "agents".to_owned(),
-        }),
-        Outbound::InventoryStatus(inventory_status(topology)),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lerdr_herdr::{AgentInfo, AgentStatus, SessionSnapshot, WorkspaceInfo};
+
+    fn snapshot_with(status: AgentStatus, focused: bool) -> SessionSnapshot {
+        SessionSnapshot {
+            agents: vec![AgentInfo {
+                pane_id: "wE:p1".into(),
+                terminal_id: "term-1".into(),
+                workspace_id: "wE".into(),
+                tab_id: "wE:t1".into(),
+                focused,
+                agent_status: status,
+                agent: Some("claude".into()),
+                cwd: Some("/home/relay/project".into()),
+                ..AgentInfo::default()
+            }],
+            workspaces: vec![WorkspaceInfo {
+                workspace_id: "wE".into(),
+                ..WorkspaceInfo::default()
+            }],
+            ..SessionSnapshot::default()
+        }
+    }
+
+    /// Frame `type` tags in emit order — `broadcast_diff` only ever
+    /// produces the four inventory legs.
+    fn types(frames: &[Outbound]) -> String {
+        frames
+            .iter()
+            .filter_map(|frame| {
+                serde_json::from_slice::<serde_json::Value>(&frame.encode())
+                    .ok()
+                    .and_then(|value| value.get("type")?.as_str().map(str::to_owned))
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    #[test]
+    fn first_publish_sends_everything_then_dedups() {
+        let mut topology = Topology::default();
+        let mut view = PublishedView::default();
+        topology.accept(snapshot_with(AgentStatus::Idle, true));
+        let batch = broadcast_diff(&topology, &mut view);
+        assert_eq!(
+            types(&batch),
+            "inventory_status,agents,workspaces,herdr_status"
+        );
+        // An identical commit publishes nothing — `publishCurrentInventory`
+        // is silent when the committed view did not move.
+        topology.accept(snapshot_with(AgentStatus::Idle, true));
+        assert!(broadcast_diff(&topology, &mut view).is_empty());
+    }
+
+    #[test]
+    fn committed_change_republishes_only_the_moved_leg() {
+        let mut topology = Topology::default();
+        let mut view = PublishedView::default();
+        topology.accept(snapshot_with(AgentStatus::Idle, true));
+        let _ = broadcast_diff(&topology, &mut view);
+        // `focused` is a wire field — flipping it republishes `agents`.
+        topology.accept(snapshot_with(AgentStatus::Idle, false));
+        assert_eq!(types(&broadcast_diff(&topology, &mut view)), "agents");
+    }
+
+    #[test]
+    fn stale_marks_health_check_only() {
+        let mut topology = Topology::default();
+        let mut view = PublishedView::default();
+        topology.accept(snapshot_with(AgentStatus::Idle, true));
+        let _ = broadcast_diff(&topology, &mut view);
+        // Event-stream reconnect: inventory stays `ready` (the oracle's
+        // transport drop does not touch `inventoryReady`); `health_check`
+        // flips — only `herdr_status` republishes.
+        assert!(topology.mark_stale());
+        assert_eq!(types(&broadcast_diff(&topology, &mut view)), "herdr_status");
+    }
+
+    #[test]
+    fn inventory_failure_errors_then_recovers() {
+        let mut topology = Topology::default();
+        let mut view = PublishedView::default();
+        topology.accept(snapshot_with(AgentStatus::Idle, true));
+        let _ = broadcast_diff(&topology, &mut view);
+
+        assert!(topology.mark_inventory_failure());
+        let batch = broadcast_diff(&topology, &mut view);
+        assert_eq!(types(&batch), "inventory_status");
+        let Outbound::InventoryStatus(status) = &batch[0] else {
+            panic!("expected inventory_status");
+        };
+        assert_eq!(status.state.as_deref(), Some("error"));
+        assert_eq!(status.error_code.as_deref(), Some("command_failed"));
+        assert_eq!(status.stale, Some(true));
+
+        // Repeat failure while already failed publishes nothing.
+        assert!(!topology.mark_inventory_failure());
+        assert!(broadcast_diff(&topology, &mut view).is_empty());
+
+        // The next successful commit is a `ready` recovery — the oracle
+        // forces the agents+workspaces legs alongside the status flip.
+        topology.accept(snapshot_with(AgentStatus::Idle, true));
+        assert_eq!(
+            types(&broadcast_diff(&topology, &mut view)),
+            "inventory_status,agents,workspaces"
+        );
+    }
+
+    #[test]
+    fn pre_commit_view_is_starting() {
+        let topology = Topology::default();
+        let status = inventory_status(&topology);
+        assert_eq!(status.state.as_deref(), Some("starting"));
+        assert_eq!(status.stale, Some(false));
+        assert_eq!(status.error_code.as_deref(), Some(""));
+        assert_eq!(status.last_success_at, Some(0));
+    }
 }
