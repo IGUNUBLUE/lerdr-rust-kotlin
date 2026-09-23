@@ -743,3 +743,43 @@ Deferred: workspace-row reorder (oracle `WorkspaceManager`), feed
 diagnostics surface, OSC-52 clipboard, hardware-keyboard map, voice
 input, attachment ingress, `deploy_app_update` (phone-side app deploy
 — desktop-origin concept), swipe-to-switch-pane.
+
+## Round 17 — Wave-3 remaining parity surfaces (2026)
+
+Bounded every "still open" item against the oracle; the ones it
+actually implements landed here.
+
+- **Feed history diagnostics** — `FeedHistoryWarnings.kt` +
+  `FeedViewModel` demand loop port the `ConversationHistory.svelte`
+  warning block the feed dropped: `continuation_incomplete` with
+  reason-specific copy + Reload, `oversized_records` /
+  `omitted_tools`/`omitted_payloads` / `corrupt_records`/`plan_corrupt`
+  rows, the preparing-page poll (1 s cadence, progress-key reset,
+  30 identical snapshots → retryable `preparation_stalled` +
+  Continue), Cancel/Continue/Reload, error codes → Continue vs Retry,
+  `source_changed` reload. Older pages prepend-merge deduped by id.
+- **Pull-to-refresh** — `PullToRefreshBox` on the Agents list armed
+  only at scroll top (oracle `AgentList` touch tracking), LongPress
+  haptic, 900 ms re-arm window, driving the new
+  `SessionRepository.inventoryRefresh` (`refresh_agents` to connected
+  relays + re-dial `disconnected` endpoints — the oracle's
+  `requestInventoryRefresh`).
+- **Workspace-row reorder** — the app has no `WorkspaceManager`
+  surface, so move up/down actions landed in the tab strip's overflow
+  menu. `workspaceTrees()` ports `relayWorkspaceTrees` (linked
+  worktrees nest under the `repo_key` primary); the block-form
+  payload moves a whole linked group, legacy `insert_index` fallback
+  kept, optimistic `pendingWorkspaceOrder` invalidated on snapshot
+  confirm or membership drift.
+- **Dropped as non-oracle**: voice input (no SpeechRecognition/mic
+  invoke in the oracle — `speech/` is relay→phone playback), OSC-52
+  clipboard (xterm.js never processes it), hardware-keyboard map
+  (oracle only wires Ctrl/Cmd+F → find), swipe-to-switch-pane (the
+  only list gesture is pull-refresh). These may return as
+  product-level enhancements but are not parity debt.
+- Housekeeping: `HomeScreenScreenshotTest` stray NUL bytes →
+  `\u0000` escapes (production group keys use NUL separators).
+
+Genuinely remaining: `deploy_app_update` (phone-side app deploy —
+the oracle's flow is desktop-origin), plus product-level items the
+oracle never shipped (voice, OSC-52, hardware keys, pane-swipe).
