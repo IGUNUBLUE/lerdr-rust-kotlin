@@ -150,8 +150,9 @@ jobs:
       - name: Exercise packaged relay on its native target
         run: |
           version="${GITHUB_REF_NAME#v}"
+          os_arch="$(echo "${{ matrix.target }}" | tr '/' '_')"
           plugin/scripts/check-installed-release.sh \
-            "dist/release/lerdr-relay_${version}_${{ matrix.target }}.tar.gz" \
+            "dist/release/lerdr-relay_${version}_${os_arch}.tar.gz" \
             "dist/release/checksums-${{ matrix.slug }}.txt" \
             "$version" "$GITHUB_SHA" "${{ matrix.target }}"
 
