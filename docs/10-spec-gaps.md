@@ -859,7 +859,16 @@ Three stations, orchestrator-integrated. Post-merge: `cargo test
   fixed order is `push_config,agents,workspaces,activity_history,
   inventory_status` vs Rust's `push_config,herdr_status,workspaces,
   agents`.
-- Mid-read `ContentRevision` fence — unchanged (fake Herdr carries no
-  revision counter; generation fence is the portable half).
-- **Deferred waves**: `webrtc_*`/`herdr-dc-v1`, `lerdr-gateway`,
-  `deploy_app_update`, portmap/UPnP, release pipeline.
+- Mid-read `ContentRevision` fence — in flight (wave 2 / S6). Re-audit:
+  the oracle's counter lives in coordinator state (the relay's own
+  committed-content revision), not in Herdr — it is portable after all;
+  the earlier "fake Herdr" note misattributed it.
+- **Removed upstream, not ported**: `webrtc_*`/`herdr-dc-v1`,
+  `lerdr-gateway`, `deploy_app_update`, portmap/UPnP — the oracle's
+  CHANGELOG made Tailscale the only transport and deleted these
+  binaries/actions. Wire names remain reserved in the v3 catalog for
+  compatibility; `app_deploy_status` stays a parseable frame with no
+  emitter (same as post-removal oracle behavior for the native app).
+- **In flight (wave 2)**: release pipeline / CI matrix; `session_name`
+  title resolver; `ContentRevision` mid-read fence; `[[link_handlers]]`
+  manifest section; `internal/localize` residual audit.

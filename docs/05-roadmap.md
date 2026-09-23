@@ -86,8 +86,13 @@ plugin** — `plugin install`/`link`/`build`, all actions, panes, the
 
 - Remaining packages: conversation readers, question parser, slashcmd,
   uploads, speech, update, appdeploy, portmap, audit, localize.
-- `lerdr-gateway` binary in Rust; gatewaywire parity.
-- WebRTC server side (`webrtc` crate) for `herdr-dc-v1`.
+- ~~`lerdr-gateway` binary in Rust; gatewaywire parity.~~ **Removed
+  upstream** — the oracle's CHANGELOG: "Tailscale is now the only
+  transport"; `lerdr-gateway`, the WebRTC gateway path, portmap/UPnP,
+  and the app-deploy stage were deleted from the reference. Not ported;
+  wire names stay reserved for compatibility.
+- ~~WebRTC server side (`webrtc` crate) for `herdr-dc-v1`.~~ Removed
+  upstream with the gateway path (see above).
 - `[[startup]]` hook + `agent.view.set` canonical view + `[[link_handlers]]`
   deep links wired into the plugin manifest (doc 09).
 - CI matrix: interop tests both directions; release pipeline producing
