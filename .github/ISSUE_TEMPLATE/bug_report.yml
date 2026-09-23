@@ -1,0 +1,62 @@
+name: Bug report
+description: Something is broken in the relay or the Android app
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. lerdr is beta software — rough edges are
+        expected, but real bugs get fixed.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part is misbehaving?
+      options:
+        - Android app
+        - Rust relay
+        - Pairing / E2EE
+        - Tailscale transport
+        - Herdr integration
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the bug and what you expected instead.
+      placeholder: |
+        1. I opened…
+        2. I tapped…
+        3. Instead of X, Y happened…
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Versions and setup.
+      placeholder: |
+        - App version (Settings → About or APK versionName):
+        - Relay version (lerdr-relay --version or /healthz):
+        - Android version / device:
+        - Herdr version:
+        - Transport (Tailscale serve / direct LAN / other):
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / evidence
+      description: |
+        Relevant log lines, screenshots, or error text. Redact tokens,
+        credentials, Tailscale IPs, and hostnames before posting.
+      render: text
+    validations:
+      required: false

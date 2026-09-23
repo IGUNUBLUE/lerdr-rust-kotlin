@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security report
+    url: https://github.com/IGUNUBLUE/lerdr-rust-kotlin/security/advisories/new
+    about: Do NOT file public issues for security vulnerabilities — use private reporting.
+  - name: Spec / protocol discussion
+    url: https://github.com/IGUNUBLUE/lerdr-rust-kotlin/blob/main/docs/03-protocol.md
+    about: Read the frozen wire contract before proposing protocol changes.

@@ -92,6 +92,14 @@ are configured). See [docs/release.md](docs/release.md).
 | `tools/shadow/` | Determinism harness (`rust-a` vs `rust-b` through one fake Herdr) |
 | `plugin/` | Herdr plugin manifest + operator scripts (install, tailscale-serve, release packaging) |
 
+## Contributing
+
+Contributions welcome — including AI-assisted ones (disclose them; see
+[CONTRIBUTING.md](CONTRIBUTING.md)). Bugs and ideas go through the issue
+templates; security reports through
+[private vulnerability reporting](SECURITY.md). Releases are tracked in
+[CHANGELOG.md](CHANGELOG.md).
+
 ## Acknowledgements
 
 Thanks to [0cv/herdr-mobile-relay](https://github.com/0cv/herdr-mobile-relay)

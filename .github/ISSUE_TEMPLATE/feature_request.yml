@@ -1,0 +1,39 @@
+name: Feature request
+description: Propose a new capability or improvement
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Note: the wire contract (`protocol v3`) is frozen — features that
+        need new wire actions are Phase-5 candidates and get discussed as
+        spec before implementation.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: The use case or pain point, not the implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What you'd like to see happen.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: wire-impact
+    attributes:
+      label: Wire impact
+      options:
+        - label: This likely needs a new/changed wire action (Phase-5 spec discussion)
+          required: false
+        - label: This is app-side or relay-internal only
+          required: false
+        - label: Not sure
+          required: false
