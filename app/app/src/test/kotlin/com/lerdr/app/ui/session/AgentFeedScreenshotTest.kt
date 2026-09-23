@@ -1,8 +1,13 @@
 package com.lerdr.app.ui.session
 
 import androidx.activity.ComponentActivity
+import androidx.compose.ui.test.isFocused
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextInput
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.lerdr.app.session.AgentFeedContent
@@ -12,11 +17,19 @@ import com.lerdr.app.session.AttachmentItem
 import com.lerdr.app.session.AttachmentItemState
 import com.lerdr.app.session.AttachmentUploads
 import com.lerdr.app.session.FeedUiState
+import com.lerdr.app.session.feed.QuestionDraft
+import com.lerdr.app.session.feed.SlashCommand
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import kotlinx.serialization.json.JsonPrimitive
 import lerdr.core.conversation.ConversationEntry
 import lerdr.core.conversation.ConversationRole
+import lerdr.core.conversation.ConversationTool
+import lerdr.core.model.BlockedMessage
+import lerdr.core.model.Interaction
+import lerdr.core.model.Option
+import lerdr.core.model.Other
 import lerdr.core.model.UploadAttachment
+import lerdr.core.store.Agent
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -25,9 +38,10 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * Roborazzi coverage for Feed mode — composer attachment surfaces: the attach
- * affordance, the tray's per-file chips in each lifecycle state, progress,
- * batch issues, and the restart affordance.
+ * Roborazzi coverage for Feed mode — markdown bodies, tool cards, the
+ * blocker card's approval/question triage, find-in-conversation, the slash
+ * popover, reader gating, the error snackbar, and the composer attachment
+ * surfaces.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = com.lerdr.app.TestApp::class)
@@ -57,6 +71,52 @@ class AgentFeedScreenshotTest {
             role = ConversationRole.ASSISTANT,
             text = "I will read the changed files first.",
         ),
+    )
+
+    /** A markdown body + tool row — the assistant-side render path. */
+    private val markdownEntry = ConversationEntry(
+        id = "e3",
+        timestamp = "2026-01-01T10:00:20Z",
+        role = ConversationRole.ASSISTANT,
+        text = "## Findings\n\nThe diff touches **three** files:\n\n" +
+            "- `Feed.kt`\n- `Tools.kt`\n\n```kotlin\nfun main() = println(\"hi\")\n```\n\n" +
+            "> Note: review the tests too.",
+        tools = listOf(
+            ConversationTool(
+                id = "t1",
+                name = "Bash",
+                input = """{"command":"git diff --stat"}""",
+                output = "3 files changed, 42 insertions(+)",
+            ),
+            ConversationTool(
+                id = "t2",
+                name = "Read",
+                input = """{"file_path":"/src/Missing.kt"}""",
+                output = "",
+                error = true,
+            ),
+        ),
+    )
+
+    private fun agent(
+        status: String = "idle",
+        attentionKind: String? = null,
+        prompt: String? = null,
+        options: List<String>? = null,
+        interaction: Interaction? = null,
+    ) = Agent(
+        relayId = "r1",
+        relayLabel = "workstation",
+        rawPaneId = "%1",
+        paneId = "r1::%1",
+        agent = "claude",
+        name = "claude",
+        status = status,
+        attentionKind = attentionKind,
+        prompt = prompt,
+        options = options,
+        interaction = interaction,
+        conversationHistoryAvailable = true,
     )
 
     private fun item(
@@ -92,6 +152,8 @@ class AgentFeedScreenshotTest {
         connected = true,
         historyAvailable = true,
         entries = entries,
+        canControl = true,
+        canCopyResponse = true,
         canAttach = true,
     )
 
@@ -106,7 +168,12 @@ class AgentFeedScreenshotTest {
                     onDraftChange = {},
                     onSendPrompt = {},
                     onRespond = { _, _ -> },
-                    onAnswerOption = {},
+                    onQuestionDraftChange = {},
+                    onSubmitQuestion = {},
+                    onNavigateQuestion = {},
+                    onClarifyQuestion = {},
+                    onCopyResponse = { entryText, onCopied -> onCopied(entryText) },
+                    onClearError = {},
                     onLoadOlder = {},
                     onRetryHistory = {},
                     onPickAttachments = {},
@@ -122,6 +189,127 @@ class AgentFeedScreenshotTest {
     fun feed_idle() {
         show(baseState())
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun feed_markdownTools() {
+        show(baseState().copy(entries = entries + markdownEntry))
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun feed_toolExpanded() {
+        show(baseState().copy(entries = entries + markdownEntry))
+        composeRule.onNodeWithText("Bash").performClick()
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun feed_approvalTriage() {
+        show(
+            baseState().copy(
+                statusLabel = "blocked",
+                blocked = agent(
+                    status = "blocked",
+                    attentionKind = BlockedMessage.ATTENTION_APPROVAL,
+                    prompt = "Allow Bash: git push --force?",
+                    options = listOf("Yes", "Always allow push", "No"),
+                ),
+            ),
+        )
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun feed_questionForm() {
+        show(
+            baseState().copy(
+                statusLabel = "blocked",
+                blocked = agent(
+                    status = "blocked",
+                    attentionKind = BlockedMessage.ATTENTION_QUESTION,
+                ),
+                blockedInteraction = Interaction(
+                    id = "q1",
+                    kind = "single_select",
+                    question = "Which branch should I target?",
+                    options = listOf(
+                        Option(index = 0, label = "main", description = "The default branch"),
+                        Option(index = 1, label = "release/2.1", description = "The hotfix line"),
+                    ),
+                    other = Other(placeholder = "Another branch"),
+                    submitLabel = "Submit",
+                    canChat = true,
+                    questionIndex = 1,
+                    questionTotal = 2,
+                ),
+                questionDraft = QuestionDraft(selected = setOf(0)),
+            ),
+        )
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun feed_find() {
+        show(baseState().copy(entries = entries + markdownEntry))
+        composeRule.onNodeWithContentDescription("Find in conversation").performClick()
+        // The find field requests focus on open — target it via focus.
+        composeRule.onNode(isFocused()).performTextInput("diff")
+        // The oracle debounces the filter 250 ms — step past it, then let
+        // the auto-reveal scroll settle.
+        composeRule.mainClock.advanceTimeBy(300)
+        composeRule.waitForIdle()
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun feed_slashMenu() {
+        show(
+            baseState().copy(
+                composerDraft = "/cl",
+                slashCommands = listOf(
+                    SlashCommand("/clear", "Clear the conversation"),
+                    SlashCommand("/close", "Close the pane", source = "project"),
+                    SlashCommand("/help", "Show help"),
+                ),
+            ),
+        )
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun feed_readerMode() {
+        show(
+            baseState().copy(
+                canControl = false,
+                canCopyResponse = false,
+                canAttach = false,
+                statusLabel = "blocked",
+                blocked = agent(
+                    status = "blocked",
+                    attentionKind = BlockedMessage.ATTENTION_APPROVAL,
+                    prompt = "Allow Bash: git push --force?",
+                    options = listOf("Yes", "No"),
+                ),
+            ),
+        )
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun feed_snackbar() {
+        // Freeze the clock — auto-advance would run the snackbar's own
+        // timeout to completion before the capture.
+        composeRule.mainClock.autoAdvance = false
+        try {
+            show(baseState().copy(lastError = "Prompt failed"))
+            // Composition + the LaunchedEffect + the show animation — but
+            // less than the snackbar's ~4 s duration.
+            composeRule.mainClock.advanceTimeBy(2_000)
+            composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+        } finally {
+            composeRule.mainClock.autoAdvance = true
+        }
     }
 
     @Test

@@ -15,15 +15,33 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import com.lerdr.app.session.feed.QuestionDraft
+import com.lerdr.app.session.feed.SlashCommand
+import com.lerdr.app.session.feed.SlashCommandCatalog
+import com.lerdr.app.session.feed.createQuestionDraft
+import com.lerdr.app.session.feed.parseSlashCatalog
+import com.lerdr.app.session.feed.questionDraftKey
+import com.lerdr.app.session.feed.questionSubmitAllowed
+import com.lerdr.app.session.feed.shouldRestoreQuestionDraft
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import lerdr.core.conversation.ConversationEntry
 import lerdr.core.conversation.ConversationPageRequest
 import lerdr.core.data.DraftStore
 import lerdr.core.data.composerDraftIdentity
+import lerdr.core.model.BlockedMessage
+import lerdr.core.model.CommandResultMessage
+import lerdr.core.model.Inbound
+import lerdr.core.model.Interaction
 import lerdr.core.model.UploadAttachment
+import lerdr.core.protocol.LerdrJson
 import lerdr.core.store.Agent
 import lerdr.core.store.AgentStatusGroup
+import lerdr.core.store.RelayConnection
 import lerdr.core.store.RelayStatus
 import lerdr.core.store.agentStatusGroup
+import lerdr.core.store.attentionKind
 import lerdr.core.store.rawBlocked
 
 /** Everything Feed mode renders — conversation page, blocker card, composer. */
@@ -48,12 +66,32 @@ data class FeedUiState(
     val hasMoreHistory: Boolean = false,
     /** Non-null while this agent blocks — the blocker card renders it. */
     val blocked: Agent? = null,
+    /**
+     * The effective question interaction — a `command_result` override wins
+     * over the store row while a pane frame is still catching up, and a
+     * resolved id clears to null until the relay unblocks.
+     */
+    val blockedInteraction: Interaction? = null,
+    /** The resolved draft for [blockedInteraction] (dirty drafts persist per interaction id). */
+    val questionDraft: QuestionDraft = QuestionDraft(),
     /** Send/answer in flight — composer + card buttons disable. */
     val responding: Boolean = false,
     val composerDraft: String = "",
     /** Transient action failure — rendered as a snackbar/inline error. */
     val lastError: String? = null,
-    /** The attach affordance — connected, exact target, not blocked. */
+    /** Transient success/info line (oracle `showToast`) — snackbar too. */
+    val notice: String? = null,
+    /** Oracle `readOnly` — false for reader-role devices; mutes every mutating control. */
+    val canControl: Boolean = false,
+    /** `agent_response_copy` capability + supported agent profile. */
+    val canCopyResponse: Boolean = false,
+    /** `list_slash_commands` catalog — composer `/` suggestions. */
+    val slashCommands: List<SlashCommand> = emptyList(),
+    val slashLoading: Boolean = false,
+    /** Fetch failed — the menu falls back to "you can still send this command". */
+    val slashUnavailable: Boolean = false,
+    val slashTruncated: Boolean = false,
+    /** The attach affordance — connected, exact target, not blocked, controller. */
     val canAttach: Boolean = false,
     /** Attachment tray snapshot — empty batch renders nothing. */
     val attachments: AttachmentBatch = AttachmentBatch(),
@@ -93,13 +131,46 @@ class FeedViewModel(
         val draft: String = "",
         val sending: Boolean = false,
         val lastError: String? = null,
+        val notice: String? = null,
+        /**
+         * Dirty question drafts by `paneId::interaction.id` — the oracle's
+         * `drafts`/`dirtyDrafts` module maps. Presence marks the draft dirty.
+         */
+        val questionDrafts: Map<String, QuestionDraft> = emptyMap(),
+        /**
+         * `applyQuestionInteraction` — an `answer_question`/`navigate_question`
+         * `command_result` carries the next interaction before any pane frame
+         * lands. Applies only while the store still shows [baseId], so a
+         * fresh pane frame wins automatically.
+         */
+        val interactionOverride: InteractionOverride? = null,
+        /** Id of an interaction finished via `confirmed`/`clarify` — hidden till unblocked. */
+        val clearedInteractionId: String? = null,
+        /** `list_slash_commands` catalog state for the composer popover. */
+        val slashCommands: List<SlashCommand> = emptyList(),
+        val slashLoading: Boolean = false,
+        val slashUnavailable: Boolean = false,
+        val slashTruncated: Boolean = false,
         /** `uploadingAttachment` — an upload run is in flight. */
         val uploadingAttachments: Boolean = false,
         val uploadStatus: String = "",
         val uploadError: Boolean = false,
     )
 
+    /** A deferred interaction — applies while the store row still shows [baseId]. */
+    private data class InteractionOverride(
+        val baseId: String,
+        val interaction: Interaction,
+    )
+
     private val local = MutableStateFlow(FeedLocal())
+
+    // Slash catalog state — declared before `init`: the eager combine below
+    // reaches `maybeLoadSlashCatalog` during construction, so these fields
+    // must already be initialized when it first runs.
+    private val slashCache = mutableMapOf<String, SlashCommandCatalog>()
+    private var slashFetching: String? = null
+    private val slashFailed = mutableSetOf<String>()
 
     val uiState: StateFlow<FeedUiState> = combine(
         sessions.agent(paneId),
@@ -108,6 +179,14 @@ class FeedViewModel(
         uploads.state(paneId),
         local,
     ) { agent, connection, responding, attachments, local ->
+        val canControl = sessions.canControl(relayId)
+        val blockedAgent = agent?.takeIf { rawBlocked(it) }
+        val interaction = effectiveInteraction(blockedAgent, local)
+        // The question card hides once its interaction resolves/clears —
+        // the agent row stays `blocked` until the relay's next frame.
+        val questionHidden = blockedAgent != null &&
+            attentionKind(blockedAgent) == BlockedMessage.ATTENTION_QUESTION &&
+            interaction == null
         FeedUiState(
             paneId = paneId,
             title = agent?.name ?: agent?.agent ?: paneId.substringAfter("::"),
@@ -121,12 +200,28 @@ class FeedViewModel(
             historyLoading = local.loading,
             historyError = local.error,
             hasMoreHistory = local.hasMore,
-            blocked = agent?.takeIf { rawBlocked(it) },
+            blocked = blockedAgent?.takeIf { !questionHidden },
+            blockedInteraction = interaction,
+            questionDraft = interaction?.let {
+                resolveQuestionDraft(it, local.questionDrafts)
+            } ?: QuestionDraft(),
             responding = paneId in responding || local.sending,
             composerDraft = local.draft,
             lastError = local.lastError,
+            notice = local.notice,
+            canControl = canControl,
+            canCopyResponse = canControl && agent != null &&
+                connection?.capabilities?.contains(AGENT_RESPONSE_COPY_CAPABILITY) == true &&
+                responseCopyProfileSupported(agent.agent),
+            slashCommands = local.slashCommands,
+            slashLoading = local.slashLoading,
+            slashUnavailable = local.slashUnavailable,
+            slashTruncated = local.slashTruncated,
             // `attachmentController(agent)` gate: exact target tuple + live
             // transport + the oracle's `inputLocked` (blocked) analogue.
+            // The reader-role mute applies in the composer's controls lock —
+            // `canAttach` itself stays the pure capability predicate the
+            // upload tests exercise.
             canAttach = connection?.status == RelayStatus.CONNECTED &&
                 agent != null && !rawBlocked(agent) && agent.wireTarget() != null,
             attachments = attachments,
@@ -146,6 +241,14 @@ class FeedViewModel(
                 .flatMapLatest { drafts.draft(it) }
                 .collect { draft ->
                     local.value = local.value.copy(draft = draft?.text.orEmpty())
+                }
+        }
+        // `loadSlashCommands` — one catalog fetch per agent identity
+        // (`agent` + `cwd`), replayed from cache on change.
+        viewModelScope.launch {
+            combine(sessions.agent(paneId), sessions.connection(relayId)) { a, c -> a to c }
+                .collect { (agent, connection) ->
+                    maybeLoadSlashCatalog(agent, connection)
                 }
         }
         loadHistory()
@@ -470,43 +573,338 @@ class FeedViewModel(
         }
     }
 
+    /**
+     * User edit — writes the dirty draft into the `paneId::interaction.id`
+     * slot the oracle's `save()` writes. Selected indices stay a `Set`;
+     * [sessions.answerQuestion] sorts them on encode.
+     */
+    fun updateQuestionDraft(next: QuestionDraft) {
+        val interaction = effectiveBlockedInteraction() ?: return
+        local.value = local.value.copy(
+            questionDrafts = local.value.questionDrafts +
+                (questionDraftKey(paneId, interaction) to next),
+        )
+    }
+
+    /**
+     * `answer_question` submit — oracle `QuestionForm.submit`: guards the
+     * draft, applies `data.interaction` on `advanced`, clears the card on a
+     * final `confirmed`, and treats anything else as unexpected.
+     */
+    fun submitQuestion() {
+        val agent = sessions.agents.value.firstOrNull { it.paneId == paneId }
+        val interaction = effectiveInteraction(
+            agent?.takeIf { rawBlocked(it) },
+            local.value,
+        ) ?: return
+        val draft = resolveQuestionDraft(interaction, local.value.questionDrafts)
+        if (!questionSubmitAllowed(interaction, draft)) {
+            local.value = local.value.copy(lastError = "Complete the question first.")
+            return
+        }
+        val submittedKey = questionDraftKey(paneId, interaction)
+        val final = interaction.submitLabel != "Next"
+        viewModelScope.launch {
+            local.value = local.value.copy(lastError = null, notice = null)
+            try {
+                val result = sessions.answerQuestion(
+                    paneId,
+                    interaction,
+                    draft.selected.sorted(),
+                    draft.otherSelected,
+                    draft.otherText,
+                )
+                val fresh = returnedInteraction(result)
+                when {
+                    result.phase == CommandResultMessage.PHASE_ADVANCED && fresh != null -> {
+                        local.value = local.value.copy(
+                            questionDrafts = local.value.questionDrafts - submittedKey,
+                            interactionOverride = InteractionOverride(interaction.id, fresh),
+                            notice = "Answer saved.",
+                        )
+                    }
+                    result.phase == CommandResultMessage.PHASE_CONFIRMED && final -> {
+                        local.value = local.value.copy(
+                            questionDrafts = local.value.questionDrafts - submittedKey,
+                            interactionOverride = null,
+                            clearedInteractionId = interaction.id,
+                            notice = "Answers submitted.",
+                        )
+                    }
+                    else -> {
+                        applyFreshInteraction(interaction.id, fresh)
+                        local.value = local.value.copy(
+                            lastError = "Unexpected question result.",
+                        )
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                handleQuestionFailure(interaction.id, failure)
+            }
+        }
+    }
+
+    /**
+     * `navigate_question` — `"previous"` needs `can_go_back`, `"next"`
+     * needs `0 < question_index < question_total`; the relay enforces both.
+     */
+    fun navigateQuestion(direction: String) {
+        val interaction = effectiveBlockedInteraction() ?: return
+        viewModelScope.launch {
+            local.value = local.value.copy(lastError = null, notice = null)
+            try {
+                val result = sessions.navigateQuestion(paneId, interaction, direction)
+                val fresh = returnedInteraction(result)
+                if (result.phase == CommandResultMessage.PHASE_NAVIGATED && fresh != null) {
+                    local.value = local.value.copy(
+                        interactionOverride = InteractionOverride(interaction.id, fresh),
+                        notice = "Opened $direction question.",
+                    )
+                } else {
+                    applyFreshInteraction(interaction.id, fresh)
+                    local.value = local.value.copy(
+                        lastError = if (result.phase == CommandResultMessage.PHASE_UNCONFIRMED) {
+                            "The agent still shows the same question; try again."
+                        } else {
+                            "No previous question returned."
+                        },
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                handleQuestionFailure(interaction.id, failure)
+            }
+        }
+    }
+
+    /** `clarify_question` — opens question chat; the card clears locally. */
+    fun clarifyQuestion() {
+        val interaction = effectiveBlockedInteraction() ?: return
+        viewModelScope.launch {
+            local.value = local.value.copy(lastError = null, notice = null)
+            try {
+                sessions.clarifyQuestion(paneId, interaction)
+                local.value = local.value.copy(
+                    interactionOverride = null,
+                    clearedInteractionId = interaction.id,
+                    notice = "Question chat opened.",
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                handleQuestionFailure(interaction.id, failure)
+            }
+        }
+    }
+
+    /** Legacy one-tap path — kept for callers that submit a bare index. */
     fun answerQuestion(
         selectedIndices: List<Int>,
         otherSelected: Boolean,
         otherText: String,
     ) {
-        val interaction = blockedInteraction() ?: return
+        val interaction = effectiveBlockedInteraction() ?: return
         viewModelScope.launch {
             local.value = local.value.copy(lastError = null)
             try {
                 sessions.answerQuestion(
                     paneId, interaction, selectedIndices, otherSelected, otherText,
                 )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (failure: Exception) {
+                handleQuestionFailure(interaction.id, failure)
+            }
+        }
+    }
+
+    /**
+     * `copy_agent_response` — the relay's copy transaction returns the
+     * rendered reply in `data.text` (controller + capable profile only —
+     * it types into the agent's terminal, so readers never call it). When
+     * the wire path is unavailable the caller's own entry text is the
+     * history-fallback the oracle reads instead.
+     */
+    fun copyAgentResponse(entryText: String, onCopied: (String) -> Unit) {
+        if (!sessions.canControl(relayId) ||
+            !uiState.value.canCopyResponse
+        ) {
+            if (entryText.isNotBlank()) {
+                onCopied(entryText)
+                local.value = local.value.copy(notice = "Agent response copied.")
+            } else {
                 local.value = local.value.copy(
-                    lastError = failure.message ?: "Answer failed",
+                    lastError = "No completed agent response is available to copy.",
+                )
+            }
+            return
+        }
+        viewModelScope.launch {
+            local.value = local.value.copy(lastError = null, notice = null)
+            try {
+                val result = sessions.copyAgentResponse(paneId)
+                val text = ((result.data as? JsonObject)?.get("text") as? JsonPrimitive)
+                    ?.contentOrNull.orEmpty()
+                if (text.isNotBlank()) {
+                    onCopied(text)
+                    local.value = local.value.copy(notice = "Agent response copied.")
+                } else {
+                    local.value = local.value.copy(
+                        lastError = "The agent returned no response text.",
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                // `haltOnCopyFailure` — the relay's failure is the answer.
+                local.value = local.value.copy(
+                    lastError = failure.message ?: "Could not copy the agent response.",
                 )
             }
         }
     }
 
-    fun navigateQuestion(direction: String) {
-        val interaction = blockedInteraction() ?: return
-        viewModelScope.launch {
-            runCatching { sessions.navigateQuestion(paneId, interaction, direction) }
+    /** Snackbar consumed — clear the transient channels. */
+    fun clearError() {
+        if (local.value.lastError != null || local.value.notice != null) {
+            local.value = local.value.copy(lastError = null, notice = null)
         }
     }
 
-    fun clarifyQuestion() {
-        val interaction = blockedInteraction() ?: return
+    // ── slash commands ────────────────────────────────────────────────
+
+    /**
+     * Oracle `loadSlashCommands` — gated on the `slash_commands`
+     * capability AND the controller role (the fetch is a mutating-class
+     * relay action; readers never open the menu anyway), cached by
+     * `agent`+`cwd` identity, one flight at a time.
+     */
+    private fun maybeLoadSlashCatalog(agent: Agent?, connection: RelayConnection?) {
+        if (agent == null || !sessions.canControl(relayId) ||
+            connection?.capabilities?.contains(SLASH_COMMANDS_CAPABILITY) != true
+        ) {
+            return
+        }
+        val identity = "${agent.agent.orEmpty()}\u0000${agent.cwd.orEmpty()}"
+        val cached = slashCache[identity]
+        if (cached != null) {
+            if (local.value.slashCommands != cached.commands ||
+                local.value.slashTruncated != cached.truncated ||
+                local.value.slashLoading || local.value.slashUnavailable
+            ) {
+                local.value = local.value.copy(
+                    slashCommands = cached.commands,
+                    slashTruncated = cached.truncated,
+                    slashLoading = false,
+                    slashUnavailable = false,
+                )
+            }
+            return
+        }
+        if (slashFetching == identity || identity in slashFailed) return
+        slashFetching = identity
+        local.value = local.value.copy(slashLoading = true, slashUnavailable = false)
         viewModelScope.launch {
-            runCatching { sessions.clarifyQuestion(paneId, interaction) }
+            try {
+                val target = agent.wireTarget()
+                    ?: throw IllegalStateException("This agent has no exact terminal identity.")
+                val result = sessions.request(
+                    agent.relayId,
+                    Inbound(type = "list_slash_commands").withPaneTarget(agent, target),
+                    timeoutMs = SLASH_TIMEOUT_MS,
+                )
+                val catalog = parseSlashCatalog(result.data)
+                slashCache[identity] = catalog
+                local.value = local.value.copy(
+                    slashCommands = catalog.commands,
+                    slashTruncated = catalog.truncated,
+                    slashLoading = false,
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                slashFailed += identity
+                local.value = local.value.copy(
+                    slashLoading = false,
+                    slashUnavailable = true,
+                )
+            } finally {
+                slashFetching = null
+            }
         }
     }
 
-    private fun blockedInteraction() =
+    // ── question plumbing ─────────────────────────────────────────────
+
+    /** `effectiveInteraction` — the override wins while the store is stale. */
+    private fun effectiveInteraction(agent: Agent?, local: FeedLocal): Interaction? {
+        if (agent == null) return null
+        val storeInteraction = agent.interaction
+        if (local.clearedInteractionId != null &&
+            storeInteraction?.id == local.clearedInteractionId
+        ) {
+            return null
+        }
+        val override = local.interactionOverride
+        if (override != null && override.baseId == storeInteraction?.id) {
+            return override.interaction
+        }
+        return storeInteraction
+    }
+
+    private fun effectiveBlockedInteraction(): Interaction? = effectiveInteraction(
         sessions.agents.value.firstOrNull { it.paneId == paneId }
-            ?.takeIf { rawBlocked(it) }?.interaction
+            ?.takeIf { rawBlocked(it) },
+        local.value,
+    )
+
+    /**
+     * The oracle's dirty-restore — a stored draft wins when it still
+     * submits or when the incoming baseline would not.
+     */
+    private fun resolveQuestionDraft(
+        interaction: Interaction,
+        drafts: Map<String, QuestionDraft>,
+    ): QuestionDraft {
+        val incoming = createQuestionDraft(interaction)
+        val cached = drafts[questionDraftKey(paneId, interaction)] ?: return incoming
+        return if (shouldRestoreQuestionDraft(interaction, cached, incoming)) {
+            cached
+        } else {
+            incoming
+        }
+    }
+
+    /** `returnedInteraction` — decode `result.data.interaction` when shaped right. */
+    private fun returnedInteraction(result: CommandResultMessage): Interaction? {
+        val element = (result.data as? JsonObject)?.get("interaction") ?: return null
+        return try {
+            LerdrJson.decodeFromJsonElement(Interaction.serializer(), element)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Oracle `handleQuestionError`. The oracle also applies
+     * `error.data.interaction` — Kotlin's `CommandException` drops `data`
+     * on failure, so only the message reaches the snackbar.
+     */
+    private fun handleQuestionFailure(interactionId: String, failure: Exception) {
+        local.value = local.value.copy(
+            lastError = failure.message ?: "Question failed",
+        )
+    }
+
+    private fun applyFreshInteraction(baseId: String, fresh: Interaction?) {
+        if (fresh == null) return
+        local.value = local.value.copy(
+            interactionOverride = InteractionOverride(baseId, fresh),
+        )
+    }
 
     private fun draftIdentity(agent: Agent): String {
         val paneIdentity = agent.terminalId?.takeIf { it.isNotEmpty() }
@@ -536,4 +934,24 @@ class FeedViewModel(
         uploads.discard(paneId)
         super.onCleared()
     }
+
+    private companion object {
+        const val SLASH_COMMANDS_CAPABILITY = "slash_commands"
+        const val AGENT_RESPONSE_COPY_CAPABILITY = "agent_response_copy"
+        const val SLASH_TIMEOUT_MS = 10_000L
+    }
+}
+
+/** Oracle `RESPONSE_COPY_AGENT_IDS` — profiles the copy transaction drives. */
+private val RESPONSE_COPY_AGENT_IDS = setOf(
+    "hermes", "hermesagent",
+    "claude", "claudecode", "codex", "openaicodex", "kimi", "kimicode",
+    "omp", "ohmypi", "pi", "picodingagent", "qoder", "qodercli",
+)
+
+/** Oracle `responseCopyProfileSupported` — normalized (lowercase, no spaces/dashes). */
+private fun responseCopyProfileSupported(agentName: String?): Boolean {
+    val normalized = agentName.orEmpty().trim()
+        .lowercase().replace(Regex("\\s+"), "").replace("-", "")
+    return normalized in RESPONSE_COPY_AGENT_IDS
 }

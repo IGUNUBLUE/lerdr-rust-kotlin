@@ -2,7 +2,11 @@ package com.lerdr.app.session
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.VisibilityThreshold
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -31,50 +35,74 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.InputChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.PreviewLightDark
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lerdr.app.di.AppEntryPoint
-import com.lerdr.core.designsystem.components.LerdrButtonGroup
-import com.lerdr.core.designsystem.components.LerdrButtonGroupItem
+import com.lerdr.app.session.feed.FeedBlockerCard
+import com.lerdr.app.session.feed.FeedMarkdown
+import com.lerdr.app.session.feed.FeedToolCard
+import com.lerdr.app.session.feed.MAX_VISIBLE_SLASH_COMMANDS
+import com.lerdr.app.session.feed.QuestionDraft
+import com.lerdr.app.session.feed.SlashCommandCatalog
+import com.lerdr.app.session.feed.SlashCommandMenu
+import com.lerdr.app.session.feed.effectiveSlashIndex
+import com.lerdr.app.session.feed.feedMatchingEntryIndexes
+import com.lerdr.app.session.feed.matchingSlashCommands
+import com.lerdr.app.session.feed.slashQueryFor
+import com.lerdr.app.session.feed.slashSelectionText
+import com.lerdr.app.ui.terminal.wrapFindIndex
 import com.lerdr.core.designsystem.components.LerdrLoadingIndicator
-import com.lerdr.core.designsystem.theme.LerdrTextStyles
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import dagger.hilt.android.EntryPointAccessors
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import lerdr.core.conversation.ConversationEntry
 import lerdr.core.conversation.ConversationRole
-import lerdr.core.model.BlockedMessage
-import lerdr.core.store.Agent
-import lerdr.core.store.attentionKind
 
 /**
  * Feed mode — semantic timeline (docs/04 §Feed). [AgentFeedScreen] owns the
@@ -118,9 +146,12 @@ fun AgentFeedScreen(
         onDraftChange = viewModel::onDraftChange,
         onSendPrompt = viewModel::sendPrompt,
         onRespond = viewModel::respond,
-        onAnswerOption = { index ->
-            viewModel.answerQuestion(listOf(index), otherSelected = false, otherText = "")
-        },
+        onQuestionDraftChange = viewModel::updateQuestionDraft,
+        onSubmitQuestion = viewModel::submitQuestion,
+        onNavigateQuestion = viewModel::navigateQuestion,
+        onClarifyQuestion = viewModel::clarifyQuestion,
+        onCopyResponse = viewModel::copyAgentResponse,
+        onClearError = viewModel::clearError,
         onLoadOlder = viewModel::loadOlderHistory,
         onRetryHistory = viewModel::loadHistory,
         onPickAttachments = { picker.launch(arrayOf("*/*")) },
@@ -142,7 +173,12 @@ fun AgentFeedContent(
     onDraftChange: (String) -> Unit,
     onSendPrompt: () -> Unit,
     onRespond: (Int, String) -> Unit,
-    onAnswerOption: (Int) -> Unit,
+    onQuestionDraftChange: (QuestionDraft) -> Unit,
+    onSubmitQuestion: () -> Unit,
+    onNavigateQuestion: (String) -> Unit,
+    onClarifyQuestion: () -> Unit,
+    onCopyResponse: (String, (String) -> Unit) -> Unit,
+    onClearError: () -> Unit,
     onLoadOlder: () -> Unit,
     onRetryHistory: () -> Unit,
     onPickAttachments: () -> Unit,
@@ -151,7 +187,112 @@ fun AgentFeedContent(
     onRestartAttachments: () -> Unit,
 ) {
     val spacing = LerdrTheme.spacing
+    val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
+    val clipboard = LocalClipboard.current
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // ── find-in-conversation — local state, `openTerminalFind` analogue ──
+    var findOpen by rememberSaveable { mutableStateOf(false) }
+    var findQuery by rememberSaveable { mutableStateOf("") }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var activeFindIndex by rememberSaveable { mutableIntStateOf(-1) }
+    // The oracle debounces the transcript filter 250 ms.
+    LaunchedEffect(findQuery) {
+        delay(250)
+        searchQuery = findQuery
+    }
+    val matchedIndexes = remember(uiState.entries, searchQuery) {
+        feedMatchingEntryIndexes(uiState.entries, searchQuery)
+    }
+    val searching = searchQuery.trim().isNotEmpty()
+    val visibleEntries = remember(uiState.entries, matchedIndexes) {
+        matchedIndexes.map { uiState.entries[it] }
+    }
+    // One match = one entry row; the find bar counts rows like the oracle's
+    // `n of m` over `visibleEntries`.
+    val matchCount = if (searching) matchedIndexes.size else 0
+    // `load-older` (+ `no-history`) header items offset lazy indices.
+    val headerOffset = (if (uiState.hasMoreHistory) 1 else 0) +
+        (if (!uiState.historyAvailable && uiState.entries.isEmpty()) 1 else 0)
+
+    fun revealFindMatch(index: Int) {
+        val normalized = wrapFindIndex(index, matchCount)
+        if (normalized < 0) return
+        activeFindIndex = normalized
+        scope.launch {
+            listState.animateScrollToItem(headerOffset + normalized)
+        }
+    }
+
+    fun closeFind() {
+        findOpen = false
+        findQuery = ""
+        searchQuery = ""
+        activeFindIndex = -1
+    }
+
+    // Oracle: a fresh result set auto-reveals the first match.
+    LaunchedEffect(searchQuery, matchCount) {
+        if (matchCount > 0) {
+            revealFindMatch(0)
+        } else {
+            activeFindIndex = -1
+        }
+    }
+
+    // ── slash commands — oracle `slashMenuOpen` + keyboard navigation ──
+    var dismissedSlashQuery by rememberSaveable { mutableStateOf<String?>(null) }
+    var activeSlashIndex by rememberSaveable { mutableIntStateOf(0) }
+    val slashQuery = slashQueryFor(uiState.composerDraft)
+    val slashMatches = remember(uiState.slashCommands, slashQuery) {
+        matchingSlashCommands(
+            SlashCommandCatalog(uiState.slashCommands, uiState.slashTruncated),
+            slashQuery,
+        )
+    }
+    val filteredSlash = remember(slashMatches) {
+        slashMatches.take(MAX_VISIBLE_SLASH_COMMANDS)
+    }
+    val slashIndex = effectiveSlashIndex(activeSlashIndex, filteredSlash.size)
+    // Oracle `slashMenuOpen` — pure draft-text drive; a blocked agent still
+    // accepts commands (chat-while-blocked is the clarify path).
+    val slashMenuOpen = uiState.canControl && slashQuery != null &&
+        dismissedSlashQuery != uiState.composerDraft
+    LaunchedEffect(uiState.composerDraft) {
+        if (slashQuery == null) {
+            dismissedSlashQuery = null
+            activeSlashIndex = 0
+        }
+    }
+
+    fun selectSlash(index: Int) {
+        val entry = filteredSlash.getOrNull(index) ?: return
+        val next = slashSelectionText(entry)
+        dismissedSlashQuery = next
+        activeSlashIndex = 0
+        onDraftChange(next)
+    }
+
+    // ── transient status → snackbar (oracle `showToast`) ──
+    LaunchedEffect(uiState.lastError) {
+        uiState.lastError?.let {
+            snackbarHostState.showSnackbar(it)
+            onClearError()
+        }
+    }
+    LaunchedEffect(uiState.notice) {
+        uiState.notice?.let {
+            snackbarHostState.showSnackbar(it)
+            onClearError()
+        }
+    }
+    LaunchedEffect(uiState.uploadStatus, uiState.uploadError) {
+        if (uiState.uploadError && uiState.uploadStatus.isNotEmpty()) {
+            snackbarHostState.showSnackbar(uiState.uploadStatus)
+        }
+    }
+
     // Follow the tail only while the user is pinned to the bottom — a
     // "Load older" prepend keeps its anchor via the stable item keys, and
     // manual scroll-back must not yank the viewport down on new output.
@@ -164,16 +305,17 @@ fun AgentFeedContent(
     }
     // The tail key changes on a new last entry and on in-place text growth
     // (streaming replies); prepends leave it untouched so no scroll fires.
-    val tailKey = uiState.entries.lastOrNull()?.let { "${it.id}:${it.text.length}" }
+    val tailKey = visibleEntries.lastOrNull()?.let { "${it.id}:${it.text.length}" }
     LaunchedEffect(tailKey, uiState.working, uiState.blocked != null) {
         if (tailKey == null || !pinnedToBottom) return@LaunchedEffect
-        val lastIndex = (if (uiState.hasMoreHistory) 1 else 0) +
-            uiState.entries.size +
+        val lastIndex = headerOffset +
+            visibleEntries.size +
             (if (uiState.blocked != null) 1 else 0) +
             (if (uiState.working) 1 else 0) - 1
         listState.animateScrollToItem(lastIndex.coerceAtLeast(0))
     }
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             SessionTopBar(
                 title = uiState.title.ifEmpty { uiState.paneId.substringAfter("::") },
@@ -197,116 +339,282 @@ fun AgentFeedContent(
                 onBack = onBack,
                 provider = uiState.provider,
                 active = uiState.working,
+                trailing = {
+                    IconButton(onClick = {
+                        if (findOpen) closeFind() else findOpen = true
+                    }) {
+                        Icon(
+                            Icons.Default.Search,
+                            contentDescription = if (findOpen) {
+                                "Close find"
+                            } else {
+                                "Find in conversation"
+                            },
+                        )
+                    }
+                },
                 tabsPaneId = tabsPaneId,
                 onSelectTab = { onSelectTab(it.paneId) },
             )
         },
         bottomBar = {
-            Composer(
-                modifier = Modifier.windowInsetsPadding(
-                    WindowInsets.systemBars
-                        .union(WindowInsets.ime)
-                        .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom),
-                ),
-                agentLabel = uiState.title.ifEmpty { uiState.paneId.substringAfter("::") },
-                draft = uiState.composerDraft,
-                sending = uiState.responding,
-                canAttach = uiState.canAttach,
-                attachments = uiState.attachments,
-                uploadStatus = uiState.uploadStatus,
-                uploadError = uiState.uploadError,
-                onDraftChange = onDraftChange,
-                onSend = onSendPrompt,
-                onPickAttachments = onPickAttachments,
-                onRemoveAttachment = onRemoveAttachment,
-                onClearAttachments = onClearAttachments,
-                onRestartAttachments = onRestartAttachments,
-            )
+            Column {
+                if (slashMenuOpen) {
+                    SlashCommandMenu(
+                        commands = filteredSlash,
+                        matchCount = slashMatches.size,
+                        loading = uiState.slashLoading,
+                        unavailable = uiState.slashUnavailable,
+                        truncated = uiState.slashTruncated,
+                        activeIndex = slashIndex,
+                        onSelect = { entry -> selectSlash(filteredSlash.indexOf(entry)) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = spacing.medium),
+                    )
+                }
+                Composer(
+                    modifier = Modifier.windowInsetsPadding(
+                        WindowInsets.systemBars
+                            .union(WindowInsets.ime)
+                            .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom),
+                    ),
+                    agentLabel = uiState.title.ifEmpty { uiState.paneId.substringAfter("::") },
+                    draft = uiState.composerDraft,
+                    sending = uiState.responding,
+                    canControl = uiState.canControl,
+                    slashMenuOpen = slashMenuOpen,
+                    onSlashKey = { key ->
+                        when (key) {
+                            Key.Escape -> {
+                                dismissedSlashQuery = uiState.composerDraft
+                                true
+                            }
+                            Key.DirectionDown -> {
+                                activeSlashIndex = if (slashIndex >= filteredSlash.size - 1) {
+                                    0
+                                } else {
+                                    slashIndex + 1
+                                }
+                                true
+                            }
+                            Key.DirectionUp -> {
+                                activeSlashIndex = if (slashIndex <= 0) {
+                                    filteredSlash.size - 1
+                                } else {
+                                    slashIndex - 1
+                                }
+                                true
+                            }
+                            Key.Enter, Key.Tab -> {
+                                if (slashIndex >= 0) {
+                                    selectSlash(slashIndex)
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+                            else -> false
+                        }
+                    },
+                    canAttach = uiState.canAttach,
+                    attachments = uiState.attachments,
+                    uploadStatus = uiState.uploadStatus,
+                    uploadError = uiState.uploadError,
+                    onDraftChange = onDraftChange,
+                    onSend = onSendPrompt,
+                    onPickAttachments = onPickAttachments,
+                    onRemoveAttachment = onRemoveAttachment,
+                    onClearAttachments = onClearAttachments,
+                    onRestartAttachments = onRestartAttachments,
+                )
+            }
         },
     ) { innerPadding ->
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(
-                top = innerPadding.calculateTopPadding() + spacing.small,
-                bottom = innerPadding.calculateBottomPadding() + spacing.small,
-                start = spacing.medium,
-                end = spacing.medium,
-            ),
-            verticalArrangement = Arrangement.spacedBy(spacing.small),
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding),
         ) {
-            if (uiState.hasMoreHistory) {
-                item(key = "load-older") {
-                    TextButton(
-                        onClick = onLoadOlder,
-                        enabled = !uiState.historyLoading,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(if (uiState.historyLoading) "Loading…" else "Load older")
+            if (findOpen) {
+                TerminalFindBar(
+                    query = findQuery,
+                    onQueryChange = { findQuery = it },
+                    matchCount = matchCount,
+                    activeIndex = activeFindIndex,
+                    truncated = false,
+                    onStep = { delta -> revealFindMatch(activeFindIndex + delta) },
+                    onClose = ::closeFind,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = spacing.medium)
+                        .padding(bottom = spacing.small),
+                )
+            }
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                contentPadding = PaddingValues(
+                    top = spacing.small,
+                    bottom = spacing.small,
+                    start = spacing.medium,
+                    end = spacing.medium,
+                ),
+                verticalArrangement = Arrangement.spacedBy(spacing.small),
+            ) {
+                if (uiState.hasMoreHistory) {
+                    item(key = "load-older") {
+                        TextButton(
+                            onClick = onLoadOlder,
+                            enabled = !uiState.historyLoading,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(if (uiState.historyLoading) "Loading…" else "Load older")
+                        }
+                    }
+                }
+                if (!uiState.historyAvailable && uiState.entries.isEmpty()) {
+                    item(key = "no-history") {
+                        Text(
+                            uiState.historyError
+                                ?: "This agent does not report conversation history.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                items(visibleEntries, key = { it.id }) { entry ->
+                    ConversationEntryRow(
+                        entry = entry,
+                        highlight = searchQuery.trim(),
+                        onCopyResponse = {
+                            onCopyResponse(entry.text) { text ->
+                                scope.launch {
+                                    clipboard.setClipEntry(
+                                        ClipEntry(
+                                            android.content.ClipData.newPlainText(
+                                                "agent response",
+                                                text,
+                                            ),
+                                        ),
+                                    )
+                                }
+                            }
+                        },
+                        modifier = Modifier.animateItem(
+                            placementSpec = spring(
+                                stiffness = Spring.StiffnessMediumLow,
+                                visibilityThreshold = IntOffset.VisibilityThreshold,
+                            ),
+                        ),
+                    )
+                }
+                if (searching && visibleEntries.isEmpty() && uiState.entries.isNotEmpty()) {
+                    item(key = "find-empty") {
+                        Text(
+                            "No loaded turns match “${searchQuery.trim()}”.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                uiState.blocked?.let { agent ->
+                    item(key = "blocker") {
+                        FeedBlockerCard(
+                            agent = agent,
+                            interaction = uiState.blockedInteraction,
+                            draft = uiState.questionDraft,
+                            enabled = uiState.canControl && !uiState.responding,
+                            onRespond = onRespond,
+                            onDraftChange = onQuestionDraftChange,
+                            onSubmitQuestion = onSubmitQuestion,
+                            onPreviousQuestion = { onNavigateQuestion("previous") },
+                            onClarifyQuestion = onClarifyQuestion,
+                            onOpenTerminal = onOpenTerminal,
+                            modifier = Modifier.animateItem(
+                                placementSpec = spring(
+                                    stiffness = Spring.StiffnessMediumLow,
+                                    visibilityThreshold = IntOffset.VisibilityThreshold,
+                                ),
+                            ),
+                        )
+                    }
+                }
+                if (uiState.working) {
+                    item(key = "working") { WorkingRow() }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConversationEntryRow(
+    entry: ConversationEntry,
+    highlight: String,
+    onCopyResponse: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    when (entry.role) {
+        ConversationRole.USER -> UserPromptBubble(entry.text, modifier)
+        ConversationRole.ASSISTANT -> Row(modifier = modifier.fillMaxWidth()) {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(LerdrTheme.spacing.small),
+                modifier = Modifier.weight(1f),
+            ) {
+                if (entry.text.isNotEmpty()) {
+                    FeedMarkdown(entry.text, highlight = highlight)
+                }
+                entry.tools.forEachIndexed { index, tool ->
+                    // `${tool.id || tool.name}:${index}` — the oracle's key.
+                    key(tool.id.ifEmpty { tool.name } + ":$index") {
+                        FeedToolCard(tool)
                     }
                 }
             }
-            if (!uiState.historyAvailable && uiState.entries.isEmpty()) {
-                item(key = "no-history") {
-                    Text(
-                        uiState.historyError
-                            ?: "This agent does not report conversation history.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            items(uiState.entries, key = { it.id }) { entry ->
-                ConversationEntryRow(entry)
-            }
-            uiState.blocked?.let { agent ->
-                item(key = "blocker") {
-                    BlockerCard(
-                        agent = agent,
-                        enabled = !uiState.responding,
-                        onRespond = onRespond,
-                        onAnswerOption = onAnswerOption,
-                    )
-                }
-            }
-            if (uiState.working) {
-                item(key = "working") { WorkingRow() }
-            }
+            AssistantEntryActions(entry = entry, onCopyResponse = onCopyResponse)
         }
     }
 }
 
+/** Per-entry overflow — `copy_agent_response` with the entry as fallback. */
 @Composable
-private fun ConversationEntryRow(entry: ConversationEntry) {
-    when (entry.role) {
-        ConversationRole.USER -> UserPromptBubble(entry.text)
-        ConversationRole.ASSISTANT -> Column(
-            verticalArrangement = Arrangement.spacedBy(LerdrTheme.spacing.small),
-        ) {
-            if (entry.text.isNotEmpty()) {
-                Text(entry.text, style = MaterialTheme.typography.bodyMedium)
-            }
-            entry.tools.forEach { tool ->
-                ToolCallCard(ToolCallUi(tool.name, tool.input.ifEmpty { tool.output }, tool.error))
-            }
+private fun AssistantEntryActions(
+    entry: ConversationEntry,
+    onCopyResponse: () -> Unit,
+) {
+    var menuOpen by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { menuOpen = true }) {
+            Icon(
+                Icons.Default.MoreVert,
+                contentDescription = "Entry actions",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            DropdownMenuItem(
+                text = { Text("Copy response") },
+                enabled = entry.text.isNotBlank(),
+                onClick = {
+                    menuOpen = false
+                    onCopyResponse()
+                },
+            )
         }
     }
 }
 
-@Immutable
-private data class ToolCallUi(
-    val title: String,
-    val detail: String,
-    val isError: Boolean = false,
-)
-
+/** User prompt — the mockup's brighter periwinkle bubble. */
 @Composable
-private fun UserPromptBubble(text: String) {
+private fun UserPromptBubble(text: String, modifier: Modifier = Modifier) {
+    val colors = LerdrTheme.extendedColors
     Surface(
-        color = MaterialTheme.colorScheme.secondaryContainer,
-        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        color = colors.chatContainer,
+        contentColor = colors.onChatContainer,
         shape = MaterialTheme.shapes.large,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
     ) {
         Text(
             text,
@@ -316,54 +624,6 @@ private fun UserPromptBubble(text: String) {
                 vertical = LerdrTheme.spacing.small + LerdrTheme.spacing.extraSmall,
             ),
         )
-    }
-}
-
-@Composable
-private fun ToolCallCard(call: ToolCallUi) {
-    val spacing = LerdrTheme.spacing
-    Card(
-        colors = CardDefaults.cardColors(
-            containerColor = if (call.isError) {
-                MaterialTheme.colorScheme.errorContainer
-            } else {
-                MaterialTheme.colorScheme.surfaceContainerLow
-            },
-        ),
-        shape = MaterialTheme.shapes.medium,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(spacing.small + spacing.extraSmall),
-        ) {
-            Icon(
-                if (call.isError) Icons.Default.CheckCircle else Icons.Default.Edit,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(20.dp),
-            )
-            Spacer(Modifier.width(spacing.small))
-            Column(Modifier.weight(1f)) {
-                Text(call.title, style = MaterialTheme.typography.titleSmall)
-                Text(
-                    call.detail,
-                    style = if (call.detail.contains('\n')) {
-                        LerdrTextStyles.code
-                    } else {
-                        MaterialTheme.typography.bodySmall
-                    },
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Icon(
-                Icons.Default.KeyboardArrowDown,
-                contentDescription = "Expand tool call",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
     }
 }
 
@@ -392,71 +652,14 @@ private fun WorkingRow() {
     }
 }
 
-/**
- * The blocker card — pins above the composer until answered. Approvals get
- * the oracle's Allow/Deny-style option buttons (`respond`); questions get
- * single-tap option rows (`answer_question` with that index).
- */
-@Composable
-private fun BlockerCard(
-    agent: Agent,
-    enabled: Boolean,
-    onRespond: (Int, String) -> Unit,
-    onAnswerOption: (Int) -> Unit,
-) {
-    val colors = LerdrTheme.extendedColors
-    val spacing = LerdrTheme.spacing
-    val isApproval = attentionKind(agent) == BlockedMessage.ATTENTION_APPROVAL
-    val prompt = agent.prompt ?: agent.interaction?.question ?: agent.command ?: ""
-    val options = agent.options
-        ?: agent.interaction?.options?.map { it.label }.orEmpty()
-
-    Card(
-        colors = CardDefaults.cardColors(containerColor = colors.attentionContainer),
-        shape = MaterialTheme.shapes.large,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(
-            modifier = Modifier.padding(spacing.medium),
-            verticalArrangement = Arrangement.spacedBy(spacing.small),
-        ) {
-            Text(
-                if (isApproval) "APPROVAL NEEDED" else "QUESTION",
-                style = MaterialTheme.typography.labelMedium,
-                color = colors.attention,
-            )
-            if (prompt.isNotEmpty()) {
-                Text(prompt, style = MaterialTheme.typography.titleSmall)
-            }
-            if (isApproval) {
-                LerdrButtonGroup(
-                    items = options.mapIndexed { index, label ->
-                        LerdrButtonGroupItem(
-                            label = label,
-                            onClick = { onRespond(index, label) },
-                            enabled = enabled,
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            } else {
-                options.forEachIndexed { index, label ->
-                    FilledTonalButton(
-                        onClick = { onAnswerOption(index) },
-                        enabled = enabled,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text(label) }
-                }
-            }
-        }
-    }
-}
-
 @Composable
 private fun Composer(
     agentLabel: String,
     draft: String,
     sending: Boolean,
+    canControl: Boolean,
+    slashMenuOpen: Boolean,
+    onSlashKey: (Key) -> Boolean,
     canAttach: Boolean,
     attachments: AttachmentBatch,
     uploadStatus: String,
@@ -470,7 +673,7 @@ private fun Composer(
     modifier: Modifier = Modifier,
 ) {
     val spacing = LerdrTheme.spacing
-    val controlsLocked = sending || attachments.uploading
+    val controlsLocked = sending || attachments.uploading || !canControl
     Surface(color = MaterialTheme.colorScheme.surface, modifier = modifier) {
         Column(modifier = Modifier.fillMaxWidth()) {
             if (attachments.items.isNotEmpty() || attachments.issue != null) {
@@ -487,7 +690,7 @@ private fun Composer(
                     uploadStatus,
                     style = MaterialTheme.typography.labelMedium,
                     color = if (uploadError) {
-                        MaterialTheme.colorScheme.error
+                        LerdrTheme.extendedColors.danger
                     } else {
                         MaterialTheme.colorScheme.onSurfaceVariant
                     },
@@ -513,19 +716,43 @@ private fun Composer(
                 OutlinedTextField(
                     value = draft,
                     onValueChange = onDraftChange,
-                    placeholder = { Text("Message $agentLabel…") },
-                    enabled = !sending,
+                    placeholder = {
+                        Text(
+                            if (canControl) {
+                                "Message $agentLabel…"
+                            } else {
+                                "Read-only — this device cannot reply"
+                            },
+                        )
+                    },
+                    enabled = canControl && !sending,
                     singleLine = false,
                     maxLines = 4,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardOptions = KeyboardOptions(
+                        // Prose input — suggestions/autocorrect stay on; the
+                        // terminal bar disables them, the chat one keeps them.
+                        keyboardType = KeyboardType.Text,
+                        imeAction = ImeAction.Send,
+                    ),
                     keyboardActions = KeyboardActions(onSend = { onSend() }),
                     shape = MaterialTheme.shapes.extraLarge,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .weight(1f)
+                        .onPreviewKeyEvent { event ->
+                            // Oracle keydown — menu keys only while it is open.
+                            if (!slashMenuOpen || event.type != KeyEventType.KeyDown) {
+                                return@onPreviewKeyEvent false
+                            }
+                            onSlashKey(event.key)
+                        },
                 )
                 Spacer(Modifier.width(spacing.small))
                 val sendable = draft.isNotBlank() ||
                     attachments.items.any { it.state == AttachmentItemState.SELECTED }
-                IconButton(onClick = onSend, enabled = !controlsLocked && sendable) {
+                IconButton(
+                    onClick = onSend,
+                    enabled = canControl && !controlsLocked && sendable,
+                ) {
                     Icon(
                         Icons.AutoMirrored.Filled.Send,
                         contentDescription = "Send",
@@ -573,7 +800,7 @@ private fun AttachmentTray(
             Text(
                 attachmentIssueText(issue),
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.error,
+                color = LerdrTheme.extendedColors.danger,
             )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(spacing.small)) {
@@ -626,7 +853,7 @@ private fun AttachmentChip(
                     Icons.Default.Warning,
                     contentDescription = item.issue?.let { attachmentIssueText(it) }
                         ?: "Attachment failed",
-                    tint = MaterialTheme.colorScheme.error,
+                    tint = LerdrTheme.extendedColors.danger,
                     modifier = Modifier.size(16.dp),
                 )
                 AttachmentItemState.SELECTED -> Icon(
@@ -665,6 +892,7 @@ private fun AgentFeedContentPreview() {
                 statusLabel = "working",
                 working = true,
                 connected = true,
+                canControl = true,
                 historyAvailable = true,
             ),
             onOpenTerminal = {},
@@ -673,7 +901,12 @@ private fun AgentFeedContentPreview() {
             onDraftChange = {},
             onSendPrompt = {},
             onRespond = { _, _ -> },
-            onAnswerOption = {},
+            onQuestionDraftChange = {},
+            onSubmitQuestion = {},
+            onNavigateQuestion = {},
+            onClarifyQuestion = {},
+            onCopyResponse = { _, _ -> },
+            onClearError = {},
             onLoadOlder = {},
             onRetryHistory = {},
             onPickAttachments = {},
