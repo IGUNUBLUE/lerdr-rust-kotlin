@@ -424,8 +424,8 @@ compare surface (`server_session_id`, `session`, `session_name`,
   fingerprinting.
 - **`agent_state` projection** — `session` is `agent_session.value` (the
   oracle's raw `SessionRaw.Value`), `session_name` is `""` — Rust has no
-  title resolver (the oracle's `Session` is rewritten to the resolved
-  title only when one exists; Kotlin merges `session_name` verbatim).
+  title resolver (resolved in round 15: `conversation/resolver.rs` ports
+  `internal/session/resolver.go`; Kotlin merges `session_name` verbatim).
 - **`pane_unchanged` always echoes `target`** (`null` when absent), and
   `HandleReadPane`'s `handleAcknowledge` half is ported — every direct
   read and every watch frame read records `pane_id → state_change_seq`
@@ -433,21 +433,18 @@ compare surface (`server_session_id`, `session`, `session_name`,
 
 ### Still open (declared deltas)
 
-- **Classification projection** — `attention_kind`, `prompt`, `command`,
-  `options`, `no_echo`, `no_echo_prompt` and the real `interaction`/
-  `question_layout` values remain Go-only; Rust emits the oracle's
-  unclassified seeds (`null`/`false`). Shadow drops exactly that key
-  set. Feeding it requires the classify+no-echo port, which also
-  unlocks the ack ledger's consumer (`Acks` records, nothing projects).
-- **Mid-read `ContentRevision` fence** — the oracle rechecks Herdr's
-  content revision after a read; Rust fences on the pane's generation
-  only (the portable half — fake Herdr carries no revision counter).
+- **Classification projection** — resolved in round 14 (S1):
+  `classify/` ports the question/attention projection; shadow compares
+  the full semantic key set for real.
+- **Mid-read `ContentRevision` fence** — resolved in round 15: the
+  counter is coordinator-side `content_rev` (not Herdr's — earlier note
+  misattributed it); all three read paths (probe, watch frame, direct
+  `read_pane`) fence both generation and revision.
 - **Read single-flight** — the oracle dedupes concurrent `read_pane`
   calls per pane in `d.reads`; Rust always reads. Internal RPC economy,
   not a wire difference.
-- **Title resolver** — `session_name` stays `""` until a title source
-  exists (the oracle resolves tab titles through Herdr state that the
-  fake/fixture path doesn't populate).
+- **Title resolver** — resolved in round 15 (see `agent_state`
+  projection note above).
 - **Go-only agent projection keys** — `activity_seq`, `pane_revision`,
   `project`, `raw_pane_id`, `tab_label`/`tab_number`/`tab_order`,
   `cwd`, `tokens`, `state_labels`, `last_active_at` remain declared
@@ -862,10 +859,8 @@ Three stations, orchestrator-integrated. Post-merge: `cargo test
   fixed order is `push_config,agents,workspaces,activity_history,
   inventory_status` vs Rust's `push_config,herdr_status,workspaces,
   agents`.
-- Mid-read `ContentRevision` fence — in flight (wave 2 / S6). Re-audit:
-  the oracle's counter lives in coordinator state (the relay's own
-  committed-content revision), not in Herdr — it is portable after all;
-  the earlier "fake Herdr" note misattributed it.
+- Mid-read `ContentRevision` fence — resolved (round 15 / S6); the
+  counter is coordinator-side, portable, now enforced on all read paths.
 - **Removed upstream, not ported**: `webrtc_*`/`herdr-dc-v1`,
   `lerdr-gateway`, `deploy_app_update`, portmap/UPnP — the oracle's
   CHANGELOG made Tailscale the only transport and deleted these
@@ -875,3 +870,70 @@ Three stations, orchestrator-integrated. Post-merge: `cargo test
 - **In flight (wave 2)**: release pipeline / CI matrix; `session_name`
   title resolver; `ContentRevision` mid-read fence; `[[link_handlers]]`
   manifest section; `internal/localize` residual audit.
+
+## Round 15 — wave 2: relay leaves, release pipeline, upstream-removal audit (2026)
+
+Three stations + orchestrator. The wave's headline finding was a
+scoping correction: the oracle deleted its entire non-Tailscale
+transport surface (`lerdr-gateway`, WebRTC gateways, `herdr-dc-v1`,
+portmap/UPnP, `deploy_app_update`/`deploying_app`, `stable-state`) —
+"Tailscale is now the only transport" per its CHANGELOG. Those items
+are recorded as **removed upstream, not ported** (roadmap annotated);
+the v3 wire names stay reserved and `app_deploy_status` remains a
+parseable frame with no emitter, matching post-removal oracle behavior.
+
+### Resolved this round
+
+- **`session_name` title resolver** (`conversation/resolver.rs`) —
+  full `internal/session/resolver.go` port: normalized
+  `(agent, cwd, foreground_cwd, session_id)` cache key, 60 s TTL
+  re-validated against the freshly-resolved `Location`, all provider
+  grammars (OMP `title`/`title_change`/`session.title`; Pi
+  `session_info.name`; Hermes `location.title`; Claude/Qoder
+  `custom-title`>`ai-title`>`summary`; Codex `session_index.jsonl`
+  first-`id` `thread_name`), scanner caps mirrored. Wired via
+  `ResolverSlot` into both commit kinds; committed title lives on the
+  shared `AttentionCell` so published clones project it. **Declared
+  delta:** the oracle's title cache is unbounded; the port caps at
+  2048 entries (sweep-then-clear) per the bounded-state rule.
+- **`ContentRevision` mid-read fence** — the counter is the
+  coordinator's own `content_rev` (the earlier "fake Herdr" note
+  misattributed it). All three read paths now fence generation +
+  revision: watch probe, watch frame read, direct `read_pane`
+  (`mid_read_fence` extracted for ordering tests).
+- **`[[link_handlers]]`** — manifest section + `plugin-open-link`
+  scripts: GitHub issue/PR links in panes open a QR overlay on the
+  phone. Spec-only (the oracle ships none) but verified against
+  upstream herdr 0.9.1's real manifest schema/env names.
+- **localize residual** — audited: no gap. Wire errors stay
+  `{code,args}`; `NormalizeLocale` + push localization already ported.
+- **Release pipeline** — `.github/workflows/{relay,app,interop,
+  release}.yml` + `scripts/{check-version-sync.sh,release-manifest.py}`
+  + `plugin/scripts/{package-release,check-installed-release}.sh` +
+  `docs/release.md`. Tag-gated 4-target builds (musl linux ×2, darwin
+  ×2), per-target native smoke, APK (signed iff keystore secrets
+  configured), version-sync gate, republish guard. Live gates
+  (HERDR_LIVE/LERDR_*/shadow-go) are `workflow_dispatch`-only.
+- **MSRV floor** — raised to 1.88: `icu_*` (via `url→idna`) already
+  required it; the CI `msrv` job is a real gate now, not advisory.
+
+### Still open
+
+- **Release-management subcommands** — `release-manifest` /
+  `verify-release` / `activate-release` / `seal-release` /
+  `prune-releases` exist in `cmd/lerdr` but not yet in `lerdr-relay`
+  (in flight — S8); `plugin/install.sh` full installs stay blocked
+  until then; the scripts' probe→fallback paths cover the interim.
+  `support-state.json` still lacks `release_directory`.
+- **Read single-flight** — unchanged declared delta (internal RPC
+  economy, not a wire difference).
+- **Go-only projection keys** — `pane_revision`/`tokens`/`state_labels`/
+  workspace `{cwd,tokens,worktree}` — declared deltas; the app already
+  parses `pane_revision` 0-normalized, so emitting it later is free.
+- **Startup-burst frame order** — unordered pool; both relays race.
+- **Live smoke** — partially validated (Moto G85 paired to the Rust
+  relay over Tailscale, live frames render); watch/lease/question
+  flows on device still to exercise.
+- **Phase 5** — untouched by design (binary inner codec, zstd,
+  conversation subscriptions, binary chunks, capability-negotiation
+  revision).
