@@ -51,14 +51,11 @@ jobs:
       - run: cargo test --workspace --locked
         working-directory: relay
 
-  # Advisory until the dep tree fits the declared floor: icu_* (via url→idna)
-  # already require rustc ≥1.88 while workspace rust-version says 1.85 —
-  # reconcile by raising the floor or pinning compatible versions, then drop
-  # continue-on-error.
+  # The declared floor is load-bearing: icu_* (via url→idna) requires
+  # rustc ≥1.88, so the workspace floor tracks the dep tree.
   msrv:
-    name: rust-version floor (advisory)
+    name: rust-version floor
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
       - id: floor

@@ -5,7 +5,7 @@ members = ["crates/*"]
 [workspace.package]
 edition = "2021"
 license = "Apache-2.0"
-rust-version = "1.85"
+rust-version = "1.88"
 
 # Version policy: latest STABLE release (semver-pinned by major/minor).
 # Verify new deps ≥7 days published.
