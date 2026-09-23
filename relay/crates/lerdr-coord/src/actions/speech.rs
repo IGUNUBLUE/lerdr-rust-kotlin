@@ -1940,6 +1940,306 @@ async fn change_speech_voice(
     frames
 }
 
+// ── `lerdr-relay speech-voices` — internal/speech's `Run` ──────────────
+
+/// `speech.ErrUsage` — CLI misuse exits 2 (cmd/lerdr's
+/// `errors.Is(err, speech.ErrUsage) → 2`); operational errors exit 1.
+#[derive(Debug)]
+pub struct SpeechCliError {
+    message: String,
+    usage: bool,
+}
+
+impl SpeechCliError {
+    /// `errors.Is(err, ErrUsage)`.
+    pub fn is_usage(&self) -> bool {
+        self.usage
+    }
+}
+
+impl std::fmt::Display for SpeechCliError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for SpeechCliError {}
+
+fn cli_usage(message: String) -> SpeechCliError {
+    SpeechCliError {
+        message,
+        usage: true,
+    }
+}
+
+fn cli_fail(message: String) -> SpeechCliError {
+    SpeechCliError {
+        message,
+        usage: false,
+    }
+}
+
+/// `speech.Run(ctx, args, stdout, stderr)` — the `speech-voices`
+/// subcommand's full dispatch. The oracle's `ctx` is `Background()` from
+/// `cmd/lerdr`, so these downloads are unbounded (`INSTALL_TIMEOUT` only
+/// bounds the phone-driven path).
+pub fn speech_voices_cli(
+    args: &[String],
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<(), SpeechCliError> {
+    speech_voices_run(&SystemEngine::new(), args, stdout, stderr)
+}
+
+/// `Run` with the engine injected — tests pin home+cache via
+/// `with_home_and_cache`.
+pub(crate) fn speech_voices_run(
+    engine: &SystemEngine,
+    args: &[String],
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<(), SpeechCliError> {
+    let Some((operation, rest)) = args.split_first() else {
+        return Err(cli_usage(
+            "lerdr speech-voices {list|missing|install|reinstall-runtime|remove} [--languages en,fr]"
+                .to_owned(),
+        ));
+    };
+    let requested = parse_languages_flag(rest, stderr)?;
+    // `--languages ""` reads the same as absent — the oracle's `*requested
+    // == ""` checks, in order: remove-gate first, then the default.
+    let requested = if requested.is_empty() && operation == "remove" {
+        return Err(cli_usage("remove needs --languages".to_owned()));
+    } else if requested.is_empty() {
+        // `DefaultLanguage` — the one voice a computer downloads on its
+        // own; every other language is asked for.
+        "en".to_owned()
+    } else {
+        requested
+    };
+    let languages: Vec<&str> = requested.split(',').collect();
+    for language in &languages {
+        if voice_entry(language).is_none() {
+            return Err(cli_usage(format!("unknown speech language {language:?}")));
+        }
+    }
+    let cancel = CancellationToken::new();
+    // `context.Background()` — the CLI has no deadline.
+    let deadline = Instant::now() + Duration::from_secs(24 * 60 * 60);
+    match operation.as_str() {
+        "list" => {
+            let status = engine.status();
+            let _ = writeln!(stdout, "Cache: {}", status.cache_dir);
+            for current in &status.voices {
+                let state = if current.installed {
+                    format!("cached, {} MB", current.bytes >> 20)
+                } else {
+                    format!("not downloaded, {} MB", current.bytes >> 20)
+                };
+                let engine_name = if current.engine.is_empty() {
+                    "no engine"
+                } else {
+                    current.engine.as_str()
+                };
+                let _ = writeln!(
+                    stdout,
+                    "  {} {} ({state}, spoken by {engine_name})",
+                    current.language, current.name
+                );
+            }
+            Ok(())
+        }
+        "missing" => {
+            for item in missing(engine, &languages) {
+                let _ = writeln!(stdout, "{item}");
+            }
+            Ok(())
+        }
+        "reinstall-runtime" => {
+            let _ = writeln!(stdout, "Downloading the speech engine...");
+            engine
+                .install_runtime(&cancel, deadline)
+                .map_err(cli_fail)?;
+            // `filepath.Dir(filepath.Dir(runtimeBinary()))` — the dir
+            // holding `piper/`, i.e. `<cache>/runtime`.
+            let runtime_dir = engine
+                .runtime_binary()
+                .parent()
+                .and_then(Path::parent)
+                .map(Path::to_path_buf)
+                .unwrap_or_default();
+            let _ = writeln!(
+                stdout,
+                "Speech engine reinstalled in {}",
+                runtime_dir.display()
+            );
+            Ok(())
+        }
+        "install" => {
+            if !engine.status().management_supported {
+                return Err(cli_fail(format!(
+                    "speech voice downloads are not supported on {}/{}",
+                    goos(),
+                    goarch()
+                )));
+            }
+            let items = missing(engine, &languages);
+            if items.is_empty() {
+                let _ = writeln!(
+                    stdout,
+                    "Speech voices are already cached in {}",
+                    engine.cache_dir().display()
+                );
+                return Ok(());
+            }
+            for item in &items {
+                if item == "runtime" {
+                    let _ = writeln!(stdout, "Downloading the speech engine...");
+                    engine
+                        .install_runtime(&cancel, deadline)
+                        .map_err(cli_fail)?;
+                    continue;
+                }
+                let entry = voice_entry(item).expect("missing() only names catalogued languages");
+                let _ = writeln!(
+                    stdout,
+                    "Downloading the {item} voice ({}, about {} MB)...",
+                    entry.name,
+                    entry.total_bytes >> 20
+                );
+                engine
+                    .install_blocking(&cancel, deadline, item)
+                    .map_err(cli_fail)?;
+            }
+            let _ = writeln!(
+                stdout,
+                "Speech voices are cached in {}",
+                engine.cache_dir().display()
+            );
+            Ok(())
+        }
+        "remove" => {
+            for language in &languages {
+                engine.remove_blocking(language).map_err(cli_fail)?;
+                let _ = writeln!(stdout, "Removed the {language} voice");
+            }
+            Ok(())
+        }
+        other => Err(cli_usage(format!(
+            "unknown speech-voices operation {other:?}"
+        ))),
+    }
+}
+
+/// `missing` — what an install would download: the engine first, since a
+/// voice without it cannot be spoken.
+fn missing(engine: &SystemEngine, languages: &[&str]) -> Vec<String> {
+    let status = engine.status();
+    if !status.management_supported {
+        return Vec::new();
+    }
+    let installed: HashMap<&str, bool> = status
+        .voices
+        .iter()
+        .map(|voice| (voice.language.as_str(), voice.installed))
+        .collect();
+    let mut items = Vec::new();
+    if !status.engine_installed {
+        items.push("runtime".to_owned());
+    }
+    for offered_language in OFFERED {
+        for requested in languages {
+            if *requested == offered_language {
+                if !installed.get(offered_language).copied().unwrap_or(false) {
+                    items.push(offered_language.to_owned());
+                }
+                break;
+            }
+        }
+    }
+    items
+}
+
+/// `flag.FlagSet("speech-voices", flag.ContinueOnError)` reduced to the
+/// single `-languages` string flag. Go semantics: `-x`/`--x`/`-x=v`/
+/// `--x=v`/`-x v` all bind, `--` terminates flags, and the first
+/// non-flag arg stops parsing (a trailing flag after it stays a flag —
+/// it lands in `unexpected argument`). `-h`/`-help` print usage and fail
+/// with `flag: help requested`; parse errors print themselves + usage to
+/// `stderr` (`failf`) and come back as usage errors.
+fn parse_languages_flag(args: &[String], stderr: &mut dyn Write) -> Result<String, SpeechCliError> {
+    let mut languages = String::new();
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        let bytes = arg.as_bytes();
+        if bytes.len() < 2 || bytes[0] != b'-' {
+            break;
+        }
+        let mut minuses = 1;
+        if bytes[1] == b'-' {
+            minuses = 2;
+            if bytes.len() == 2 {
+                index += 1;
+                break;
+            }
+        }
+        let body = &arg[minuses..];
+        if body.is_empty() || body.starts_with('-') || body.starts_with('=') {
+            return Err(flag_parse_error(stderr, format!("bad flag syntax: {arg}")));
+        }
+        let (name, inline_value) = match body.split_once('=') {
+            Some((name, value)) => (name, Some(value.to_owned())),
+            None => (body, None),
+        };
+        index += 1;
+        if name == "help" || name == "h" {
+            flag_usage(stderr);
+            return Err(cli_usage("flag: help requested".to_owned()));
+        }
+        if name != "languages" {
+            return Err(flag_parse_error(
+                stderr,
+                format!("flag provided but not defined: -{name}"),
+            ));
+        }
+        match inline_value {
+            Some(value) => languages = value,
+            None => match args.get(index) {
+                Some(value) => {
+                    languages = value.clone();
+                    index += 1;
+                }
+                None => {
+                    return Err(flag_parse_error(
+                        stderr,
+                        format!("flag needs an argument: -{name}"),
+                    ));
+                }
+            },
+        }
+    }
+    if let Some(first) = args.get(index) {
+        return Err(cli_usage(format!("unexpected argument {first:?}")));
+    }
+    Ok(languages)
+}
+
+/// `failf` — the flag error line + usage on stderr, and the message back
+/// as a usage error (`fmt.Errorf("%w: %s", ErrUsage, err)`).
+fn flag_parse_error(stderr: &mut dyn Write, message: String) -> SpeechCliError {
+    let _ = writeln!(stderr, "{message}");
+    flag_usage(stderr);
+    cli_usage(message)
+}
+
+/// `flag.PrintDefaults` for the single string flag.
+fn flag_usage(stderr: &mut dyn Write) {
+    let _ = writeln!(stderr, "Usage of speech-voices:");
+    let _ = writeln!(stderr, "  -languages string");
+    let _ = writeln!(stderr, "    \tcomma-separated languages");
+}
+
 #[cfg(test)]
 mod tests {
     use lerdr_core::protocol::CommandResultMessage;
@@ -2714,5 +3014,125 @@ mod tests {
             assert!(OFFERED.contains(&voice.language.as_str()));
         }
         assert_eq!(catalog.voices.len(), OFFERED.len());
+    }
+
+    // ── `speech-voices` CLI — `Run`'s parse/dispatch layer ──────────
+
+    fn cli_args(args: &[&str]) -> Vec<String> {
+        args.iter().map(|arg| arg.to_string()).collect()
+    }
+
+    /// The oracle's `TestRun` usage cases, plus the remove gate and the
+    /// flag package's own errors — all exit-2 (`ErrUsage`).
+    #[test]
+    fn speech_cli_usage_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine =
+            SystemEngine::with_home_and_cache(dir.path().join("home"), dir.path().join("cache"));
+        for args in [
+            &[][..],
+            &["list", "--languages", "tlh"][..],
+            &["explode"][..],
+            &["list", "extra"][..],
+            &["remove"][..],
+            &["list", "--bogus"][..],
+            &["list", "--languages"][..],
+            &["list", "-h"][..],
+        ] {
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let result = speech_voices_run(&engine, &cli_args(args), &mut out, &mut err);
+            let error = result.expect_err(&format!("args {args:?} should fail"));
+            assert!(error.is_usage(), "args {args:?} should be a usage error");
+        }
+    }
+
+    /// `flag.FlagSet` binding forms for the single `-languages` string.
+    #[test]
+    fn speech_cli_languages_flag_forms() {
+        let mut sink = Vec::new();
+        let parse = |args: &[&str]| parse_languages_flag(&cli_args(args), &mut Vec::new());
+        assert_eq!(parse(&["-languages", "en,fr"]).unwrap(), "en,fr");
+        assert_eq!(parse(&["--languages", "de"]).unwrap(), "de");
+        assert_eq!(parse(&["-languages=es"]).unwrap(), "es");
+        assert_eq!(parse(&["--languages=zh"]).unwrap(), "zh");
+        // A repeated flag keeps the last value, like `flag.String`.
+        assert_eq!(
+            parse(&["--languages", "en", "--languages", "fr"]).unwrap(),
+            "fr"
+        );
+        // `--` terminates flags; nothing follows.
+        assert_eq!(parse(&["--"]).unwrap(), "");
+        // `--` terminating flags leaves a trailing arg "unexpected".
+        assert!(parse(&["--", "x"]).unwrap_err().is_usage());
+        // Flag parse errors echo the message + usage onto stderr.
+        assert!(parse_languages_flag(&cli_args(&["-bad"]), &mut sink).is_err());
+        let stderr = String::from_utf8(sink).unwrap();
+        assert!(stderr.contains("flag provided but not defined: -bad"));
+        assert!(stderr.contains("Usage of speech-voices:"));
+    }
+
+    /// `list` and `missing` over a pinned, empty cache — the engine
+    /// column is host-dependent, the language/name/state columns are not.
+    #[test]
+    fn speech_cli_list_and_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine =
+            SystemEngine::with_home_and_cache(dir.path().join("home"), dir.path().join("cache"));
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        speech_voices_run(&engine, &cli_args(&["list"]), &mut out, &mut err).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.starts_with(&format!("Cache: {}", engine.cache_dir().display())));
+        for language in OFFERED {
+            let entry = voice_entry(language).unwrap();
+            assert!(
+                text.contains(&format!("  {language} {} (not downloaded,", entry.name)),
+                "list output should name {language}: {text}"
+            );
+        }
+
+        let mut out = Vec::new();
+        speech_voices_run(
+            &engine,
+            &cli_args(&["missing", "--languages", "de"]),
+            &mut out,
+            &mut err,
+        )
+        .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        // The requested voice is listed last; "runtime" may precede it.
+        assert_eq!(lines.last(), Some(&"de"));
+        assert!(!lines.contains(&"fr"));
+    }
+
+    /// `remove` over an empty cache still prints the oracle's line;
+    /// `-h` prints the flag usage block on stderr.
+    #[test]
+    fn speech_cli_remove_and_help() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine =
+            SystemEngine::with_home_and_cache(dir.path().join("home"), dir.path().join("cache"));
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        speech_voices_run(
+            &engine,
+            &cli_args(&["remove", "--languages", "de"]),
+            &mut out,
+            &mut err,
+        )
+        .unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "Removed the de voice\n");
+
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let error =
+            speech_voices_run(&engine, &cli_args(&["list", "-h"]), &mut out, &mut err).unwrap_err();
+        assert!(error.is_usage());
+        assert_eq!(error.to_string(), "flag: help requested");
+        assert!(String::from_utf8(err)
+            .unwrap()
+            .contains("-languages string"));
     }
 }

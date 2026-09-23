@@ -1029,6 +1029,7 @@ dependencies = [
  "lerdr-fixture",
  "lerdr-herdr",
  "lerdr-relay",
+ "libc",
  "p256",
  "qrcode",
  "rand 0.9.5",

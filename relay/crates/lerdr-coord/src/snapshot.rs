@@ -62,7 +62,7 @@ pub fn compose_snapshot(topology: &Topology) -> Vec<Outbound> {
 /// (polls keep running), so it feeds `herdr_status.health_check`, not
 /// this frame. Attempt/success timestamps marshal as Unix *seconds*
 /// (`lastAttemptAt.Unix()`), not the millis the ledger keeps.
-pub(crate) fn inventory_status(topology: &Topology) -> InventoryStatusMessage {
+pub fn inventory_status(topology: &Topology) -> InventoryStatusMessage {
     let state = if topology.inventory_ready {
         "ready"
     } else if !topology.inventory_error_code.is_empty() {

@@ -45,13 +45,17 @@ pub mod release;
 mod router;
 mod snapshot;
 mod topology;
+/// The `update-worker` subcommand's detached job runner
+/// (`internal/update/worker.go`) — sync, no runtime.
+pub mod update_worker;
 mod watches;
 
+pub use actions::speech::{speech_voices_cli, SpeechCliError};
 pub use actor::Invalidation;
 pub use actor::{TopologyActor, TopologyHandle};
 pub use fingerprint::content_fingerprint;
 pub use router::{ClientSinkLookup, HerdRouter, HerdRouterFactory};
-pub use snapshot::compose_snapshot;
+pub use snapshot::{compose_snapshot, inventory_status};
 pub use topology::Topology;
 pub use watches::{pane_unchanged, WatchCtl, WatchSet, ACK_TIMEOUT, DEFAULT_LINES};
 

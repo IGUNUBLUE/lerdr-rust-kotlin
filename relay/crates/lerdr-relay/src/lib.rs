@@ -1,6 +1,7 @@
 //! `lerdr-relay` — the Lerdr relay binary's first slice: the axum
-//! `/ws`/`/healthz` server, the `herdr-e2ee-v2` handshake driver, the device
-//! auth boundary, and the per-client session actor.
+//! `/ws` + `/health`/`/healthz`/`/readyz` server, the `herdr-e2ee-v2`
+//! handshake driver, the device auth boundary, and the per-client
+//! session actor.
 //!
 //! Layering (state-machine + driver split — sync cores, async edges):
 //!

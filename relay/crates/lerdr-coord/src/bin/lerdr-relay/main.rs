@@ -20,6 +20,7 @@ use lerdr_coord::{release, ClientSinkLookup, HerdRouterFactory, TopologyActor};
 use lerdr_core::audit;
 use lerdr_herdr::Client;
 use lerdr_relay::auth::BootstrapRearm;
+use lerdr_relay::server::{HealthProbe, InventoryProbeFn};
 use lerdr_relay::session::{AttributionFn, AuditHook, SessionConfig, SnapshotFn};
 use lerdr_relay::store::FileAuthStore;
 use lerdr_relay::Relay;
@@ -152,6 +153,27 @@ enum Commands {
         /// The rollback release directory to keep.
         #[arg(value_name = "PREVIOUS_RELEASE")]
         previous_release: Option<PathBuf>,
+    },
+    /// Run one staged update job to completion — `internal/update`'s
+    /// `Worker.Run`. Invoked by `install_update` via systemd-run/launchctl
+    /// as a detached transient unit; never run by hand.
+    UpdateWorker {
+        /// The `update-job-*.json` payload path.
+        #[arg(value_name = "JOB.json")]
+        job_path: PathBuf,
+    },
+    /// Manage the cached speech voices — `internal/speech`'s `Run`:
+    /// `list|missing|install|reinstall-runtime|remove` plus a repeated or
+    /// comma-separated `--languages`. Flags are parsed inside the command
+    /// so the Go `flag` usage contract (exit 2) survives.
+    SpeechVoices {
+        /// Raw argv passed through to the speech command.
+        #[arg(
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            value_name = "ARGS"
+        )]
+        args: Vec<String>,
     },
 }
 
@@ -328,6 +350,28 @@ fn run_hook(command: Commands) -> ExitCode {
             keep.extend(previous_release);
             release::prune_old_releases(&release_root, &keep).map_err(Into::into)
         }
+        Commands::UpdateWorker { job_path } => {
+            match lerdr_coord::update_worker::run(&job_path) {
+                // `errors.Is(err, update.ErrConcurrent)` → exit 3.
+                Err(error) if error.is_concurrent() => {
+                    eprintln!("lerdr-relay: {error}");
+                    return ExitCode::from(3);
+                }
+                other => other.map_err(|e| -> BoxError { e.into() }),
+            }
+        }
+        Commands::SpeechVoices { args } => {
+            let mut stdout = std::io::stdout().lock();
+            let mut stderr = std::io::stderr().lock();
+            lerdr_coord::speech_voices_cli(&args, &mut stdout, &mut stderr).map_err(|error| {
+                // `speech.ErrUsage` → exit 2 like the oracle's run().
+                if error.is_usage() {
+                    UsageError(error.to_string()).into()
+                } else {
+                    error.into()
+                }
+            })
+        }
         Commands::Serve(_) => unreachable!("serve handled in main"),
     };
     match result {
@@ -493,30 +537,44 @@ async fn run(args: ServeArgs) -> Result<(), BoxError> {
     );
     let factory = router_factory.clone().into_factory();
     let topology_for_snapshot = topology.clone();
-    let relay = Relay::with_router_factory(auth, factory).with_session_config(SessionConfig {
-        snapshot_fn: Some(SnapshotFn(Arc::new(move || {
-            lerdr_coord::compose_snapshot(&topology_for_snapshot.topology.borrow())
+    let topology_for_health = topology.clone();
+    // `s.cfg.InstanceID` + `s.state.InventoryStatus` — the probe reads the
+    // topology watch cell directly, so /healthz and /readyz reflect live
+    // committed inventory state without the relay calling back into the
+    // coordinator.
+    let health = HealthProbe {
+        instance_id: cfg.instance_id.clone(),
+        inventory: Some(InventoryProbeFn(Arc::new(move || {
+            lerdr_coord::inventory_status(&topology_for_health.topology.borrow())
         }))),
-        // `ResetWithBootstrap` — a configured relay key re-arms the
-        // bootstrap invitation after `reset_devices` wipes the store, so
-        // the printed setup link keeps pairing (the oracle feeds
-        // `[]byte(cfg.Token)`; the type requires exactly 32 bytes).
-        reset_bootstrap: cfg.token.as_deref().and_then(|token| {
-            token
-                .as_bytes()
-                .try_into()
-                .ok()
-                .map(|secret| BootstrapRearm {
-                    secret,
-                    name: label.clone(),
-                })
-        }),
-        audit: Some(AuditHook {
-            log: audit.clone(),
-            attribution: Some(attribution),
-        }),
-        ..SessionConfig::default()
-    });
+        ..HealthProbe::default()
+    };
+    let relay = Relay::with_router_factory(auth, factory)
+        .with_health(health)
+        .with_session_config(SessionConfig {
+            snapshot_fn: Some(SnapshotFn(Arc::new(move || {
+                lerdr_coord::compose_snapshot(&topology_for_snapshot.topology.borrow())
+            }))),
+            // `ResetWithBootstrap` — a configured relay key re-arms the
+            // bootstrap invitation after `reset_devices` wipes the store, so
+            // the printed setup link keeps pairing (the oracle feeds
+            // `[]byte(cfg.Token)`; the type requires exactly 32 bytes).
+            reset_bootstrap: cfg.token.as_deref().and_then(|token| {
+                token
+                    .as_bytes()
+                    .try_into()
+                    .ok()
+                    .map(|secret| BootstrapRearm {
+                        secret,
+                        name: label.clone(),
+                    })
+            }),
+            audit: Some(AuditHook {
+                log: audit.clone(),
+                attribution: Some(attribution),
+            }),
+            ..SessionConfig::default()
+        });
     let _ = relay_cell.set(relay.clone());
     // `d.broadcast` — journal events (`activity` rows, `activity_history`
     // clears) fan out to every connected client, matching the oracle's
@@ -558,7 +616,8 @@ async fn run(args: ServeArgs) -> Result<(), BoxError> {
     spawn_support_writer(&cfg, relay.shutdown());
 
     let listener = TcpListener::bind((cfg.host.as_str(), cfg.port)).await?;
-    info!(addr = %listener.local_addr()?, "lerdr-relay listening");
+    // The oracle logs `instance` with the listen line.
+    info!(addr = %listener.local_addr()?, instance = %cfg.instance_id, "lerdr-relay listening");
     relay.serve(listener).await?;
     info!("lerdr-relay stopped");
     Ok(())
@@ -780,5 +839,41 @@ fn spawn_signal_handlers(
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `speech-voices` collects its whole argv — flags included — for the
+    /// Go `flag`-compatible parser inside the command (exit-2 contract).
+    #[test]
+    fn speech_voices_collects_trailing_args() {
+        let cli = Cli::try_parse_from([
+            "lerdr-relay",
+            "speech-voices",
+            "list",
+            "--languages",
+            "en,fr",
+        ])
+        .unwrap();
+        let Some(Commands::SpeechVoices { args }) = cli.command else {
+            panic!("expected speech-voices");
+        };
+        assert_eq!(args, vec!["list", "--languages", "en,fr"]);
+    }
+
+    /// `update-worker` binds exactly one JOB.json path.
+    #[test]
+    fn update_worker_takes_one_job_path() {
+        let cli = Cli::try_parse_from(["lerdr-relay", "update-worker", "/tmp/update-job-7.json"])
+            .unwrap();
+        let Some(Commands::UpdateWorker { job_path }) = cli.command else {
+            panic!("expected update-worker");
+        };
+        assert_eq!(job_path, Path::new("/tmp/update-job-7.json"));
+        assert!(Cli::try_parse_from(["lerdr-relay", "update-worker"]).is_err());
+        assert!(Cli::try_parse_from(["lerdr-relay", "update-worker", "a", "b"]).is_err());
     }
 }
