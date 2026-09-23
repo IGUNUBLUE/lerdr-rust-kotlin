@@ -15,6 +15,7 @@ import com.lerdr.app.settings.InvitationUi
 import com.lerdr.app.settings.QrBitmapUi
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import lerdr.core.data.DeviceRole
+import lerdr.core.model.UpdateState
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -56,6 +57,8 @@ class DevicesSectionScreenshotTest {
                     onInvitationCopyFailed = {},
                     onDismissInvitation = {},
                     onDismissStatus = {},
+                    onCheckUpdate = {},
+                    onInstallUpdate = {},
                     modifier = Modifier.padding(12.dp),
                 )
             }
@@ -178,6 +181,70 @@ class DevicesSectionScreenshotTest {
                         current = true,
                     ),
                 ),
+            ),
+        )
+    }
+
+    @Test
+    fun devices_update_available() {
+        content(
+            DevicesUiState(
+                relayLabel = "workstation",
+                connected = true,
+                canAdminister = true,
+                canInvite = true,
+                fetched = true,
+                currentDeviceId = "dev-1",
+                updateSupported = true,
+                update = UpdateState(
+                    state = "available",
+                    currentVersion = "1.3.2",
+                    availableVersion = "1.4.0",
+                    availableRevision = "abc1234def5678",
+                    targetVersion = "1.4.0",
+                    targetRevision = "abc1234def5678",
+                    canInstall = true,
+                ),
+                devices = listOf(
+                    device(
+                        "dev-1", "Pixel 8",
+                        role = DeviceRole.CONTROLLER,
+                        lastSeenAt = 1_772_445_600_000L,
+                        current = true,
+                    ),
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun devices_update_failed() {
+        content(
+            DevicesUiState(
+                relayLabel = "workstation",
+                connected = true,
+                canAdminister = true,
+                canInvite = true,
+                fetched = true,
+                currentDeviceId = "dev-1",
+                updateSupported = true,
+                update = UpdateState(
+                    state = "failed",
+                    error = "signature verification failed",
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun devices_update_manual_bootstrap() {
+        content(
+            DevicesUiState(
+                relayLabel = "workstation",
+                connected = true,
+                canAdminister = true,
+                fetched = true,
+                currentDeviceId = "dev-1",
             ),
         )
     }

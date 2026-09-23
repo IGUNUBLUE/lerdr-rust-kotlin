@@ -23,6 +23,7 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
 import lerdr.core.data.DeviceRole
 import lerdr.core.model.Inbound
+import lerdr.core.model.UpdateState
 import lerdr.core.store.RelayStatus
 import lerdr.core.transport.RelaySession
 
@@ -94,6 +95,12 @@ data class DevicesUiState(
     val statusIsError: Boolean = false,
     /** Open invitation block — link (and QR when offered) + copy affordance. */
     val invitation: InvitationUi? = null,
+    /** `self_update` capability — the update row renders when true. */
+    val updateSupported: Boolean = false,
+    /** Live `connection.update` — the oracle's `updateStatus` source. */
+    val update: UpdateState? = null,
+    /** `check_update`/`install_update` in flight — latches both buttons. */
+    val updateBusy: Boolean = false,
 )
 
 /**
@@ -125,13 +132,31 @@ class DevicesViewModel(
     val uiState: StateFlow<DevicesUiState> = _uiState.asStateFlow()
 
     init {
-        // Connection state + QR capability.
+        // Connection state + QR capability + the live update row.
         viewModelScope.launch {
             sessions.connection(relayId).collect { connection ->
                 val was = _uiState.value.connected
                 val now = connection?.status == RelayStatus.CONNECTED
-                _uiState.update { it.copy(connected = now) }
+                _uiState.update {
+                    it.copy(
+                        connected = now,
+                        update = connection?.update,
+                        updateSupported = connection?.capabilities
+                            ?.contains(SELF_UPDATE_CAPABILITY) == true,
+                    )
+                }
                 if (now && !was) refresh()
+            }
+        }
+        // A relay that restarted mid-install announces completion here.
+        viewModelScope.launch {
+            sessions.completedUpdates.collect { completed ->
+                val done = completed[relayId] ?: return@collect
+                sessions.consumeCompletedUpdate(relayId)
+                setStatus(
+                    "${_uiState.value.relayLabel} updated to v${done.version}.",
+                    isError = false,
+                )
             }
         }
         // Caller identity from the handshake (device_list refines it later).
@@ -300,6 +325,44 @@ class DevicesViewModel(
         "Copy failed. Select and copy the invitation link manually.",
         isError = true,
     )
+
+    /**
+     * `checkRelayUpdate` — the reply's `data.update` lands on the
+     * connection row via `SessionRepository`; failures surface on the
+     * status line like the oracle's toast.
+     */
+    fun checkUpdate() {
+        if (_uiState.value.updateBusy) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(updateBusy = true) }
+            try {
+                sessions.checkUpdate(relayId)
+            } catch (failure: Exception) {
+                setStatus(failure.displayMessage(), isError = true)
+            } finally {
+                _uiState.update { it.copy(updateBusy = false) }
+            }
+        }
+    }
+
+    /**
+     * `installRelayUpdate` — the repository gates on
+     * `available && can_install && target_revision` and refuses cleanly;
+     * the reply (or refusal) refreshes `update` on the same collector.
+     */
+    fun installUpdate() {
+        if (_uiState.value.updateBusy) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(updateBusy = true) }
+            try {
+                sessions.installUpdate(relayId)
+            } catch (failure: Exception) {
+                setStatus(failure.displayMessage(), isError = true)
+            } finally {
+                _uiState.update { it.copy(updateBusy = false) }
+            }
+        }
+    }
 
     fun dismissInvitation() = _uiState.update { it.copy(invitation = null) }
 
@@ -515,6 +578,9 @@ class DevicesViewModel(
 
         /** Relay capability that backs the `qr_code` action. */
         const val QR_CAPABILITY = "invitation_qr"
+
+        /** Relay capability that backs `check_update`/`install_update`. */
+        const val SELF_UPDATE_CAPABILITY = "self_update"
 
         /** `qrBitmap` bounds — a real QR symbol is 21..177 modules square. */
         const val QR_MIN_MODULES = 21

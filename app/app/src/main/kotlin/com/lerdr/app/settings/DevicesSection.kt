@@ -94,6 +94,8 @@ fun DevicesSection(relayId: String, modifier: Modifier = Modifier) {
         onInvitationCopyFailed = viewModel::invitationCopyFailed,
         onDismissInvitation = viewModel::dismissInvitation,
         onDismissStatus = viewModel::dismissStatus,
+        onCheckUpdate = viewModel::checkUpdate,
+        onInstallUpdate = viewModel::installUpdate,
         modifier = modifier,
     )
 }
@@ -117,6 +119,8 @@ fun DevicesContent(
     onInvitationCopyFailed: () -> Unit,
     onDismissInvitation: () -> Unit,
     onDismissStatus: () -> Unit,
+    onCheckUpdate: () -> Unit,
+    onInstallUpdate: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val spacing = LerdrTheme.spacing
@@ -210,6 +214,13 @@ fun DevicesContent(
                     }
                 }
             }
+
+            // ── relay self-update (oracle's per-relay update row) ─────
+            RelayUpdateBlock(
+                uiState = uiState,
+                onCheck = onCheckUpdate,
+                onInstall = onInstallUpdate,
+            )
 
             // ── one-use invitation link (+ QR when the relay draws it) ─
             uiState.invitation?.let { invitation ->
@@ -431,6 +442,171 @@ fun DevicesContent(
 }
 
 // ── pieces ────────────────────────────────────────────────────────────
+
+/** The oracle's `updateStatus` — label + detail + warning per state. */
+private data class UpdateStatusUi(
+    val label: String,
+    val detail: String,
+    val warning: Boolean,
+    val danger: Boolean = false,
+)
+
+private fun updateStatus(
+    supported: Boolean,
+    connected: Boolean,
+    update: lerdr.core.model.UpdateState?,
+): UpdateStatusUi {
+    if (!connected) {
+        return UpdateStatusUi(
+            "Update status unavailable",
+            "Connect this relay to check its version.",
+            warning = false,
+        )
+    }
+    if (!supported) {
+        return UpdateStatusUi(
+            "Manual update required",
+            "Update this relay from its terminal once to enable phone-driven updates.",
+            warning = true,
+        )
+    }
+    when (update?.state) {
+        "checking" -> return UpdateStatusUi("Checking for updates…", "", warning = false)
+        "available" -> return UpdateStatusUi(
+            "Update v${update.availableVersion.orEmpty()} available",
+            "Revision ${shortRevision(update.availableRevision.orEmpty())}",
+            warning = true,
+        )
+        "blocked" -> return UpdateStatusUi(
+            "Update v${update.availableVersion.orEmpty()} needs attention",
+            update.reason.orEmpty(),
+            warning = true,
+        )
+        "scheduled" -> return UpdateStatusUi(
+            "Update scheduled…",
+            "Preparing the verified release.",
+            warning = true,
+        )
+        "preparing" -> return UpdateStatusUi(
+            "Verifying update…",
+            "Checking release identity and transport compatibility.",
+            warning = true,
+        )
+        "installing" -> return UpdateStatusUi(
+            "Installing update…",
+            "The connection may briefly disconnect.",
+            warning = true,
+        )
+        "restarting" -> return UpdateStatusUi(
+            "Restarting relay…",
+            "The connection may briefly disconnect.",
+            warning = true,
+        )
+        "succeeded" -> return UpdateStatusUi(
+            "Update installed",
+            "Running v${update.currentVersion.orEmpty()}",
+            warning = false,
+        )
+        "rolled_back" -> return UpdateStatusUi(
+            "Update rolled back",
+            update.error.orEmpty(),
+            warning = true,
+            danger = true,
+        )
+        "failed" -> return UpdateStatusUi(
+            "Update operation failed",
+            update.error.orEmpty(),
+            warning = true,
+            danger = true,
+        )
+    }
+    val checked = update?.checkedAt?.takeIf { it > 0 }
+        ?.let { "Checked ${DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(it * 1_000))}" }
+        ?: "Update check pending"
+    return UpdateStatusUi("Up to date", checked, warning = false)
+}
+
+/** The oracle's `shortRevision`: hex revisions shorten to 7 chars, `-dirty` kept. */
+private fun shortRevision(revision: String): String {
+    val dirty = revision.endsWith("-dirty")
+    val base = if (dirty) revision.dropLast(6) else revision
+    if (!HEX_REVISION.matches(base)) return revision
+    return if (dirty) "${base.take(7)}-dirty" else base.take(7)
+}
+
+private val HEX_REVISION = Regex("^[0-9a-fA-F]{12,40}$")
+
+/**
+ * The relay's software-update row — `check_update` on demand, `install_update`
+ * when the checked candidate is installable and the caller is a controller.
+ */
+@Composable
+private fun RelayUpdateBlock(
+    uiState: DevicesUiState,
+    onCheck: () -> Unit,
+    onInstall: () -> Unit,
+) {
+    val spacing = LerdrTheme.spacing
+    val status = updateStatus(uiState.updateSupported, uiState.connected, uiState.update)
+    val colors = LerdrTheme.extendedColors
+    val container = when {
+        status.danger -> colors.dangerContainer
+        status.warning -> colors.attentionContainer
+        else -> MaterialTheme.colorScheme.surfaceContainerHigh
+    }
+    val content = when {
+        status.danger -> colors.onDangerContainer
+        status.warning -> colors.onAttentionContainer
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(spacing.small),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.small)
+            .background(container)
+            .padding(horizontal = spacing.medium, vertical = spacing.small)
+            // Update-state changes announce politely.
+            .liveRegionPolite(),
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                status.label,
+                style = MaterialTheme.typography.bodyMedium,
+                color = content,
+            )
+            if (status.detail.isNotEmpty()) {
+                Text(
+                    status.detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = content,
+                )
+            }
+        }
+        if (uiState.updateBusy) {
+            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+        } else {
+            val installable = uiState.update?.state == "available" &&
+                uiState.update.canInstall == true &&
+                !uiState.update.targetRevision.isNullOrEmpty()
+            if (installable && uiState.canAdminister) {
+                TextButton(
+                    onClick = onInstall,
+                    enabled = uiState.connected,
+                ) {
+                    Text("Update")
+                }
+            }
+            TextButton(
+                onClick = onCheck,
+                enabled = uiState.connected && uiState.updateSupported,
+            ) {
+                Text("Check")
+            }
+        }
+    }
+}
 
 @Composable
 private fun RolePill(role: DeviceRole) {
@@ -895,6 +1071,8 @@ private fun DevicesContentPreview() {
             onInvitationCopyFailed = {},
             onDismissInvitation = {},
             onDismissStatus = {},
+            onCheckUpdate = {},
+            onInstallUpdate = {},
         )
     }
 }
