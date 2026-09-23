@@ -2,7 +2,9 @@ package com.lerdr.app.ui.terminal
 
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performTextInput
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.lerdr.core.designsystem.theme.LerdrTheme
@@ -48,6 +50,38 @@ class TerminalInputBarScreenshotTest {
         composeRule.setContent {
             LerdrTheme {
                 TerminalInputBar(onSendText = {})
+            }
+        }
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    /** `no_echo` prompt — masked field, "Password" label, shield marker. */
+    @Test
+    fun inputBar_secretMode() {
+        composeRule.setContent {
+            LerdrTheme {
+                TerminalInputBar(
+                    onSendText = {},
+                    secretMode = true,
+                    onSendSecret = {},
+                )
+            }
+        }
+        composeRule.onNodeWithTag("terminalSecretField").performTextInput("hunter2")
+        composeRule.waitForIdle()
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    /** Reader gate — field and send affordance render disabled. */
+    @Test
+    fun inputBar_readOnly() {
+        composeRule.setContent {
+            LerdrTheme {
+                TerminalInputBar(
+                    onSendText = {},
+                    enabled = false,
+                    hint = "Read-only session",
+                )
             }
         }
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)

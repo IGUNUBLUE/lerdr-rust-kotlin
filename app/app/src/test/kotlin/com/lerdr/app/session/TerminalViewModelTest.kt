@@ -18,6 +18,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import lerdr.core.data.DeviceRole
+import lerdr.core.data.RelayDeviceCredential
 import lerdr.core.data.RelayEndpoint
 import lerdr.core.data.RelayRegistry
 import lerdr.core.protocol.LerdrJson
@@ -325,4 +327,120 @@ class TerminalViewModelTest {
         assertThat(state.rows[1].spans.single().text).isEqualTo("TWO")
         assertThat(state.cursor).isEqualTo(TerminalCursorUi(row = 2, column = 2))
     }
+
+    @Test
+    fun `send_secret rides the typed request path with no plain-text frame`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        // The relay advertises `secret_input` on push_config.
+        h.handle().emit(
+            json("""{"type":"push_config","capabilities":["secret_input"]}"""),
+        )
+        h.pump()
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        backgroundScope.launch { viewModel.uiState.collect { } }
+        h.pump()
+
+        assertThat(viewModel.uiState.value.secretInputSupported).isTrue()
+
+        viewModel.sendSecret("hunter2")
+        h.pump()
+
+        val secret = h.handle().requests.single { it.type == "send_secret" }
+        assertThat(secret.text).isEqualTo("hunter2")
+        // send_secret never touches send_text/send_input/send_keys.
+        assertThat(
+            h.handle().requests.map { it.type } +
+                sentFrames(h.handle()).map { it["type"]?.jsonPrimitive?.content },
+        ).containsNoneOf("send_text", "send_input", "send_keys")
+        assertThat(viewModel.uiState.value.lastError).isNull()
+    }
+
+    @Test
+    fun `send_secret without the capability fails closed into lastError`() = runTest {
+        val h = Harness(this, tmp.root)
+        // connectReady's push_config does not advertise `secret_input`.
+        h.connectReady()
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        backgroundScope.launch { viewModel.uiState.collect { } }
+        h.pump()
+
+        assertThat(viewModel.uiState.value.secretInputSupported).isFalse()
+
+        viewModel.sendSecret("hunter2")
+        h.pump()
+
+        assertThat(viewModel.uiState.value.lastError)
+            .isEqualTo("This relay does not support password prompts")
+        // Nothing left the device — no send_secret request was framed.
+        assertThat(h.handle().requests.map { it.type }).doesNotContain("send_secret")
+
+        // The snackbar consumes the error once.
+        viewModel.dismissError()
+        assertThat(viewModel.uiState.value.lastError).isNull()
+    }
+
+    @Test
+    fun `no_echo frame surfaces the hidden prompt in ui state`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        backgroundScope.launch { viewModel.uiState.collect { } }
+        h.pump()
+
+        h.handle().emit(
+            json(
+                """{"type":"pane_content","pane_id":"%1","content":"Password:","content_fingerprint":"fp-secret","format":"text","no_echo":true,"no_echo_prompt":"Password:"}""",
+            ),
+        )
+        h.pump()
+
+        val state = viewModel.uiState.value
+        assertThat(state.noEcho).isTrue()
+        assertThat(state.noEchoPrompt).isEqualTo("Password:")
+    }
+
+    @Test
+    fun `controller credential enables canControl`() = runTest {
+        val h = Harness(this, tmp.root)
+        // canControl reads the enrolled role — seed it, then start() so
+        // the repository's records collector publishes it before the VM's
+        // combine evaluates.
+        h.registry.upsert(h.endpoint)
+        h.credentials.seed("r1", credential(DeviceRole.CONTROLLER))
+        h.repository.start()
+        h.pump()
+        h.connectReady()
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        backgroundScope.launch { viewModel.uiState.collect { } }
+        h.pump()
+
+        assertThat(viewModel.uiState.value.canControl).isTrue()
+    }
+
+    @Test
+    fun `reader credential leaves canControl false`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.registry.upsert(h.endpoint)
+        h.credentials.seed("r1", credential(DeviceRole.READER))
+        h.repository.start()
+        h.pump()
+        h.connectReady()
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        backgroundScope.launch { viewModel.uiState.collect { } }
+        h.pump()
+
+        assertThat(viewModel.uiState.value.canControl).isFalse()
+    }
+
+    private fun credential(role: DeviceRole) = RelayDeviceCredential(
+        id = "cred-1",
+        version = 1,
+        secret = java.util.Base64.getUrlEncoder().withoutPadding()
+            .encodeToString(ByteArray(32) { it.toByte() }),
+        deviceId = "dev-1",
+        role = role,
+        locale = "en",
+        issuedAtEpochMs = 1_000L,
+    )
 }

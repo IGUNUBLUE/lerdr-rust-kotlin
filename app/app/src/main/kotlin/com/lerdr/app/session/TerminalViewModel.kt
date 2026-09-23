@@ -19,6 +19,7 @@ import kotlinx.coroutines.launch
 import lerdr.core.store.Agent
 import lerdr.core.store.RelayStatus
 import lerdr.core.terminal.PaneSurface
+import lerdr.core.transport.CommandException
 
 /** Everything Terminal mode renders — pane snapshot + key/send actions. */
 @Immutable
@@ -49,6 +50,18 @@ data class TerminalUiState(
     val noEchoPrompt: String? = null,
     val leaseColumns: Int = 0,
     val leaseRows: Int = 0,
+    /**
+     * The oracle's `readOnly` gate, inverted — mutating affordances
+     * (input bar, key chips, secret field) enable only for an enrolled
+     * CONTROLLER credential. Fail-closed like the oracle.
+     */
+    val canControl: Boolean = false,
+    /**
+     * Relay `secret_input` capability — the hidden-prompt answer path
+     * (`send_secret`). Without it the bar stays in plain mode and the
+     * prompt banner carries the oracle's too-old-relay hint instead.
+     */
+    val secretInputSupported: Boolean = false,
     /** Transient action failure — rendered as a snackbar/inline error. */
     val lastError: String? = null,
 )
@@ -130,6 +143,9 @@ class TerminalViewModel(
             noEchoPrompt = snapshot?.noEchoPrompt,
             leaseColumns = snapshot?.columns ?: 0,
             leaseRows = snapshot?.rows ?: 0,
+            canControl = sessions.canControl(relayId),
+            secretInputSupported = connection?.capabilities
+                ?.contains(SessionRepository.SECRET_CAPABILITY) == true,
             lastError = error,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TerminalUiState(paneId))
@@ -245,6 +261,27 @@ class TerminalViewModel(
                 lastError.value = failure.message
             }
         }
+    }
+
+    /**
+     * `send_secret` — the hidden-prompt answer. The relay never journals
+     * it; a missing `secret_input` capability fails locally with
+     * [CommandException] before anything leaves the device.
+     */
+    fun sendSecret(text: String) {
+        if (text.isEmpty()) return
+        viewModelScope.launch {
+            try {
+                sessions.sendSecret(paneId, text)
+            } catch (failure: Exception) {
+                lastError.value = failure.message
+            }
+        }
+    }
+
+    /** The snackbar consumed the error — clear so a repeat re-triggers. */
+    fun dismissError() {
+        lastError.value = null
     }
 
     /** Pull-to-refresh — the gate coalesces non-forced reads at 35 s. */

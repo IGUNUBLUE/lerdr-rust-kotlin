@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.ime
@@ -26,14 +27,19 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -61,6 +67,9 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.tooling.preview.PreviewLightDark
@@ -113,6 +122,8 @@ fun TerminalScreen(
         tabsPaneId = paneId,
         onSendKeys = viewModel::sendKeys,
         onSendText = viewModel::sendLiteralText,
+        onSendSecret = viewModel::sendSecret,
+        onDismissError = viewModel::dismissError,
         onViewportMeasured = viewModel::onViewportMeasured,
         onRefresh = viewModel::refresh,
     )
@@ -129,6 +140,8 @@ fun TerminalContent(
     tabsPaneId: String? = null,
     onSendKeys: (List<String>) -> Unit,
     onSendText: (String) -> Unit,
+    onSendSecret: (String) -> Unit = {},
+    onDismissError: () -> Unit = {},
     onViewportMeasured: (columns: Int, rows: Int) -> Unit,
     onRefresh: () -> Unit,
 ) {
@@ -146,6 +159,22 @@ fun TerminalContent(
     var combosOpen by remember { mutableStateOf(false) }
     val inputFocus = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // The oracle's `noEchoActive` — the pane reports a hidden prompt. The
+    // wire may omit the prompt text; the oracle defaults it to
+    // "Password:". Readers never reach the field (the bar is disabled);
+    // the banner still explains what the pane is asking.
+    val secretActive = uiState.noEcho
+    val secretPrompt = uiState.noEchoPrompt?.takeIf { it.isNotEmpty() }
+        ?: "Password:"
+
+    LaunchedEffect(uiState.lastError) {
+        uiState.lastError?.let {
+            snackbarHostState.showSnackbar(it)
+            onDismissError()
+        }
+    }
 
     fun showKeyboard() {
         inputFocus.requestFocus()
@@ -226,7 +255,13 @@ fun TerminalContent(
                 statusLabel = uiState.statusLabel.ifEmpty {
                     if (uiState.connected) "live" else "offline"
                 },
-                statusColor = if (uiState.connected) colors.live else colors.idle,
+                // Mockup: the "lease N×M" chip is amber while this view
+                // holds the pane's size; otherwise the live/offline dot.
+                statusColor = when {
+                    uiState.leaseColumns > 0 -> colors.attention
+                    uiState.connected -> colors.live
+                    else -> colors.idle
+                },
                 mode = SessionMode.TERMINAL,
                 onSelectMode = { mode ->
                     when (mode) {
@@ -261,23 +296,41 @@ fun TerminalContent(
                         .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom),
                 ),
             ) {
+                if (secretActive) {
+                    SecretPromptBanner(
+                        prompt = secretPrompt,
+                        supported = uiState.secretInputSupported,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
                 SpecialKeysBar(
                     onSendKeys = onSendKeys,
                     ctrlLatched = ctrlLatched,
+                    enabled = uiState.canControl,
                     onCtrlTap = {
                         ctrlLatched = !ctrlLatched
                         if (ctrlLatched) showKeyboard()
                     },
                     onCtrlLongPress = { combosOpen = true },
+                    onShowKeyboard = ::showKeyboard,
                 )
                 TerminalInputBar(
                     onSendText = onSendText,
+                    enabled = uiState.canControl,
+                    hint = if (uiState.canControl) {
+                        "Inject text…"
+                    } else {
+                        "Read-only session"
+                    },
                     focusRequester = inputFocus,
                     ctrlLatched = ctrlLatched,
                     onCtrlChord = ::sendCtrlChord,
+                    secretMode = secretActive && uiState.secretInputSupported,
+                    onSendSecret = onSendSecret,
                 )
             }
         },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { innerPadding ->
         Column(
             modifier = Modifier
@@ -305,51 +358,55 @@ fun TerminalContent(
                     shape = MaterialTheme.shapes.medium,
                     modifier = Modifier.fillMaxSize(),
                 ) {
-                    if (uiState.waitingForContent) {
-                        Column(modifier = Modifier.padding(spacing.medium)) {
-                            Text(
-                                if (uiState.connected) {
-                                    "Watching pane…"
-                                } else {
-                                    "Waiting for relay…"
-                                },
-                                style = LerdrTextStyles.terminal,
-                                color = colors.terminalAccent,
+                    Column {
+                        // The mockup's pane meta row — the lease grid as a
+                        // ── pane N×M ── divider inside the surface card,
+                        // with the truncated / hidden-input markers.
+                        val metaLabel = paneMetaLabel(uiState)
+                        if (metaLabel != null) {
+                            PaneMetaRow(
+                                label = metaLabel,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(
+                                        horizontal = spacing.small,
+                                        vertical = spacing.extraSmall,
+                                    ),
                             )
                         }
-                    } else {
-                        TerminalSurface(
-                            rows = uiState.rows,
-                            cursor = uiState.cursor,
-                            revision = uiState.revision,
-                            contentPadding = PaddingValues(spacing.medium),
-                            state = surfaceState,
-                            findRanges = findRanges,
-                            onViewportMeasured = onViewportMeasured,
-                            onTapSurface = {
-                                inputFocus.requestFocus()
-                                keyboardController?.show()
-                            },
-                        )
-                    }
-                }
-                if (uiState.truncated) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        contentColor = MaterialTheme.colorScheme.onSurface,
-                        shape = CircleShape,
-                        modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .padding(top = spacing.small),
-                    ) {
-                        Text(
-                            "pane truncated — full view on the computer",
-                            style = MaterialTheme.typography.labelSmall,
-                            modifier = Modifier.padding(
-                                horizontal = spacing.small,
-                                vertical = spacing.extraSmall,
-                            ),
-                        )
+                        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                            if (uiState.waitingForContent) {
+                                Column(modifier = Modifier.padding(spacing.medium)) {
+                                    Text(
+                                        if (uiState.connected) {
+                                            "Watching pane…"
+                                        } else {
+                                            "Waiting for relay…"
+                                        },
+                                        style = LerdrTextStyles.terminal,
+                                        color = colors.terminalAccent,
+                                    )
+                                }
+                            } else {
+                                TerminalSurface(
+                                    rows = uiState.rows,
+                                    cursor = uiState.cursor,
+                                    revision = uiState.revision,
+                                    contentPadding = PaddingValues(spacing.medium),
+                                    state = surfaceState,
+                                    findRanges = findRanges,
+                                    onViewportMeasured = onViewportMeasured,
+                                    onTapSurface = {
+                                        // Readers have no composer — the
+                                        // tap stays a scroll gesture.
+                                        if (uiState.canControl) {
+                                            inputFocus.requestFocus()
+                                            keyboardController?.show()
+                                        }
+                                    },
+                                )
+                            }
+                        }
                     }
                 }
                 // Mockup's "scroll to live" — appears once the follow-live
@@ -362,7 +419,8 @@ fun TerminalContent(
                         shape = CircleShape,
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
-                            .padding(bottom = spacing.small),
+                            .padding(bottom = spacing.small)
+                            .defaultMinSize(minHeight = 48.dp),
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -497,13 +555,20 @@ internal fun TerminalFindBar(
     }
 }
 
-/** Esc Tab arrows Enter ⌫ Ctrl — the mockup's single special-keys bar. */
+/**
+ * Esc Tab arrows Enter ⌫ Ctrl ⌨ — the mockup's single special-keys bar.
+ * Every chip enforces the 48 dp touch target; [enabled] is the reader
+ * gate (`readOnly` in the oracle — mutating affordances stay reachable
+ * but inert so the bar's layout doesn't jump between roles).
+ */
 @Composable
 private fun SpecialKeysBar(
     onSendKeys: (List<String>) -> Unit,
     ctrlLatched: Boolean,
+    enabled: Boolean,
     onCtrlTap: () -> Unit,
     onCtrlLongPress: () -> Unit,
+    onShowKeyboard: () -> Unit,
 ) {
     val spacing = LerdrTheme.spacing
     Surface(color = MaterialTheme.colorScheme.surfaceContainerLow) {
@@ -520,59 +585,152 @@ private fun SpecialKeysBar(
                     .horizontalScroll(rememberScrollState())
                     .padding(horizontal = spacing.medium, vertical = spacing.small),
             ) {
+                if (!enabled) {
+                    // The oracle's readOnly gate — a persistent hint in
+                    // place of usable keys.
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        shape = MaterialTheme.shapes.small,
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .defaultMinSize(minHeight = 48.dp)
+                                .padding(
+                                    horizontal = spacing.small + spacing.extraSmall,
+                                ),
+                        ) {
+                            Icon(
+                                Icons.Default.Lock,
+                                contentDescription = null,
+                                modifier = Modifier.padding(end = spacing.extraSmall),
+                            )
+                            Text(
+                                "read-only",
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                        }
+                    }
+                }
                 SPECIAL_KEYS.forEach { (label, key) ->
-                    KeyButton(label = label, onClick = { onSendKeys(listOf(key)) })
+                    KeyButton(
+                        label = label,
+                        onClick = { onSendKeys(listOf(key)) },
+                        enabled = enabled,
+                    )
                 }
                 // Latching modifier — tap, then a letter on the keyboard
-                // sends the chord; long-press opens the combos sheet.
-                val ctrlColors = if (ctrlLatched) {
-                    MaterialTheme.colorScheme.primaryContainer to
+                // sends the chord; long-press opens the combos sheet. The
+                // latched state is announced (selected + stateDescription)
+                // and painted on the container (the oracle's aria-pressed
+                // + `keyControlStatus`).
+                val ctrlColors = when {
+                    !enabled -> MaterialTheme.colorScheme.surfaceContainerHigh to
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    ctrlLatched -> MaterialTheme.colorScheme.primaryContainer to
                         MaterialTheme.colorScheme.onPrimaryContainer
-                } else {
-                    MaterialTheme.colorScheme.surfaceContainerHighest to
+                    else -> MaterialTheme.colorScheme.surfaceContainerHighest to
                         MaterialTheme.colorScheme.onSurface
                 }
                 Surface(
                     color = ctrlColors.first,
                     contentColor = ctrlColors.second,
                     shape = MaterialTheme.shapes.small,
+                    modifier = Modifier.semantics {
+                        selected = ctrlLatched
+                        stateDescription = if (ctrlLatched) {
+                            "Ctrl latched — the next letter sends a Ctrl chord"
+                        } else {
+                            "Ctrl not latched"
+                        }
+                    },
                 ) {
                     Text(
                         "Ctrl",
                         style = MaterialTheme.typography.labelLarge,
                         modifier = Modifier
                             .combinedClickable(
+                                enabled = enabled,
                                 onClick = onCtrlTap,
                                 onLongClick = onCtrlLongPress,
                             )
+                            .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                             .padding(
                                 horizontal = spacing.small + spacing.extraSmall,
-                                vertical = spacing.extraSmall,
                             ),
                     )
                 }
+                // Mockup's ⌨ tail chip — focuses the input field and
+                // raises the soft keyboard.
+                KeyButton(
+                    label = null,
+                    onClick = onShowKeyboard,
+                    enabled = true,
+                ) {
+                    Icon(
+                        Icons.Default.Keyboard,
+                        contentDescription = "Show keyboard",
+                        modifier = Modifier.padding(
+                            horizontal = spacing.small + spacing.extraSmall,
+                        ),
+                    )
+                }
+            }
+            if (ctrlLatched) {
+                // The oracle's `keyControlStatus` — the latch is visible
+                // in words, not only in the chip's container color.
+                Text(
+                    "Ctrl latched — type a letter for the chord",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(
+                        horizontal = spacing.medium,
+                        vertical = spacing.extraSmall,
+                    ),
+                )
             }
         }
     }
 }
 
 @Composable
-private fun KeyButton(label: String, onClick: () -> Unit) {
+private fun KeyButton(
+    label: String?,
+    onClick: () -> Unit,
+    enabled: Boolean,
+    content: (@Composable () -> Unit)? = null,
+) {
     val spacing = LerdrTheme.spacing
     Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerHighest,
-        contentColor = MaterialTheme.colorScheme.onSurface,
+        color = if (enabled) {
+            MaterialTheme.colorScheme.surfaceContainerHighest
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHigh
+        },
+        contentColor = if (enabled) {
+            MaterialTheme.colorScheme.onSurface
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        },
         shape = MaterialTheme.shapes.small,
         onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp),
     ) {
-        Text(
-            label,
-            style = MaterialTheme.typography.labelLarge,
-            modifier = Modifier.padding(
-                horizontal = spacing.small + spacing.extraSmall,
-                vertical = spacing.extraSmall,
-            ),
-        )
+        Box(contentAlignment = Alignment.Center) {
+            if (content != null) {
+                content()
+            } else {
+                Text(
+                    label.orEmpty(),
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.padding(
+                        horizontal = spacing.small + spacing.extraSmall,
+                    ),
+                )
+            }
+        }
     }
 }
 
@@ -591,7 +749,9 @@ private fun CtrlCombosSheet(
                         onSendKeys(listOf("Ctrl+${combo.last()}"))
                         onDismiss()
                     },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 48.dp),
                 ) {
                     Text(
                         combo,
@@ -626,6 +786,105 @@ private val SPECIAL_KEYS = listOf(
 
 private val CTRL_COMBOS = listOf("C-c", "C-d", "C-z", "C-l", "C-r")
 
+/**
+ * The mockup's `─── pane 92×42 ───` divider row — session meta as a
+ * terminal-styled caption flanked by rules inside the surface card.
+ * Shows the leased grid, then the markers the frame flagged.
+ */
+@Composable
+private fun PaneMetaRow(label: String, modifier: Modifier = Modifier) {
+    val colors = LerdrTheme.extendedColors
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier) {
+        HorizontalDivider(
+            modifier = Modifier.weight(1f),
+            color = colors.terminalAccent.copy(alpha = 0.25f),
+        )
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = colors.terminalAccent.copy(alpha = 0.8f),
+            maxLines = 1,
+            modifier = Modifier.padding(horizontal = LerdrTheme.spacing.small),
+        )
+        HorizontalDivider(
+            modifier = Modifier.weight(1f),
+            color = colors.terminalAccent.copy(alpha = 0.25f),
+        )
+    }
+}
+
+/** `pane 92×42` + `truncated` + `hidden input` — null when nothing applies. */
+private fun paneMetaLabel(uiState: TerminalUiState): String? {
+    val parts = buildList {
+        if (uiState.leaseColumns > 0) {
+            add(
+                if (uiState.leaseRows > 0) {
+                    "pane ${uiState.leaseColumns}×${uiState.leaseRows}"
+                } else {
+                    "pane ${uiState.leaseColumns} cols"
+                },
+            )
+        }
+        if (uiState.truncated) add("truncated")
+        if (uiState.noEcho) add("hidden input")
+    }
+    return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
+}
+
+/**
+ * The oracle's `.secret-prompt` section — explains that the pane is asking
+ * for a hidden value (`no_echo`) before the password-mode input bar. When
+ * the relay lacks `secret_input` the field stays inert and this carries
+ * the oracle's too-old-relay hint as the inline error.
+ */
+@Composable
+private fun SecretPromptBanner(
+    prompt: String,
+    supported: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val spacing = LerdrTheme.spacing
+    val colors = LerdrTheme.extendedColors
+    Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, modifier = modifier) {
+        Column(
+            modifier = Modifier.padding(
+                horizontal = spacing.medium,
+                vertical = spacing.extraSmall,
+            ),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.Shield,
+                    contentDescription = null,
+                    tint = colors.attention,
+                )
+                Text(
+                    text = if (prompt.isNotEmpty()) {
+                        "The terminal is asking for a hidden value: $prompt"
+                    } else {
+                        "The terminal is asking for a hidden value"
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(start = spacing.small),
+                )
+            }
+            if (!supported) {
+                Text(
+                    "This computer's relay is too old to accept a hidden value " +
+                        "from the phone; answer it at the computer.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.danger,
+                    modifier = Modifier.padding(
+                        start = spacing.medium + spacing.small,
+                        top = spacing.extraSmall,
+                    ),
+                )
+            }
+        }
+    }
+}
+
 @PreviewLightDark
 @Composable
 private fun TerminalContentPreview() {
@@ -639,6 +898,9 @@ private fun TerminalContentPreview() {
                 statusLabel = "lease 92×42",
                 connected = true,
                 waitingForContent = false,
+                leaseColumns = 92,
+                leaseRows = 42,
+                canControl = true,
                 rows = parseTerminalRows(
                     listOf(
                         "lerdr git:(main) [32mcargo test[0m -p lerdr-e2ee",
