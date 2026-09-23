@@ -65,7 +65,9 @@ Installed via `npx skills add` (`.agents/skills/`, lockfile
 | `testing-setup` | Android test strategy/harnesses (official android/skills) |
 
 Vendored from user-global (`.agents/skills/`, committed directly — not
-in `skills-lock.json`; `_shared/` holds their shared references):
+in `skills-lock.json`; `_shared/` holds their shared references).
+`judgment-day`, `no-commit-attribution` and `skill-improver` now live
+only in `~/.agents/skills/` (global) — no longer vendored here.
 
 | Skill | When |
 |---|---|
@@ -74,10 +76,7 @@ in `skills-lock.json`; `_shared/` holds their shared references):
 | `cognitive-doc-design` | Low-cognitive-load docs (guides, RFCs, onboarding) |
 | `context7-mcp` | Library/framework API docs lookup |
 | `find-skills` | Discover and install skills |
-| `judgment-day` | Blind dual review with bounded fix rounds |
 | `mobile-android-design` | M3/Compose design patterns |
-| `no-commit-attribution` | No agent attribution in commits/PRs |
 | `skill-creator` | Author new skills |
-| `skill-improver` | Audit/upgrade existing skills |
 | `skill-registry` | Reindex skill triggers after changes |
 | `work-unit-commits` | Plan commits as reviewable work units |
