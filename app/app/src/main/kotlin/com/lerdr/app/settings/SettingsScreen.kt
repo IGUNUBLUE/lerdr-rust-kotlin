@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings as AndroidSettings
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -16,27 +17,21 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Devices
-import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Fingerprint
-import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsOff
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Terminal
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -48,12 +43,11 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
@@ -65,9 +59,14 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.lerdr.app.nav.LerdrNavBadges
+import com.lerdr.app.nav.rememberLerdrNavBadges
+import com.lerdr.app.nav.topLevelNavItems
 import com.lerdr.app.security.BiometricPromptHelper
 import com.lerdr.app.security.SecurityEntryPoint
-import com.lerdr.core.designsystem.components.LerdrNavItem
+import com.lerdr.core.designsystem.components.LerdrSegmentedControl
+import com.lerdr.core.designsystem.components.LerdrSettingsDivider
+import com.lerdr.core.designsystem.components.LerdrSettingsGroup
 import com.lerdr.core.designsystem.components.LerdrShortNavigationBar
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import com.lerdr.navigation.LerdrKey
@@ -75,15 +74,16 @@ import dagger.hilt.android.EntryPointAccessors
 import lerdr.core.protocol.Protocol
 
 /**
- * Settings (docs/04 §Settings) — Relays with working lifecycle actions,
- * Security (app lock), Appearance (per-app night mode, API 31+),
- * Notifications status + system-settings link, About. Every visible
- * control does something; rows without a backend (devices, speech,
- * updates) stay absent on purpose.
+ * Settings (docs/04 §Settings) — grouped, Pixel-style rows: Relays
+ * (chevron into the per-relay detail), Security (app lock), Appearance
+ * (per-app night mode, API 31+), Notifications status + system-settings
+ * link, About. Per-relay management (devices, push, speech, updates)
+ * lives on [RelayDetailScreen].
  */
 @Composable
 fun SettingsScreen(
     onSelectTopLevel: (LerdrKey) -> Unit,
+    onOpenRelay: (String) -> Unit,
 ) {
     // hilt-navigation-compose is absent — pull the bound singletons
     // through the screen's entry points.
@@ -118,8 +118,8 @@ fun SettingsScreen(
         ),
         snackbarHostState = snackbarHostState,
         onSelectTopLevel = onSelectTopLevel,
-        onReconnectRelay = viewModel::reconnectRelay,
-        onForgetRelay = viewModel::forgetRelay,
+        onOpenRelay = onOpenRelay,
+        badges = rememberLerdrNavBadges(),
         onRevalidateAll = viewModel::revalidateAll,
         onThemeMode = { mode ->
             viewModel.setThemeMode(mode)
@@ -127,11 +127,6 @@ fun SettingsScreen(
         },
         onAppLockChange = viewModel::setAppLockEnabled,
         onOpenNotificationSettings = { openNotificationSettings(context) },
-        relaySections = { relayId ->
-            PushPolicySection(relayId)
-            DevicesSection(relayId)
-            SpeechSection(relayId)
-        },
     )
 }
 
@@ -144,52 +139,24 @@ fun SettingsContent(
     appLockReady: Boolean,
     snackbarHostState: SnackbarHostState,
     onSelectTopLevel: (LerdrKey) -> Unit,
-    onReconnectRelay: (String) -> Unit,
-    onForgetRelay: (String) -> Unit,
+    onOpenRelay: (String) -> Unit,
     onRevalidateAll: () -> Unit,
     onThemeMode: (ThemeMode) -> Unit,
     onAppLockChange: (Boolean) -> Unit,
     onOpenNotificationSettings: () -> Unit,
-    /**
-     * Per-relay feature sections (push policy, devices, speech) rendered
-     * under each relay card. Nullable so previews/tests — which can't
-     * resolve the sections' Hilt entry points — stay renderable.
-     */
-    relaySections: (@Composable (relayId: String) -> Unit)? = null,
+    badges: LerdrNavBadges = LerdrNavBadges(),
 ) {
     val spacing = LerdrTheme.spacing
-    var forgetTarget by remember { mutableStateOf<RelayRowUi?>(null) }
     Scaffold(
         topBar = {
             TopAppBar(title = { Text("Settings") })
         },
         bottomBar = {
             LerdrShortNavigationBar(
-                items = listOf(
-                    LerdrNavItem(
-                        label = "Agents",
-                        icon = Icons.Default.Terminal,
-                        selected = false,
-                        onClick = { onSelectTopLevel(LerdrKey.Home) },
-                    ),
-                    LerdrNavItem(
-                        label = "Computers",
-                        icon = Icons.Default.Dns,
-                        selected = false,
-                        onClick = { onSelectTopLevel(LerdrKey.Computers) },
-                    ),
-                    LerdrNavItem(
-                        label = "Activity",
-                        icon = Icons.Default.History,
-                        selected = false,
-                        onClick = { onSelectTopLevel(LerdrKey.Activity) },
-                    ),
-                    LerdrNavItem(
-                        label = "Settings",
-                        icon = Icons.Default.Settings,
-                        selected = true,
-                        onClick = { onSelectTopLevel(LerdrKey.Settings) },
-                    ),
+                items = topLevelNavItems(
+                    selected = LerdrKey.Settings,
+                    badges = badges,
+                    onSelect = onSelectTopLevel,
                 ),
             )
         },
@@ -209,184 +176,184 @@ fun SettingsContent(
                     onAction = onRevalidateAll,
                 )
             }
-            if (uiState.relays.isEmpty()) {
-                item(key = "relays-empty") {
-                    ListItem(
-                        headlineContent = { Text("No computers paired") },
-                        supportingContent = {
-                            Text("Pair one from the Agents tab (+) to see it here.")
-                        },
-                    )
+            item(key = "relays-group") {
+                LerdrSettingsGroup {
+                    if (uiState.relays.isEmpty()) {
+                        ListItem(
+                            headlineContent = { Text("No computers paired") },
+                            supportingContent = {
+                                Text("Pair one from the Agents tab (+) to see it here.")
+                            },
+                        )
+                    }
+                    uiState.relays.forEachIndexed { index, relay ->
+                        if (index > 0) LerdrSettingsDivider()
+                        RelayRow(relay = relay, onClick = { onOpenRelay(relay.relayId) })
+                    }
                 }
-            }
-            items(uiState.relays, key = { it.relayId }) { relay ->
-                RelayCard(
-                    relay = relay,
-                    onReconnect = { onReconnectRelay(relay.relayId) },
-                    onForget = { forgetTarget = relay },
-                    modifier = Modifier.padding(horizontal = spacing.medium),
-                )
-                relaySections?.invoke(relay.relayId)
             }
 
             item(key = "security-header") {
                 SectionHeader(title = "Security")
             }
-            item(key = "security-app-lock") {
-                // Whole row toggles — the canonical settings Switch pattern:
-                // the row owns the interaction (Role.Switch announces
-                // "on/off"), the Switch renders state only.
-                ListItem(
-                    modifier = Modifier.toggleable(
-                        value = uiState.appLockEnabled,
-                        role = Role.Switch,
-                        onValueChange = onAppLockChange,
-                    ),
-                    headlineContent = { Text("App lock") },
-                    supportingContent = {
-                        Text(
-                            when {
-                                !uiState.appLockEnabled ->
-                                    "Require biometrics or the device PIN to open Lerdr."
-                                appLockReady ->
-                                    "On — verifies once every time the app opens."
-                                else ->
-                                    "On, but no screen lock is set up — " +
-                                        "the gate opens without verifying."
-                            },
-                        )
-                    },
-                    leadingContent = {
-                        Icon(
-                            Icons.Default.Fingerprint,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    },
-                    trailingContent = {
-                        Switch(
-                            checked = uiState.appLockEnabled,
-                            onCheckedChange = null,
-                        )
-                    },
-                )
+            item(key = "security-group") {
+                LerdrSettingsGroup {
+                    // Whole row toggles — the canonical settings Switch
+                    // pattern: the row owns the interaction (Role.Switch
+                    // announces "on/off"), the Switch renders state only.
+                    ListItem(
+                        modifier = Modifier.toggleable(
+                            value = uiState.appLockEnabled,
+                            role = Role.Switch,
+                            onValueChange = onAppLockChange,
+                        ),
+                        colors = listItemGroupColors(),
+                        headlineContent = { Text("App lock") },
+                        supportingContent = {
+                            Text(
+                                when {
+                                    !uiState.appLockEnabled ->
+                                        "Require biometrics or the device PIN to open Lerdr."
+                                    appLockReady ->
+                                        "On — verifies once every time the app opens."
+                                    else ->
+                                        "On, but no screen lock is set up — " +
+                                            "the gate opens without verifying."
+                                },
+                            )
+                        },
+                        leadingContent = {
+                            Icon(
+                                Icons.Default.Fingerprint,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        },
+                        trailingContent = {
+                            Switch(
+                                checked = uiState.appLockEnabled,
+                                onCheckedChange = null,
+                            )
+                        },
+                    )
+                }
             }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 item(key = "appearance-header") {
                     SectionHeader(title = "Appearance")
                 }
-                item(key = "appearance-theme") {
-                    ListItem(
-                        headlineContent = { Text("Theme") },
-                        supportingContent = {
-                            Row(horizontalArrangement = Arrangement.spacedBy(spacing.small)) {
-                                ThemeMode.entries.forEach { mode ->
-                                    FilterChip(
-                                        selected = uiState.themeMode == mode,
-                                        onClick = { onThemeMode(mode) },
-                                        label = { Text(mode.label) },
-                                    )
-                                }
-                            }
-                        },
-                    )
+                item(key = "appearance-group") {
+                    LerdrSettingsGroup {
+                        ListItem(
+                            colors = listItemGroupColors(),
+                            headlineContent = { Text("Theme") },
+                            leadingContent = {
+                                Icon(
+                                    if (uiState.themeMode == ThemeMode.DARK) {
+                                        Icons.Default.DarkMode
+                                    } else {
+                                        Icons.Default.LightMode
+                                    },
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            },
+                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(
+                                    horizontal = spacing.medium,
+                                    vertical = spacing.extraSmall,
+                                ),
+                        ) {
+                            LerdrSegmentedControl(
+                                options = ThemeMode.entries.map { it.label },
+                                selectedIndex = ThemeMode.entries.indexOf(uiState.themeMode),
+                                onSelect = { onThemeMode(ThemeMode.entries[it]) },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                        Spacer(Modifier.height(spacing.small))
+                    }
                 }
             }
 
             item(key = "notifications-header") {
                 SectionHeader(title = "Notifications")
             }
-            item(key = "notifications-status") {
-                ListItem(
-                    headlineContent = { Text("Notifications") },
-                    supportingContent = {
-                        Text(
-                            if (notificationsEnabled) {
-                                "Allowed — agent alerts can reach the shade."
-                            } else {
-                                "Blocked — enable them to get agent alerts."
-                            },
-                        )
-                    },
-                    leadingContent = {
-                        Icon(
-                            if (notificationsEnabled) {
-                                Icons.Default.Notifications
-                            } else {
-                                Icons.Default.NotificationsOff
-                            },
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    },
-                    trailingContent = {
-                        TextButton(onClick = onOpenNotificationSettings) {
-                            Text("System settings")
-                        }
-                    },
-                )
+            item(key = "notifications-group") {
+                LerdrSettingsGroup {
+                    ListItem(
+                        colors = listItemGroupColors(),
+                        headlineContent = { Text("Notifications") },
+                        supportingContent = {
+                            Text(
+                                if (notificationsEnabled) {
+                                    "Allowed — agent alerts can reach the shade."
+                                } else {
+                                    "Blocked — enable them to get agent alerts."
+                                },
+                            )
+                        },
+                        leadingContent = {
+                            Icon(
+                                if (notificationsEnabled) {
+                                    Icons.Default.Notifications
+                                } else {
+                                    Icons.Default.NotificationsOff
+                                },
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        },
+                        trailingContent = {
+                            TextButton(onClick = onOpenNotificationSettings) {
+                                Text("System settings")
+                            }
+                        },
+                    )
+                }
             }
 
             item(key = "about-header") {
                 SectionHeader(title = "About")
             }
-            item(key = "about-version") {
-                ListItem(
-                    headlineContent = { Text("Lerdr for Android") },
-                    supportingContent = { Text("Version $appVersion") },
-                    leadingContent = {
-                        Icon(
-                            Icons.Default.Info,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    },
-                )
-            }
-            item(key = "about-protocol") {
-                ListItem(
-                    headlineContent = { Text("Protocol") },
-                    supportingContent = {
-                        Text("v${Protocol.VERSION} · ${Protocol.ENCRYPTED_WEBSOCKET_SUBPROTOCOL}")
-                    },
-                )
-            }
-            item(key = "about-reference") {
-                ListItem(
-                    headlineContent = { Text("Reference implementation") },
-                    supportingContent = { Text("github.com/IGUNUBLUE/lerdr") },
-                )
+            item(key = "about-group") {
+                LerdrSettingsGroup {
+                    ListItem(
+                        colors = listItemGroupColors(),
+                        headlineContent = { Text("Lerdr for Android") },
+                        supportingContent = { Text("Version $appVersion") },
+                        leadingContent = {
+                            Icon(
+                                Icons.Default.Info,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        },
+                    )
+                    LerdrSettingsDivider()
+                    ListItem(
+                        colors = listItemGroupColors(),
+                        headlineContent = { Text("Protocol") },
+                        supportingContent = {
+                            Text(
+                                "v${Protocol.VERSION} · " +
+                                    Protocol.ENCRYPTED_WEBSOCKET_SUBPROTOCOL,
+                            )
+                        },
+                    )
+                    LerdrSettingsDivider()
+                    ListItem(
+                        colors = listItemGroupColors(),
+                        headlineContent = { Text("Reference implementation") },
+                        supportingContent = { Text("github.com/IGUNUBLUE/lerdr") },
+                    )
+                }
             }
         }
-    }
-
-    forgetTarget?.let { relay ->
-        AlertDialog(
-            onDismissRequest = { forgetTarget = null },
-            title = { Text("Forget ${relay.label}?") },
-            text = {
-                Text(
-                    "Removes the relay, this device's credential, and the live " +
-                        "session. Pair again to reconnect.",
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        onForgetRelay(relay.relayId)
-                        forgetTarget = null
-                    },
-                ) {
-                    Text("Forget", color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { forgetTarget = null }) {
-                    Text("Cancel")
-                }
-            },
-        )
     }
 }
 
@@ -418,73 +385,64 @@ private fun SectionHeader(
     }
 }
 
+/**
+ * One relay row inside the Relays group — status-tinted icon, label,
+ * `origin · status` summary, chevron into the per-relay detail screen.
+ */
 @Composable
-private fun RelayCard(
+private fun RelayRow(
     relay: RelayRowUi,
-    onReconnect: () -> Unit,
-    onForget: () -> Unit,
-    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
 ) {
-    val spacing = LerdrTheme.spacing
     val statusColor = when {
         relay.connected -> LerdrTheme.extendedColors.live
         relay.authRejected -> MaterialTheme.colorScheme.error
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
-    Card(
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-        ),
-        shape = MaterialTheme.shapes.medium,
-        modifier = modifier.fillMaxWidth(),
-    ) {
-        Column(modifier = Modifier.padding(spacing.medium)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Default.Devices,
-                    contentDescription = null,
-                    tint = statusColor,
+    ListItem(
+        modifier = Modifier.clickable(onClick = onClick),
+        colors = listItemGroupColors(),
+        headlineContent = {
+            Text(relay.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        },
+        supportingContent = {
+            Column {
+                Text(
+                    "${relay.origin} · ${relay.statusLabel}",
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
-                Spacer(Modifier.width(spacing.small))
-                Column(Modifier.weight(1f)) {
+                if (relay.detailLabel.isNotEmpty()) {
                     Text(
-                        relay.label,
-                        style = MaterialTheme.typography.titleSmall,
+                        relay.detailLabel,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    Text(
-                        "${relay.origin} · ${relay.statusLabel}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    if (relay.detailLabel.isNotEmpty()) {
-                        Text(
-                            relay.detailLabel,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
                 }
             }
-            Spacer(Modifier.height(spacing.small))
-            Row(horizontalArrangement = Arrangement.spacedBy(spacing.small)) {
-                if (relay.canReconnect) {
-                    TextButton(onClick = onReconnect) {
-                        Text("Reconnect")
-                    }
-                }
-                TextButton(onClick = onForget) {
-                    Text("Forget", color = MaterialTheme.colorScheme.error)
-                }
-            }
-        }
-    }
+        },
+        leadingContent = {
+            Icon(
+                Icons.Default.Devices,
+                contentDescription = null,
+                tint = statusColor,
+            )
+        },
+        trailingContent = {
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        },
+    )
 }
+
+/** ListItems riding inside a [LerdrSettingsGroup] drop their own fill. */
+@Composable
+private fun listItemGroupColors() = ListItemDefaults.colors(
+    containerColor = Color.Transparent,
+)
 
 // ── platform seams (screen-owned; VMs never see a Context) ────────────
 
@@ -624,8 +582,7 @@ private fun SettingsContentPreview() {
             appLockReady = true,
             snackbarHostState = remember { SnackbarHostState() },
             onSelectTopLevel = {},
-            onReconnectRelay = {},
-            onForgetRelay = {},
+            onOpenRelay = {},
             onRevalidateAll = {},
             onThemeMode = {},
             onAppLockChange = {},

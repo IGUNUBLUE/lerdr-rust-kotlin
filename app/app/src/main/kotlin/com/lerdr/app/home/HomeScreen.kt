@@ -83,7 +83,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lerdr.app.di.AppEntryPoint
 import com.lerdr.app.ui.ProviderBadge
-import com.lerdr.core.designsystem.components.LerdrNavItem
+import com.lerdr.app.nav.LerdrNavBadges
+import com.lerdr.app.nav.rememberLerdrNavBadges
+import com.lerdr.app.nav.topLevelNavItems
 import com.lerdr.core.designsystem.components.LerdrShortNavigationBar
 import com.lerdr.core.designsystem.components.LerdrWavyProgressIndicator
 import com.lerdr.core.designsystem.theme.LerdrTheme
@@ -143,6 +145,7 @@ fun HomeScreen(
         uiState = uiState,
         onOpenAgent = onOpenAgent,
         onSelectTopLevel = onSelectTopLevel,
+        badges = rememberLerdrNavBadges(),
         onRespond = viewModel::respond,
         onAnswerOption = viewModel::answerQuestion,
         onStopAgent = viewModel::stopAgent,
@@ -188,6 +191,7 @@ fun HomeContent(
     refreshing: Boolean = false,
     onRefreshInventory: () -> Unit = {},
     messages: Flow<String> = emptyFlow(),
+    badges: LerdrNavBadges = LerdrNavBadges(),
 ) {
     val spacing = LerdrTheme.spacing
     val snackbarHostState = remember { SnackbarHostState() }
@@ -222,31 +226,10 @@ fun HomeContent(
         },
         bottomBar = {
             LerdrShortNavigationBar(
-                items = listOf(
-                    LerdrNavItem(
-                        label = "Agents",
-                        icon = Icons.Default.Terminal,
-                        selected = true,
-                        onClick = { onSelectTopLevel(LerdrKey.Home) },
-                    ),
-                    LerdrNavItem(
-                        label = "Computers",
-                        icon = Icons.Default.Dns,
-                        selected = false,
-                        onClick = { onSelectTopLevel(LerdrKey.Computers) },
-                    ),
-                    LerdrNavItem(
-                        label = "Activity",
-                        icon = Icons.Default.History,
-                        selected = false,
-                        onClick = { onSelectTopLevel(LerdrKey.Activity) },
-                    ),
-                    LerdrNavItem(
-                        label = "Settings",
-                        icon = Icons.Default.Settings,
-                        selected = false,
-                        onClick = { onSelectTopLevel(LerdrKey.Settings) },
-                    ),
+                items = topLevelNavItems(
+                    selected = LerdrKey.Home,
+                    badges = badges,
+                    onSelect = onSelectTopLevel,
                 ),
             )
         },

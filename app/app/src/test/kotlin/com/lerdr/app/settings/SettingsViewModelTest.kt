@@ -50,7 +50,7 @@ class SettingsViewModelTest {
     @After
     fun resetMain() = Dispatchers.resetMain()
 
-    private class Harness(
+    class Harness(
         private val testScope: TestScope,
         tmpDir: File,
     ) {
@@ -90,6 +90,9 @@ class SettingsViewModelTest {
             factory.handleFor(origin) ?: error("no session for $origin")
 
         fun viewModel() = SettingsViewModel(repository, preferences)
+
+        fun detailViewModel(relayId: String = "r1") =
+            RelayDetailViewModel(relayId, repository)
 
         /** Poll on a real clock — DataStore IO is off the test scheduler. */
         fun await(condition: () -> Boolean) {
@@ -154,64 +157,15 @@ class SettingsViewModelTest {
     }
 
     @Test
-    fun `reconnect dials a registry relay that has no session yet`() = runTest {
+    fun `revalidateAll probes the live session`() = runTest {
         val h = Harness(this, tmp.root)
-        val viewModel = h.viewModel()
-        backgroundScope.launch { viewModel.uiState.collect { } }
-
-        // Repository not started — registry row with no session runtime.
-        h.registry.upsert(h.endpoint)
-        h.await { viewModel.uiState.value.relays.isNotEmpty() }
-        assertThat(h.factory.created).isEmpty()
-
-        viewModel.reconnectRelay("r1")
-        h.pump()
-        assertThat(h.factory.created).containsKey("ws://192.168.1.5:7474/ws")
-        assertThat(viewModel.uiState.value.relays.single().statusLabel)
-            .isEqualTo("connecting…")
-    }
-
-    @Test
-    fun `reconnect on a live session runs the revalidate probe`() = runTest {
-        val h = Harness(this, tmp.root)
-        // reconnectRelay resolves the endpoint from the registry, like the UI.
         h.registry.upsert(h.endpoint)
         h.await { h.registry.relays.value.isNotEmpty() }
         h.repository.connect(h.endpoint)
         h.pump()
 
-        val viewModel = h.viewModel()
-        viewModel.reconnectRelay("r1")
+        h.viewModel().revalidateAll()
         assertThat(h.handle().revalidateCount).isEqualTo(1)
-
-        viewModel.revalidateAll()
-        assertThat(h.handle().revalidateCount).isEqualTo(2)
-    }
-
-    @Test
-    fun `forget drops the registry entry, credential, and live session`() = runTest {
-        val h = Harness(this, tmp.root)
-        h.credentials.seed("r1", RelayInvitation(ByteArray(32)))
-        h.repository.start()
-        h.registry.upsert(h.endpoint)
-        h.await { h.factory.handleFor(h.origin) != null }
-        val handle = h.handle()
-
-        val viewModel = h.viewModel()
-        viewModel.forgetRelay("r1")
-        h.await { handle.closed }
-
-        assertThat(h.registry.snapshot()).isEmpty()
-        assertThat(h.credentials.get("r1")).isNull()
-    }
-
-    @Test
-    fun `reconnecting an unknown relay is a no-op`() = runTest {
-        val h = Harness(this, tmp.root)
-        val viewModel = h.viewModel()
-        viewModel.reconnectRelay("ghost")
-        h.pump()
-        assertThat(h.factory.created).isEmpty()
     }
 
     @Test

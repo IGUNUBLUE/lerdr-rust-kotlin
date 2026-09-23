@@ -18,6 +18,7 @@ import com.lerdr.app.session.AgentFeedScreen
 import com.lerdr.app.session.FilesScreen
 import com.lerdr.app.session.SessionRepository
 import com.lerdr.app.session.TerminalScreen
+import com.lerdr.app.settings.RelayDetailScreen
 import com.lerdr.app.settings.SettingsScreen
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import com.lerdr.navigation.LerdrDeepLinks
@@ -124,7 +125,16 @@ private fun EntryProviderScope<LerdrKey>.lerdrEntries(
         ActivityScreen(onSelectTopLevel = navigator::navigateTopLevel)
     }
     entry<LerdrKey.Settings> {
-        SettingsScreen(onSelectTopLevel = navigator::navigateTopLevel)
+        SettingsScreen(
+            onSelectTopLevel = navigator::navigateTopLevel,
+            onOpenRelay = { navigator.navigate(LerdrKey.RelayDetail(it)) },
+        )
+    }
+    entry<LerdrKey.RelayDetail> { key ->
+        RelayDetailScreen(
+            relayId = key.relayId,
+            onBack = navigator::goBack,
+        )
     }
     entry<LerdrKey.Pairing> { key ->
         PairingScreen(

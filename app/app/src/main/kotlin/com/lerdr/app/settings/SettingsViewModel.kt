@@ -75,37 +75,16 @@ class SettingsViewModel(
         lastError,
     ) { relays, connections, themeMode, appLockEnabled, error ->
         SettingsUiState(
-            relays = relays.map { it.toRow(connections[it.id]) },
+            relays = relays.map { it.toRelayRowUi(connections[it.id]) },
             themeMode = themeMode,
             appLockEnabled = appLockEnabled,
             lastError = error,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState())
 
-    /** Per-row reconnect — see class doc for the two underlying paths. */
-    fun reconnectRelay(relayId: String) {
-        val endpoint = sessions.relays.value.firstOrNull { it.id == relayId } ?: return
-        if (sessions.sessionState(relayId) == null) {
-            sessions.connect(endpoint)
-        } else {
-            sessions.revalidateAll()
-        }
-    }
-
     /** `revalidateConnections` — foreground probe on every session. */
     fun revalidateAll() {
         sessions.revalidateAll()
-    }
-
-    /** Forget + unpair — drops the registry entry and the credential. */
-    fun forgetRelay(relayId: String) {
-        viewModelScope.launch {
-            try {
-                sessions.removeRelay(relayId)
-            } catch (failure: Exception) {
-                lastError.value = failure.message ?: "Could not forget the relay"
-            }
-        }
     }
 
     /** Theme picker intent — persists; the screen applies the switch. */
@@ -126,38 +105,42 @@ class SettingsViewModel(
     fun dismissError() {
         lastError.value = null
     }
+}
 
-    private fun RelayEndpoint.toRow(connection: RelayConnection?): RelayRowUi {
-        val pairing = connection != null &&
-            (connection.pairingRequired || connection.pairingDeferred)
-        return RelayRowUi(
-            relayId = id,
-            label = label,
-            origin = socketOrigin,
-            statusLabel = when {
-                connection == null -> "offline"
-                connection.authRejected -> "authorization rejected — re-pair"
-                connection.pairingRequired -> "pairing required"
-                connection.pairingDeferred -> "pairing deferred"
-                connection.status == RelayStatus.CONNECTED -> "connected"
-                connection.status == RelayStatus.CONNECTING -> "connecting…"
-                else -> "offline"
-            },
-            detailLabel = if (connection?.status == RelayStatus.CONNECTED) {
-                listOfNotNull(
-                    connection.path?.wire,
-                    connection.releaseVersion.ifEmpty { connection.version }
-                        .takeIf { it.isNotEmpty() }
-                        ?.let { "relay $it" },
-                    connection.protocol.takeIf { it > 0 }?.let { "protocol $it" },
-                    connection.rttMs.takeIf { it >= 0 }?.let { "${it}ms" },
-                ).joinToString(" · ")
-            } else {
-                ""
-            },
-            connected = connection?.status == RelayStatus.CONNECTED,
-            authRejected = connection?.authRejected == true,
-            canReconnect = connection == null || (!connection.authRejected && !pairing),
-        )
-    }
+/**
+ * Shared relay-row projection — used by Settings' relay list and the
+ * per-relay detail screen's header card.
+ */
+internal fun RelayEndpoint.toRelayRowUi(connection: RelayConnection?): RelayRowUi {
+    val pairing = connection != null &&
+        (connection.pairingRequired || connection.pairingDeferred)
+    return RelayRowUi(
+        relayId = id,
+        label = label,
+        origin = socketOrigin,
+        statusLabel = when {
+            connection == null -> "offline"
+            connection.authRejected -> "authorization rejected — re-pair"
+            connection.pairingRequired -> "pairing required"
+            connection.pairingDeferred -> "pairing deferred"
+            connection.status == RelayStatus.CONNECTED -> "connected"
+            connection.status == RelayStatus.CONNECTING -> "connecting…"
+            else -> "offline"
+        },
+        detailLabel = if (connection?.status == RelayStatus.CONNECTED) {
+            listOfNotNull(
+                connection.path?.wire,
+                connection.releaseVersion.ifEmpty { connection.version }
+                    .takeIf { it.isNotEmpty() }
+                    ?.let { "relay $it" },
+                connection.protocol.takeIf { it > 0 }?.let { "protocol $it" },
+                connection.rttMs.takeIf { it >= 0 }?.let { "${it}ms" },
+            ).joinToString(" · ")
+        } else {
+            ""
+        },
+        connected = connection?.status == RelayStatus.CONNECTED,
+        authRejected = connection?.authRejected == true,
+        canReconnect = connection == null || (!connection.authRejected && !pairing),
+    )
 }

@@ -49,7 +49,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lerdr.app.di.AppEntryPoint
 import com.lerdr.app.home.HomeViewModel
 import com.lerdr.app.home.RelayCardUi
-import com.lerdr.core.designsystem.components.LerdrNavItem
+import com.lerdr.app.nav.LerdrNavBadges
+import com.lerdr.app.nav.rememberLerdrNavBadges
+import com.lerdr.app.nav.topLevelNavItems
 import com.lerdr.core.designsystem.components.LerdrShortNavigationBar
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import com.lerdr.navigation.LerdrKey
@@ -81,6 +83,7 @@ fun ComputersScreen(
         onSelectTopLevel = onSelectTopLevel,
         onPairDevice = onPairDevice,
         onManageDevices = onManageDevices,
+        badges = rememberLerdrNavBadges(),
     )
 }
 
@@ -92,6 +95,7 @@ fun ComputersContent(
     onSelectTopLevel: (LerdrKey) -> Unit,
     onPairDevice: () -> Unit,
     onManageDevices: () -> Unit,
+    badges: LerdrNavBadges = LerdrNavBadges(),
 ) {
     val spacing = LerdrTheme.spacing
     Scaffold(
@@ -113,31 +117,10 @@ fun ComputersContent(
         },
         bottomBar = {
             LerdrShortNavigationBar(
-                items = listOf(
-                    LerdrNavItem(
-                        label = "Agents",
-                        icon = Icons.Default.Terminal,
-                        selected = false,
-                        onClick = { onSelectTopLevel(LerdrKey.Home) },
-                    ),
-                    LerdrNavItem(
-                        label = "Computers",
-                        icon = Icons.Default.Dns,
-                        selected = true,
-                        onClick = { onSelectTopLevel(LerdrKey.Computers) },
-                    ),
-                    LerdrNavItem(
-                        label = "Activity",
-                        icon = Icons.Default.History,
-                        selected = false,
-                        onClick = { onSelectTopLevel(LerdrKey.Activity) },
-                    ),
-                    LerdrNavItem(
-                        label = "Settings",
-                        icon = Icons.Default.Settings,
-                        selected = false,
-                        onClick = { onSelectTopLevel(LerdrKey.Settings) },
-                    ),
+                items = topLevelNavItems(
+                    selected = LerdrKey.Computers,
+                    badges = badges,
+                    onSelect = onSelectTopLevel,
                 ),
             )
         },
