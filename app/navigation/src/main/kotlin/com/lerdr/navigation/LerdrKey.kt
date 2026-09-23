@@ -48,6 +48,10 @@ sealed interface LerdrKey : NavKey {
     @Serializable
     data object Settings : LerdrKey
 
+    /** Per-relay management detail — devices, push policy, speech. */
+    @Serializable
+    data class RelayDetail(val relayId: String) : LerdrKey
+
     companion object {
         /** Keys rendered in the bottom navigation bar. */
         val topLevel: Set<LerdrKey> = setOf(Home, Computers, Activity, Settings)
