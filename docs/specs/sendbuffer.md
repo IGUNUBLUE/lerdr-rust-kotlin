@@ -2,7 +2,7 @@
 
 Spec for the relay's per-client outbound queue and what a slow client observes.
 Closes `docs/10-spec-gaps.md` P0-2. All line numbers cite `~/Projects/lerdr`
-(read-only oracle).
+(original Go implementation — provenance only).
 
 Sources: `internal/transport/sendbuffer.go` (queue),
 `internal/transport/ws.go` (hub send paths, eviction, metrics),

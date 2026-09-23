@@ -82,18 +82,17 @@ when a format drifts, fix once in the relay, both clients benefit.
   rows: port the segmentation tests, use `BreakIterator` not `length`.
 - **4 MiB send-buffer ceiling** — giant full frames evict the client;
   monitor pane sizes, prefer deltas, document the limit before raising it.
-- **Reference drift** — the Go relay stays the production product while
-  Rust reaches parity; reference bugfixes land there and must be
-  re-extracted into fixtures/specs or the oracle lies. Mitigation: the
-  shadow-diff harness doubles as a regression alarm; treat the Go repo as
-  frozen for features once Rust hits shadow parity.
+- **Spec drift** — `docs/` and `fixtures/` are the contract; behavior
+  changes land only through spec updates + vector regeneration, or the
+  spec lies. Mitigation: the shadow-diff harness doubles as a
+  determinism/regression alarm on the outbound stream.
 - **Keystore loss on backup/restore** — credentials wrapped by Keystore
   keys may not survive device replacement; pairing recovery UX (re-pair
   QR) must be easy.
 
 ## Explicitly accepted
 
-- **iOS/desktop stay on the PWA** — Kotlin app is Android-only. The web
-  bundle remains a first-class artifact of the Rust relay.
-- **No wire-format changes in flight** — deferred to protocol v2 (phase 5).
-- **Go remains until parity is proven** — it is the oracle, not the enemy.
+- **Android-only client** — no PWA; the Rust relay ships no `web/`
+  bundle. iOS/desktop are out of product scope.
+- **No wire-format changes in flight** — deferred to the Phase-5
+  protocol revision.

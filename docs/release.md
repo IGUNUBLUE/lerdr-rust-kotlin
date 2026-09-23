@@ -1,9 +1,9 @@
 # Cutting a release
 
-The release pipeline mirrors the Go oracle: tag `v<version>` on `main`, and
-`.github/workflows/release.yml` builds the bundles, smokes them on native
-runners, and publishes a GitHub release. `plugin-build.sh` then installs that
-exact version — no Rust toolchain on user hosts.
+Tag `v<version>` on `main` and `.github/workflows/release.yml` builds the
+bundles, smokes them on native runners, and publishes a GitHub release.
+`plugin-build.sh` then installs that exact version — no Rust toolchain on
+user hosts.
 
 ## Version bumps (in the release PR — never at build time)
 
@@ -32,7 +32,7 @@ git push origin v<x.y.z>
 - `lerdr-relay_<v>_<os>_<arch>.tar.gz` — linux amd64/arm64 (static musl),
   darwin amd64/arm64. Each tarball: `lerdr-relay` binary stamped with
   `LERDR_VERSION`/`LERDR_REVISION`, `README.md`, the operator `scripts/*.sh`
-  wrappers, and `release-manifest.json` (oracle's schema 1).
+  wrappers, and `release-manifest.json` (manifest schema 1).
 - `checksums.txt` — sha256 over all tarballs; `install.sh` refuses a release
   without it.
 - `lerdr_<v>_universal.apk` — only when `ANDROID_KEYSTORE_BASE64` +
@@ -58,15 +58,11 @@ git push origin v<x.y.z>
 
 `interop.yml` holds the gates that need real infrastructure:
 
-- `shadow-self` — rust-vs-rust parity, runs on `relay/**`/`tools/shadow/**`
+- `shadow-self` — rust-vs-rust determinism, runs on `relay/**`/`tools/shadow/**`
   PRs and nightly.
-- `shadow-go` — `workflow_dispatch` onto a runner with the Go oracle
-  checked out (`oracle` input → `LERDR_ORACLE`) and `go` in PATH.
 - `live` — `workflow_dispatch` onto a self-hosted machine with a live Herdr
-  socket: `HERDR_LIVE=1` (`lerdr-herdr`), `LERDR_LIVE=1` (`lerdr-coord`),
-  `LERDR_RUST_INTEROP=1` (app spawns the freshly built `lerdr-relay`), and
-  `LERDR_INTEROP=1` (running Go oracle relay; opt in with the `go_relay`
-  input).
+  socket: `HERDR_LIVE=1` (`lerdr-herdr`), `LERDR_LIVE=1` (`lerdr-coord`), and
+  `LERDR_RUST_INTEROP=1` (app spawns the freshly built `lerdr-relay`).
 - `probe` — `workflow_dispatch` or nightly; hermetic on hosted runners:
   builds `lerdr-relay`, starts it on `127.0.0.1:8377` with a generated
   32-byte token, runs `WireProbeTest`.

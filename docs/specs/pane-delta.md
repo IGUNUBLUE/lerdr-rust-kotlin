@@ -1,8 +1,8 @@
 # Pane Delta — `pane_delta` / `pane_content` / `pane_applied` / `pane_resync`
 
 Spec for the pane streaming delta codec and the watch ack chain. Closes
-`docs/10-spec-gaps.md` P0-1. All line numbers cite `~/Projects/lerdr` (Go
-reference; read-only oracle).
+`docs/10-spec-gaps.md` P0-1. All line numbers cite `~/Projects/lerdr`
+(original Go implementation — provenance only).
 
 Sources: `internal/panedelta/delta.go` (algorithm),
 `internal/app/pane_watch.go` (watch lifecycle, sender policy),

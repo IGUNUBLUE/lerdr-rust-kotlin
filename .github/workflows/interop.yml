@@ -1,8 +1,8 @@
 name: Interop
 
 # Shadow self-parity is hermetic (rust relay vs rust relay through the fake
-# Herdr) and runs in normal CI. Everything that needs a real Herdr socket or
-# the Go oracle checkout is manual-only — never on PRs.
+# Herdr) and runs in normal CI. Everything that needs a real Herdr socket is
+# manual-only — never on PRs.
 on:
   push:
     branches: [main]
@@ -23,21 +23,11 @@ on:
     inputs:
       runner:
         description: >-
-          Runner label for jobs that need a live Herdr socket or the Go
-          oracle checkout (self-hosted dev machine).
+          Runner label for jobs that need a live Herdr socket
+          (self-hosted dev machine).
         required: false
         default: "self-hosted"
         type: string
-      oracle:
-        description: Path to the Go oracle checkout on the runner (LERDR_ORACLE).
-        required: false
-        default: "~/Projects/lerdr"
-        type: string
-      go_relay:
-        description: Also run InteropTest against the running Go oracle relay (ws://127.0.0.1:8375).
-        required: false
-        default: false
-        type: boolean
 
 jobs:
   shadow-self:
@@ -50,9 +40,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: relay
-      - name: shadow_diff --mode self
+      - name: shadow_diff self-parity
         run: >-
-          python3 tools/shadow/shadow_diff.py --mode self
+          python3 tools/shadow/shadow_diff.py
           --keep --run-dir "$RUNNER_TEMP/shadow-self"
       - name: Upload shadow run dir
         if: failure()
@@ -62,49 +52,9 @@ jobs:
           path: ${{ runner.temp }}/shadow-self
           retention-days: 7
 
-  shadow-go:
-    name: shadow-diff vs Go oracle
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ${{ inputs.runner }}
-    timeout-minutes: 45
-    env:
-      LERDR_ORACLE: ${{ inputs.oracle }}
-    steps:
-      - uses: actions/checkout@v7
-      - name: Require the Go oracle checkout
-        run: |
-          case "$LERDR_ORACLE" in
-            "~/"*) LERDR_ORACLE="$HOME/${LERDR_ORACLE#"~/"}" ;;
-          esac
-          echo "LERDR_ORACLE=$LERDR_ORACLE" >> "$GITHUB_ENV"
-          test -d "$LERDR_ORACLE" && test -f "$LERDR_ORACLE/go.mod" || {
-            echo "::error::shadow --mode go needs a runner with the Go oracle checked out." >&2
-            echo "::error::Set the 'oracle' input / LERDR_ORACLE; the oracle is never modified." >&2
-            exit 1
-          }
-          command -v go >/dev/null || {
-            echo "::error::go toolchain missing — the shadow driver builds the oracle's cmd/lerdr" >&2
-            exit 1
-          }
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: relay
-      - name: shadow_diff --mode go
-        run: >-
-          python3 tools/shadow/shadow_diff.py --mode go
-          --keep --run-dir "$RUNNER_TEMP/shadow-go"
-      - name: Upload shadow run dir
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: shadow-go-run
-          path: ${{ runner.temp }}/shadow-go
-          retention-days: 7
-
   # The documented live gates (AGENTS.md). They need a machine with a real
-  # Herdr socket — and for InteropTest, the running Go oracle relay — so they
-  # only exist as a manual dispatch onto a runner that provides both.
+  # Herdr socket — so they only exist as a manual dispatch onto a runner
+  # that provides one.
   live:
     name: live gates (real Herdr socket)
     if: github.event_name == 'workflow_dispatch'
@@ -149,12 +99,6 @@ jobs:
           LERDR_RUST_INTEROP: "1"
           LERDR_RELAY_BIN: ${{ github.workspace }}/relay/target/debug/lerdr-relay
         run: ./gradlew --console=plain :core:transport:test --tests RustInteropTest
-        working-directory: app
-      - name: InteropTest vs Go relay (LERDR_INTEROP)
-        if: inputs.go_relay
-        env:
-          LERDR_INTEROP: "1"
-        run: ./gradlew --console=plain :core:transport:test --tests InteropTest
         working-directory: app
 
   # Hermetic on hosted runners: the job builds lerdr-relay, starts it on

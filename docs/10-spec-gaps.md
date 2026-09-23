@@ -1,8 +1,14 @@
 # 10 — Spec gaps (strict self-review)
 
+> **Alignment note (2026-09):** the project is self-contained — `docs/` +
+> `fixtures/` are the authority. Mentions of "the oracle" / "the Go
+> implementation" in this file are **historical provenance** (where each
+> behavior was extracted from), not a standing comparison rule. New gaps
+> are resolved against the spec and vectors, not an external codebase.
+
 Honest accounting of what the plan does **not** yet specify. Ordered by
-severity. Each item names the oracle in the Go repo to extract from —
-Phase 0 should burn this list down before any production code.
+severity. Historical items name the original implementation file each
+behavior was extracted from.
 
 **Status after the Phase-0 fixture+spec pass**: P0 items 1–4 now have
 specs in `docs/specs/` AND executable vectors in `fixtures/` (delta codec,
@@ -930,7 +936,7 @@ against.
   `docs/release.md`. Tag-gated 4-target builds (musl linux ×2, darwin
   ×2), per-target native smoke, APK (signed iff keystore secrets
   configured), version-sync gate, republish guard. Live gates
-  (HERDR_LIVE/LERDR_*/shadow-go) are `workflow_dispatch`-only.
+  (HERDR_LIVE/LERDR_*/live) are `workflow_dispatch`-only.
 - **MSRV floor** — raised to 1.88: `icu_*` (via `url→idna`) already
   required it; the CI `msrv` job is a real gate now, not advisory.
 

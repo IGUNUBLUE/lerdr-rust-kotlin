@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase-3 shadow-diff driver — Go relay and Rust relay, side by side.
+"""Shadow-diff driver — two Rust relay runs, side by side.
 
 Layout under --run-dir (default: a fresh tmp dir):
 
@@ -8,15 +8,15 @@ Layout under --run-dir (default: a fresh tmp dir):
                                list_directories output)
       herdr.sock               lerdr-fake-herdr socket (both relays attach)
       herdr-ops.jsonl          fake's method log
-      go/   rust-a/  rust-b/   per-side runtime dirs (config/data/auth)
+      rust-a/  rust-b/         per-side runtime dirs (config/data/auth)
       logs/                    relay + fake stdout/stderr
       traces/                  lerdr-shadow JSONL traces
       report.txt               the normalized diff
 
-Modes:
-
-    self   rust-a vs rust-b — the harness's own determinism gate
-    go     go vs rust       — the actual parity gate
+The gate: identical scripted herdr-e2ee-v2 traffic through two fresh relay
+instances must produce byte-identical normalized outbound streams — a
+determinism/regression check on the outbound pipeline. `lerdr-shadow diff`
+also compares a fresh trace against a recorded baseline directly.
 
 Exit: 0 identical, 1 diff, 2 setup/infra failure.
 """
@@ -36,7 +36,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 RELAY_DIR = ROOT / "relay"
-ORACLE_DIR = Path(os.environ.get("LERDR_ORACLE", os.path.expanduser("~/Projects/lerdr")))
 TOOLS = ROOT / "tools" / "shadow"
 SCENARIOS = TOOLS / "scenarios"
 DEFAULT_SCENARIO = SCENARIOS / "core.json"
@@ -164,8 +163,6 @@ class Harness:
                 "TZ": "UTC",
             }
         )
-        # The oracle CLI fake is HERDR_BIN for the Go relay; harmless for Rust.
-        env["HERDR_BIN"] = str(self.fake_cli)
         env["FAKE_HERDR_SCENARIO"] = str(STATE)
         env["FAKE_HERDR_STATE"] = str(side_dir / "fake-herdr.state")
         env["FAKE_HERDR_OPERATIONS"] = str(self.logs / f"fake-ops-{side_dir.name}.jsonl")
@@ -173,7 +170,7 @@ class Harness:
 
     # -- stages ---------------------------------------------------------------
 
-    def build(self, need_go: bool, skip_build: bool = False) -> None:
+    def build(self, skip_build: bool = False) -> None:
         if not skip_build:
             log("building rust relay + shadow tools")
             subprocess.run(
@@ -196,28 +193,6 @@ class Harness:
         for b in (self.rust_relay, self.shadow, self.fake_socket):
             if not b.exists():
                 raise SystemExit(f"missing binary: {b}")
-        if need_go:
-            bindir = self.run_dir / "bin"
-            bindir.mkdir(exist_ok=True)
-            self.go_relay = bindir / "lerdr-go"
-            self.fake_cli = bindir / "fake-herdr"
-            if skip_build and self.go_relay.exists() and self.fake_cli.exists():
-                return
-            log("building oracle binaries (no oracle source changes)")
-            subprocess.run(
-                ["go", "build", "-o", str(self.go_relay), "./cmd/lerdr"],
-                cwd=ORACLE_DIR,
-                check=True,
-            )
-            subprocess.run(
-                ["go", "build", "-o", str(self.fake_cli), "./cmd/fake-herdr"],
-                cwd=ORACLE_DIR,
-                check=True,
-            )
-        else:
-            # Self-parity still wants the CLI fake around for symmetry, but
-            # nothing calls it — point at /bin/true.
-            self.fake_cli = Path("/bin/true")
 
     def start_fake(self) -> None:
         proc = self.spawn(
@@ -237,47 +212,33 @@ class Harness:
             raise SystemExit("fake herdr socket never came up — see logs/fake-herdr-socket.log")
         log("fake herdr socket up")
 
-    def start_relay(self, side: str, kind: str, port: int, plugin_port: int) -> None:
+    def start_relay(self, side: str, port: int) -> None:
         side_dir = self.run_dir / side
         side_dir.mkdir(parents=True, exist_ok=True)
         env = self.base_env(side_dir)
-        if kind == "go":
-            env.update(
-                {
-                    "LERDR_RELAY_PORT": str(port),
-                    "LERDR_RELAY_PLUGIN_PORT": str(plugin_port),
-                    "LERDR_RELAY_HOST": "127.0.0.1",
-                    "LERDR_RELAY_INSTANCE_ID": f"shadow-{side}",
-                    # Long interval → no mid-scenario poll; startup state stays
-                    # authoritative (invalidations still flow via the socket).
-                    "LERDR_RELAY_POLL_INTERVAL": "60",
-                }
-            )
-            argv = [str(self.go_relay), "serve"]
-        else:
-            argv = [
-                str(self.rust_relay),
-                "serve",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                str(port),
-                "--token",
-                TOKEN,
-                "--socket-path",
-                str(self.sock),
-                "--runtime-dir",
-                str(side_dir / "runtime"),
-                "--device-auth-dir",
-                str(side_dir / "device-auth"),
-                "--rearm-bootstrap",
-            ]
+        argv = [
+            str(self.rust_relay),
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--token",
+            TOKEN,
+            "--socket-path",
+            str(self.sock),
+            "--runtime-dir",
+            str(side_dir / "runtime"),
+            "--device-auth-dir",
+            str(side_dir / "device-auth"),
+            "--rearm-bootstrap",
+        ]
         proc = self.spawn(f"relay-{side}", argv, env)
         if not wait_healthz(port, proc):
             raise SystemExit(
                 f"relay {side} never answered /healthz — see logs/relay-{side}.log"
             )
-        log(f"relay {side} ({kind}) up on :{port}")
+        log(f"relay {side} up on :{port}")
 
     def run_client(self, side: str, port: int, scenario: Path) -> Path:
         trace = self.traces / f"{side}.jsonl"
@@ -328,7 +289,6 @@ class Harness:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--mode", choices=["self", "go"], default="go")
     ap.add_argument(
         "--scenario",
         type=Path,
@@ -361,27 +321,23 @@ def main() -> int:
 
     h = Harness(run_dir, keep)
     try:
-        h.build(need_go=args.mode == "go", skip_build=args.skip_build)
+        h.build(skip_build=args.skip_build)
         h.start_fake()
 
-        if args.mode == "go":
-            sides = [("go", "go"), ("rust", "rust")]
-        else:
-            sides = [("rust-a", "rust"), ("rust-b", "rust")]
+        sides = ["rust-a", "rust-b"]
 
-        ports = {side: free_port() for side, _ in sides}
-        plugin_ports = {side: free_port() for side, _ in sides}
+        ports = {side: free_port() for side in sides}
         traces = {}
-        for side, kind in sides:
+        for side in sides:
             # Each relay starts only just before its own run: the fake's
             # control.emit broadcasts to every held events.subscribe
             # connection, so a relay already up during the other side's
             # run would process those transitions too — its per-pane
             # ledgers and activity journal would be pre-advanced and the
             # second run could never reproduce the first.
-            h.start_relay(side, kind, ports[side], plugin_ports[side])
+            h.start_relay(side, ports[side])
             traces[side] = h.run_client(side, ports[side], scenario)
-        rc = h.diff(traces[sides[0][0]], traces[sides[1][0]])
+        rc = h.diff(traces[sides[0]], traces[sides[1]])
         return rc
     finally:
         h.stop_all()

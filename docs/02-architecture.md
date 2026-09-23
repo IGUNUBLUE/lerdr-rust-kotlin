@@ -24,8 +24,7 @@
 │  Computer — Rust relay (single static binary)               │
 │  ┌────────────────────────────────────────────────────────┐ │
 │  │ axum HTTP: /ws + /healthz — no web assets (Android-    │ │
-│  │ only product; the Go relay can keep serving the PWA    │ │
-│  │ in parallel during coexistence if wanted)              │ │
+│  │ only product; this is the sole relay implementation)   │ │
 │  ├────────────────────────────────────────────────────────┤ │
 │  │ session actor per client: send buffer, coalescing,     │ │
 │  │ eviction, E2EE session (p256 + aes-gcm + hkdf)         │ │
@@ -171,17 +170,17 @@ keeps serving PWA clients unchanged.
 ## The seam strategy — why this is low-risk
 
 ```
-Go relay ⇄ Web PWA        (today, production — stays running for any
-                           non-Android device during transition)
-Go relay ⇄ Kotlin app     (phase 1 target — validates the client half)
-Rust relay ⇄ test client  (shadow parity harness vs the Go oracle)
-Rust relay ⇄ Kotlin app   (end state — the only shipped combination)
+Rust relay ⇄ Kotlin app   (the shipped combination — protocol v3 over
+                           herdr-e2ee-v2, E2EE end to end)
+Rust relay ⇄ test client  (shadow harness self-mode — determinism and
+                           regression gate for the outbound stream)
 ```
 
-Every combination in the matrix is a supported configuration at every
-point in time. No flag day on either side. The Rust relay validates
-against a **protocol-level test client** (fixtures + scripted watch
-sessions) rather than the PWA, since the PWA is out of product scope.
+Each side validates independently against the frozen contract: the app
+against golden vectors and scripted relay sessions, the relay against
+the same vectors plus a protocol-level test client (`tools/shadow`).
+No flag day on either side — a peer that speaks `protocol v3` is
+correct by definition.
 
 ## What deliberately does NOT move
 

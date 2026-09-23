@@ -1,7 +1,7 @@
 # Pane Size Lease — `lease_pane_size` / `release_pane_size`
 
 Spec for multi-client pane-size arbitration. Closes `docs/10-spec-gaps.md`
-P0-4. All line numbers cite `~/Projects/lerdr` (read-only oracle).
+P0-4. All line numbers cite `~/Projects/lerdr` (original Go implementation — provenance only).
 
 Sources: `internal/panesize/manager.go` (lease manager — entire file cited),
 `internal/app/server.go` (action wiring, disconnect cleanup),

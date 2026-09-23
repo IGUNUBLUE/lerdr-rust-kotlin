@@ -1,23 +1,25 @@
 # Agent Instructions
 
-New implementation of Lerdr: Rust relay + Kotlin/Compose app.
-`~/Projects/lerdr` (Go + Tauri/WebView) is the **reference and oracle** —
-it defines product behavior and generates fixtures; nothing is ported
-line-by-line. Everything is specified in `docs/` — read `00-inventory`,
-`02-architecture`, `03-protocol`, `04-app-design`, `05-roadmap`,
-`08-herdr-boundary`, `10-spec-gaps` before implementing anything.
+Lerdr: Rust relay + Kotlin/Compose Android app. `docs/` is the spec and
+the authority — read `00-inventory`, `02-architecture`, `03-protocol`,
+`04-app-design`, `05-roadmap`, `08-herdr-boundary`, `10-spec-gaps` before
+implementing anything. The project is self-contained: it does not track
+or compare against any external implementation.
 
 ## Rules
 
-- Wire protocol starts at `protocol v3` / `herdr-e2ee-v2` (proven contract,
-  golden vectors are the oracle); changes land only through the deliberate
-  Phase-5 revision — never by drift.
+- Wire protocol is `protocol v3` / `herdr-e2ee-v2` (frozen contract,
+  anchored by the committed golden vectors in `fixtures/`); changes land
+  only through the deliberate Phase-5 revision — never by drift.
 - English only: code, docs, commits.
 - Every commit builds and passes tests; one PR per coherent unit; no
   direct pushes to main.
-- Only touch `~/Projects/lerdr` to *generate* fixtures (test-only hooks).
+- `fixtures/` vectors are frozen — they change only as part of a
+  deliberate protocol revision.
 - Parallel work uses disjoint file ownership; shared/generated files
   belong to the orchestrator.
+- Comments citing the original implementation (e.g. "the reference") are
+  historical provenance, not a standing comparison rule.
 
 ## Verification
 
@@ -32,14 +34,14 @@ line-by-line. Everything is specified in `docs/` — read `00-inventory`,
   (`platforms;android-37.2`), minSdk 28, targetSdk 36.
 - Fixture consumers: `com.lerdr.core.testing.Fixtures` (Kotlin),
   `lerdr-fixture` crate (Rust).
-- Live gates (not in CI): `LERDR_INTEROP=1 :core:transport:test --tests
-  InteropTest` pairs against the running Go relay; `HERDR_LIVE=1 cargo
-  test -p lerdr-herdr --test live` hits the real Herdr socket;
-  `LERDR_PROBE=1 LERDR_PROBE_TOKEN=<32B> :core:transport:test --tests
-  WireProbeTest --rerun-tasks` pairs a throwaway device against the Rust
-  relay at `ws://127.0.0.1:8377` and prints every inbound frame + codec
-  result (re-arm the invitation with `kill -USR1 <relay-pid>`; leaves an
-  enrolled credential behind).
+- Live gates (not in CI): `LERDR_RUST_INTEROP=1 :core:transport:test
+  --tests RustInteropTest` pairs a throwaway device against a spawned
+  Rust relay; `HERDR_LIVE=1 cargo test -p lerdr-herdr --test live` hits
+  the real Herdr socket; `LERDR_PROBE=1 LERDR_PROBE_TOKEN=<32B>
+  :core:transport:test --tests WireProbeTest --rerun-tasks` pairs a
+  throwaway device against the Rust relay at `ws://127.0.0.1:8377` and
+  prints every inbound frame + codec result (re-arm the invitation with
+  `kill -USR1 <relay-pid>`; leaves an enrolled credential behind).
 - App visual changes: screenshot test (Roborazzi) in the PR.
 
 ## Skills

@@ -129,7 +129,7 @@ variables are never folded through that helper.
 
 ## Binary subcommand contract
 
-The scripts assume `lerdr-relay` implements the oracle's argv surface:
+The scripts assume `lerdr-relay` implements this argv surface:
 `serve`, `event-hook`, `startup-hook` (new), `setup-fragment`,
 `normalize-origin`, `qr`, `support`, `speech-voices`, `release-manifest`,
 `verify-release`, `seal-release`, `activate-release`, `prune-releases`, plus
@@ -137,7 +137,7 @@ SIGUSR1 re-arm of the setup invitation and `relay.pid` beside `relay.env`.
 `/healthz` must report `status`/`instance`/`version`/`protocol` and
 `release_version`/`revision`/`bundle_hash` for exact-release verification.
 
-## Deviations from the oracle (`~/Projects/lerdr`)
+## Deviations from the original Go implementation
 
 - Manifest location: `plugin/herdr-plugin.toml` vs repo root — command paths
   are `scripts/…` instead of `relay/…`; install uses the subdir form.
@@ -145,7 +145,7 @@ SIGUSR1 re-arm of the setup invitation and `relay.pid` beside `relay.env`.
 - No asset-name fallback to `lerdr_*` tarballs — those contain the Go binary.
 - Added `[[startup]]` → `scripts/plugin-on-startup.sh` execs
   `lerdr-relay startup-hook` (doc 09: re-assert `agent.view.set` after
-  session restore/`live_handoff`). The oracle has no startup hook.
+  session restore/`live_handoff`). The original has no startup hook.
 - Release tarball carries `scripts/` instead of `relay/` and no `web/` bundle
   or LICENSE yet; `web_hash`/`bundle_hash` manifest fields are kept for
   contract parity (the binary defines what they hash).

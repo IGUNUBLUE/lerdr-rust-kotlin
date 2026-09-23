@@ -1,8 +1,11 @@
-# Shadow-diff parity harness (Phase-3 exit gate)
+# Shadow-diff determinism harness
 
-Runs the Go oracle relay and the Rust relay side-by-side against the same
-fake Herdr, drives identical scripted `herdr-e2ee-v2` client traffic through
-each, and diffs the normalized outbound frame streams.
+Runs two fresh Rust relay instances against the same fake Herdr, drives
+identical scripted `herdr-e2ee-v2` client traffic through each, and diffs
+the normalized outbound frame streams. Byte-identical traces mean the
+outbound pipeline is deterministic; any drift between runs of the same
+binary is a bug, and `lerdr-shadow diff` also compares a fresh trace
+against a recorded baseline to catch regressions across changes.
 
 ## Layout
 
@@ -11,7 +14,7 @@ tools/shadow/
   shadow_diff.py        orchestrator: builds binaries, runs both relays, diffs
   scenarios/core.json   startup + common actions (default scenario)
   scenarios/watch.json  watch_pane → ack → mutate → pane_delta → unwatch
-  herdr/state.json      fake-Herdr seed (Go CLI-fake Scenario + `socket` ext)
+  herdr/state.json      fake-Herdr seed (Scenario + `socket` ext)
 relay/crates/lerdr-shadow/
   src/scenario.rs       scenario/compare config parsing
   src/client.rs         encrypted WS client (handshake + sealed steps)
@@ -26,17 +29,14 @@ relay/crates/lerdr-shadow/
 ## Usage
 
 ```bash
-# self-parity: rust vs rust — the harness's own determinism gate
-python3 tools/shadow/shadow_diff.py --mode self
-
-# parity gate: oracle go relay vs rust relay
-python3 tools/shadow/shadow_diff.py --mode go
+# determinism gate: two fresh relay runs must produce identical traces
+python3 tools/shadow/shadow_diff.py
 
 # keep the run dir (logs/, traces/, report.txt)
-python3 tools/shadow/shadow_diff.py --mode go --keep --run-dir /tmp/shadow
+python3 tools/shadow/shadow_diff.py --keep --run-dir /tmp/shadow
 
 # a different scenario — bare name or path
-python3 tools/shadow/shadow_diff.py --mode self --scenario watch
+python3 tools/shadow/shadow_diff.py --scenario watch
 ```
 
 Exit codes: `0` identical, `1` normalized streams differ, `2` infra failure.
@@ -44,18 +44,14 @@ Exit codes: `0` identical, `1` normalized streams differ, `2` infra failure.
 (every decrypted frame), `herdr-ops.jsonl` (fake's method log) and
 `report.txt`.
 
-`LERDR_ORACLE` overrides the oracle checkout (default `~/Projects/lerdr`);
 `SHADOW_RELAY_LOG` sets the Rust relay log level (default `info`).
 
 ## What the driver does
 
-1. `cargo build` `lerdr-relay`, `lerdr-shadow`, `lerdr-fake-herdr`; in `--mode
-   go` also `go build ./cmd/lerdr` + `./cmd/fake-herdr` from the oracle tree
-   (read-only — the oracle is never modified).
+1. `cargo build` `lerdr-relay`, `lerdr-shadow`, `lerdr-fake-herdr`.
 2. One `lerdr-fake-herdr` serves `herdr.sock` for **both** relays from
-   `herdr/state.json`; `HERDR_BIN` points the Go relay at the oracle's CLI
-   fake sharing the same state file (`responses` keys are argv joined with
-   `\x00`, hence the `\u0000` escapes in `state.json`).
+   `herdr/state.json` (`responses` keys are argv joined with `\x00`,
+   hence the `\u0000` escapes in `state.json`).
 3. Each relay gets an isolated side dir (`XDG_CONFIG_HOME`/`XDG_DATA_HOME`/
    `XDG_CACHE_HOME`, runtime dir, device-auth store) plus a **shared** `$HOME`
    so `list_directories` output is byte-identical. Relays start **just
@@ -73,7 +69,7 @@ Exit codes: `0` identical, `1` normalized streams differ, `2` infra failure.
 | knob | effect |
 |---|---|
 | `drop_types` | whole frame types excluded (one-sided: `action_receipt`; transport: `e2ee_server_hello`) |
-| `drop_matches` | predicate drops — a `{type, contains}` clause; kills Go's empty startup `activity_history` only when `activities` is null |
+| `drop_matches` | predicate drops — a `{type, contains}` clause |
 | `unordered_types` | scheduler-owned types pool as a sorted multiset, **preempting** `request_id` attribution (a `capture` list on the step wins) |
 | `drop_keys` | keys removed at any depth (timestamps, generated `id`s, echoed `target`) |
 | `map_keys` | keys kept but value → `"<mapped>"` (device/credential ids, keys, versions) |
@@ -98,53 +94,37 @@ freely). `request_id` attribution works across step windows.
   the scenario's server-side lever: `control.set {pane_id, text}` rewrites
   the `pane.read` content, `control.emit {name, data}` broadcasts
   `{"event":name,"data":…}` to every held `events.subscribe` connection —
-  the exact envelope both relays decode (Go `herdr.Event`, Rust
-  `decode_stream_line`, snake_case names canonicalized to dotted).
+  the exact envelope the relay decodes (`decode_stream_line`, snake_case
+  names canonicalized to dotted).
 - `ack_pane {pane_id, target?, capture?}` — sends `pane_applied` echoing the
   newest observed `pane_content`/`pane_delta` `content_fingerprint` for the
-  pane (the oracle's `handlePaneApplied` matches it against `pending`).
-  Fails the step when no pane frame has been seen yet.
+  pane. Fails the step when no pane frame has been seen yet.
 
 `{name}` placeholders resolve from step scope (`request_id`) then `vars`.
-Pane-targeted actions carry `vars.target` because Go validates
+Pane-targeted actions carry `vars.target` — the
 `target.{pane_id,terminal_id,generation,server_session_id,agent_session_id}`
-against live agent state whenever `pane_id` is present; Rust ignores it for
-these actions.
+shape from the wire contract; the relay ignores it for these actions.
 
 ## Current result
 
-`core` — `--mode self` and `--mode go` → **IDENTICAL**, including the
-semantic `pane_content` fields and the `activity`/`activity_history`
-attribution rows (`project`/`host`/`session`).
+`core`, `watch`, `semantic` — **IDENTICAL** traces across runs, including
+the semantic `pane_content` fields, the `activity`/`activity_history`
+attribution rows (`project`/`host`/`session`), the full `watch_pane` →
+`pane_content{ack_required}` → `pane_applied` → mutate → `pane_delta` →
+ack → `unwatch_pane` lifecycle, and the blocked lifecycle (approval →
+drift → question → idle completion) frame-for-frame.
 
-`watch` — `--mode self` and `--mode go` → **IDENTICAL**: the full
-`watch_pane` → `pane_content{ack_required}` → `pane_applied` → mutate →
-`pane_delta` → ack → `unwatch_pane` lifecycle matches, including identical
-`segments` (`[{copy_lines:12},{text:"appended line 13\n"}]`) and the full
-classification/no-echo projection on both frame types.
+Normalization notes:
 
-`semantic` — `--mode self` and `--mode go` → **IDENTICAL**: the blocked
-lifecycle (approval → drift → question → idle completion) matches
-frame-for-frame — `blocked`/`agents`/`pane_content` carry the real
-`attention_kind`/`prompt`/`command`/`options`/`approval_fingerprint`/
-`interaction`/`interaction_id`/`question_layout`, and the transition
-journal emits identical `blocked`/`question`/`finished` activity rows.
-
-Documented deltas:
-
-- `action_receipt` — Rust-only v3 dispatch evidence (dropped, still censused).
+- `action_receipt` — v3 dispatch evidence (dropped, still censused).
 - `inventory_status` — compared for real: the full six-key projection
   (state/error_code/message/stale + both timestamps); only
   `last_attempt_at`/`last_success_at` are key-dropped (wall-clock volatile).
 - `push_config`/`herdr_status` — implementation-scoped capability/update
   payloads via `type_drop_keys` (see notes in `core.json`).
-- `agents[*].{pane_revision,tokens,state_labels}` — `pane_revision` is the
-  per-commit epoch counter (its value depends on which internal commit a
-  publish raced); `tokens`/`state_labels` are Go-only fields.
-- `workspaces[*].{cwd,tokens,worktree}` — Go hydrates `cwd` from tabs/panes
-  and emits `tokens`/`worktree`; Rust omits all three.
-- Go emits an empty `activity_history` at connect (predicate-dropped).
-- Startup burst order differs (push_config first vs unordered set) — the pool.
+- `agents[*].pane_revision` — the per-commit epoch counter (its value
+  depends on which internal commit a publish raced).
+- Startup burst order differs run-to-run — the pool.
 
 ## Caveats
 
@@ -162,4 +142,4 @@ Documented deltas:
   startup burst must observe the same topology the first did.
 - Deltas need real deltas: `panedelta` requires a ≥3-line copy anchor
   (`MINIMUM_COPY_LINES`) and charges 64 B/segment in `efficient` — small or
-  scattered edits legitimately produce a full `pane_content` on both relays.
+  scattered edits legitimately produce a full `pane_content`.

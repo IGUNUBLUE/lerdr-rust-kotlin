@@ -1,44 +1,39 @@
 # lerdr-rust-kotlin
 
-New implementation of Lerdr: relay in **Rust**, Android app in
-**Kotlin + Jetpack Compose (Material 3 Expressive)**.
+Lerdr: relay in **Rust**, Android app in **Kotlin + Jetpack Compose
+(Material 3 Expressive)**. The product: your coding agents, live on the
+phone — sessions, questions, approvals, terminals, and workspace files,
+over an end-to-end encrypted channel.
 
-`IGUNUBLUE/lerdr` (Go + Tauri/WebView) is the reference implementation and
-behavior oracle — it defines the product and generates the golden fixtures;
-this repo builds the improved implementation, not a line-by-line port.
-This repo contains the plan only — no production code yet.
+The repo is self-contained: `docs/` is the spec and the plan, and the
+committed golden vectors in `fixtures/` anchor the wire contract. There
+is no external reference implementation to track.
 
 ## Why
 
 - **Rust**: one static binary per computer, no GC, with the concurrency
-  profile the relay already proved it needs (pane watches, per-client
-  queues, coalescing). The current Go model works; Rust makes it
-  memory-auditable and cheaper to run on modest machines.
-- **Native Kotlin**: no WebView. Real 60/120 fps rendering, native gestures,
-  a real terminal keyboard, notifications and platform integrations without
-  plugin IPC layers. The current app is a bundled web frontend; the new one
-  is an experience designed for the phone that feels like sitting at the
-  computer, with the same usage capability.
+  profile the relay needs (pane watches, per-client queues, coalescing)
+  — memory-auditable and cheap on modest machines.
+- **Native Kotlin**: no WebView. Real 60/120 fps rendering, native
+  gestures, a real terminal keyboard, notifications and platform
+  integrations without plugin IPC layers — an experience designed for
+  the phone that feels like sitting at the computer.
 
 ## The core idea
 
-**The protocol is the boundary.** `protocol v3` over `herdr-e2ee-v2` is the
-stable contract. That allows:
-
-1. Building the Kotlin app against the existing Go relay (already deployed).
-2. Building the Rust relay against the existing web app (already deployed).
-3. Validating each half independently with cross-language golden vectors.
-4. Cutting each side over independently — no big bang.
+**The protocol is the boundary.** `protocol v3` over `herdr-e2ee-v2` is
+the frozen contract. The relay and the app evolve independently as long
+as both speak it; the golden vectors keep them honest byte-for-byte.
 
 ## Documents
 
 | Doc | Contents |
 |---|---|
-| [00 — Inventory](docs/00-inventory.md) | What exists today: Go packages, actions, app features, native surface |
+| [00 — Inventory](docs/00-inventory.md) | Feature surface inventory: packages, actions, app features, native surface |
 | [01 — Research](docs/01-research.md) | Reference apps and what to copy from each |
 | [02 — Architecture](docs/02-architecture.md) | Rust crates, Kotlin modules, stack decisions |
-| [03 — Protocol](docs/03-protocol.md) | Extracted wire contract: E2EE handshake, frames, actions, pane watch |
-| [04 — App design](docs/04-app-design.md) | UX redesign with Material 3 Expressive, screen by screen |
+| [03 — Protocol](docs/03-protocol.md) | Wire contract: E2EE handshake, frames, actions, pane watch |
+| [04 — App design](docs/04-app-design.md) | UX spec with Material 3 Expressive, screen by screen |
 | [05 — Roadmap](docs/05-roadmap.md) | Phases, deliverables, cutover criteria |
 | [06 — Risks](docs/06-risks.md) | Technical risks and mitigations |
 | [07 — Execution prompt](docs/07-execution-prompt.md) | Copy-paste master prompt + per-phase loops |
@@ -54,14 +49,14 @@ see [AGENTS.md](AGENTS.md).
 
 ## Project rules
 
-- **Protocol parity first**: no wire-format changes until both
-  implementations coexist. Protocol improvements (binary codec on the E2EE
-  path, compression, metadata diffing) go into a versioned protocol v2.
-- **Golden vectors**: every cryptographic or parsing seam is pinned with
-  fixtures generated from the current Go/TS implementation.
-- **No capability regression**: the new app must do everything the web app
-  does — the ~70-action catalog is the checklist.
+- **Protocol stability first**: `protocol v3` / `herdr-e2ee-v2` is
+  frozen; improvements (binary codec on the E2EE path, compression,
+  metadata diffing) go into a deliberate Phase-5 revision — never by
+  drift.
+- **Golden vectors**: every cryptographic or parsing seam is pinned by
+  the committed fixtures in `fixtures/`; they change only with a
+  protocol revision.
+- **Capability completeness**: the app covers the full action catalog
+  documented in `docs/03-protocol.md` — the catalog is the checklist.
 - **Android-only client**: no PWA in scope. The Rust relay is a pure
-  WS+API backend — no `web/` asset pipeline. (Consequence: iOS and desktop
-  browsers lose a client; the existing Go+PWA stack can keep serving them
-  in parallel if desired, since the protocol is shared.)
+  WS+API backend — no `web/` asset pipeline.

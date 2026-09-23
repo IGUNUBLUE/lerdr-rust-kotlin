@@ -4,7 +4,7 @@ Two parts: **§A** extracts the inherited protocol/store behavior from the Go
 reference (the wire contract is frozen); **§B** proposes the new Rust-native
 store schema — a fresh design, no byte compatibility, no migration.
 
-All line numbers cite `~/Projects/lerdr` (read-only oracle). Sources:
+All line numbers cite `~/Projects/lerdr` (original Go implementation — provenance only). Sources:
 `internal/deviceauth/store.go`, `internal/deviceauth/resolver.go`,
 `internal/transport/e2ee.go` (hello/finish fields), `internal/app/server.go`
 (actions, disconnect-on-revoke), `internal/setuphelper/setuphelper.go` (QR),

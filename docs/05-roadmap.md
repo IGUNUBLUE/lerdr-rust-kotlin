@@ -20,14 +20,15 @@ against a real counterpart.
 **Exit**: `lerdr-core`/`protocol` DTOs decode every fixture;
 `:core:e2ee` round-trips every crypto vector.
 
-## Phase 1 — Kotlin core against the Go relay (the big one)
+## Phase 1 — Kotlin core (the big one) — **done**
 
-Build the app half first — it derisks crypto + protocol + UX against a
-server that already works.
+Build the app half first — it derisks crypto + protocol + UX. (Historical:
+Phase 1 validated against the original Go relay, since retired — the
+shadow determinism harness is now the regression gate.)
 
 1. `:core:protocol` — DTOs, action catalog, receipts.
-2. `:core:e2ee` — handshake + session (interop test: pair a real device
-   against the Go relay — this *is* the acceptance test).
+2. `:core:e2ee` — handshake + session (live pairing test against a
+   running relay — `RustInteropTest`).
 3. `:core:transport` — OkHttp WS, backoff/keepalive, `push_config` intake.
 4. `:core:store` — agents/workspaces/connections StateFlows; identity-
    preserving merge (port the v0.26.3 merge semantics).
@@ -64,44 +65,43 @@ largest single component; don't block the feed on it.
 **Exit**: zero features that only exist in the old web app. The Tauri
 shell is retired — Android is the only client going forward.
 
-## Phase 3 — Rust relay core (shadow parity)
+## Phase 3 — Rust relay core
 
 - `lerdr-core` + `lerdr-e2ee` + `lerdr-herdr` + `lerdr-watch` +
   `lerdr-coord` + `lerdr-store` + `lerdr-push` + minimal `lerdr-relay`
   binary serving `/ws` + `/healthz` + actions (no web assets).
-- Run **shadow**: Rust relay on a second port against the same Herdr;
-  compare outbound event streams (agents, panes, questions) with the Go
-  relay — a diff harness is the parity oracle.
+- Run **shadow** (`tools/shadow`): drive the relay with scripted
+  `herdr-e2ee-v2` client traffic against the fake Herdr and diff the
+  normalized outbound stream — deterministic trace = regression gate.
 - Keep scope: skip appdeploy/update/speech/appdirs niceties until the core
   is proven; they are leaf packages.
 
-**Exit**: Rust relay serves the production Kotlin app for a week with
-no behavioral divergence vs the shadow-diff harness; CPU/RSS ≤ Go
-baseline on identical load; **installs as the same `lerdr.events`
-plugin** — `plugin install`/`link`/`build`, all actions, panes, the
-`event-hook` subcommand, and the `[[startup]]` hook work end-to-end
-(see doc 09).
+**Exit**: Rust relay serves the production Kotlin app with no
+behavioral divergence in the shadow-diff traces; **installs as the
+`lerdr.events` plugin** — `plugin install`/`link`/`build`, all actions,
+panes, the `event-hook` subcommand, and the `[[startup]]` hook work
+end-to-end (see doc 09).
 
 ## Phase 4 — Rust completes
 
 - Remaining packages: conversation readers, question parser, slashcmd,
   uploads, speech, update, appdeploy, portmap, audit, localize.
 - ~~`lerdr-gateway` binary in Rust; gatewaywire parity.~~ **Removed
-  upstream** — the oracle's CHANGELOG: "Tailscale is now the only
+  upstream** — original CHANGELOG: "Tailscale is now the only
   transport"; `lerdr-gateway`, the WebRTC gateway path, portmap/UPnP,
-  and the app-deploy stage were deleted from the reference. Not ported;
+  and the app-deploy stage were deleted there. Not ported;
   wire names stay reserved for compatibility.
 - ~~WebRTC server side (`webrtc` crate) for `herdr-dc-v1`.~~ Removed
   upstream with the gateway path (see above).
 - `[[startup]]` hook + `agent.view.set` canonical view + `[[link_handlers]]`
   deep links wired into the plugin manifest (doc 09).
-- CI matrix: interop tests both directions; release pipeline producing
+- CI matrix: app↔relay interop tests; release pipeline producing
   static musl binaries + the same tarballs/APK + `herdr-plugin.toml`
   version sync (bump in the release PR, never at build time).
 
-**Exit**: `lerdr` Go binary superseded; tag as the reference
-implementation. Repo decision (mono vs split) deferred to this point —
-keeping both halves in one repo until then maximizes fixture sharing.
+**Exit**: this repo is the implementation and the release source —
+tagged releases ship from here (see `docs/release.md`). Mono-repo
+stands: both halves share fixtures and the spec.
 
 ## Phase 5 — Protocol v2 (post-parity improvements, negotiated)
 
@@ -121,7 +121,7 @@ Now that both ends are native code we control:
    server and delivers user value immediately (native UX on the existing
    relay).
 2. **Relay second** because by then the protocol is proven from the client
-   side and the Go server remains as oracle.
+   side and the golden vectors anchor the contract.
 3. **Gateway/webrtc last** — they're the least-differentiated bits and the
    riskiest native dependency on Android.
 

@@ -24,7 +24,7 @@ Use whenever touching `relay/crates/lerdr-*`, `app/core/{network,crypto,terminal
 ## Execution Steps
 
 1. Before changing shared types or codecs, read `docs/03-protocol.md` and find the closest fixture.
-2. If behavior is ambiguous, generate a fixture from the Go implementation (`~/Projects/lerdr`, test-only export hooks) — never guess.
+2. If behavior is ambiguous, check the spec + existing fixtures — never guess. If the spec is silent, record the gap in `docs/10-spec-gaps.md` and surface it before coding.
 3. Add/adjust a vector test proving byte-parity, in both directions when applicable.
 4. Run the full fixture suite for the touched crate/module before committing.
 

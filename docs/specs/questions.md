@@ -2,7 +2,7 @@
 
 Spec for the structured-question contract between relay and client. Closes
 `docs/10-spec-gaps.md` P0-3. All line numbers cite `~/Projects/lerdr`
-(read-only oracle).
+(original Go implementation — provenance only).
 
 Sources: `internal/question/parser.go` (Interaction/Option/Other schema, id,
 parse dispatch), `internal/question/input.go` (Focus → key planning),
