@@ -1,8 +1,8 @@
-# Phase 5 — wire spec (DRAFT for joint review)
+# Phase 5 — wire spec (ratified 2026-09, joint review closed)
 
-Status: **proposal, not ratified**. Nothing in this file lands until both
-relay and app sign off. Governing rule (`AGENTS.md`): wire changes land
-only through a deliberate revision — never by drift.
+Status: **ratified** — app-side verdicts folded in below. Governing rule
+(`AGENTS.md`): wire changes land only through a deliberate revision —
+never by drift.
 
 Two independent tracks:
 
@@ -25,17 +25,23 @@ client → {"type":"client_caps", "protocol":3,
           "capabilities":[...], "preferred_inner_codec":"json"|"binary-v1"}
 ```
 
-`client_caps` is optional and sent once as the first post-handshake
-frame. A capability is live only when present on **both** lists.
-Unilateral changes: each side emits `caps_update {capabilities:[...]}`
-if support flips mid-session (e.g., herdr restarted older).
+`client_caps` is optional for the server and **emitted unconditionally**
+by the app as the first post-handshake frame; old relays answer
+`unknown_action`, which the app ignores. A capability is live only when
+present on **both** lists. Unilateral changes: each side emits
+`caps_update {capabilities:[...]}` if support flips mid-session (e.g.,
+herdr restarted older). `caps_update` is a new outbound type — app-side
+it decodes to `UnknownServerMessage` harmlessly even on old parsers.
 
-Open Q1 — app: is a separate `client_caps` frame acceptable, or do you
-prefer folding client capabilities into `e2ee_client_hello` (that is an
-e2ee v3 handshake change — bigger blast radius)?
+**Q1 verdict (app): `client_caps` post-handshake — `e2ee_client_hello`
+untouched.** The hello is hand-built JSON in `E2EEHandshake.kt` anchored
+by `crypto.handshake.*` golden vectors; any new field invalidates
+vectors and strict old parsers. A caps frame inside the encrypted
+channel is additive, and nothing capability-gated can arrive before it
+anyway.
 
-Open Q2 — app: unknown `type` values from server→client must already be
-tolerated (you run `ignoreUnknownKeys`)? `caps_update` relies on it.
+**Q2 verdict (app): confirmed.** `ServerMessageCodec` already maps
+unknown `type` to `UnknownServerMessage(type, fields)`.
 
 ## 1. Track A — new actions (app-ranked)
 
@@ -58,6 +64,10 @@ for mutations. Marks: **[M]** mutating, **[C]** coordinated per-pane,
 Maps to herdr `pane.focus`/`tab.focus`/`workspace.focus`/`agent.focus`.
 Reply: `action_receipt` (confirmed when herdr acks). Failure:
 `herdr_error` with upstream message. Declared capability `"focus"`.
+
+**`TargetRef` addition:** `workspace_id` does not exist on `TargetRef`
+today — `focus_workspace` adds it additively (empty string elsewhere;
+old decoders ignore it).
 
 ### 1.2 `pane_search` — server-side find over full scrollback
 
@@ -98,9 +108,13 @@ resp command_result {"url":"https://..."}          # or {"url":null}
 
 `row`/`col` are **viewport coordinates** of the last served frame —
 relay translates to herdr's `{viewport_row, col, content_revision,
-offset_from_bottom}`. Resolve is read-only (app can show a preview/copy/
-QR affordance); activate opens it in the desktop browser. Capability
-`"pane_links"`.
+offset_from_bottom}`. Coordinates are resolvable only inside the live
+viewport; a scrolled-back `row`/`col` refers to scrollback space and
+resolve returns `{"url":null}`. The real value of resolve is **OSC8
+hidden links** — terminals render clickable text whose URL is invisible
+in the plain text, so the app cannot regex it out of served lines.
+Resolve is read-only (app can show a preview/copy/QR affordance);
+activate opens it in the desktop browser. Capability `"pane_links"`.
 
 ### 1.5 Layout — export/apply
 
@@ -133,9 +147,10 @@ encoding for fixtures and docs. Negotiated via `preferred_inner_codec`
 in `client_caps`; server echoes the chosen codec in `caps_update`.
 Falls back to JSON whenever either side declines.
 
-Open Q4 — app: MsgPack (kmp-friendly libs) or CBOR? Or defer — this is
-the largest single item and benefits least if watch deltas already
-compress well.
+**Q4 verdict (app): CBOR if built — DEFERRED.** `kotlinx-serialization-
+cbor` is first-party and reuses the same `@Serializable` models, but
+`convo_sub` + `frame_zstd` land first; if compressed deltas kill the
+overhead, a second codec and its fixture surface are unnecessary.
 
 ### 2.2 zstd frame compression (`frame_zstd`)
 
@@ -160,8 +175,9 @@ Coalescible (like `agents`/`workspaces` snapshots); `reset:true` when
 the history was rebuilt and the client should drop its cache. Honors
 the existing generation/ref-staleness rules.
 
-Open Q5 — app: per-pane subscribe or a single `subscribe_conversations`
-covering all watched panes (fewer frames)?
+**Q5 verdict (app): per-pane subscribe/unsubscribe.** The app consumes
+one pane's conversation at a time (Feed lifecycle); bulk subscription
+wastes bandwidth on feeds never opened.
 
 ### 2.4 Upload binary chunks (`upload_binary`)
 
@@ -172,14 +188,14 @@ chunks travel as **raw binary WS frames**:
 inside the encrypted channel (same seq discipline). `upload_finish`
 unchanged.
 
-## 3. Implementation order (proposal)
+## 3. Implementation order (ratified)
 
 1. Caps revision (§0) — foundation, both tracks key off it.
 2. Track A actions in app-rank order: focus → search/selection → links
    → layout. Each ships independently behind its capability.
-3. Track B by ROI: `convo_sub` (kills polling) → `frame_zstd` (cheap,
-   big frames) → `upload_binary` (narrow path) → `inner_codec_binary`
-   (largest, defer if 2+3 land the wins).
+3. Track B: `convo_sub` → `frame_zstd` → `upload_binary`.
+   `inner_codec_binary` **deferred** pending measured wins from
+   `convo_sub` + `frame_zstd` (app recommendation).
 
 Relay-side mapping: each action routes through the coordinator like
 existing `read_pane`/`send_text`; read fences reuse `pane_read_fresh`'s
