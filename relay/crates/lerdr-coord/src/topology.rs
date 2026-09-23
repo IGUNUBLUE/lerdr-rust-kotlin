@@ -17,7 +17,8 @@
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use lerdr_core::protocol::{AgentState, HerdrFeatureStatus, Workspace, WorkspaceWorktree};
+use lerdr_core::json::MaybeNull;
+use lerdr_core::protocol::{AgentState, HerdrStatus, Workspace, WorkspaceWorktree};
 use lerdr_herdr::{AgentInfo, SessionSnapshot, WorkspaceInfo};
 
 /// `SessionCache` observation times for one pane (state.go:470-520) —
@@ -58,13 +59,13 @@ pub struct Topology {
     /// Wall-clock of the last accepted snapshot — `last_success_at` on the
     /// `inventory_status` projection (the snapshot poll *is* the inventory).
     pub(crate) accepted_at: i64,
-    /// Herdr capability/probe ledger projected into
-    /// `herdr_status.features` — the oracle's `herdrStatusPayload`
-    /// evidence map. Populated by the actor from `lerdr_herdr`
-    /// capabilities on every (re)bootstrap; empty until the first probe
-    /// lands. Survives `accept()` like `generations` — it is relay-side
-    /// evidence, not snapshot data.
-    pub herdr_features: BTreeMap<String, HerdrFeatureStatus>,
+    /// Herdr capability/probe evidence projected into `herdr_status` —
+    /// the oracle's `herdrStatusPayload`, filled field-for-field from the
+    /// `lerdr_herdr` capability report (`ServerStatus`). Populated by the
+    /// actor on every (re)bootstrap and refresh tick; `features` stays an
+    /// empty object until the first report lands. Survives `accept()`
+    /// like `generations` — it is relay-side evidence, not snapshot data.
+    pub herdr_status: HerdrStatus,
 }
 
 fn now_millis() -> i64 {
@@ -83,7 +84,12 @@ impl Default for Topology {
             generations: BTreeMap::new(),
             agent_times: BTreeMap::new(),
             accepted_at: 0,
-            herdr_features: BTreeMap::new(),
+            herdr_status: HerdrStatus {
+                // `features` decodes non-nullable on Kotlin — an empty
+                // object, never `null` (see `snapshot::herdr_status`).
+                features: MaybeNull::Value(BTreeMap::new()),
+                ..HerdrStatus::default()
+            },
         }
     }
 }
@@ -108,17 +114,16 @@ impl Topology {
         self.accepted_at = now;
     }
 
-    /// Install the capability/probe ledger the actor collected. Returns
+    /// Install the capability evidence the actor collected. Returns
     /// `true` (and bumps the revision so broadcasts republish
-    /// `herdr_status`) when the map actually changed.
-    pub fn set_herdr_features(
-        &mut self,
-        features: BTreeMap<String, HerdrFeatureStatus>,
-    ) -> bool {
-        if self.herdr_features == features {
+    /// `herdr_status`) when any field changed — an unchanged report
+    /// carries unchanged per-feature generations, so whole-struct
+    /// equality suppresses no-change republishes.
+    pub fn set_herdr_status(&mut self, status: HerdrStatus) -> bool {
+        if self.herdr_status == status {
             return false;
         }
-        self.herdr_features = features;
+        self.herdr_status = status;
         self.revision += 1;
         true
     }

@@ -165,7 +165,7 @@ fn main() -> ExitCode {
 fn run_hook(command: Commands) -> ExitCode {
     let result: Result<(), BoxError> = match command {
         Commands::Version { json } => {
-            let version = env!("CARGO_PKG_VERSION");
+            let version = lerdr_coord::release_version();
             let revision = option_env!("LERDR_REVISION").unwrap_or("dev");
             if json {
                 println!(
@@ -444,7 +444,14 @@ fn spawn_udp_ingress(
                             continue;
                         }
                     }
-                    topology.refresh().await;
+                    if kind == "startup" {
+                        // Session restore / server.live_handoff — re-assert
+                        // the transient agent view + capability evidence,
+                        // not just the snapshot.
+                        topology.startup_hook().await;
+                    } else {
+                        topology.refresh().await;
+                    }
                 }
             }
         }
@@ -472,7 +479,7 @@ fn write_support_state(runtime_dir: &std::path::Path) {
     use std::io::Write;
     let state = serde_json::json!({
         "generated_at": chrono_free_timestamp(),
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": lerdr_coord::release_version(),
         "revision": option_env!("LERDR_REVISION").unwrap_or("dev"),
         "protocol": 3,
         "readiness": "serving",

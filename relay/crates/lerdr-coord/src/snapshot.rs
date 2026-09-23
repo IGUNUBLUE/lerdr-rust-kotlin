@@ -3,6 +3,7 @@
 //! Order matters — the oracle sends `push_config` first, then the
 //! inventory/state frames, so clients see capabilities before content.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use lerdr_core::json::MaybeNull;
@@ -30,8 +31,8 @@ pub fn compose_snapshot(topology: &Topology) -> Vec<Outbound> {
         Outbound::PushConfig(Box::new(PushConfig {
             r#type: "push_config".to_owned(),
             protocol: VERSION,
-            version: env!("CARGO_PKG_VERSION").to_owned(),
-            release_version: env!("CARGO_PKG_VERSION").to_owned(),
+            version: crate::release_version().to_owned(),
+            release_version: crate::release_version().to_owned(),
             capabilities: MaybeNull::Value(CAPABILITIES.iter().map(|s| s.to_string()).collect()),
             herdr_status: status.clone(),
             ..PushConfig::default()
@@ -68,22 +69,24 @@ fn inventory_status(topology: &Topology) -> InventoryStatusMessage {
     }
 }
 
-/// `herdr_status` payload from the projection — `server_version`/`protocol`
-/// come from the snapshot envelope, `health_check` from staleness,
-/// `features` from the actor-maintained probe ledger
-/// (`Topology::herdr_features`). The map must be an object, never `null`:
-/// the oracle's `herdrStatusPayload` always allocates it, and the Kotlin
-/// model types it non-nullable — `null` fails decode, drops `push_config`,
-/// and the inventory gate then swallows every `agents`/`workspaces` frame.
+/// `herdr_status` payload from the projection — the actor-maintained
+/// capability evidence (`Topology::herdr_status`, the oracle's
+/// `ServerStatus` → `herdrStatusPayload`), with `server_version`/
+/// `protocol` overridden by the snapshot envelope: `accept()` refreshes
+/// those on reconnect before the next capability report lands, and they
+/// are the same server-reported values. `features` must be an object,
+/// never `null`: the Kotlin model types it non-nullable — `null` fails
+/// decode, drops `push_config`, and the inventory gate then swallows
+/// every `agents`/`workspaces` frame.
 fn herdr_status(topology: &Topology) -> HerdrStatus {
-    HerdrStatus {
-        server_version: topology.snapshot.version.clone(),
-        server_protocol: topology.snapshot.protocol as i64,
-        server_protocol_known: true,
-        health_check: Some(!topology.stale),
-        features: MaybeNull::Value(topology.herdr_features.clone()),
-        ..HerdrStatus::default()
+    let mut status = topology.herdr_status.clone();
+    status.server_version = topology.snapshot.version.clone();
+    status.server_protocol = topology.snapshot.protocol as i64;
+    status.server_protocol_known = topology.snapshot.protocol > 0 || status.server_protocol_known;
+    if status.features.is_null() {
+        status.features = MaybeNull::Value(BTreeMap::new());
     }
+    status
 }
 
 /// Broadcast frames for one topology revision — the per-connection

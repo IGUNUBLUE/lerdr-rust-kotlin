@@ -31,14 +31,19 @@
 //! # }
 //! ```
 
+pub mod capabilities;
+mod cli;
 mod client;
 mod error;
 mod events;
+pub mod schema;
 mod singleflight;
 mod transport;
 mod types;
+mod view;
 mod wire;
 
+pub use capabilities::{CapabilityReport, FeatureEvidence, FeatureState};
 pub use client::{Client, ClientConfig};
 pub use error::{
     BootstrapError, DispatchPhase, EventStreamError, HerdrError, SubscribeError,
@@ -49,6 +54,10 @@ pub use events::{
     EventStream, EventSupervisor, Subscription, SupervisorSignal, SupervisorStream,
     EVENTS_REQUEST_ID,
 };
+pub use schema::{SchemaError, SchemaRegistry, SchemaSource};
 pub use transport::{default_socket_path, BoxIo, Io, Transport, UnixTransport};
 pub use types::*;
+pub use view::{
+    assert_agent_view, lerdr_agent_view, ViewAssertOutcome, AGENT_VIEW_LABEL, AGENT_VIEW_SOURCE,
+};
 pub use wire::{DEFAULT_REQUEST_TIMEOUT, MAX_LINE_BYTES};

@@ -334,6 +334,7 @@ pub struct Pong {
 /// Optional capabilities the server advertises in `pong`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ServerCapabilities {
+    #[serde(default)]
     pub live_handoff: bool,
     #[serde(default)]
     pub detached_server_daemon: bool,

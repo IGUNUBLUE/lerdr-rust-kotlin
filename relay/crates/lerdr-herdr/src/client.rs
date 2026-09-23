@@ -19,11 +19,16 @@ use tokio::sync::Semaphore;
 use tokio::time::Instant;
 use tracing::instrument;
 
+use crate::capabilities::{
+    features, CapabilityLedger, CapabilityReport, FeatureEvidence, FeatureState, NOTED_METHODS,
+    UNKNOWN_METHOD_CODES,
+};
 use crate::error::{BootstrapError, DispatchPhase, HerdrError, SubscribeError};
 use crate::events::{
     self, topology_subscriptions, Bootstrap, Event, EventStream, EventSupervisor, Subscription,
     SupervisorStream, EVENTS_REQUEST_ID,
 };
+use crate::schema::{SchemaError, SchemaRegistry, SchemaSource};
 use crate::singleflight::Singleflight;
 use crate::transport::{default_socket_path, Transport, UnixTransport};
 use crate::types::*;
@@ -51,6 +56,14 @@ pub struct ClientConfig {
     pub read_retry: bool,
     /// Request-id prefix (`lerdr-api-N`).
     pub id_prefix: String,
+    /// Explicit `herdr` binary for CLI introspection (`api schema`,
+    /// `--version`). `None` resolves `HERDR_BIN`/`HERDR_BIN_PATH`, `PATH`,
+    /// then the known install locations — `findHerdrBin` in the oracle.
+    pub herdr_bin: Option<PathBuf>,
+    /// Where the API schema comes from at capability refresh. Default
+    /// [`SchemaSource::Cli`]; tests inject [`SchemaSource::Static`] or
+    /// [`SchemaSource::Disabled`] to stay off the host's `herdr` binary.
+    pub schema_source: SchemaSource,
 }
 
 impl Default for ClientConfig {
@@ -62,6 +75,8 @@ impl Default for ClientConfig {
             event_queue_capacity: 1024,
             read_retry: true,
             id_prefix: "lerdr-api".to_string(),
+            herdr_bin: None,
+            schema_source: SchemaSource::default(),
         }
     }
 }
@@ -95,6 +110,12 @@ struct ClientInner {
     seq: AtomicU64,
     flights: Singleflight,
     workspace_reordered: AtomicU8,
+    /// The capability ledger — last published report plus observed notes.
+    /// `std::sync::Mutex`: mutations are short map writes, never held across
+    /// an `.await`.
+    capabilities: std::sync::Mutex<CapabilityLedger>,
+    /// Serializes `collect_capabilities` refreshes (`refreshMu`).
+    capability_refresh: tokio::sync::Mutex<()>,
 }
 
 /// A client for the Herdr socket API. Cheap to clone — all state is shared.
@@ -118,6 +139,8 @@ impl Client {
                 seq: AtomicU64::new(0),
                 flights: Singleflight::default(),
                 workspace_reordered: AtomicU8::new(WS_REORDERED_UNKNOWN),
+                capabilities: std::sync::Mutex::new(CapabilityLedger::default()),
+                capability_refresh: tokio::sync::Mutex::new(()),
             }),
         }
     }
@@ -167,8 +190,13 @@ impl Client {
         method: &str,
         params: &P,
     ) -> Result<Value, HerdrError> {
-        self.call_inner(method, params, Some(self.inner.config.request_timeout))
-            .await
+        self.call_inner(
+            method,
+            params,
+            Some(self.inner.config.request_timeout),
+            true,
+        )
+        .await
     }
 
     /// Like [`call`](Self::call) with an explicit deadline — `None` waits
@@ -179,7 +207,25 @@ impl Client {
         params: &P,
         timeout: Option<Duration>,
     ) -> Result<Value, HerdrError> {
-        self.call_inner(method, params, timeout).await
+        self.call_inner(method, params, timeout, true).await
+    }
+
+    /// A request that leaves no capability note — the capability probes
+    /// adjudicate their own evidence, and a note written mid-collect would
+    /// be tagged with the *previous* server's identity (the ledger only
+    /// learns the new one at `apply_refresh`).
+    pub(crate) async fn call_untracked<P: Serialize + Sync>(
+        &self,
+        method: &str,
+        params: &P,
+    ) -> Result<Value, HerdrError> {
+        self.call_inner(
+            method,
+            params,
+            Some(self.inner.config.request_timeout),
+            false,
+        )
+        .await
     }
 
     async fn call_inner<P: Serialize + Sync>(
@@ -187,7 +233,12 @@ impl Client {
         method: &str,
         params: &P,
         timeout: Option<Duration>,
+        track: bool,
     ) -> Result<Value, HerdrError> {
+        // `epoch := c.capabilityEpoch()` — captured before dispatch so a
+        // reply arriving after a bootstrap invalidation is dropped as
+        // previous-server evidence.
+        let epoch = self.capability_epoch();
         let deadline = Instant::now() + timeout.unwrap_or(events::FAR_FUTURE);
         let request_id = self.next_id();
         let payload = wire::encode_request(&request_id, method, params)?;
@@ -225,8 +276,16 @@ impl Client {
             .await
             .map_err(HerdrError::dispatched_io)?;
         let response = wire::decode_response(&line)?;
-        wire::classify_response(response, &request_id)
-            .map(|raw| serde_json::from_str(raw.get()).unwrap_or(Value::Null))
+        let result = wire::classify_response(response, &request_id)
+            .map(|raw| serde_json::from_str(raw.get()).unwrap_or(Value::Null));
+        // `noteSocketFeature` — a definitive answer about a tracked method
+        // is capability evidence, whatever the caller does with it. The
+        // epoch was captured before dispatch: a bootstrap that ran
+        // meanwhile means this reply came from the previous server.
+        if track && NOTED_METHODS.contains(&method) {
+            self.note_socket_feature(epoch, method, &result);
+        }
+        result
     }
 
     /// Route through singleflight when `method` is read-only.
@@ -398,15 +457,27 @@ impl Client {
         lines: u32,
         format: ReadFormat,
     ) -> Result<PaneReadResult, HerdrError> {
+        self.pane_read_opts(&PaneReadParams::new(pane_id, source, lines, format))
+            .await
+    }
+
+    /// `pane.read` with full param control — callers that need an explicit
+    /// `strip_ansi` (e.g. ANSI reads that still strip) build
+    /// [`PaneReadParams`] directly. Singleflight keys on the whole
+    /// serialized tuple `(pane_id, source, lines, format, strip_ansi)`, so
+    /// two reads differing in any field never collapse.
+    pub async fn pane_read_opts(
+        &self,
+        params: &PaneReadParams,
+    ) -> Result<PaneReadResult, HerdrError> {
         #[derive(serde::Deserialize)]
         struct R {
             read: PaneReadResult,
         }
-        let params = PaneReadParams::new(pane_id, source, lines, format);
         let mut last_err = None;
         for attempt in 0..2u8 {
             match self
-                .call_result::<_, R>("pane.read", &params, "pane_read")
+                .call_result::<_, R>("pane.read", params, "pane_read")
                 .await
             {
                 Ok(r) => return Ok(r.read),
@@ -667,26 +738,51 @@ impl Client {
     }
 
     /// The topology subscription set with the `workspace.reordered` fallback:
-    /// attempt including it while its capability is not known-unsupported, and
-    /// on Herdr's pre-dispatch rejection resubscribe without it — the Go
-    /// client's `Bootstrap` behavior.
+    /// attempt including it while its capability is not known-unsupported
+    /// (`ShouldAttemptWorkspaceReordered`), and on Herdr's pre-dispatch
+    /// rejection resubscribe without it — the Go client's `Bootstrap`
+    /// behavior. The attempt's outcome is recorded into the ledger
+    /// (`subscription_acknowledged` / `subscription_rejected`).
+    ///
+    /// Called standalone, the ledger's published verdict gates the attempt —
+    /// a schema `schema_absent` or an earlier same-server rejection skips
+    /// the doomed round-trip. Called through [`Client::bootstrap_with`] the
+    /// live verdicts have just been invalidated (`reconnect_required`), so
+    /// the consult reads `unknown` and the variant is re-probed — the
+    /// oracle's reset→attempt ordering verbatim.
     pub async fn subscribe_topology(&self) -> Result<EventStream, SubscribeError> {
-        // Optimistic probe per bootstrap: reconnects may face a different
-        // server build.
+        let attempt = self.should_attempt_workspace_reordered();
+        // `None`/`Some(_)` from `workspace_reordered_supported` describes
+        // this bootstrap's probe — a skipped attempt probed nothing.
         self.inner
             .workspace_reordered
             .store(WS_REORDERED_UNKNOWN, Ordering::Relaxed);
-        match self.subscribe_events(&topology_subscriptions(true)).await {
+        match self
+            .subscribe_events(&topology_subscriptions(attempt))
+            .await
+        {
             Ok(stream) => {
-                self.inner
-                    .workspace_reordered
-                    .store(WS_REORDERED_SUPPORTED, Ordering::Relaxed);
+                if attempt {
+                    self.inner
+                        .workspace_reordered
+                        .store(WS_REORDERED_SUPPORTED, Ordering::Relaxed);
+                    self.note_feature(
+                        features::WORKSPACE_REORDERED,
+                        FeatureState::Supported,
+                        "subscription_acknowledged",
+                    );
+                }
                 Ok(stream)
             }
-            Err(err) if err.is_workspace_reordered_rejected() => {
+            Err(err) if attempt && err.is_workspace_reordered_rejected() => {
                 self.inner
                     .workspace_reordered
                     .store(WS_REORDERED_UNSUPPORTED, Ordering::Relaxed);
+                self.note_feature(
+                    features::WORKSPACE_REORDERED,
+                    FeatureState::Unsupported,
+                    "subscription_rejected",
+                );
                 self.subscribe_events(&topology_subscriptions(false)).await
             }
             Err(err) => Err(err),
@@ -715,6 +811,13 @@ impl Client {
         subscriptions: &[Subscription],
         topology_fallback: bool,
     ) -> Result<Bootstrap, BootstrapError> {
+        // `workspaceReorderedReset` → `InvalidateLiveCapabilities`: a
+        // (re)connect may answer with a different server build, so
+        // socket-observed verdicts drop to `reconnect_required` before the
+        // subscription consult — which therefore attempts
+        // `workspace.reordered` again unless a *standalone* caller left a
+        // same-server verdict in place.
+        self.invalidate_live_capabilities();
         let mut stream = if topology_fallback {
             self.subscribe_topology()
                 .await
@@ -751,6 +854,154 @@ impl Client {
             WS_REORDERED_UNSUPPORTED => Some(false),
             _ => None,
         }
+    }
+
+    // -- capability ledger (`herdrCapabilities.go`) -------------------------
+
+    /// Recompute the capability report: introspect `herdr api schema --json`
+    /// (or the configured [`SchemaSource`]), fall back to a single ping
+    /// probe, overlay observed notes, publish the diff, and return the
+    /// report. Serialized internally — concurrent callers share one
+    /// refresh. Never fails: every failure mode degrades features to
+    /// `unknown` rather than aborting.
+    pub async fn collect_capabilities(&self) -> CapabilityReport {
+        crate::capabilities::collect_capabilities(self).await
+    }
+
+    /// The last published report — zero before the first
+    /// [`Client::collect_capabilities`].
+    pub fn capability_status(&self) -> CapabilityReport {
+        self.ledger().report().clone()
+    }
+
+    /// Evidence for one feature (`FeatureState::Unknown` when untouched).
+    pub fn feature(&self, name: &str) -> FeatureEvidence {
+        self.capability_status().feature(name)
+    }
+
+    /// `Supports` — true only on `FeatureState::Supported`.
+    pub fn supports(&self, name: &str) -> bool {
+        self.feature(name).state == FeatureState::Supported
+    }
+
+    /// `ShouldAttemptWorkspaceReordered` — attempt unless known-unsupported.
+    pub fn should_attempt_workspace_reordered(&self) -> bool {
+        self.feature(features::WORKSPACE_REORDERED).state != FeatureState::Unsupported
+    }
+
+    /// `InvalidateLiveCapabilities` — run at the top of every bootstrap.
+    /// Socket-observed verdicts may describe a different build now
+    /// (`server.live_handoff`, socket retarget), so they reset to
+    /// `unknown`/`reconnect_required` until the next refresh re-derives
+    /// them. Identity-scoped notes survive on the ledger.
+    pub(crate) fn invalidate_live_capabilities(&self) {
+        self.ledger().invalidate_live();
+    }
+
+    /// Record a caller-supplied verdict for `name` (replay enrichers etc.).
+    pub fn note_feature(&self, name: &str, state: FeatureState, reason: &str) {
+        self.ledger().note(name, state, reason);
+    }
+
+    /// `herdr api schema --json` — parsed into a [`SchemaRegistry`]. The
+    /// raw method catalog for anything that wants more than the curated
+    /// feature list; `collect_capabilities` consumes it internally.
+    pub async fn api_schema(&self) -> Result<SchemaRegistry, SchemaError> {
+        match &self.inner.config.schema_source {
+            SchemaSource::Static(reg) => Ok(reg.clone()),
+            SchemaSource::Disabled => {
+                Err(SchemaError::Cli("schema introspection disabled".to_owned()))
+            }
+            SchemaSource::Cli => {
+                let bin = crate::cli::resolve_herdr_bin(self.inner.config.herdr_bin.as_deref());
+                let out = crate::cli::run_cli(
+                    &bin,
+                    self.inner.transport.socket_path_hint().as_deref(),
+                    &["api", "schema", "--json"],
+                    self.inner.config.request_timeout,
+                )
+                .await
+                .map_err(|e| SchemaError::Cli(e.to_string()))?;
+                let registry = SchemaRegistry::parse(&out)?;
+                if registry.is_usable() {
+                    Ok(registry)
+                } else {
+                    Err(SchemaError::Empty)
+                }
+            }
+        }
+    }
+
+    /// A definitive socket answer for a tracked method is capability
+    /// evidence (`noteSocketFeature`): success supports it, an
+    /// unknown-method refusal refutes it. `DispatchedUnknown` is
+    /// deliberately silent — the method may have applied. `epoch` is the
+    /// ledger epoch captured at dispatch; the note is dropped when a
+    /// bootstrap has since invalidated the live set.
+    fn note_socket_feature(&self, epoch: u64, name: &str, result: &Result<Value, HerdrError>) {
+        let verdict = match result {
+            Ok(_) => Some((FeatureState::Supported, "operation_succeeded")),
+            Err(HerdrError::Refused { code, .. })
+                if UNKNOWN_METHOD_CODES.contains(&code.as_str()) =>
+            {
+                Some((FeatureState::Unsupported, "method_not_supported"))
+            }
+            _ => None,
+        };
+        if let Some((state, reason)) = verdict {
+            self.ledger().note_at(epoch, name, state, reason);
+        }
+    }
+
+    // -- ledger plumbing for `capabilities` -------------------------------
+
+    fn ledger(&self) -> std::sync::MutexGuard<'_, CapabilityLedger> {
+        self.inner
+            .capabilities
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub(crate) async fn capability_refresh_lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.inner.capability_refresh.lock().await
+    }
+
+    /// `capabilityEpoch` — the ledger's live epoch, captured before a
+    /// dispatch or refresh so stale results are dropped.
+    pub(crate) fn capability_epoch(&self) -> u64 {
+        self.ledger().live_epoch()
+    }
+
+    pub(crate) fn herdr_bin(&self) -> Option<PathBuf> {
+        self.inner.config.herdr_bin.clone()
+    }
+
+    pub(crate) fn socket_path_hint(&self) -> Option<PathBuf> {
+        self.inner.transport.socket_path_hint()
+    }
+
+    pub(crate) fn ledger_note_for(
+        &self,
+        name: &str,
+        identity: &str,
+    ) -> Option<(FeatureState, String)> {
+        self.ledger().fresh_note(name, identity)
+    }
+
+    pub(crate) fn ledger_notes_for(&self, identity: &str) -> Vec<(String, FeatureState, String)> {
+        self.ledger().fresh_notes(identity)
+    }
+
+    /// `applyRefresh` — publish `report` if it is still current (epoch
+    /// match) and return the now-current report (generation bumps applied).
+    pub(crate) fn apply_capability_report(
+        &self,
+        epoch: u64,
+        report: CapabilityReport,
+    ) -> CapabilityReport {
+        let mut ledger = self.ledger();
+        ledger.apply_refresh(epoch, report);
+        ledger.report().clone()
     }
 }
 

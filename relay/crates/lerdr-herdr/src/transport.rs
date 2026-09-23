@@ -32,6 +32,14 @@ pub trait Transport: Send + Sync + 'static {
 
     /// Short human-readable target for tracing (`unix:/path/herdr.sock`).
     fn describe(&self) -> String;
+
+    /// The socket path this transport dials, when it has one — exported into
+    /// the `herdr` CLI's environment as `HERDR_SOCKET_PATH` so session-aware
+    /// subcommands (`api schema`, `--version` is unaffected) target the same
+    /// server. Default `None` for in-memory test transports.
+    fn socket_path_hint(&self) -> Option<PathBuf> {
+        None
+    }
 }
 
 /// Unix domain socket transport (`tokio::net::UnixStream`).
@@ -61,6 +69,10 @@ impl Transport for UnixTransport {
 
     fn describe(&self) -> String {
         format!("unix:{}", self.path.display())
+    }
+
+    fn socket_path_hint(&self) -> Option<PathBuf> {
+        Some(self.path.clone())
     }
 }
 
