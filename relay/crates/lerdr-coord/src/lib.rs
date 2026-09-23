@@ -41,6 +41,7 @@ mod classify;
 pub mod conversation;
 mod fingerprint;
 mod history;
+pub mod release;
 mod router;
 mod snapshot;
 mod topology;
