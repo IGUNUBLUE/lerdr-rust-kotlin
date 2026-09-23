@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use lerdr_core::protocol::{AgentState, Workspace, WorkspaceWorktree};
+use lerdr_core::protocol::{AgentState, HerdrFeatureStatus, Workspace, WorkspaceWorktree};
 use lerdr_herdr::{AgentInfo, SessionSnapshot, WorkspaceInfo};
 
 /// `SessionCache` observation times for one pane (state.go:470-520) —
@@ -58,6 +58,13 @@ pub struct Topology {
     /// Wall-clock of the last accepted snapshot — `last_success_at` on the
     /// `inventory_status` projection (the snapshot poll *is* the inventory).
     pub(crate) accepted_at: i64,
+    /// Herdr capability/probe ledger projected into
+    /// `herdr_status.features` — the oracle's `herdrStatusPayload`
+    /// evidence map. Populated by the actor from `lerdr_herdr`
+    /// capabilities on every (re)bootstrap; empty until the first probe
+    /// lands. Survives `accept()` like `generations` — it is relay-side
+    /// evidence, not snapshot data.
+    pub herdr_features: BTreeMap<String, HerdrFeatureStatus>,
 }
 
 fn now_millis() -> i64 {
@@ -76,6 +83,7 @@ impl Default for Topology {
             generations: BTreeMap::new(),
             agent_times: BTreeMap::new(),
             accepted_at: 0,
+            herdr_features: BTreeMap::new(),
         }
     }
 }
@@ -98,6 +106,21 @@ impl Topology {
         self.revision += 1;
         self.stale = false;
         self.accepted_at = now;
+    }
+
+    /// Install the capability/probe ledger the actor collected. Returns
+    /// `true` (and bumps the revision so broadcasts republish
+    /// `herdr_status`) when the map actually changed.
+    pub fn set_herdr_features(
+        &mut self,
+        features: BTreeMap<String, HerdrFeatureStatus>,
+    ) -> bool {
+        if self.herdr_features == features {
+            return false;
+        }
+        self.herdr_features = features;
+        self.revision += 1;
+        true
     }
 
     /// Mark the view stale (event stream down). Returns `true` when the

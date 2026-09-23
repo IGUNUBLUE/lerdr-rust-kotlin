@@ -202,6 +202,7 @@ fn clone_topology(state: &Topology) -> Topology {
         generations: state.generations.clone(),
         agent_times: state.agent_times.clone(),
         accepted_at: state.accepted_at,
+        herdr_features: state.herdr_features.clone(),
     }
 }
 

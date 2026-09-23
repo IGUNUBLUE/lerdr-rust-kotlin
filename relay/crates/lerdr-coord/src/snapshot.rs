@@ -69,18 +69,19 @@ fn inventory_status(topology: &Topology) -> InventoryStatusMessage {
 }
 
 /// `herdr_status` payload from the projection — `server_version`/`protocol`
-/// come from the snapshot envelope, `health_check` from staleness.
-/// `features` must be an (empty) object, never `null`: the oracle's
-/// `herdrStatusPayload` always allocates the map, and the Kotlin model
-/// types it non-nullable — `null` fails decode, drops `push_config`, and
-/// the inventory gate then swallows every `agents`/`workspaces` frame.
+/// come from the snapshot envelope, `health_check` from staleness,
+/// `features` from the actor-maintained probe ledger
+/// (`Topology::herdr_features`). The map must be an object, never `null`:
+/// the oracle's `herdrStatusPayload` always allocates it, and the Kotlin
+/// model types it non-nullable — `null` fails decode, drops `push_config`,
+/// and the inventory gate then swallows every `agents`/`workspaces` frame.
 fn herdr_status(topology: &Topology) -> HerdrStatus {
     HerdrStatus {
         server_version: topology.snapshot.version.clone(),
         server_protocol: topology.snapshot.protocol as i64,
         server_protocol_known: true,
         health_check: Some(!topology.stale),
-        features: MaybeNull::Value(Default::default()),
+        features: MaybeNull::Value(topology.herdr_features.clone()),
         ..HerdrStatus::default()
     }
 }
