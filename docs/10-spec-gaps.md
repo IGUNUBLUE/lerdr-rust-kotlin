@@ -692,3 +692,54 @@ on `canControl` (the oracle's `readOnlyRelayIds` behavior).
 Still open (next wave): voice input, attachment ingress UX, update
 check, diagnostics screen, OSC-52 clipboard, hardware-keyboard map,
 swipe-to-switch-pane, workspace-row reorder surface.
+
+## Round 16 — Wave-2 oracle-parity seams: viewed pane, acknowledge, self-update (2026)
+
+Audit found three oracle behaviors the app never sent; all are
+repository seams + lifecycle wiring rather than protocol changes
+(protocol v3 already covers every frame).
+
+- **`push_viewed_pane`** (`SessionRepository.setViewedPane` +
+  `setLocked`, fed by `TerminalViewModel` init/cleared and
+  `LerdrApp`'s `lockState.locked` collector). Matches the oracle's
+  App-level `$effect` exactly: signature =
+  `relay:pane:terminal:agent_session:generation`, non-empty only while
+  visible + unlocked + `server_session_id == "primary"` + relay
+  `connected`; a change pushes `visible:false, unlocked:!locked` to the
+  previous relay then `visible:true, unlocked:true, target` to the new
+  one. Reactive like the oracle — agent regeneration, reconnect, lock,
+  and hide re-derive via `agents`/`connections` collectors under
+  `start()`. Tab switches to Feed/Files clear it (the oracle gates on
+  `view === 'terminal'`).
+- **`acknowledge_pane` on open** — `FeedViewModel.init` calls
+  `acknowledgePane` for non-reader devices (the oracle's `openAgent`
+  gate); `AgentStore.acknowledgeDone` adds the oracle's optimistic
+  `done`→`idle` flip before the command lands.
+- **Relay self-update** — `checkUpdate`/`installUpdate` on
+  `SessionRepository`: `self_update`-gated, 30 s timeout, `data.update`
+  folds into the connection row on success **and** refusal —
+  `CommandException` grew a `data` payload for that. `installUpdate`
+  mirrors `installRelayUpdate`: reads the expected version/revision
+  from `connection.update` (`available && can_install &&
+  target_revision` else `CommandException(reason)`), remembers a
+  pending install, and `reconcilePendingUpdates` declares completion
+  when a reconnect reports `releaseVersion` + `-dirty`-stripped
+  `revision` matching the target (the restart dropped the
+  `command_result`). The oracle's auto-check effect is ported:
+  `check_update` fires once per `relay:version:revision:appVersion`
+  identity on connect (needs `buildConfig = true` for VERSION_NAME).
+  UI lands on the Devices card: `updateStatus`'s full state vocabulary
+  (checking/available/blocked/scheduled/preparing/installing/
+  restarting/succeeded/rolled_back/failed + up-to-date fallback),
+  warning/danger tints, Check + controller-gated Update actions,
+  `shortRevision` port, live-region announcements.
+- **Tests** — `SessionRepositoryTest` +11: exact target frame, dedup,
+  clear-on-leave, lock clear/republish, non-primary gate, hide-clear,
+  regeneration repush, capability refusal, `check_update` payload fold,
+  install expected-fields, refusal payload application. DevicesSection
+  goldens +3 (available/failed/manual-bootstrap).
+
+Deferred: workspace-row reorder (oracle `WorkspaceManager`), feed
+diagnostics surface, OSC-52 clipboard, hardware-keyboard map, voice
+input, attachment ingress, `deploy_app_update` (phone-side app deploy
+— desktop-origin concept), swipe-to-switch-pane.
