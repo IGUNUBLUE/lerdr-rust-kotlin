@@ -891,6 +891,14 @@ self-update worker health-checks it post-swap, and `install_update` is a
 live routed action the oracle still ships. Those remain planned work
 (S9), not part of the skipped web/gateway surface.
 
+**Tailnet exposure** stays script-based: `tailscale-serve.sh` /
+`tailscale-service.sh` / `plugin-tailscale-setup.sh` were already ported
+(path-only diffs), wired as the `tailscale-setup` manifest command and
+listed in release `REQUIRED_FILES`. A native `tailscaled` LocalAPI
+serve-config path was considered and declined — it would duplicate the
+script path with a new unsocketed API surface and no oracle to shadow
+against.
+
 ### Resolved this round
 
 - **`session_name` title resolver** (`conversation/resolver.rs`) —
