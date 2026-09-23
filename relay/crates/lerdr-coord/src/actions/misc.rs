@@ -329,7 +329,7 @@ impl UpdateManager {
             release_root,
             runtime_dir: runtime_dir(),
             herdr_bin,
-            version: env!("CARGO_PKG_VERSION").to_owned(),
+            version: crate::release_version().to_owned(),
             revision: option_env!("LERDR_REVISION").unwrap_or("dev").to_owned(),
             health_url: format!("http://127.0.0.1:{port}/healthz"),
             api_base: CANONICAL_API.to_owned(),
@@ -1410,7 +1410,7 @@ pub(crate) async fn check_update(
 ) -> Vec<Outbound> {
     let checking = update_status_frame(serde_json::json!({
         "state": "checking",
-        "current_version": env!("CARGO_PKG_VERSION"),
+        "current_version": crate::release_version(),
         "current_revision": option_env!("LERDR_REVISION").unwrap_or("dev"),
     }));
     // `s.hub.Broadcast` — peer sessions see the check begin too.
