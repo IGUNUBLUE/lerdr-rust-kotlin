@@ -919,12 +919,17 @@ parseable frame with no emitter, matching post-removal oracle behavior.
 
 ### Still open
 
-- **Release-management subcommands** — `release-manifest` /
-  `verify-release` / `activate-release` / `seal-release` /
-  `prune-releases` exist in `cmd/lerdr` but not yet in `lerdr-relay`
-  (in flight — S8); `plugin/install.sh` full installs stay blocked
-  until then; the scripts' probe→fallback paths cover the interim.
-  `support-state.json` still lacks `release_directory`.
+- **Release-management subcommands** — resolved (S8, `release.rs`):
+  all five subcommands (`release-manifest`, `verify-release`,
+  `activate-release`, `seal-release`, `prune-releases`) ported with
+  oracle CLI shapes and sync dispatch; `support-state.json` emits
+  `release_directory`; `version --json` matches `{version, revision,
+  target}`. **Declared divergence:** Go's `release.Verify` requires a
+  non-empty `web_hash` (web-bundle builds); the Rust verifier enforces
+  `web_hash` only when `web/` entries exist — matching
+  `scripts/release-manifest.py`, since Rust tarballs ship no web
+  bundle. Cross-verified: Python manifests verify under Rust and vice
+  versa.
 - **Read single-flight** — unchanged declared delta (internal RPC
   economy, not a wire difference).
 - **Go-only projection keys** — `pane_revision`/`tokens`/`state_labels`/
