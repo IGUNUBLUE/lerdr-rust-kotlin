@@ -27,8 +27,11 @@ client → {"type":"client_caps", "protocol":3,
 
 `client_caps` is optional for the server and **emitted unconditionally**
 by the app as the first post-handshake frame; old relays answer
-`unknown_action`, which the app ignores. A capability is live only when
-present on **both** lists. Unilateral changes: each side emits
+`unknown_action`, which the app ignores. The relay replies with a
+`caps_update` carrying the **server's advertised list** — the symmetric
+declaration, so the client learns the live set even if it connected
+before the latest flip. A capability is live only when present on
+**both** lists. Unilateral changes: each side emits
 `caps_update {capabilities:[...]}` if support flips mid-session (e.g.,
 herdr restarted older). `caps_update` is a new outbound type — app-side
 it decodes to `UnknownServerMessage` harmlessly even on old parsers.
@@ -77,13 +80,17 @@ req  {"type":"pane_search","target":{...},"query":"panic",
       "cursor":{"row":<u32>,"col":<u16>},
       "previous":{"start":{...},"end":{...}}|null}
 resp command_result {"matches":[{"start":{"row","col"},
-      "end":{"row","col"}}], "content_revision":<u64>}
+      "end":{"row","col"}}], "content_revision":<u64>,
+      "total":<u64>, "current":<u64>, "current_global":<u64>}
 ```
 
 Maps to herdr `pane.copy_search`. The relay injects the pane's current
 upstream `content_revision` as the fence — app never sends it (the
-served watch watermark is authoritative relay-side). Empty `matches` =
-no hit. Capability `"pane_search"`. Read-only.
+served watch watermark is authoritative relay-side; an unobserved
+watermark probes via unfenced `pane.copy_motion`, `stale_content`
+refusals re-probe and retry once). Empty `matches` = no hit. The
+`total`/`current`/`current_global` fields are upstream match-position
+metadata, additive beyond the base shape (S13 implementation).
 
 ### 1.3 `pane_selection_read` — read an arbitrary range
 
@@ -100,21 +107,29 @@ Capability `"pane_search"` (same family). Read-only.
 ```json
 req  {"type":"pane_link_resolve","target":{...},
       "row":<u16>,"col":<u16>}
-resp command_result {"url":"https://..."}          # or {"url":null}
+resp command_result {"regions":[{"start":{"row","col"},
+      "end":{"row","col"}}...]}                    # cell bounds
 
      {"type":"pane_link_activate","target":{...},
       "row":<u16>,"col":<u16>}                     [M,C]
+resp command_result {"handled":<bool>, "url":"https://..."|null}
 ```
 
 `row`/`col` are **viewport coordinates** of the last served frame —
 relay translates to herdr's `{viewport_row, col, content_revision,
 offset_from_bottom}`. Coordinates are resolvable only inside the live
 viewport; a scrolled-back `row`/`col` refers to scrollback space and
-resolve returns `{"url":null}`. The real value of resolve is **OSC8
-hidden links** — terminals render clickable text whose URL is invisible
-in the plain text, so the app cannot regex it out of served lines.
-Resolve is read-only (app can show a preview/copy/QR affordance);
-activate opens it in the desktop browser. Capability `"pane_links"`.
+resolve returns empty `regions`.
+
+**Implementation correction (S13):** herdr 0.9.1's `pane.link.resolve`
+exposes **cell regions only** — it does not return the URL. The URL
+surfaces on `pane.link.activate` (`{handled, url}`). So resolve = "is
+there a link here / where does it span" (highlight affordance), and
+activate = open it on the desktop browser and report what it was. The
+real value of the pair is **OSC8 hidden links** — terminals render
+clickable text whose URL is invisible in the plain text, so the app
+cannot regex it out of served lines. Resolve is read-only; activate is
+mutating. Capability `"pane_links"`.
 
 ### 1.5 Layout — export/apply
 
