@@ -1126,3 +1126,31 @@ through the e2ee pipe to the router, malformed header evicts,
 `chunk_encoding` stamp follows announce/retract, error results never
 stamped) — fmt/clippy `-D warnings` clean, `shadow_diff.py` core/watch/
 semantic all IDENTICAL, frozen vectors untouched.
+
+## Round 20 — Phase-5 E2E epilogue (2026)
+
+- **App-side landed** (`dc7ade1` Track A, `8de761c` Track B — 27 files,
+  +947): `client_caps` post-handshake unconditional, `caps_update`
+  typed + `applyCapsUpdate` mid-session advertised replacement,
+  `capabilityLive` gate in `RelayConnection`, 10 gated repository
+  methods, `sendBytes` binary path that bypasses the send buffer but
+  refuses while JSON is queued (ordering in the shared seq domain),
+  FIFO ack correlation validating `file_index`/`next_sequence`/
+  `received_bytes`, zstd-jni 1.5.7-16 (compileOnly + @aar, all ABIs),
+  `FeedViewModel` convo_sub with reset-replace/append-dedup/stale-
+  generation-drop and polling fallback.
+- **Live-verified against `:8377`**: `caps_update{caps=22}`,
+  `pane_content` `encoding:zstd` inflate round-trip (1865 chars),
+  `conversation_update reset:true` 80 messages, `upload_begin_result`
+  `chunk_encoding:binary`, `0x03` chunk ack `request_id:""` +
+  `next_sequence:1` + `received_bytes:42` — session healthy throughout.
+- **Coexistence fix** (`7febd29`): `agent.view.set` asserts narrowed to
+  the documented loss points — first `Synced` (bootstrap) and the
+  `[[startup]]` hook. Resubscribe `Synced`s collect capabilities only;
+  the mid-session stomp on `hhdebb.herdr-radar`'s view (~4.4h hold,
+  observed live) cannot recur.
+- Roadmap `docs/05` Phase-5 marked landed; `inner_codec_binary` stays
+  deferred pending measured `convo_sub`+`frame_zstd` wins.
+
+Phase-5 is closed: every ratified capability is implemented,
+negotiated, and exercised end-to-end on both sides.

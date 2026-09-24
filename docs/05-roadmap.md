@@ -105,15 +105,26 @@ stands: both halves share fixtures and the spec.
 
 ## Phase 5 — Protocol v2 (post-parity improvements, negotiated)
 
-Now that both ends are native code we control:
-- Binary inner codec (the E2EE path already supports binary frames —
-  `CodecBinary` exists; inner payload JSON→binary is the ~37% win).
-- Pre-seal compression for pane frames (zstd — deltas already compress
-  well, frames don't).
-- Conversation **subscriptions** (push instead of `get_conversation_history`
-  polling).
-- Upload binary chunks (today base64-in-JSON).
-- Capability negotiation revision.
+**Landed end-to-end both sides** — spec ratified in `docs/13`, relay
+through `3b86093` + `7febd29`, app through `dc7ade1` + `8de761c`; all
+capabilities negotiated live on `:8377` (`caps=22` advertised).
+
+- Capability negotiation revision — **done**: `client_caps`
+  post-handshake + symmetric `caps_update` (§0), live =
+  advertised ∩ announced.
+- Conversation **subscriptions** (push instead of
+  `get_conversation_history` polling) — **done**: per-pane
+  `subscribe_conversation`, `conversation_update` reset/append.
+- Pre-seal compression for pane frames — **done** as `frame_zstd`:
+  negotiated zstd `pane_content` payloads (~10× on realistic frames).
+- Upload binary chunks (was base64-in-JSON) — **done** as
+  `upload_binary`: raw `[0x03][id:32][seq][bytes]` inside the E2EE
+  channel; JSON carrier remains for non-negotiated clients.
+- Track-A feature actions — **done**: `focus_*`, `pane_search`,
+  `pane_selection_read`, `pane_link_resolve`/`activate`,
+  `layout_export`/`apply`.
+- Binary inner codec — **deferred** by joint decision: measure
+  `convo_sub`+`frame_zstd` wins first (`docs/13` §2.1).
 
 ## Order-of-work rationale
 
