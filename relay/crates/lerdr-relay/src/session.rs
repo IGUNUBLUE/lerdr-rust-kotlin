@@ -24,8 +24,8 @@ use lerdr_core::json::{MaybeNull, RawJson};
 use lerdr_core::protocol::{
     action_receipt_response, compatible, decode_failure_response, error_codes, error_response,
     incompatible_response, required_capability, ActionClass, ActionMetadata, ActionReceipt,
-    ActionReceiptPhase, ApiError, CommandResultMessage, HerdrStatus, Inbound, Outbound, PushConfig,
-    RequestScope, CAPABILITIES, VERSION,
+    ActionReceiptPhase, ApiError, CapsUpdateMessage, CommandResultMessage, HerdrStatus, Inbound,
+    Outbound, PushConfig, RequestScope, CAPABILITIES, VERSION,
 };
 use lerdr_core::sendbuffer::{is_replaceable, PushResult, RejectReason, SendBuffer};
 use lerdr_e2ee::Session;
@@ -885,12 +885,22 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
             return self.enqueue(Outbound::ActionReceipt(incompatible_response(&inbound)));
         }
         // Phase-5 §0 negotiation legs are absorbed here — `client_caps`
-        // and a client's own `caps_update` announce the client's set;
-        // they answer nothing and never reach the router. (An old relay
-        // answers `unknown_action`, which the app ignores; this one
-        // records the announcement and moves on.)
+        // and a client's own `caps_update` announce the client's set and
+        // never reach the router. `client_caps` additionally gets the
+        // symmetric reply: a `caps_update` carrying the server's
+        // advertised list, so the client learns the live set even if it
+        // connected before the latest flip. (An old relay answers
+        // `unknown_action`, which the app ignores.)
         if matches!(scope.action.operation, "client_caps" | "caps_update") {
             self.caps.announce(&inbound);
+            if scope.action.operation == "client_caps" {
+                return self.enqueue(Outbound::CapsUpdate(CapsUpdateMessage {
+                    capabilities: Some(MaybeNull::Value(
+                        self.caps.server.iter().cloned().collect(),
+                    )),
+                    r#type: "caps_update".to_owned(),
+                }));
+            }
             return CONTINUE;
         }
         // Capability gate — a gated action is live only while its

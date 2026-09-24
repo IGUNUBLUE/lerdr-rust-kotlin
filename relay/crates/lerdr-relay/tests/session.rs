@@ -256,11 +256,12 @@ async fn stalled_writer_times_out_and_drops_transport() {
 
 // ── Phase-5 capability negotiation (docs/13 §0) ────────────────────────────
 
-/// `client_caps` announces the client's set and is absorbed silently —
-/// the app's contract with old relays is `unknown_action` noise, with new
-/// relays it is no reply at all.
+/// `client_caps` announces the client's set and gets the symmetric
+/// reply: a `caps_update` carrying the server's advertised list — the
+/// explicit negotiation ack. (An old relay answers `unknown_action`,
+/// which the app ignores; this one declares its set back.)
 #[tokio::test]
-async fn client_caps_is_absorbed_without_reply() {
+async fn client_caps_is_answered_with_server_caps_update() {
     let store = Arc::new(MemoryAuthStore::new());
     let (mut client, mut session, server, _sink_rx) =
         establish(store, test_config(), CancellationToken::new()).await;
@@ -277,10 +278,16 @@ async fn client_caps_is_absorbed_without_reply() {
             br#"{"type":"nonsense_action","protocol":3,"request_id":"req-2"}"#,
         )
         .await;
-    // The very next frame must be the nonsense action's answer — any
-    // reply to caps-1 would arrive first.
+    // The very next frame must be the negotiation reply carrying the
+    // server's advertised list.
     let reply = client.read_json(&mut session).await;
-    assert_eq!(reply["type"], "error");
+    assert_eq!(reply["type"], "caps_update");
+    assert!(reply["capabilities"]
+        .as_array()
+        .expect("capabilities array")
+        .iter()
+        .any(|cap| cap == "focus"));
+    let reply = client.read_until_type(&mut session, "error").await;
     assert_eq!(reply["request_id"], "req-2");
 
     drop(client);
@@ -495,9 +502,9 @@ async fn client_caps_is_protocol_ungated() {
             br#"{"type":"focus_workspace","protocol":3,"request_id":"req-ok","target":{"workspace_id":"wE"}}"#,
         )
         .await;
-    // First frame is the focus receipt — the caps frame announced
-    // `focus` (gate open) and answered nothing itself.
-    let reply = client.read_json(&mut session).await;
+    // The caps frame announced `focus` (gate open) and drew the
+    // `caps_update` negotiation reply — skip it for the focus receipt.
+    let reply = client.read_until_type(&mut session, "action_receipt").await;
     assert_eq!(reply["type"], "action_receipt");
     assert_eq!(reply["request_id"], "req-ok");
     assert_eq!(reply["receipt"]["phase"], "dispatched_unknown");
