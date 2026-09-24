@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 Releases are **pre-release / beta** — no compatibility guarantees yet.
 
-## [Unreleased]
+## [0.0.3] — 2026-09-24
 
 ### Added
 
@@ -23,6 +23,23 @@ Releases are **pre-release / beta** — no compatibility guarantees yet.
   panes carrying `lerdr_watching`, a device-count chip on workspace
   groups carrying `lerdr_devices`, and state-label chips on agent rows.
   Snapshot semantics: absent keys clear (herdr TTL expiry), deltas keep.
+- **Capability contract completed** (`docs/03` §4.1 is canonical) — the
+  relay now advertises `pane_realtime_delta` (gated on `pane.read`),
+  `tab_reorder`, `workspace_reorder_block`, `typed_push`,
+  `push_policy`, and `device_management`, so app-side feature gates arm
+  on connect.
+- **Speech capabilities wired** — `speech_synthesis` /
+  `speech_voice_management` advertise from live local speech facts
+  (flite/espeak/say system fallbacks or the managed Piper engine), flip
+  mid-session via `caps_update`, and populate
+  `push_config.speech_languages`.
+
+### Changed
+
+- **inner_codec_binary dropped** (`docs/13` §2.1) — the deferred CBOR
+  inner-codec path is removed outright; `frame_zstd` captured the real
+  win. `preferred_inner_codec` is gone from `client_caps` (relays
+  ignore it as an unknown field either way).
 
 ### Removed
 
