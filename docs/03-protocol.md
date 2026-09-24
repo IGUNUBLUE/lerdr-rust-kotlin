@@ -231,4 +231,5 @@ health check, E2EE handshake on every new socket (sessions are per-conn).
 - `pane_applied`/`acknowledge_pane`/`unwatch_pane`/`refresh_agents` are
   read-class actions — readers can drive a watch.
 - Binary codec exists on the **E2EE frame** layer today; inner payloads
-  stay JSON. A future binary inner codec is a protocol v2 concern.
+  stay JSON. A binary inner codec was evaluated in Phase-5 and dropped
+  (`docs/13` §2.1).

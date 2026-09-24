@@ -1055,9 +1055,10 @@ watch coalescing, fmt/clippy clean, shadow self-mode IDENTICAL.
   `plugin.*`, `server.reload*`, `integration.*` — 15 client methods,
   all capability-adjudicated; `plugin-pane`/`herdr-reload`/`integration`
   debug subcommands.
-- Deferred by joint decision: `inner_codec_binary` (CBOR if revived —
-  pending `convo_sub`+`frame_zstd` measured wins); `client_shell.
-  surface.set` (thin-client-only); graphics/popup/input-set tier-3.
+- Dropped by joint decision: `inner_codec_binary` (CBOR — removed from
+  the plan after `frame_zstd` captured the real win; `docs/13` §2.1);
+  `client_shell.surface.set` (thin-client-only); graphics/popup/
+  input-set tier-3.
 
 Verification: 730+ workspace tests green post-merge, fmt/clippy clean,
 frozen vectors untouched. Track B in flight: `convo_sub` → `frame_zstd`
@@ -1113,7 +1114,7 @@ frozen vectors untouched. Track B in flight: `convo_sub` → `frame_zstd`
   shared `Negotiated` flag set. JSON/base64 chunks for non-negotiated
   clients are untouched, and carriers may be mixed within one upload
   (the sequence counter is the shared domain).
-- Still deferred: `inner_codec_binary` (CBOR).
+- Dropped: `inner_codec_binary` (CBOR — `docs/13` §2.1).
 
 Verification: workspace tests green — 6 new `uploadbinary` unit tests
 (header round-trip, edge sequences, every malformed shape, foreign id
@@ -1149,8 +1150,11 @@ semantic all IDENTICAL, frozen vectors untouched.
   `[[startup]]` hook. Resubscribe `Synced`s collect capabilities only;
   the mid-session stomp on `hhdebb.herdr-radar`'s view (~4.4h hold,
   observed live) cannot recur.
-- Roadmap `docs/05` Phase-5 marked landed; `inner_codec_binary` stays
-  deferred pending measured `convo_sub`+`frame_zstd` wins.
+- Roadmap `docs/05` Phase-5 marked landed; `inner_codec_binary`
+  dropped outright — `frame_zstd` captured the compression win and a
+  second inner codec is not worth its conformance surface. The relay
+  no longer models `preferred_inner_codec` (senders are ignored like
+  any unknown field).
 
 Phase-5 is closed: every ratified capability is implemented,
 negotiated, and exercised end-to-end on both sides.

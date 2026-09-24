@@ -72,9 +72,9 @@ pub enum DecodeError {
 /// through [`Inbound::raw`], [`Inbound::raw_str`], and [`Inbound::raw_int`]
 /// (`content_fingerprint`/`interval_ms` have named accessors too).
 ///
-/// Phase-5 adds `capabilities`/`preferred_inner_codec` (`client_caps`,
-/// docs/13 §0) — fields the Go struct never carried; they append at the
-/// tail and emit only when populated.
+/// Phase-5 adds `capabilities` (`client_caps`/`caps_update`, docs/13
+/// §0) — a field the Go struct never carried; it appends at the tail
+/// and emits only when populated.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Inbound {
     #[serde(default, deserialize_with = "de_default")]
@@ -464,14 +464,6 @@ pub struct Inbound {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub capabilities: Vec<String>,
-    /// Phase-5 `client_caps` — the client's preferred inner codec
-    /// (`"json"` or `"binary-v1"`; binary negotiation is deferred).
-    #[serde(
-        default,
-        deserialize_with = "de_default",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub preferred_inner_codec: String,
     /// Wire fields the typed view does not model — the raw decoded map,
     /// captured by [`Inbound::decode_map`] before normalization so
     /// [`Inbound::raw`]/[`Inbound::raw_str`]/[`Inbound::raw_int`] see
@@ -722,28 +714,19 @@ mod tests {
     #[test]
     fn client_caps_fields_decode_and_emit() {
         let msg = Inbound::decode(
-            br#"{"type":"client_caps","protocol":3,"capabilities":["focus","frame_zstd"],"preferred_inner_codec":"binary-v1"}"#,
+            br#"{"type":"client_caps","protocol":3,"capabilities":["focus","frame_zstd"]}"#,
         )
         .unwrap();
         assert_eq!(msg.capabilities, ["focus", "frame_zstd"]);
-        assert_eq!(msg.preferred_inner_codec, "binary-v1");
         let encoded = String::from_utf8(msg.encode()).unwrap();
         assert!(
             encoded.contains("\"capabilities\":[\"focus\",\"frame_zstd\"]"),
             "{encoded}"
         );
-        assert!(
-            encoded.contains("\"preferred_inner_codec\":\"binary-v1\""),
-            "{encoded}"
-        );
 
-        // Inbound `caps_update` re-announces through the same field;
-        // absent list and absent codec emit nothing.
+        // Inbound `caps_update` re-announces through the same field.
         let msg = Inbound::decode(br#"{"type":"caps_update","capabilities":["focus"]}"#).unwrap();
         assert_eq!(msg.capabilities, ["focus"]);
-        assert_eq!(msg.preferred_inner_codec, "");
-        let encoded = String::from_utf8(msg.encode()).unwrap();
-        assert!(!encoded.contains("preferred_inner_codec"), "{encoded}");
 
         let msg = Inbound::decode(br#"{"type":"read_pane"}"#).unwrap();
         let encoded = String::from_utf8(msg.encode()).unwrap();

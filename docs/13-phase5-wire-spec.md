@@ -152,20 +152,17 @@ simplified app-oriented tree (flatter, no pane internals)?
 
 ## 2. Track B — transport upgrades (negotiated)
 
-### 2.1 Binary inner codec (`inner_codec_binary`)
+### 2.1 Binary inner codec — **dropped**
 
-E2EE already rides `CodecBinary` on WS binary frames; the *inner*
-payload stays JSON today (~37% overhead win available). Proposal:
-`binary-v1` = length-prefixed CBOR/MsgPack carrying the same document
-model — field-for-field identical semantics, JSON stays the reference
-encoding for fixtures and docs. Negotiated via `preferred_inner_codec`
-in `client_caps`; server echoes the chosen codec in `caps_update`.
-Falls back to JSON whenever either side declines.
-
-**Q4 verdict (app): CBOR if built — DEFERRED.** `kotlinx-serialization-
-cbor` is first-party and reuses the same `@Serializable` models, but
-`convo_sub` + `frame_zstd` land first; if compressed deltas kill the
-overhead, a second codec and its fixture surface are unnecessary.
+The Phase-5 draft proposed a CBOR inner payload (`binary-v1`, ~37%
+theoretical overhead win) negotiated via `preferred_inner_codec` in
+`client_caps`. **Removed from the plan**: `frame_zstd` captured the
+real win on the bulky path (~10× on realistic `pane_content`), and the
+remaining frames are small control chatter where a second codec would
+buy marginal bytes against a doubled fixture/conformance surface.
+`preferred_inner_codec` is no longer modeled — a client that still
+sends it is ignored like any unknown field. JSON remains the single
+inner encoding.
 
 ### 2.2 zstd frame compression (`frame_zstd`)
 

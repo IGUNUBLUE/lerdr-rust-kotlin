@@ -123,8 +123,9 @@ capabilities negotiated live on `:8377` (`caps=22` advertised).
 - Track-A feature actions — **done**: `focus_*`, `pane_search`,
   `pane_selection_read`, `pane_link_resolve`/`activate`,
   `layout_export`/`apply`.
-- Binary inner codec — **deferred** by joint decision: measure
-  `convo_sub`+`frame_zstd` wins first (`docs/13` §2.1).
+- Binary inner codec — **dropped** (`docs/13` §2.1): `frame_zstd`
+  captured the real compression win; a second inner codec is not worth
+  its fixture/conformance surface.
 
 ## Order-of-work rationale
 

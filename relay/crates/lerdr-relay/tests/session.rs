@@ -269,7 +269,7 @@ async fn client_caps_is_answered_with_server_caps_update() {
     client
         .send_json(
             &mut session,
-            br#"{"type":"client_caps","protocol":3,"request_id":"caps-1","capabilities":["focus"],"preferred_inner_codec":"binary-v1"}"#,
+            br#"{"type":"client_caps","protocol":3,"request_id":"caps-1","capabilities":["focus"]}"#,
         )
         .await;
     client

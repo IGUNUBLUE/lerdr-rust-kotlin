@@ -728,9 +728,6 @@ struct NegotiatedCaps {
     /// `caps_update` after that. `None` until the first announcement: a
     /// pre-Phase-5 client has no list, so no gated capability is live.
     client: Option<BTreeSet<String>>,
-    /// `preferred_inner_codec` off `client_caps` — kept for the deferred
-    /// Track-B negotiation; this build only ever serves JSON.
-    preferred_codec: String,
     /// The encode-time transport gates shared with this session's
     /// [`ClientSink`] clones — mirror `live(..)` for each negotiated
     /// wire-shape feature so sink-side producers apply the transforms
@@ -743,7 +740,6 @@ impl Default for NegotiatedCaps {
         Self {
             server: CAPABILITIES.iter().map(|cap| (*cap).to_owned()).collect(),
             client: None,
-            preferred_codec: String::new(),
             gates: Arc::new(NegotiatedGates::default()),
         }
     }
@@ -760,19 +756,12 @@ impl NegotiatedCaps {
     }
 
     /// `client_caps` / inbound `caps_update` absorb — record the client's
-    /// announced set wholesale (and its codec preference on `client_caps`).
-    /// Silent by contract: an old relay answers `unknown_action`, which the
-    /// app ignores; this one simply records and moves on.
+    /// announced set wholesale. Silent by contract: an old relay answers
+    /// `unknown_action`, which the app ignores; this one simply records
+    /// and moves on.
     fn announce(&mut self, inbound: &Inbound) {
         self.client = Some(inbound.capabilities.iter().cloned().collect());
         self.sync_gate();
-        if inbound.r#type == "client_caps" && !inbound.preferred_inner_codec.is_empty() {
-            self.preferred_codec = inbound.preferred_inner_codec.clone();
-            debug!(
-                codec = %self.preferred_codec,
-                "client codec preference noted (binary negotiation deferred)"
-            );
-        }
     }
 
     /// Observe an outbound capability frame — `push_config` and
