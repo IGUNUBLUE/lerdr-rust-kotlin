@@ -1028,3 +1028,37 @@ fmt/clippy clean, live smoke of all three endpoints.
 
 Verification: 366+ coord tests green incl. fake-driven event folds and
 watch coalescing, fmt/clippy clean, shadow self-mode IDENTICAL.
+
+## Round 18 — Phase-5 Track A + tier-2 marginal surface (2026)
+
+- **§0 capability negotiation landed** (`fbf432d` + `ae7ca0f`): inbound
+  `client_caps` (unconditional emit by app, absorbed + symmetric
+  `caps_update` reply carrying the server's advertised list), outbound
+  `caps_update` (replaceable/coalescible, emitted on advertised-set
+  flips), `NegotiatedCaps` per-session gate (`advertised ∩ announced`,
+  `capability_unsupported` before the session-id fence), `TargetRef`
+  gained `workspace_id`/`tab_id` additively.
+- **Track A complete** — focus family (`fbf432d`: pane/tab/workspace/
+  agent focus, session→pane resolution, partial-family per-method
+  refutation) and pane-content families (`8334689`: `pane_search`,
+  `pane_selection_read`, `pane_link_resolve`/`activate`,
+  `layout_export`/`apply`). All wire actions are `protocol:3` additive,
+  capability-gated both-lists.
+- **Spec corrections folded back** (`docs/13`): `pane.link.resolve`
+  returns `{regions}` cell bounds only — the URL surfaces on
+  `pane.link.activate` `{handled,url}` (0.9.1 truth); `pane_search`
+  adds `total`/`current`/`current_global` match metadata.
+- **Tier-2 marginal herdr surface** (`4c7ee84`): `pane/workspace.
+  report_metadata` (watch annotations — `lerdr_watching`/`lerdr_devices`
+  tokens, wall-clock-floored seqs, 300s TTL server-side expiry),
+  `client.window_title` ("lerdr: N device(s)"), `plugin.pane.*`/
+  `plugin.*`, `server.reload*`, `integration.*` — 15 client methods,
+  all capability-adjudicated; `plugin-pane`/`herdr-reload`/`integration`
+  debug subcommands.
+- Deferred by joint decision: `inner_codec_binary` (CBOR if revived —
+  pending `convo_sub`+`frame_zstd` measured wins); `client_shell.
+  surface.set` (thin-client-only); graphics/popup/input-set tier-3.
+
+Verification: 730+ workspace tests green post-merge, fmt/clippy clean,
+frozen vectors untouched. Track B in flight: `convo_sub` → `frame_zstd`
+→ `upload_binary`.
