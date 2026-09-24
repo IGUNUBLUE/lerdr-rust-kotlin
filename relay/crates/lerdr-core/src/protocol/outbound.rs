@@ -691,6 +691,37 @@ pub struct CommandResultMessage {
     pub r#type: String,
 }
 
+/// `conversation_update` — Phase-5 §2.3 per-pane conversation push
+/// (`convo_sub`). `messages` carries the same entry objects
+/// `get_conversation_history` returns — serialized once by the coordinator
+/// and embedded verbatim. `reset:true` marks a rebuilt history (initial
+/// frame, source rotation, pane replacement) — the client drops its cache;
+/// `reset:false` is append-only. `generation` is the pane's current epoch
+/// (`TargetRef` conventions) so a stale feed is detectable; `target` echoes
+/// the resolved subscription target.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConversationUpdateMessage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<u64>,
+    #[serde(
+        default,
+        deserialize_with = "de_nullable",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub messages: Option<MaybeNull<RawJson>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "de_nullable",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub target: Option<MaybeNull<TargetRef>>,
+    /// Envelope discriminator. Constructors set the canonical constant.
+    #[serde(default, deserialize_with = "de_default")]
+    pub r#type: String,
+}
+
 /// `{"error":{code,args?},"request_id":?,"type":"error"}`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ErrorMessage {
@@ -1144,6 +1175,7 @@ pub enum Outbound {
     Blocked(Box<BlockedMessage>),
     CapsUpdate(CapsUpdateMessage),
     CommandResult(CommandResultMessage),
+    ConversationUpdate(ConversationUpdateMessage),
     Error(ErrorMessage),
     HerdrStatus(HerdrStatusMessage),
     InventoryStatus(InventoryStatusMessage),
@@ -1201,6 +1233,7 @@ impl Outbound {
             "blocked" => typed!(Blocked, Box<BlockedMessage>),
             "caps_update" => typed!(CapsUpdate, CapsUpdateMessage),
             "command_result" => typed!(CommandResult, CommandResultMessage),
+            "conversation_update" => typed!(ConversationUpdate, ConversationUpdateMessage),
             "error" => typed!(Error, ErrorMessage),
             "herdr_status" => typed!(HerdrStatus, HerdrStatusMessage),
             "inventory_status" => typed!(InventoryStatus, InventoryStatusMessage),
@@ -1247,6 +1280,7 @@ impl Outbound {
             Outbound::Blocked(m) => enc!(m),
             Outbound::CapsUpdate(m) => enc!(m),
             Outbound::CommandResult(m) => enc!(m),
+            Outbound::ConversationUpdate(m) => enc!(m),
             Outbound::Error(m) => enc!(m),
             Outbound::HerdrStatus(m) => enc!(m),
             Outbound::InventoryStatus(m) => enc!(m),
@@ -1386,5 +1420,51 @@ mod tests {
             panic!("expected CapsUpdate");
         };
         assert!(matches!(message.capabilities, Some(MaybeNull::Null) | None));
+    }
+
+    /// docs/13 §2.3 — `conversation_update` emits the spec's flat shape:
+    /// sorted keys, `messages` verbatim, `target` a TargetRef.
+    #[test]
+    fn conversation_update_round_trips() {
+        let messages = serde_json::value::RawValue::from_string(
+            r#"[{"id":"e1","role":"user","text":"hi"}]"#.to_owned(),
+        )
+        .unwrap();
+        let outbound = Outbound::ConversationUpdate(ConversationUpdateMessage {
+            generation: Some(2),
+            messages: Some(MaybeNull::Value(RawJson(messages))),
+            reset: Some(true),
+            target: Some(MaybeNull::Value(TargetRef {
+                server_session_id: "primary".to_owned(),
+                pane_id: "wE:p1".to_owned(),
+                terminal_id: "term-1".to_owned(),
+                generation: 2,
+                agent_session_id: "sess-1".to_owned(),
+                ..TargetRef::default()
+            })),
+            r#type: "conversation_update".to_owned(),
+        });
+        let encoded = String::from_utf8(outbound.encode()).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"generation":2,"messages":[{"id":"e1","role":"user","text":"hi"}],"reset":true,"target":{"server_session_id":"primary","pane_id":"wE:p1","terminal_id":"term-1","generation":2,"agent_session_id":"sess-1"},"type":"conversation_update"}"#
+        );
+        let decoded = Outbound::decode(encoded.as_bytes()).unwrap();
+        let Outbound::ConversationUpdate(message) = decoded else {
+            panic!("expected ConversationUpdate, got {decoded:?}");
+        };
+        assert_eq!(message.generation, Some(2));
+        assert_eq!(message.reset, Some(true));
+        assert_eq!(
+            message
+                .messages
+                .as_ref()
+                .and_then(MaybeNull::value)
+                .map(RawJson::get),
+            Some(r#"[{"id":"e1","role":"user","text":"hi"}]"#)
+        );
+        let target = message.target.and_then(MaybeNull::into_value).unwrap();
+        assert_eq!(target.pane_id, "wE:p1");
+        assert_eq!(target.agent_session_id, "sess-1");
     }
 }

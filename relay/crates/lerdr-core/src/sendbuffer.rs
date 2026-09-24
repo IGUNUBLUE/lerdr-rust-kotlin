@@ -24,8 +24,10 @@ pub const DEFAULT_MAX_BYTES: usize = MAX_OUTBOUND_MESSAGE_BYTES;
 
 /// Message types whose newest frame supersedes a queued same-type tail —
 /// the exact list from `encodeMessage` in `internal/transport/ws.go`,
-/// plus Phase-5's `caps_update`: a queued older capability set is
-/// superseded by the newest one, same as the snapshot streams.
+/// plus Phase-5's `caps_update` and `conversation_update`: a queued older
+/// capability set or conversation snapshot is superseded by the newest one,
+/// same as the snapshot streams (docs/13 §2.3 — `conversation_update` is
+/// "coalescible, like `agents`/`workspaces` snapshots").
 /// Snapshot/state streams collapse; deltas, receipts, and per-event
 /// broadcasts never do.
 pub const REPLACEABLE_TYPES: &[&str] = &[
@@ -38,6 +40,7 @@ pub const REPLACEABLE_TYPES: &[&str] = &[
     "pane_unchanged",
     "pane_resync",
     "caps_update",
+    "conversation_update",
 ];
 
 /// Whether `kind` is in the replaceable set (`encodeMessage`'s decision).
@@ -282,6 +285,24 @@ mod tests {
         assert_eq!(buffer.pop(), Some(b"first".to_vec()));
         assert_eq!(buffer.pop(), Some(b"second".to_vec()));
         assert_eq!(buffer.pop(), None);
+    }
+
+    /// docs/13 §2.3 — `conversation_update` frames coalesce like other
+    /// replaceable snapshots: a queued older snapshot yields to the newest.
+    #[test]
+    fn conversation_update_coalesces() {
+        assert!(is_replaceable("conversation_update"));
+        let mut buffer = SendBuffer::with_capacity(64, 4096);
+        assert_eq!(
+            buffer.push_typed(vec![0; 100], "conversation_update".into(), true),
+            PushResult::Queued
+        );
+        assert_eq!(
+            buffer.push_typed(vec![0; 120], "conversation_update".into(), true),
+            PushResult::Coalesced
+        );
+        assert_eq!(buffer.len(), 1);
+        assert_eq!(buffer.bytes(), 120);
     }
 
     #[test]

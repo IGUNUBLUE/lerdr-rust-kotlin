@@ -9,6 +9,7 @@
 //! continuation chains, native id cursors, corruption flags) are unchanged.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
@@ -26,15 +27,20 @@ const RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 
 /// The oracle's `Browser`: one shared `Reader` behind a synchronous facade.
 pub struct ConversationBrowser {
-    reader: Reader,
+    reader: Arc<Reader>,
 }
 
 impl ConversationBrowser {
     /// `NewBrowser` minus the cache root / options — defaults apply.
     pub fn new(home: PathBuf) -> Self {
-        ConversationBrowser {
-            reader: Reader::new(home),
-        }
+        Self::with_reader(Arc::new(Reader::new(home)))
+    }
+
+    /// `NewBrowserWithReader` — share the reader's tuple→location cache and
+    /// provider handles with the resolver/subscription paths so transcript
+    /// source decisions stay consistent across consumers.
+    pub fn with_reader(reader: Arc<Reader>) -> Self {
+        ConversationBrowser { reader }
     }
 
     /// Access to the underlying reader (title resolution shares it).
@@ -51,7 +57,11 @@ impl ConversationBrowser {
         Ok(self.read_page_sync(req))
     }
 
-    fn read_page_sync(&self, request: BrowseRequest) -> BrowsePage {
+    /// The synchronous body of [`read_page`](Self::read_page) —
+    /// `convo_sub` feed tasks run it inside `spawn_blocking` (bounded file
+    /// I/O plus a ~3s-capped `sqlite3` subprocess for the native readers
+    /// must not stall the executor).
+    pub(crate) fn read_page_sync(&self, request: BrowseRequest) -> BrowsePage {
         let scope = normalize_browse_scope(request.scope);
         let limit = if request.limit < 1 {
             DEFAULT_PAGE_SIZE as i64
@@ -154,6 +164,7 @@ fn browse_unavailable(code: &str, reason: &str) -> BrowsePage {
         diagnostics: BrowseDiagnostics::default(),
         error: None,
         omo_plan: None,
+        probe_path: String::new(),
     }
 }
 
@@ -175,6 +186,7 @@ fn browse_failure(code: &str, reason: &str, error: BrowseError) -> BrowsePage {
         diagnostics: BrowseDiagnostics::default(),
         error: Some(error),
         omo_plan: None,
+        probe_path: String::new(),
     }
 }
 
@@ -245,6 +257,14 @@ fn wire_page(page: Page, provider: &str, native: bool, home: &std::path::Path) -
         diagnostics,
         error: None,
         omo_plan,
+        // Flat readers report the located file itself; Claude reports the
+        // chain tip. Anything that captured no statable source leaves it
+        // empty — a subscriber then re-reads instead of probing.
+        probe_path: if page.probe_path.is_empty() {
+            page.source_path.clone()
+        } else {
+            page.probe_path.clone()
+        },
     };
     wire.entries = entries;
     enforce_page_budget(&mut wire);

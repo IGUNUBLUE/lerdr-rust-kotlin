@@ -35,6 +35,7 @@ use tracing::Instrument;
 
 use crate::actions::{self, ActionContext};
 use crate::actor::TopologyHandle;
+use crate::convo_subs::{ConvoSubDeps, ConvoSubSet, ConvoSubSpec};
 use crate::snapshot::topology_broadcast;
 use crate::topology::Topology;
 use crate::watches::{
@@ -71,6 +72,10 @@ struct ActionShared {
     /// `s.auditLog` — spawned handlers append `result` rows here; the
     /// session layer owns `attempt` rows and admin results.
     audit: Option<Arc<audit::AuditLog>>,
+    /// The relay-shared conversation browser — one `Reader` backing the
+    /// title resolver, the projector, and every `convo_sub` feed so
+    /// transcript locations and source identity stay consistent.
+    conversation_browser: Arc<crate::conversation::ConversationBrowser>,
 }
 
 /// Builds one [`HerdRouter`] per accepted session.
@@ -138,9 +143,15 @@ impl HerdRouterFactory {
             activities: activities.clone(),
             push: push.clone(),
             notices: notices.clone(),
-            conversations,
+            conversations: conversations.clone(),
             cancel: cancel.clone(),
         });
+        // `convo_sub` feeds share the same reader — transcript location
+        // and source-identity decisions then agree with the resolver and
+        // history paths (`NewBrowserWithReader`).
+        let conversation_browser = Arc::new(crate::conversation::ConversationBrowser::with_reader(
+            conversations,
+        ));
         Self {
             handle: handle.clone(),
             sink_of,
@@ -159,6 +170,7 @@ impl HerdRouterFactory {
                     handle, devices_of, cancel,
                 ),
                 audit,
+                conversation_browser,
             }),
         }
     }
@@ -245,6 +257,8 @@ pub struct HerdRouter {
     /// `client.Identity().DeviceID` — captured alongside `client_id`.
     device_id: Option<String>,
     watches: WatchSet,
+    /// `convo_sub` per-pane conversation feeds (docs/13 §2.3).
+    convo_subs: ConvoSubSet,
     /// Forwards topology revisions to this client.
     forwarder: Option<tokio::task::JoinHandle<()>>,
 }
@@ -264,6 +278,7 @@ impl HerdRouter {
             client_id: None,
             device_id: None,
             watches: WatchSet::default(),
+            convo_subs: ConvoSubSet::default(),
             forwarder: None,
         }
     }
@@ -372,6 +387,7 @@ impl Drop for HerdRouter {
             }
         }
         self.watches.stop_all();
+        self.convo_subs.stop_all();
         if let Some(f) = self.forwarder.take() {
             f.abort();
         }
@@ -492,6 +508,14 @@ impl ActionRouter for HerdRouter {
             "pane_resync" => {
                 self.watches.resync(&message.pane_id);
                 RouterReply::empty()
+            }
+
+            // --- conversation feed (Phase-5 §2.3) --------------------------
+            "subscribe_conversation" => {
+                self.route_subscribe_conversation(request_id, action_id, message)
+            }
+            "unsubscribe_conversation" => {
+                self.route_unsubscribe_conversation(request_id, action_id, message)
             }
 
             // --- input ----------------------------------------------------
@@ -1208,6 +1232,87 @@ impl HerdRouter {
                 &self.client_id.clone().unwrap_or_default(),
                 &message.pane_id,
             );
+        }
+        RouterReply::send(vec![receipt(
+            &request_id,
+            &action_id,
+            ActionReceiptPhase::CONFIRMED,
+            None,
+        )])
+    }
+
+    /// `subscribe_conversation` (docs/13 §2.3) — resolve the request's
+    /// target to a live pane (`pane_id` top-level or `target.pane_id`
+    /// directly, `target.agent_session_id` through the session index)
+    /// and spawn the per-pane feed; its first `conversation_update` is
+    /// the current conversation on `reset:true`. An unresolvable address
+    /// is the oracle-family `Outcome::failed` — `command_result` +
+    /// `failed_before_dispatch`, the same boundary shape
+    /// `get_conversation_history` reports a gone pane through.
+    fn route_subscribe_conversation(
+        &mut self,
+        request_id: String,
+        action_id: String,
+        message: &Inbound,
+    ) -> RouterReply {
+        const ACTION: &str = "subscribe_conversation";
+        // One of the two addressing forms must be present.
+        let has_address = !actions::pane_of(message).is_empty()
+            || message
+                .target
+                .as_ref()
+                .is_some_and(|t| !t.agent_session_id.is_empty());
+        if !has_address {
+            return invalid_request(
+                &request_id,
+                &action_id,
+                "target.pane_id or target.agent_session_id is required",
+            );
+        }
+        let topology = self.handle.topology.borrow().clone();
+        let Some(pane_id) = crate::convo_subs::subscribe_pane(&topology, message) else {
+            return RouterReply::send(
+                actions::Outcome::failed(actions::pane_of(message), "Agent is unavailable").frames(
+                    &request_id,
+                    ACTION,
+                    &action_id,
+                ),
+            );
+        };
+        let Some(sink) = self.sink() else {
+            return refused(&request_id, &action_id, "session_not_ready");
+        };
+        self.convo_subs.start(
+            ConvoSubSpec { pane_id },
+            ConvoSubDeps {
+                handle: self.handle.clone(),
+                browser: self.shared.conversation_browser.clone(),
+                sink: Arc::new(sink),
+                cancel: self.cancel.clone(),
+                on_read: None,
+            },
+        );
+        RouterReply::send(vec![receipt(
+            &request_id,
+            &action_id,
+            ActionReceiptPhase::CONFIRMED,
+            None,
+        )])
+    }
+
+    /// `unsubscribe_conversation` — stop the pane's feed; like
+    /// `unwatch_pane` an unknown target is a no-op receipt, and a stale
+    /// tuple never vetoes cleanup (the action rides the exempt arm of
+    /// the exact-target check).
+    fn route_unsubscribe_conversation(
+        &mut self,
+        request_id: String,
+        action_id: String,
+        message: &Inbound,
+    ) -> RouterReply {
+        let topology = self.handle.topology.borrow().clone();
+        if let Some(pane_id) = crate::convo_subs::unsubscribe_pane(&topology, message) {
+            self.convo_subs.stop(&pane_id);
         }
         RouterReply::send(vec![receipt(
             &request_id,

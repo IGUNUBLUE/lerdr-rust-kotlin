@@ -734,3 +734,66 @@ async fn phase5_families_gate_independently() {
     drop(client);
     server.await.expect("server joins");
 }
+
+// ── Phase-5 Track-B `convo_sub` (docs/13 §2.3) ───────────────────────────────
+
+/// `subscribe_conversation`/`unsubscribe_conversation` ride the `convo_sub`
+/// gate: denied before any announcement, each naming the capability it
+/// requires.
+#[tokio::test]
+async fn convo_sub_actions_gate_before_announcement() {
+    let store = Arc::new(MemoryAuthStore::new());
+    let (mut client, mut session, server, _sink_rx) =
+        establish(store, test_config(), CancellationToken::new()).await;
+
+    for action in ["subscribe_conversation", "unsubscribe_conversation"] {
+        let frame = format!(
+            r#"{{"type":"{action}","protocol":3,"request_id":"req-{action}","target":{{"pane_id":"wE:p1"}}}}"#
+        );
+        client.send_json(&mut session, frame.as_bytes()).await;
+        let reply = client.read_until_type(&mut session, "error").await;
+        assert_eq!(reply["request_id"], format!("req-{action}"), "{action}");
+        assert_eq!(reply["error"]["code"], "capability_unsupported", "{action}");
+        assert_eq!(
+            reply["error"]["args"]["capability"],
+            serde_json::json!("convo_sub"),
+            "{action}"
+        );
+        assert_eq!(
+            reply["error"]["args"]["operation"],
+            serde_json::json!(action),
+            "{action}"
+        );
+    }
+
+    drop(client);
+    server.await.expect("server joins");
+}
+
+/// Announcing `convo_sub` opens both gates — the stub router's
+/// `dispatched_unknown` receipts prove each action routed.
+#[tokio::test]
+async fn client_caps_with_convo_sub_routes_subscription_actions() {
+    let store = Arc::new(MemoryAuthStore::new());
+    let (mut client, mut session, server, _sink_rx) =
+        establish(store, test_config(), CancellationToken::new()).await;
+
+    client
+        .send_json(
+            &mut session,
+            br#"{"type":"client_caps","protocol":3,"capabilities":["convo_sub"]}"#,
+        )
+        .await;
+    for action in ["subscribe_conversation", "unsubscribe_conversation"] {
+        let frame = format!(
+            r#"{{"type":"{action}","protocol":3,"request_id":"req-{action}","action_id":"a-{action}","target":{{"pane_id":"wE:p1"}}}}"#
+        );
+        client.send_json(&mut session, frame.as_bytes()).await;
+        let reply = client.read_until_type(&mut session, "action_receipt").await;
+        assert_eq!(reply["request_id"], format!("req-{action}"), "{action}");
+        assert_eq!(reply["receipt"]["phase"], "dispatched_unknown", "{action}");
+    }
+
+    drop(client);
+    server.await.expect("server joins");
+}

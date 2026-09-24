@@ -85,6 +85,12 @@ pub struct Page {
     /// browser to compute `source_revision`. Internal only.
     #[serde(skip)]
     pub source_path: String,
+    /// The file a subscriber stats to decide whether the transcript moved —
+    /// the chain TIP for Claude (`continued-in` links and new records both
+    /// land in the newest segment), the located source everywhere else.
+    /// Empty means the read captured no statable source. Internal only.
+    #[serde(skip)]
+    pub probe_path: String,
 }
 
 impl Page {
@@ -190,6 +196,10 @@ pub struct BrowsePage {
     pub error: Option<BrowseError>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub omo_plan: Option<OmoTodoState>,
+    /// The file a conversation subscriber stats between reads — the chain
+    /// tip for Claude, `source_path` elsewhere. Internal only.
+    #[serde(skip)]
+    pub probe_path: String,
 }
 
 /// OMO todo-state projection (Go `OMOTodoState`).
