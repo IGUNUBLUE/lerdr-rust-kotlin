@@ -52,8 +52,11 @@ transport — those paths were deliberately not reimplemented
 | Health | `GET /healthz`, `/readyz` on the loopback bind |
 | Tailnet publish | `plugin/scripts/tailscale-serve.sh` — serve config persists in tailscaled |
 
-Logs live in the journal (`journalctl --user -u lerdr.service`); the file
-log was only a `nohup` artifact of pre-service dev runs.
+Ops under systemd (the PID rotates on every restart — never script against
+it): restart `systemctl --user restart lerdr.service`, logs
+`journalctl --user -u lerdr.service -f`, re-arm a pairing invitation
+`systemctl --user kill -s USR1 lerdr.service`. The file log was only a
+`nohup` artifact of pre-service dev runs.
 
 ### Capability contract
 
