@@ -3,6 +3,8 @@ package lerdr.core.store
 import app.cash.turbine.test
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.test.runTest
+import lerdr.core.model.CapsUpdateMessage
+import lerdr.core.model.ClientCapabilities
 import lerdr.core.model.HerdrStatus
 import lerdr.core.model.HerdrStatusMessage
 import lerdr.core.model.InventoryStatusMessage
@@ -181,6 +183,60 @@ class ConnectionStoreTest {
             "r1", HerdrStatusMessage(status = HerdrStatus(generation = 6, serverVersion = "new")),
         )
         assertThat(store.connectionNow("r1")!!.herdrStatus!!.serverVersion).isEqualTo("new")
+    }
+
+    // ── Phase-5 §0 capability negotiation ────────────────────────────
+
+    @Test
+    fun `caps_update replaces the advertised set`() {
+        val store = store()
+        connect(store)
+        store.applyPushConfig(
+            "r1",
+            PushConfigMessage(
+                capabilities = WireField.Present(listOf("focus", "pane_links")),
+            ),
+        )
+        store.applyCapsUpdate("r1", CapsUpdateMessage(capabilities = listOf("focus", "layout")))
+        assertThat(store.connectionNow("r1")!!.capabilities)
+            .containsExactly("focus", "layout")
+    }
+
+    @Test
+    fun `live capabilities are advertised intersect announced`() {
+        val store = store()
+        connect(store)
+        store.applyPushConfig(
+            "r1",
+            PushConfigMessage(
+                capabilities = WireField.Present(
+                    listOf("focus", "pane_links", "attention_classification", "convo_sub"),
+                ),
+            ),
+        )
+        val conn = store.connectionNow("r1")!!
+        // Server-only (convo_sub — not announced by the app yet) and
+        // client-only entries stay out of the live set.
+        assertThat(conn.liveCapabilities).containsExactly("focus", "pane_links")
+        assertThat(conn.capabilityLive("focus")).isTrue()
+        assertThat(conn.capabilityLive("convo_sub")).isFalse()
+        assertThat(conn.capabilityLive("layout")).isFalse()
+    }
+
+    @Test
+    fun `empty advertised set leaves nothing live`() {
+        val store = store()
+        connect(store)
+        val conn = store.connectionNow("r1")!!
+        assertThat(conn.liveCapabilities).isEmpty()
+        assertThat(conn.capabilityLive(ClientCapabilities.FOCUS)).isFalse()
+    }
+
+    @Test
+    fun `caps_update on a missing connection is a no-op`() {
+        val store = store()
+        store.applyCapsUpdate("ghost", CapsUpdateMessage(capabilities = listOf("focus")))
+        assertThat(store.connectionNow("ghost")).isNull()
     }
 
     // ── snapshot gate ────────────────────────────────────────────────

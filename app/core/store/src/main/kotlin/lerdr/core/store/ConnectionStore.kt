@@ -9,6 +9,8 @@ import kotlinx.coroutines.flow.map
 import lerdr.core.model.AgentProfile
 import lerdr.core.model.AppDeployStatusMessage
 import lerdr.core.model.AppDeployState
+import lerdr.core.model.CapsUpdateMessage
+import lerdr.core.model.ClientCapabilities
 import lerdr.core.model.HerdrStatus
 import lerdr.core.model.HerdrStatusMessage
 import lerdr.core.model.InventoryStatusMessage
@@ -147,6 +149,17 @@ data class RelayConnection(
     /** Whether the relay advertised `attention_classification` on this connection. */
     val attentionCapable: Boolean
         get() = ATTENTION_CAPABILITY in capabilities
+
+    /**
+     * Phase-5 §0 live set — server-advertised ∩ app-announced
+     * (`docs/13`). Capability-gated Track-A actions check this, not the
+     * raw advertised list.
+     */
+    val liveCapabilities: Set<String>
+        get() = ClientCapabilities.live(capabilities)
+
+    /** Whether [capability] is in the negotiated live set. */
+    fun capabilityLive(capability: String): Boolean = capability in liveCapabilities
 
     companion object {
         const val ATTENTION_CAPABILITY = "attention_classification"
@@ -347,6 +360,20 @@ class ConnectionStore(
                 speechLanguages = message.speechLanguages?.filter { it.isNotBlank() }
                     ?: emptyList(),
                 agentProfiles = normalizeAgentProfiles(message.agentProfiles.orNull),
+            ))
+        }
+    }
+
+    /**
+     * `caps_update` — Phase-5 §0: the server's full advertised list
+     * replaces the connection's set (the `client_caps` reply and any
+     * unilateral mid-session flip land here).
+     */
+    fun applyCapsUpdate(relayId: String, message: CapsUpdateMessage) {
+        synchronized(lock) {
+            val connection = _connections.value[relayId] ?: return
+            _connections.value = _connections.value + (relayId to connection.copy(
+                capabilities = message.capabilities.filter { it.isNotEmpty() },
             ))
         }
     }

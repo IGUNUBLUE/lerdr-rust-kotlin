@@ -11,6 +11,7 @@ import lerdr.core.model.AgentUpdateMessage
 import lerdr.core.model.AgentsMessage
 import lerdr.core.model.AppDeployStatusMessage
 import lerdr.core.model.BlockedMessage
+import lerdr.core.model.CapsUpdateMessage
 import lerdr.core.model.CommandResultMessage
 import lerdr.core.model.ErrorMessage
 import lerdr.core.model.HerdrStatusMessage
@@ -60,6 +61,7 @@ object ServerMessageCodec {
             "agents" -> LerdrJson.decodeFromJsonElement(AgentsMessage.serializer(), raw)
             "app_deploy_status" -> LerdrJson.decodeFromJsonElement(AppDeployStatusMessage.serializer(), raw)
             "blocked" -> LerdrJson.decodeFromJsonElement(BlockedMessage.serializer(), raw)
+            "caps_update" -> LerdrJson.decodeFromJsonElement(CapsUpdateMessage.serializer(), raw)
             "command_result" -> LerdrJson.decodeFromJsonElement(CommandResultMessage.serializer(), raw)
             "error" -> LerdrJson.decodeFromJsonElement(ErrorMessage.serializer(), raw)
             "herdr_status" -> LerdrJson.decodeFromJsonElement(HerdrStatusMessage.serializer(), raw)
@@ -113,6 +115,7 @@ object ServerMessageCodec {
         is AgentsMessage -> AgentsMessage.serializer()
         is AppDeployStatusMessage -> AppDeployStatusMessage.serializer()
         is BlockedMessage -> BlockedMessage.serializer()
+        is CapsUpdateMessage -> CapsUpdateMessage.serializer()
         is CommandResultMessage -> CommandResultMessage.serializer()
         is ErrorMessage -> ErrorMessage.serializer()
         is HerdrStatusMessage -> HerdrStatusMessage.serializer()

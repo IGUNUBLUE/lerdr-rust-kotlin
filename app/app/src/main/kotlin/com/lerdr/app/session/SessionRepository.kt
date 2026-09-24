@@ -45,10 +45,17 @@ import lerdr.core.model.ActionReceiptPhase
 import lerdr.core.model.ActivityEntry
 import lerdr.core.model.ActivityHistoryMessage
 import lerdr.core.model.ActivityMessage
+import lerdr.core.model.ClientCapabilities
 import lerdr.core.model.CommandResultMessage
 import lerdr.core.model.ErrorMessage
 import lerdr.core.model.Inbound
 import lerdr.core.model.Interaction
+import lerdr.core.model.PaneLinkActivatedResult
+import lerdr.core.model.PaneLinkResolvedResult
+import lerdr.core.model.PaneSearchResult
+import lerdr.core.model.PaneSelectionResult
+import lerdr.core.model.PaneTextPoint
+import lerdr.core.model.PaneTextRange
 import lerdr.core.model.ServerMessage
 import lerdr.core.model.TargetRef
 import lerdr.core.model.UnknownServerMessage
@@ -1012,6 +1019,163 @@ class SessionRepository @Inject constructor(
         return sendToAgent(agent, Inbound(type = "tab_reorder", insertIndex = insertIndex))
     }
 
+    // ── Phase-5 Track A — focus / pane content / links / layout (docs/13 §1)
+
+    /** `focus_pane` — raise the pane's tab and window (notification tap → jump). */
+    suspend fun focusPane(paneId: String): CommandResultMessage {
+        val agent = requireAgent(paneId)
+        requireCapability(agent, ClientCapabilities.FOCUS)
+        return sendToAgent(agent, Inbound(type = "focus_pane"))
+    }
+
+    /** `focus_tab` — activate the pane's tab and its workspace. */
+    suspend fun focusTab(paneId: String): CommandResultMessage {
+        val agent = requireAgent(paneId)
+        requireCapability(agent, ClientCapabilities.FOCUS)
+        return sendToAgent(agent, Inbound(type = "focus_tab"))
+    }
+
+    /** `focus_workspace` — activate the pane's workspace. */
+    suspend fun focusWorkspace(paneId: String): CommandResultMessage {
+        val agent = requireAgent(paneId)
+        requireCapability(agent, ClientCapabilities.FOCUS)
+        return sendToAgent(agent, Inbound(type = "focus_workspace"))
+    }
+
+    /** `focus_agent` — focus the pane hosting the agent session. */
+    suspend fun focusAgent(paneId: String): CommandResultMessage {
+        val agent = requireAgent(paneId)
+        requireCapability(agent, ClientCapabilities.FOCUS)
+        if (agent.agentSessionId.isNullOrEmpty()) {
+            throw CommandException("This agent does not report an agent session id")
+        }
+        return sendToAgent(agent, Inbound(type = "focus_agent"))
+    }
+
+    /**
+     * `pane_search` — server-side find over full scrollback. `cursor` is the
+     * copy-engine point to continue from (`{0,0}` searches from the top);
+     * `previous` re-anchors next/previous at the last hit. The relay injects
+     * the `content_revision` fence — clients never send it.
+     */
+    suspend fun paneSearch(
+        paneId: String,
+        query: String,
+        direction: String = "forward",
+        cursor: PaneTextPoint = PaneTextPoint(),
+        previous: PaneTextRange? = null,
+    ): PaneSearchResult {
+        val agent = requireAgent(paneId)
+        requireCapability(agent, ClientCapabilities.PANE_SEARCH)
+        if (query.isEmpty()) throw CommandException("Query is required")
+        val result = sendToAgent(
+            agent,
+            Inbound(
+                type = "pane_search",
+                query = query,
+                direction = direction,
+                cursor = LerdrJson.encodeToJsonElement(
+                    PaneTextPoint.serializer(), cursor,
+                ),
+                previous = previous?.let {
+                    LerdrJson.encodeToJsonElement(PaneTextRange.serializer(), it)
+                },
+            ),
+        )
+        return decodeResult(result, PaneSearchResult.serializer())
+    }
+
+    /** `pane_selection_read` — read the `{anchor,cursor}` range's text. */
+    suspend fun paneSelectionRead(
+        paneId: String,
+        anchor: PaneTextPoint,
+        cursor: PaneTextPoint,
+    ): PaneSelectionResult {
+        val agent = requireAgent(paneId)
+        requireCapability(agent, ClientCapabilities.PANE_SEARCH)
+        val result = sendToAgent(
+            agent,
+            Inbound(
+                type = "pane_selection_read",
+                anchor = LerdrJson.encodeToJsonElement(
+                    PaneTextPoint.serializer(), anchor,
+                ),
+                cursor = LerdrJson.encodeToJsonElement(
+                    PaneTextPoint.serializer(), cursor,
+                ),
+            ),
+        )
+        return decodeResult(result, PaneSelectionResult.serializer())
+    }
+
+    /**
+     * `pane_link_resolve` — hit-test a viewport cell for a link; returns its
+     * cell **regions** (the highlight affordance). The URL surfaces only on
+     * [paneLinkActivate] — resolve never carries it (docs/13 §1.4).
+     * Viewport coordinates apply to the live viewport; scrolled-back cells
+     * address scrollback and may resolve empty.
+     */
+    suspend fun paneLinkResolve(
+        paneId: String,
+        row: Int,
+        col: Int,
+    ): PaneLinkResolvedResult {
+        val agent = requireAgent(paneId)
+        requireCapability(agent, ClientCapabilities.PANE_LINKS)
+        val result = sendToAgent(
+            agent,
+            Inbound(type = "pane_link_resolve", row = row, col = col),
+        )
+        return decodeResult(result, PaneLinkResolvedResult.serializer())
+    }
+
+    /** `pane_link_activate` — open the link under a viewport cell. */
+    suspend fun paneLinkActivate(
+        paneId: String,
+        row: Int,
+        col: Int,
+    ): PaneLinkActivatedResult {
+        val agent = requireAgent(paneId)
+        requireCapability(agent, ClientCapabilities.PANE_LINKS)
+        val result = sendToAgent(
+            agent,
+            Inbound(type = "pane_link_activate", row = row, col = col),
+        )
+        return decodeResult(result, PaneLinkActivatedResult.serializer())
+    }
+
+    /**
+     * `layout_export` — the pane's verbatim herdr `LayoutNode` tree.
+     * The wire also accepts `target.tab_id`; the app's agent always
+     * carries it once reported.
+     */
+    suspend fun layoutExport(paneId: String): JsonElement? {
+        val agent = requireAgent(paneId)
+        requireCapability(agent, ClientCapabilities.LAYOUT)
+        val result = sendToAgent(agent, Inbound(type = "layout_export"))
+        return (result.data as? JsonObject)?.get("root")
+    }
+
+    /** `layout_apply` — rebuild a layout from an exported tree (audited). */
+    suspend fun layoutApply(
+        paneId: String,
+        root: JsonElement,
+        tabLabel: String = "",
+        focus: Boolean = false,
+    ): CommandResultMessage {
+        val agent = requireAgent(paneId)
+        requireCapability(agent, ClientCapabilities.LAYOUT)
+        return sendToAgent(
+            agent,
+            Inbound(
+                type = "layout_apply",
+                root = root,
+                tabLabel = tabLabel,
+                focus = focus,
+            ),
+        )
+    }
+
     // ── agent management ──────────────────────────────────────────────
 
     /** `agent_start` — launch a profile into a workspace (relay-scoped). */
@@ -1555,7 +1719,8 @@ class SessionRepository @Inject constructor(
             agent,
             Inbound(
                 type = ConversationPageRequest.ACTION,
-                cursor = request.cursor,
+                cursor = request.cursor.takeIf { it.isNotEmpty() }
+                    ?.let(::JsonPrimitive),
                 limit = request.limit,
                 retry = request.retry,
             ),
@@ -1636,6 +1801,27 @@ class SessionRepository @Inject constructor(
     private fun requireAgent(paneId: String): Agent =
         agentStore.agentNow(paneId)
             ?: throw IllegalStateException("This agent is no longer available.")
+
+    /**
+     * Phase-5 §0 gate — a Track-A action may only ride the negotiated live
+     * set (server-advertised ∩ app-announced); older relays refuse locally
+     * instead of eating an `unknown_action`.
+     */
+    private fun requireCapability(agent: Agent, capability: String) {
+        if (connectionStore.connectionNow(agent.relayId)
+                ?.capabilityLive(capability) != true
+        ) {
+            throw CommandException("This relay does not support $capability")
+        }
+    }
+
+    /** Decode a `command_result.data` payload into its Track-A DTO. */
+    private fun <T> decodeResult(
+        result: CommandResultMessage,
+        serializer: kotlinx.serialization.KSerializer<T>,
+    ): T = result.data?.let {
+        runCatching { LerdrJson.decodeFromJsonElement(serializer, it) }.getOrNull()
+    } ?: throw CommandException("Relay returned an empty result")
 
     private fun sessionFor(relayId: String): RelaySessionHandle? =
         synchronized(lock) { sessions[relayId]?.handle }

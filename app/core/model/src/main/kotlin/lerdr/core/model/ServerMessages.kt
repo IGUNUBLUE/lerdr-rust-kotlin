@@ -299,6 +299,17 @@ data class HerdrStatus(
     val features: Map<String, HerdrFeatureStatus> = emptyMap(),
 )
 
+/**
+ * `caps_update` — Phase-5 §0 capability re-declaration. The relay sends it
+ * as the `client_caps` reply and on unilateral support flips mid-session;
+ * `capabilities` is the server's full advertised list (not a delta).
+ */
+@Serializable
+data class CapsUpdateMessage(
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS) override val type: String = "caps_update",
+    val capabilities: List<String> = emptyList(),
+) : ServerMessage
+
 /** `herdr_status` broadcast. */
 @Serializable
 data class HerdrStatusMessage(

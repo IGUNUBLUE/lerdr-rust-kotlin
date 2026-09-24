@@ -45,6 +45,8 @@ internal fun Agent.wireTarget(): TargetRef? {
         terminalId = terminalId,
         generation = generation,
         agentSessionId = agentSessionId.orEmpty(),
+        workspaceId = workspaceId,
+        tabId = tabId,
     )
 }
 

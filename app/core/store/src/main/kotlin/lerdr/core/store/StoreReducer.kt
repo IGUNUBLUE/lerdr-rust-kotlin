@@ -4,6 +4,7 @@ import lerdr.core.model.AgentUpdateMessage
 import lerdr.core.model.AgentsMessage
 import lerdr.core.model.AppDeployStatusMessage
 import lerdr.core.model.BlockedMessage
+import lerdr.core.model.CapsUpdateMessage
 import lerdr.core.model.HerdrStatusMessage
 import lerdr.core.model.InventoryStatusMessage
 import lerdr.core.model.PaneContentMessage
@@ -50,6 +51,10 @@ class StoreReducer(
             // Read the capability after the update — the oracle mutates the
             // connection in place before renormalizing agent attention.
             agentStore.renormalizeAttention(relayId, attentionCapable(relayId))
+            true
+        }
+        is CapsUpdateMessage -> {
+            connectionStore.applyCapsUpdate(relayId, message)
             true
         }
         is HerdrStatusMessage -> {

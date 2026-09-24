@@ -25,6 +25,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import lerdr.core.model.ActionReceiptMessage
 import lerdr.core.model.ActionReceiptPhase
+import lerdr.core.model.ClientCapabilities
 import lerdr.core.model.CommandResultMessage
 import lerdr.core.model.ErrorMessage
 import lerdr.core.model.Inbound
@@ -359,6 +360,9 @@ class RelaySession(
             // (the oracle's onAuthenticated → commitDeviceEnrollment).
             onEnrolled(authentication, finish)
             _state.value = SessionState.Connected(finish)
+            // Phase-5 §0 — `client_caps` is the first post-handshake frame;
+            // old relays answer `unknown_action`, which the app ignores.
+            connection.send(clientCapsFrame())
             connection.sendRaw(KEEPALIVE_JSON)
             drainBuffer(connection)
             val reason = serve(connection)
@@ -669,5 +673,17 @@ class RelaySession(
     companion object {
         /** `{"type":"refresh_agents"}` — the health ping every deployed relay answers. */
         const val KEEPALIVE_JSON = "{\"type\":\"refresh_agents\"}"
+
+        /**
+         * Phase-5 §0 `client_caps` — announces this app's capability set
+         * and the preferred inner codec. Sent unconditionally; the live
+         * set is `server-advertised ∩ this` (docs/13).
+         */
+        private fun clientCapsFrame(): Inbound = Inbound(
+            type = "client_caps",
+            protocol = Protocol.VERSION,
+            capabilities = ClientCapabilities.ANNOUNCED,
+            preferredInnerCodec = ClientCapabilities.PREFERRED_INNER_CODEC,
+        )
     }
 }

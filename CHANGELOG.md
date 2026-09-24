@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 Releases are **pre-release / beta** — no compatibility guarantees yet.
 
+## [Unreleased]
+
+### Added
+
+- **Phase-5 Track A** (`docs/13-phase5-wire-spec.md`) — capability
+  negotiation + pane-content actions on the frozen v3 envelope:
+  - App announces `client_caps` as the first post-handshake frame and
+    applies the relay's symmetric `caps_update`; the negotiated live set
+    is `server-advertised ∩ app-announced`.
+  - New actions: `focus_pane`/`focus_tab`/`focus_workspace`/`focus_agent`,
+    `pane_search` (match-position metadata), `pane_selection_read`,
+    `pane_link_resolve` (cell regions) / `pane_link_activate`
+    (`handled` + `url`), `layout_export`/`layout_apply`.
+  - `TargetRef` gains `workspace_id`/`tab_id`; `Inbound` gains the
+    structured Phase-5 raw fields (`query`, `cursor` objects,
+    `anchor`, `previous`, `row`/`col`, `root`, `tab_label`, `focus`).
+
 ## [0.0.1] — 2026-09-23
 
 First public release. Working end-to-end, still in development.

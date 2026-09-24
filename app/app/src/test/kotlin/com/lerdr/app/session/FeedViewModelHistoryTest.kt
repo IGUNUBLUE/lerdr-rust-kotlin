@@ -15,6 +15,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import lerdr.core.conversation.ConversationBrowseState
 import lerdr.core.data.DeviceRole
 import lerdr.core.data.DraftStore
@@ -226,7 +227,7 @@ class FeedViewModelHistoryTest {
         assertThat(state.preparationPaused).isFalse()
         // The cursorless head request carries the wire page size.
         val request = h.historyRequests().single()
-        assertThat(request.cursor).isEmpty()
+        assertThat(request.cursor).isNull()
         assertThat(request.limit).isEqualTo(200)
         assertThat(request.retry).isFalse()
     }
@@ -292,7 +293,7 @@ class FeedViewModelHistoryTest {
         // Cursorful pages merge diagnostics into the window report.
         assertThat(state.historyDiagnostics.oversizedRecords).isEqualTo(1)
         val older = h.historyRequests().last()
-        assertThat(older.cursor).isEqualTo("c1")
+        assertThat(older.cursor).isEqualTo(JsonPrimitive("c1"))
         assertThat(older.retry).isFalse()
     }
 
@@ -359,7 +360,8 @@ class FeedViewModelHistoryTest {
         // The polls re-issued the preparation cursor on the wire.
         val requests = h.historyRequests()
         assertThat(requests).hasSize(3)
-        assertThat(requests.map { it.cursor }).containsExactly("", "prep-1", "prep-1").inOrder()
+        assertThat(requests.map { it.cursor })
+            .containsExactly(null, JsonPrimitive("prep-1"), JsonPrimitive("prep-1")).inOrder()
     }
 
     @Test
@@ -422,7 +424,7 @@ class FeedViewModelHistoryTest {
         // The Continue request re-issued the stored preparation cursor.
         val requests = h.historyRequests()
         assertThat(requests).hasSize(2)
-        assertThat(requests.last().cursor).isEqualTo("prep-1")
+        assertThat(requests.last().cursor).isEqualTo(JsonPrimitive("prep-1"))
         assertThat(requests.last().retry).isFalse()
         assertThat(state.browseState)
             .isEqualTo(ConversationBrowseState.READY)
@@ -461,7 +463,7 @@ class FeedViewModelHistoryTest {
             .isEqualTo(ConversationBrowseState.READY)
         assertThat(state.historyError).isNull()
         assertThat(state.preparationPaused).isFalse()
-        assertThat(h.historyRequests().last().cursor).isEqualTo("prep-1")
+        assertThat(h.historyRequests().last().cursor).isEqualTo(JsonPrimitive("prep-1"))
         assertThat(h.historyRequests().last().retry).isFalse()
     }
 
@@ -523,7 +525,7 @@ class FeedViewModelHistoryTest {
         val requests = h.historyRequests()
         assertThat(requests).hasSize(3)
         val retried = requests.last()
-        assertThat(retried.cursor).isEqualTo("c1")
+        assertThat(retried.cursor).isEqualTo(JsonPrimitive("c1"))
         assertThat(retried.retry).isTrue()
         val state = vm.uiState.value
         assertThat(state.historyError).isNull()
@@ -581,7 +583,7 @@ class FeedViewModelHistoryTest {
 
         val requests = h.historyRequests()
         assertThat(requests).hasSize(3)
-        assertThat(requests.last().cursor).isEmpty()
+        assertThat(requests.last().cursor).isNull()
         assertThat(requests.last().retry).isFalse()
         val state = vm.uiState.value
         assertThat(state.entries.map { it.id }).containsExactly("e5", "e6").inOrder()

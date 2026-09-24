@@ -6,6 +6,7 @@ import lerdr.core.model.AgentState
 import lerdr.core.model.AgentUpdateMessage
 import lerdr.core.model.AgentsMessage
 import lerdr.core.model.BlockedMessage
+import lerdr.core.model.CapsUpdateMessage
 import lerdr.core.model.CommandResultMessage
 import lerdr.core.model.Interaction
 import lerdr.core.model.InventoryStatusMessage
@@ -137,6 +138,18 @@ class StoreReducerTest {
         val h = Harness(backgroundScope)
         assertThat(h.reducer.handle("ghost", PushConfigMessage())).isTrue()
         assertThat(h.connections.connections.value).isEmpty()
+    }
+
+    @Test
+    fun `caps_update routes into the connection's advertised set`() = runTest {
+        val h = Harness(backgroundScope)
+        h.connect()
+        h.ready()
+        assertThat(h.reducer.handle("r1", CapsUpdateMessage(capabilities = listOf("focus"))))
+            .isTrue()
+        val conn = h.connections.connectionNow("r1")!!
+        assertThat(conn.capabilities).containsExactly("focus")
+        assertThat(conn.capabilityLive("focus")).isTrue()
     }
 
     // ── deltas ───────────────────────────────────────────────────────

@@ -55,7 +55,13 @@ data class Inbound(
     val direction: String = "",
     val lines: Int = 0,
     val before: String = "",
-    val cursor: String = "",
+    /**
+     * Pagination cursor for the legacy reads — a JSON string there; the
+     * Phase-5 `pane_search`/`pane_selection_read` actions carry the
+     * structured `{row,col}` point instead (relay reads it from the raw
+     * map, `docs/13` §1.2-1.3). JsonElement keeps both wire shapes.
+     */
+    val cursor: JsonElement? = null,
     val retry: Boolean = false,
     val limit: Int = 0,
     val columns: Int = 0,
@@ -82,4 +88,25 @@ data class Inbound(
     val snoozed: Boolean = false,
     val visible: Boolean = false,
     val unlocked: Boolean = false,
+    // ── Phase-5 (docs/13) — appended at the tail like the relay ────
+    /** `pane_search` — the copy-engine query (§1.2). */
+    val query: String = "",
+    /** `client_caps`/inbound `caps_update` — announced capability list (§0). */
+    val capabilities: List<String> = emptyList(),
+    /** `client_caps` — preferred inner codec; `"json"` today (§0). */
+    @SerialName("preferred_inner_codec") val preferredInnerCodec: String = "",
+    /** `pane_selection_read` — selection start `{row,col}` (§1.3). */
+    val anchor: JsonElement? = null,
+    /** `pane_search` — prior match `{start,end}` for next/previous (§1.2). */
+    val previous: JsonElement? = null,
+    /** `pane_link_resolve`/`pane_link_activate` — viewport cell row (§1.4). */
+    val row: Int? = null,
+    /** `pane_link_resolve`/`pane_link_activate` — viewport cell column. */
+    val col: Int? = null,
+    /** `layout_apply` — the LayoutNode tree (§1.5). */
+    val root: JsonElement? = null,
+    /** `layout_apply` — label for the applied tab (§1.5). */
+    @SerialName("tab_label") val tabLabel: String = "",
+    /** `layout_apply` — focus the applied layout (§1.5). */
+    val focus: Boolean = false,
 )
