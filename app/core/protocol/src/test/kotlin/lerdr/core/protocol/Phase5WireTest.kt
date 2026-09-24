@@ -43,7 +43,6 @@ class Phase5WireTest {
                 type = "client_caps",
                 protocol = Protocol.VERSION,
                 capabilities = ClientCapabilities.ANNOUNCED,
-                preferredInnerCodec = ClientCapabilities.PREFERRED_INNER_CODEC,
             ),
         )
         assertThat(frame["type"]!!.jsonPrimitive.content).isEqualTo("client_caps")
@@ -54,7 +53,7 @@ class Phase5WireTest {
                 "convo_sub", "frame_zstd", "upload_binary",
             )
             .inOrder()
-        assertThat(frame["preferred_inner_codec"]!!.jsonPrimitive.content).isEqualTo("json")
+        assertThat(frame.containsKey("preferred_inner_codec")).isFalse()
     }
 
     @Test

@@ -93,8 +93,6 @@ data class Inbound(
     val query: String = "",
     /** `client_caps`/inbound `caps_update` — announced capability list (§0). */
     val capabilities: List<String> = emptyList(),
-    /** `client_caps` — preferred inner codec; `"json"` today (§0). */
-    @SerialName("preferred_inner_codec") val preferredInnerCodec: String = "",
     /** `pane_selection_read` — selection start `{row,col}` (§1.3). */
     val anchor: JsonElement? = null,
     /** `pane_search` — prior match `{start,end}` for next/previous (§1.2). */

@@ -21,8 +21,7 @@ so negotiation is symmetric:
 server → push_config { ..., capabilities: [..., "focus", "pane_search",
                  "pane_links", "layout", "convo_sub", "frame_zstd",
                  "upload_binary"] }
-client → {"type":"client_caps", "protocol":3,
-          "capabilities":[...], "preferred_inner_codec":"json"|"binary-v1"}
+client → {"type":"client_caps", "protocol":3, "capabilities":[...]}
 ```
 
 `client_caps` is optional for the server and **emitted unconditionally**

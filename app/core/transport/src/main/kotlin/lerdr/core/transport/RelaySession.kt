@@ -688,15 +688,15 @@ class RelaySession(
         const val KEEPALIVE_JSON = "{\"type\":\"refresh_agents\"}"
 
         /**
-         * Phase-5 §0 `client_caps` — announces this app's capability set
-         * and the preferred inner codec. Sent unconditionally; the live
-         * set is `server-advertised ∩ this` (docs/13).
+         * Phase-5 §0 `client_caps` — announces this app's capability set.
+         * Sent unconditionally; the live set is `server-advertised ∩
+         * this` (docs/13). The relay no longer models
+         * `preferred_inner_codec` (§2.1 dropped).
          */
         private fun clientCapsFrame(): Inbound = Inbound(
             type = "client_caps",
             protocol = Protocol.VERSION,
             capabilities = ClientCapabilities.ANNOUNCED,
-            preferredInnerCodec = ClientCapabilities.PREFERRED_INNER_CODEC,
         )
     }
 }

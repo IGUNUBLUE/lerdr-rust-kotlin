@@ -7,8 +7,8 @@ package lerdr.core.model
  * (`push_config`/`caps_update`/`herdr_status`) ∩ client-announced.
  *
  * The announced set is deliberately the families this app implements at
- * the wire layer — Track A + Track B; the inner binary codec stays
- * deferred (§2.1).
+ * the wire layer — Track A + Track B; the inner binary codec was
+ * dropped from the plan (§2.1 — `frame_zstd` captured the win).
  */
 object ClientCapabilities {
 
@@ -25,9 +25,6 @@ object ClientCapabilities {
         FOCUS, PANE_SEARCH, PANE_LINKS, LAYOUT,
         CONVO_SUB, FRAME_ZSTD, UPLOAD_BINARY,
     )
-
-    /** `preferred_inner_codec` — JSON inner frames; binary deferred (§0/Q4). */
-    const val PREFERRED_INNER_CODEC = "json"
 
     /** `advertised ∩ announced` — the live set per docs/13 §0. */
     fun live(advertised: Collection<String>): Set<String> =
