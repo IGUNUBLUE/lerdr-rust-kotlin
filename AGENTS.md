@@ -41,7 +41,9 @@ or compare against any external implementation.
   :core:transport:test --tests WireProbeTest --rerun-tasks` pairs a
   throwaway device against the Rust relay at `ws://127.0.0.1:8377` and
   prints every inbound frame + codec result (re-arm the invitation with
-  `kill -USR1 <relay-pid>`; leaves an enrolled credential behind).
+  `kill -USR1 <relay-pid>` — on the systemd deployment use
+  `systemctl --user kill -s USR1 lerdr.service` since the PID changes
+  per restart; leaves an enrolled credential behind).
 - App visual changes: screenshot test (Roborazzi) in the PR.
 
 ## Skills
