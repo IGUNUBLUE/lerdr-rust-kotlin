@@ -74,6 +74,14 @@ class FakeRelaySessionHandle(
         return true
     }
 
+    /** `0x03` binary upload chunks sent through [sendBytes]. */
+    val sentBytes = mutableListOf<ByteArray>()
+
+    override fun sendBytes(payload: ByteArray): Boolean {
+        sentBytes += payload
+        return true
+    }
+
     override fun send(message: Inbound): Boolean {
         sentTyped += message
         return true

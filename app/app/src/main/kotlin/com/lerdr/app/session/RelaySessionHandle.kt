@@ -34,6 +34,12 @@ interface RelaySessionHandle {
     /** Fire-and-forget send; false when refused (queued frames report true). */
     fun sendRaw(json: String): Boolean
 
+    /**
+     * Phase-5 §2.4 `upload_binary` — send binary plaintext (`0x03` chunk
+     * carrier) directly; never queued. False unless written now.
+     */
+    fun sendBytes(payload: ByteArray): Boolean
+
     /** Fire-and-forget send of a typed inbound message. */
     fun send(message: Inbound): Boolean
 
@@ -65,6 +71,7 @@ private class RelaySessionAdapter(
     override val incoming: Flow<JsonObject> get() = session.incoming
 
     override fun sendRaw(json: String): Boolean = session.sendRaw(json)
+    override fun sendBytes(payload: ByteArray): Boolean = session.sendBytes(payload)
     override fun send(message: Inbound): Boolean = session.send(message)
     override suspend fun request(message: Inbound, timeoutMs: Long): CommandResultMessage =
         session.request(message, timeoutMs)

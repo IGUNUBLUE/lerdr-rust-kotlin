@@ -128,6 +128,7 @@ fun AgentFeedScreen(
             entryPoint.sessionRepository(),
             entryPoint.draftStore(),
             AttachmentUploads(entryPoint.appScope(), entryPoint.sessionRepository(), appContext),
+            entryPoint.appScope(),
         )
     }
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()

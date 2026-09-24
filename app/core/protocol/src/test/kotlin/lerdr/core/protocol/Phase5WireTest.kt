@@ -49,7 +49,10 @@ class Phase5WireTest {
         assertThat(frame["type"]!!.jsonPrimitive.content).isEqualTo("client_caps")
         assertThat(frame["protocol"]!!.jsonPrimitive.int).isEqualTo(3)
         assertThat(frame["capabilities"]!!.jsonArray.map { it.jsonPrimitive.content })
-            .containsExactly("focus", "pane_search", "pane_links", "layout")
+            .containsExactly(
+                "focus", "pane_search", "pane_links", "layout",
+                "convo_sub", "frame_zstd", "upload_binary",
+            )
             .inOrder()
         assertThat(frame["preferred_inner_codec"]!!.jsonPrimitive.content).isEqualTo("json")
     }

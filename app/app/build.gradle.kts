@@ -61,6 +61,10 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.okhttp)
+    // Phase-5 §2.2 `frame_zstd` — the aar bundles Android .so into the
+    // APK; JVM unit tests resolve the jar's embedded host natives.
+    implementation("com.github.luben:zstd-jni:1.5.7-16@aar")
+    testImplementation(libs.zstd.jni)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)

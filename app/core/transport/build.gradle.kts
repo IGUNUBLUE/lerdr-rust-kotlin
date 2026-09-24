@@ -14,5 +14,7 @@ dependencies {
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.turbine)
     testImplementation(libs.mockwebserver3)
+    // The wire probe exercises `frame_zstd` decompression live.
+    testImplementation(libs.zstd.jni)
     testImplementation(project(":core:testing"))
 }

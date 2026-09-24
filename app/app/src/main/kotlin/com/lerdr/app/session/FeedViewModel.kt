@@ -40,10 +40,13 @@ import lerdr.core.conversation.ConversationDiagnostics
 import lerdr.core.conversation.ConversationEntry
 import lerdr.core.conversation.ConversationPage
 import lerdr.core.conversation.ConversationPageRequest
+import lerdr.core.conversation.ConversationProjector
 import lerdr.core.data.DraftStore
 import lerdr.core.data.composerDraftIdentity
 import lerdr.core.model.BlockedMessage
+import lerdr.core.model.ClientCapabilities
 import lerdr.core.model.CommandResultMessage
+import lerdr.core.model.ConversationUpdateMessage
 import lerdr.core.model.Inbound
 import lerdr.core.model.Interaction
 import lerdr.core.model.UploadAttachment
@@ -54,6 +57,7 @@ import lerdr.core.store.RelayConnection
 import lerdr.core.store.RelayStatus
 import lerdr.core.store.agentStatusGroup
 import lerdr.core.store.attentionKind
+import lerdr.core.store.clientPaneId
 import lerdr.core.store.rawBlocked
 
 /** Everything Feed mode renders — conversation page, blocker card, composer. */
@@ -146,6 +150,7 @@ class FeedViewModel(
     private val sessions: SessionRepository,
     private val drafts: DraftStore,
     private val uploads: AttachmentUploads,
+    private val appScope: kotlinx.coroutines.CoroutineScope,
 ) : ViewModel() {
 
     private val relayId = paneId.substringBefore("::")
@@ -164,6 +169,9 @@ class FeedViewModel(
 
     /** Oracle `preparationProgressKey` — identical progress snapshots stall the loop. */
     private var preparationProgressKey = ""
+
+    /** Phase-5 §2.3 — a `convo_sub` feed is open for this pane. */
+    private var convoSubscribed = false
 
     private data class FeedLocal(
         val entries: List<ConversationEntry> = emptyList(),
@@ -332,8 +340,67 @@ class FeedViewModel(
                 // next agents snapshot owns the truth either way.
             }
         }
+        // Phase-5 §2.3 `convo_sub` — per-pane push while the capability is
+        // live. A mid-session `caps_update` retraction unsubscribes; the
+        // polling demand loop stays the fallback path either way.
+        viewModelScope.launch {
+            sessions.connection(relayId)
+                .map { it?.capabilityLive(ClientCapabilities.CONVO_SUB) == true }
+                .distinctUntilChanged()
+                .collect { live ->
+                    if (live && !convoSubscribed) {
+                        try {
+                            sessions.subscribeConversation(paneId)
+                            convoSubscribed = true
+                        } catch (_: Exception) {
+                            // Negotiation raced — the next state change retries.
+                        }
+                    } else if (!live && convoSubscribed) {
+                        convoSubscribed = false
+                        try {
+                            sessions.unsubscribeConversation(paneId)
+                        } catch (_: Exception) {
+                        }
+                    }
+                }
+        }
+        viewModelScope.launch {
+            sessions.frames.collect { frame ->
+                if (frame.relayId != relayId) return@collect
+                val update = frame.message as? ConversationUpdateMessage ?: return@collect
+                applyConversationUpdate(update)
+            }
+        }
         loadHistory()
     }
+
+    /**
+     * `conversation_update` — `reset:true` replaces the window wholesale
+     * (initial frame, source rotation, pane replacement — including the
+     * empty tombstone); `reset:false` appends the new tail, deduplicated
+     * by id like the live-tail re-browse. Stale pane epochs drop.
+     */
+    private fun applyConversationUpdate(update: ConversationUpdateMessage) {
+        val targetPane = update.target?.paneId ?: return
+        if (clientPaneId(relayId, targetPane) != paneId) return
+        val generation = update.generation
+        val agentGeneration = agentStoreGeneration()
+        if (generation != null && agentGeneration != null && generation < agentGeneration) return
+        val pushed = ConversationProjector.projectEntries(update.messages)
+        local.value = if (update.reset == true) {
+            local.value.copy(
+                entries = pushed,
+                error = null,
+                errorCode = "",
+                errorRetryable = false,
+            )
+        } else {
+            local.value.copy(entries = mergeAppendedEntries(local.value.entries, pushed))
+        }
+    }
+
+    private fun agentStoreGeneration(): Long? =
+        sessions.agentNow(paneId)?.generation
 
     /**
      * First page — newest entries — or a PREPARING/FAILED status surface.
@@ -1291,6 +1358,17 @@ class FeedViewModel(
     /** `controller.onDestroy` — best-effort `upload_cancel`, then drop the batch. */
     override fun onCleared() {
         uploads.discard(paneId)
+        // viewModelScope is already cancelled — the unsubscribe rides the
+        // app scope like TerminalViewModel's release/unwatch teardown.
+        if (convoSubscribed) {
+            convoSubscribed = false
+            appScope.launch {
+                try {
+                    sessions.unsubscribeConversation(paneId)
+                } catch (_: Exception) {
+                }
+            }
+        }
         super.onCleared()
     }
 
@@ -1310,6 +1388,18 @@ private fun mergeOlderEntries(
 ): List<ConversationEntry> {
     val existingIds = existing.mapTo(HashSet()) { it.id }
     return older.filter { it.id !in existingIds } + existing
+}
+
+/**
+ * `conversation_update` `reset:false` — appended tails extend the window,
+ * deduplicated by id (the push may re-send the anchor entry).
+ */
+private fun mergeAppendedEntries(
+    existing: List<ConversationEntry>,
+    appended: List<ConversationEntry>,
+): List<ConversationEntry> {
+    val existingIds = existing.mapTo(HashSet()) { it.id }
+    return existing + appended.filter { it.id !in existingIds }
 }
 
 /** Oracle `RESPONSE_COPY_AGENT_IDS` — profiles the copy transaction drives. */

@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
@@ -56,16 +57,43 @@ class WireProbeTest {
         )
         val frames = CopyOnWriteArrayList<String>()
         val agentsFrames = CopyOnWriteArrayList<JsonObject>()
+        val uploadFrames = CopyOnWriteArrayList<JsonObject>()
         val collector = launch {
             session.incoming.collect { frame ->
                 val type = frame["type"]?.jsonPrimitive?.content ?: "?"
                 if (type == "agents") agentsFrames += frame
+                if (type == "upload_begin_result" || type == "upload_chunk_result") {
+                    uploadFrames += frame
+                }
                 val decoded = try {
                     ServerMessageCodec.decode(frame).let { "ok:${it::class.simpleName}" }
                 } catch (invalid: Exception) {
                     "DECODE-FAIL:${invalid::class.simpleName}:${invalid.message?.take(160)}"
                 }
                 val detail = when (type) {
+                    "pane_content" -> {
+                        // §2.2 — report negotiated compression and restore
+                        // the payload through the Track-B decompressor.
+                        val encoding = frame["encoding"]?.jsonPrimitive?.content
+                        if (encoding == null) {
+                            "plain"
+                        } else {
+                            val restored = try {
+                                lerdr.core.protocol.FrameZstd
+                                    .decompressPaneContentPayload(frame)
+                            } catch (invalid: Exception) {
+                                null
+                            }
+                            "enc=$encoding restored=${restored?.get("content")
+                                ?.jsonPrimitive?.content?.length ?: -1}"
+                        }
+                    }
+                    "conversation_update" -> "reset=" +
+                        (frame["reset"]?.jsonPrimitive?.content ?: "-") +
+                        " msgs=" + (frame["messages"]?.jsonArray?.size ?: -1)
+                    "upload_begin_result", "upload_chunk_result" ->
+                        "req=${frame["request_id"]?.jsonPrimitive?.content ?: "∅"} " +
+                            (frame["result"]?.toString()?.take(160) ?: frame["error"].toString())
                     "agents" -> "rows=" +
                         (frame["agents"]?.jsonArray?.size ?: -1) + " " +
                         (frame["agents"]?.jsonArray?.joinToString(",") { row ->
@@ -99,6 +127,7 @@ class WireProbeTest {
             withTimeout(10_000) { enrolled.await() }
             delay(COLLECT_MS)
             probeTrackA(session, agentsFrames)
+            probeTrackB(session, agentsFrames, uploadFrames)
         } finally {
             collector.cancel()
             session.close()
@@ -147,6 +176,144 @@ class WireProbeTest {
             onFailure = { "pane_search → ${it::class.simpleName}: ${it.message?.take(160)}" },
         )
         System.err.println("TRACK-A $line")
+    }
+
+    /**
+     * Phase-5 Track-B smoke — `subscribe_conversation` round-trips an
+     * `action_receipt` and spawns the per-pane `conversation_update` feed;
+     * `upload_begin` reports `chunk_encoding:"binary"` while negotiated,
+     * and one `0x03` chunk acks on the JSON channel with an empty
+     * `request_id` (`upload_cancel` discards the staged session after).
+     */
+    private suspend fun probeTrackB(
+        session: RelaySession,
+        agentsFrames: CopyOnWriteArrayList<JsonObject>,
+        uploadFrames: CopyOnWriteArrayList<JsonObject>,
+    ) {
+        val row = agentsFrames.lastOrNull()
+            ?.get("agents")?.jsonArray?.firstOrNull()?.jsonObject ?: return
+        fun field(key: String) = row[key]?.jsonPrimitive?.content.orEmpty()
+        val paneId = field("pane_id")
+        if (paneId.isEmpty()) return
+        val target = TargetRef(
+            serverSessionId = field("server_session_id"),
+            paneId = paneId,
+            terminalId = field("terminal_id"),
+            generation = field("generation").toLongOrNull() ?: 0,
+            agentSessionId = field("agent_session_id"),
+        )
+
+        // §2.2 — a watch makes pane_content flow; with `frame_zstd`
+        // negotiated the relay compresses it (collector prints enc= and
+        // the restored length through the decompressor).
+        val targetJson = buildJsonObject {
+            target.serverSessionId.let { put("server_session_id", it) }
+            put("pane_id", target.paneId)
+            target.terminalId.let { put("terminal_id", it) }
+            put("generation", target.generation)
+            target.agentSessionId.let { put("agent_session_id", it) }
+        }
+        session.sendRaw(
+            buildJsonObject {
+                put("type", "watch_pane")
+                put("request_id", "probe-watch")
+                put("protocol", 3)
+                put("pane_id", paneId)
+                put("target", targetJson)
+            }.toString(),
+        )
+
+        // §2.3 — subscribe; the reset snapshot lands on `incoming`.
+        val sub = runCatching {
+            withTimeout(15_000) {
+                session.request(
+                    Inbound(type = "subscribe_conversation", paneId = paneId, target = target),
+                )
+            }
+        }
+        System.err.println(
+            "TRACK-B subscribe → " + sub.fold(
+                { "ok=${it.ok} phase=${it.phase}" },
+                { "${it::class.simpleName}: ${it.message?.take(120)}" },
+            ),
+        )
+        delay(2_500) // let the first conversation_update frames arrive
+
+        // §2.4 — staged session + one binary chunk + cancel. `files`
+        // rides as a raw extra; the begin result answers on its own type.
+        val beginFramesBefore = uploadFrames.size
+        val beginReq = "probe-upload-begin"
+        session.sendRaw(
+            buildJsonObject {
+                put("type", "upload_begin")
+                put("request_id", beginReq)
+                put("protocol", 3)
+                put("pane_id", paneId)
+                put("target", targetJson)
+                put(
+                    "files",
+                    kotlinx.serialization.json.buildJsonArray {
+                        add(
+                            buildJsonObject {
+                                put("name", "probe.txt")
+                                put("media_type", "text/plain")
+                                put("bytes", 42)
+                            },
+                        )
+                    },
+                )
+            }.toString(),
+        )
+        val beginFrame = awaitUploadFrame(uploadFrames, beginFramesBefore, "upload_begin_result")
+        val uploadId = beginFrame?.get("result")?.jsonObject
+            ?.get("upload_id")?.jsonPrimitive?.content
+        System.err.println(
+            "TRACK-B begin → " + (beginFrame?.toString()?.take(200) ?: "no frame"),
+        )
+        if (uploadId.isNullOrEmpty()) return
+
+        // `0x03` carrier — raw bytes through the sealed channel.
+        val chunkFramesBefore = uploadFrames.size
+        val sent = session.sendBytes(
+            lerdr.core.protocol.BinaryUploadChunk.encodeChunk(
+                uploadId, 0, "probe-bytes for the staged upload carrier\n".encodeToByteArray(),
+            )!!,
+        )
+        val chunkFrame = if (sent) {
+            awaitUploadFrame(uploadFrames, chunkFramesBefore, "upload_chunk_result")
+        } else {
+            null
+        }
+        System.err.println(
+            "TRACK-B chunk(sent=$sent) → " + (chunkFrame?.toString()?.take(200) ?: "no ack"),
+        )
+
+        // Discard the staged session.
+        session.sendRaw(
+            buildJsonObject {
+                put("type", "upload_cancel")
+                put("request_id", "probe-upload-cancel")
+                put("protocol", 3)
+                put("pane_id", paneId)
+                put("target", targetJson)
+                put("upload_id", uploadId)
+            }.toString(),
+        )
+    }
+
+    private suspend fun awaitUploadFrame(
+        frames: CopyOnWriteArrayList<JsonObject>,
+        from: Int,
+        type: String,
+    ): JsonObject? = withTimeoutOrNull(15_000) {
+        while (true) {
+            frames.subList(from, frames.size)
+                .firstOrNull { it["type"]?.jsonPrimitive?.content == type }
+                ?.let { return@withTimeoutOrNull it }
+            delay(100)
+        }
+        @Suppress("UNREACHABLE_CODE")
+        null
     }
 
     private fun isEnabled(): Boolean = System.getenv("LERDR_PROBE") == "1"

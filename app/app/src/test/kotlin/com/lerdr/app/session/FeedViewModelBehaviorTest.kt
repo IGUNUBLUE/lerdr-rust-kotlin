@@ -57,7 +57,7 @@ class FeedViewModelBehaviorTest {
         private val testScope: TestScope,
         tmpDir: File,
     ) {
-        private val scope = testScope.backgroundScope
+        val scope = testScope.backgroundScope
         val credentials = FakeCredentialStore()
         private val relayStore = PreferenceDataStoreFactory.create(scope = scope) {
             File(tmpDir, "relays.preferences_pb")
@@ -158,7 +158,7 @@ class FeedViewModelBehaviorTest {
     }
 
     private fun Harness.viewModel(): FeedViewModel =
-        FeedViewModel(paneId, repository, drafts, uploads)
+        FeedViewModel(paneId, repository, drafts, uploads, scope)
 
     private fun credential(role: DeviceRole) = RelayDeviceCredential(
         id = "cred-1",

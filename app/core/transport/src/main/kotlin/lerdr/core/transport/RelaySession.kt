@@ -256,6 +256,19 @@ class RelaySession(
     fun sendRaw(json: String): Boolean =
         sendSerialized(json, ClientSendBuffer.sniffMessageType(json.toByteArray(Charsets.UTF_8)) ?: "")
 
+    /**
+     * Phase-5 §2.4 `upload_binary` — send binary plaintext (the `0x03`
+     * chunk carrier) directly, bypassing [sendBuffer]: a chunk is bound
+     * to the staged upload session's expiry and the shared sequence
+     * domain, so a queued-then-replayed chunk could only corrupt state.
+     * False unless a live connection writes it now.
+     */
+    fun sendBytes(payload: ByteArray): Boolean = sendLock.withLock {
+        val connection = currentConnection ?: return@withLock false
+        if (_state.value !is SessionState.Connected || !sendBuffer.isEmpty()) return@withLock false
+        connection.sendBytes(payload)
+    }
+
     private fun sendSerialized(json: String, kind: String): Boolean = sendLock.withLock {
         val connection = currentConnection
         if (connection != null && sendBuffer.isEmpty()) {

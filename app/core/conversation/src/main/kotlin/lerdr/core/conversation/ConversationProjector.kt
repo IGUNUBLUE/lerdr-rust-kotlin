@@ -73,6 +73,14 @@ object ConversationProjector {
     fun project(result: CommandResultMessage): ConversationPage =
         project(result.data)
 
+    /**
+     * Phase-5 §2.3 `convo_sub` — `conversation_update.messages` carries the
+     * same entry objects `get_conversation_history` returns, verbatim.
+     * Malformed rows drop exactly like page entries do.
+     */
+    fun projectEntries(messages: JsonElement?): List<ConversationEntry> =
+        (messages as? JsonArray)?.mapNotNull(::projectEntry) ?: emptyList()
+
     /** Projects a raw `BrowsePage` payload into the domain page. */
     fun project(data: JsonElement?): ConversationPage {
         val page = data as? JsonObject ?: invalid("page payload is not an object")

@@ -213,6 +213,25 @@ class RelayConnection(
         return socket.send(String(frame, Charsets.UTF_8))
     }
 
+    /**
+     * Phase-5 §2.4 `upload_binary` — seal one *binary plaintext* payload
+     * (the `0x03` upload-chunk carrier). Same encrypt + write discipline
+     * as [sendRaw]; the plaintext is arbitrary bytes, never JSON.
+     */
+    fun sendBytes(payload: ByteArray): Boolean {
+        if (!ready.isCompleted) return false
+        val session = sessionRef ?: return false
+        val socket = socketRef ?: return false
+        val frame = try {
+            synchronized(sealLock) { session.seal(payload) }
+        } catch (failure: E2EEException) {
+            terminate(DisconnectReason("Could not encrypt relay message"))
+            socket.cancel()
+            return false
+        }
+        return socket.send(String(frame, Charsets.UTF_8))
+    }
+
     /** Graceful close (1000); the peer's close handshake completes termination. */
     fun close() {
         userClosed.set(true)

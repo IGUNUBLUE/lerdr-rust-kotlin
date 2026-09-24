@@ -210,16 +210,17 @@ class ConnectionStoreTest {
             "r1",
             PushConfigMessage(
                 capabilities = WireField.Present(
-                    listOf("focus", "pane_links", "attention_classification", "convo_sub"),
+                    listOf("focus", "pane_links", "attention_classification", "convo_sub", "webrtc"),
                 ),
             ),
         )
         val conn = store.connectionNow("r1")!!
-        // Server-only (convo_sub — not announced by the app yet) and
+        // Server-only (webrtc — never announced by the app) and
         // client-only entries stay out of the live set.
-        assertThat(conn.liveCapabilities).containsExactly("focus", "pane_links")
+        assertThat(conn.liveCapabilities).containsExactly("focus", "pane_links", "convo_sub")
         assertThat(conn.capabilityLive("focus")).isTrue()
-        assertThat(conn.capabilityLive("convo_sub")).isFalse()
+        assertThat(conn.capabilityLive("convo_sub")).isTrue()
+        assertThat(conn.capabilityLive("webrtc")).isFalse()
         assertThat(conn.capabilityLive("layout")).isFalse()
     }
 

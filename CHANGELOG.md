@@ -23,6 +23,23 @@ Releases are **pre-release / beta** — no compatibility guarantees yet.
   - `TargetRef` gains `workspace_id`/`tab_id`; `Inbound` gains the
     structured Phase-5 raw fields (`query`, `cursor` objects,
     `anchor`, `previous`, `row`/`col`, `root`, `tab_label`, `focus`).
+- **Phase-5 Track B** (`docs/13-phase5-wire-spec.md` §2) — negotiated
+  transport upgrades, all gated on the live capability set:
+  - `frame_zstd` — `pane_content` frames may carry
+    `encoding:"zstd"` + base64 zstd `payload`; the envelope stays
+    plaintext and the inflated `{content}` restores before the
+    terminal surface consumes it. Malformed payloads drop safely.
+  - `convo_sub` — `subscribe_conversation`/`unsubscribe_conversation`
+    per pane; `conversation_update` pushes a `reset` snapshot then
+    append-only tails, deduplicated by entry id and dropped when the
+    pane `generation` is stale. The Feed subscribes while the screen
+    is open; history polling remains the fallback path.
+  - `upload_binary` — chunks ride the `0x03` carrier
+    `[0x03][upload_id:32][chunk_seq:BE64][bytes]` inside the sealed
+    channel when `upload_begin_result.chunk_encoding == "binary"`.
+    Acks stay JSON (`upload_chunk_result`, empty `request_id`,
+    correlated by send order); JSON and binary carriers share one
+    sequence domain per upload.
 
 ## [0.0.1] — 2026-09-23
 

@@ -68,6 +68,8 @@ import lerdr.core.model.UploadChunkResult
 import lerdr.core.model.UploadChunkResultMessage
 import lerdr.core.model.UploadFinishResult
 import lerdr.core.model.UploadFinishResultMessage
+import lerdr.core.protocol.BinaryUploadChunk
+import lerdr.core.protocol.FrameZstd
 import lerdr.core.protocol.LerdrJson
 import lerdr.core.protocol.Protocol
 import lerdr.core.protocol.ServerMessageCodec
@@ -167,6 +169,13 @@ class SessionRepository @Inject constructor(
 
     /** `pendingUploads` — `upload_*` requests answer on their own frame type. */
     private val pendingUploads = ConcurrentHashMap<String, PendingUpload>()
+
+    /**
+     * `upload_binary` acks arrive as `upload_chunk_result` with an empty
+     * `request_id` — correlation is the send order itself (chunks are
+     * awaited serially, so per-relay FIFO is exact).
+     */
+    private val pendingBinaryChunks = ConcurrentHashMap<String, ArrayDeque<PendingUpload>>()
 
     /** Latest auth records — `getAuthentication` is sync, so this is the cache. */
     @Volatile
@@ -695,8 +704,20 @@ class SessionRepository @Inject constructor(
             ?.takeIf { it.isString }?.content ?: return
         val runtime = synchronized(lock) { panes[clientPaneId(relayId, rawPaneId)] } ?: return
         runtime.mutex.withLock {
+            // Phase-5 §2.2 — restore `content` before the surface reads it.
+            // A malformed payload drops the frame; the ack/fingerprint
+            // chain's resync expiry recovers the pane.
+            val frame = if (type == "pane_content") {
+                try {
+                    FrameZstd.decompressPaneContentPayload(raw)
+                } catch (invalid: IllegalArgumentException) {
+                    return@withLock
+                }
+            } else {
+                raw
+            }
             val result = when (type) {
-                "pane_content" -> runtime.surface.applyContent(raw)
+                "pane_content" -> runtime.surface.applyContent(frame)
                 "pane_delta" -> runtime.surface.applyDelta(raw)
                 "pane_unchanged" -> runtime.surface.applyUnchanged(raw)
                 else -> runtime.surface.onResync()
@@ -1176,6 +1197,32 @@ class SessionRepository @Inject constructor(
         )
     }
 
+    // ── Track B — conversation subscriptions (Phase-5 §2.3) ──────────
+
+    /**
+     * `subscribe_conversation` — open the per-pane push feed; the first
+     * `conversation_update` arrives `reset:true` with the current
+     * conversation, later frames append tails. Answers an
+     * `action_receipt` CONFIRMED (resolved into `CommandResultMessage`
+     * by [RelaySession.request]).
+     */
+    suspend fun subscribeConversation(paneId: String): CommandResultMessage {
+        val agent = requireAgent(paneId)
+        requireCapability(agent, ClientCapabilities.CONVO_SUB)
+        return sendToAgent(agent, Inbound(type = "subscribe_conversation"))
+    }
+
+    /**
+     * `unsubscribe_conversation` — stop the pane's feed. Like
+     * `unwatch_pane`, an unknown/stale target is a no-op receipt, so this
+     * skips the local capability gate: cleanup must ride even after a
+     * mid-session `caps_update` retraction.
+     */
+    suspend fun unsubscribeConversation(paneId: String): CommandResultMessage {
+        val agent = requireAgent(paneId)
+        return sendToAgent(agent, Inbound(type = "unsubscribe_conversation"))
+    }
+
     // ── agent management ──────────────────────────────────────────────
 
     /** `agent_start` — launch a profile into a workspace (relay-scoped). */
@@ -1404,6 +1451,55 @@ class SessionRepository @Inject constructor(
     }
 
     /**
+     * Phase-5 §2.4 `upload_binary` — one chunk on the `0x03` binary
+     * carrier: `[0x03][upload_id:32][seq:BE64][bytes]` sealed like any
+     * other frame. `target`/`file_index`/`sha256` are anchored
+     * server-side; the ack arrives as `upload_chunk_result` with an
+     * empty `request_id`, correlated by send order ([pendingBinaryChunks]).
+     * [fileIndex] rides the pending expectation only — it validates the
+     * ack, never the wire.
+     */
+    suspend fun uploadBinaryChunk(
+        paneId: String,
+        uploadId: String,
+        fileIndex: Int,
+        sequence: Int,
+        data: ByteArray,
+    ): UploadChunkResult {
+        val agent = requireAgent(paneId)
+        requireCapability(agent, BinaryUploadChunk.CAPABILITY)
+        val frame = BinaryUploadChunk.encodeChunk(uploadId, sequence.toLong(), data)
+            ?: throw CommandException("Relay returned an upload id this client cannot send")
+        val session = sessionFor(agent.relayId)
+            ?: throw TransportException.NotConnected()
+        if (session.state.value !is RelaySession.SessionState.Connected) {
+            throw TransportException.NotConnected()
+        }
+        val pending = PendingUpload(
+            deferred = CompletableDeferred(),
+            relayId = agent.relayId,
+            responseType = "upload_chunk_result",
+            expectedFileIndex = fileIndex,
+            expectedNextSequence = sequence + 1,
+        )
+        val queue = pendingBinaryChunks.getOrPut(agent.relayId) { ArrayDeque() }
+        synchronized(queue) { queue.addLast(pending) }
+        pending.rearmBinary(agent.relayId, UPLOAD_TIMEOUT_MS)
+        if (!session.sendBytes(frame)) {
+            removeBinaryPending(agent.relayId, pending)
+            throw TransportException.WriteRejected("Could not send command to relay")
+        }
+        try {
+            val message = pending.deferred.await()
+            return (message as? UploadChunkResultMessage)?.let(::unwrapUploadResult)
+                ?: throw invalidUploadResponse()
+        } catch (cancelled: CancellationException) {
+            removeBinaryPending(agent.relayId, pending)
+            throw cancelled
+        }
+    }
+
+    /**
      * `upload_finish` — whole-file SHA-256 claims; answers
      * `upload_finish_result` `{attachments:[{ref,name,media_type,bytes,sha256,expires_at}]}`.
      */
@@ -1518,12 +1614,54 @@ class SessionRepository @Inject constructor(
             is UploadFinishResultMessage -> message.requestId
             is UploadCancelResultMessage -> message.requestId
             else -> return
-        } ?: return
+        }
+        // §2.4 — `0x03` chunks ack on the JSON channel with an empty
+        // `request_id`; the per-relay FIFO carries the correlation.
+        if (requestId.isNullOrEmpty()) {
+            if (message is UploadChunkResultMessage) resolveBinaryChunkResult(relayId, message)
+            return
+        }
         val pending = pendingUploads[requestId] ?: return
         if (pending.relayId != relayId || pending.responseType != message.type) return
         pendingUploads.remove(requestId)
         pending.timeoutJob?.cancel()
         pending.deferred.complete(message)
+    }
+
+    /**
+     * `0x03`-carrier ack — complete the oldest pending binary chunk for
+     * the relay after validating `file_index`/`next_sequence` (the ack's
+     * only correlation fields). A mismatched ack drops: the pending's
+     * timeout reports the upload as `dispatched_unknown`.
+     */
+    private fun resolveBinaryChunkResult(relayId: String, message: UploadChunkResultMessage) {
+        val queue = pendingBinaryChunks[relayId] ?: return
+        val pending = synchronized(queue) {
+            val head = queue.firstOrNull() ?: return
+            // Error acks carry no `result` — position correlates them.
+            if (message.error == null) {
+                if (head.expectedFileIndex != null &&
+                    head.expectedFileIndex != message.result?.fileIndex
+                ) {
+                    return
+                }
+                if (head.expectedNextSequence != null &&
+                    head.expectedNextSequence != message.result?.nextSequence
+                ) {
+                    return
+                }
+            }
+            queue.removeFirst()
+        } ?: return
+        pending.timeoutJob?.cancel()
+        pending.deferred.complete(message)
+    }
+
+    private fun removeBinaryPending(relayId: String, pending: PendingUpload) {
+        pendingBinaryChunks[relayId]?.let { queue ->
+            synchronized(queue) { queue.remove(pending) }
+        }
+        pending.timeoutJob?.cancel()
     }
 
     /**
@@ -1535,6 +1673,21 @@ class SessionRepository @Inject constructor(
         for ((requestId, pending) in pendingUploads) {
             if (pending.relayId != relayId) continue
             if (pendingUploads.remove(requestId, pending)) {
+                pending.timeoutJob?.cancel()
+                pending.deferred.completeExceptionally(
+                    CommandException(
+                        message = message,
+                        phase = "dispatched_unknown",
+                        dispatchedUnknown = true,
+                    ),
+                )
+            }
+        }
+        pendingBinaryChunks.remove(relayId)?.let { queue ->
+            val drained = synchronized(queue) {
+                buildList { while (true) add(queue.removeFirstOrNull() ?: break) }
+            }
+            drained.forEach { pending ->
                 pending.timeoutJob?.cancel()
                 pending.deferred.completeExceptionally(
                     CommandException(
@@ -1560,6 +1713,22 @@ class SessionRepository @Inject constructor(
                     ),
                 )
             }
+        }
+    }
+
+    /** Same timeout discipline for `0x03` pendings (deque-keyed). */
+    private fun PendingUpload.rearmBinary(relayId: String, timeoutMs: Long) {
+        timeoutJob?.cancel()
+        timeoutJob = scope.launch {
+            delay(timeoutMs)
+            removeBinaryPending(relayId, this@rearmBinary)
+            deferred.completeExceptionally(
+                CommandException(
+                    message = "Attachment upload did not finish in time.",
+                    phase = "dispatched_unknown",
+                    dispatchedUnknown = true,
+                ),
+            )
         }
     }
 
@@ -1770,6 +1939,7 @@ class SessionRepository @Inject constructor(
     // ── read seams for screens ────────────────────────────────────────
 
     fun agent(paneId: String): Flow<Agent?> = agentStore.agent(paneId)
+    fun agentNow(paneId: String): Agent? = agentStore.agentNow(paneId)
     fun connection(relayId: String): Flow<RelayConnection?> = connectionStore.connection(relayId)
     fun connectionNow(relayId: String): RelayConnection? = connectionStore.connectionNow(relayId)
 
@@ -2042,6 +2212,9 @@ class SessionRepository @Inject constructor(
         val relayId: String,
         val responseType: String,
         @Volatile var timeoutJob: Job? = null,
+        /** `upload_binary` ack validation — only set on `0x03` pendings. */
+        val expectedFileIndex: Int? = null,
+        val expectedNextSequence: Int? = null,
     )
 
     companion object {

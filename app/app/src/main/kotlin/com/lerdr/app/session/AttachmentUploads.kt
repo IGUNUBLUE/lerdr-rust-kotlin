@@ -26,6 +26,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import lerdr.core.model.UploadAttachment
 import lerdr.core.model.UploadBeginResult
+import lerdr.core.protocol.BinaryUploadChunk
 import lerdr.core.transport.CommandException
 
 /**
@@ -529,13 +530,19 @@ class AttachmentUploads internal constructor(
             }
             began = true
             synchronized(batch) { batch.activeUploadId = uploadId }
+            // §2.4 — a negotiated `chunk_encoding:"binary"` moves chunks
+            // onto the `0x03` carrier; JSON/base64 otherwise. The stamp is
+            // the negotiated truth — a mid-flight retraction still answers
+            // `capability_unsupported`, which `issueFrom` maps like any
+            // command failure.
+            val binaryChunks = begin.chunkEncoding == BinaryUploadChunk.ENCODING
             // `sequence` is global across the batch's files, like the oracle.
             var sequence = 0
             for (fileIndex in uploadItems.indices) {
                 val item = uploadItems[fileIndex]
                 sequence = uploadFile(
                     paneId, batch, item, fileIndex,
-                    uploadId, chunkBytes, expiresAtMs, run, sequence,
+                    uploadId, chunkBytes, expiresAtMs, run, sequence, binaryChunks,
                 )
                 if (sequence < 0 || run != batch.epoch) return emptyList()
             }
@@ -610,6 +617,7 @@ class AttachmentUploads internal constructor(
         expiresAtMs: Long,
         run: Int,
         sequence: Int,
+        binaryChunks: Boolean = false,
     ): Int {
         var nextSequence = sequence
         var offset = 0L
@@ -633,15 +641,26 @@ class AttachmentUploads internal constructor(
                 }
                 if (filled == 0) break
                 val chunk = if (filled == buffer.size) buffer else buffer.copyOf(filled)
-                val chunkSha256 = hex(chunkDigest.digest(chunk))
-                val response = sessions.uploadChunk(
-                    paneId,
-                    uploadId.orEmpty(),
-                    fileIndex,
-                    sequence = nextSequence,
-                    data = chunk,
-                    sha256 = chunkSha256,
-                )
+                val response = if (binaryChunks) {
+                    // The `0x03` carrier drops `sha256` — the relay measures
+                    // it on receipt; the AES-GCM envelope authenticates bytes.
+                    sessions.uploadBinaryChunk(
+                        paneId,
+                        uploadId.orEmpty(),
+                        fileIndex,
+                        sequence = nextSequence,
+                        data = chunk,
+                    )
+                } else {
+                    sessions.uploadChunk(
+                        paneId,
+                        uploadId.orEmpty(),
+                        fileIndex,
+                        sequence = nextSequence,
+                        data = chunk,
+                        sha256 = hex(chunkDigest.digest(chunk)),
+                    )
+                }
                 if (run != batch.epoch) return -1
                 val expectedBytes = offset + filled
                 if (response.fileIndex != fileIndex ||

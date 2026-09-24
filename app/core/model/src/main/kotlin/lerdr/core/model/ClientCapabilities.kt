@@ -7,8 +7,8 @@ package lerdr.core.model
  * (`push_config`/`caps_update`/`herdr_status`) ∩ client-announced.
  *
  * The announced set is deliberately the families this app implements at
- * the wire layer — Track A only; Track B (`convo_sub`, `frame_zstd`,
- * `upload_binary`, inner binary codec) joins as it lands.
+ * the wire layer — Track A + Track B; the inner binary codec stays
+ * deferred (§2.1).
  */
 object ClientCapabilities {
 
@@ -16,9 +16,15 @@ object ClientCapabilities {
     const val PANE_SEARCH = "pane_search"
     const val PANE_LINKS = "pane_links"
     const val LAYOUT = "layout"
+    const val CONVO_SUB = "convo_sub"
+    const val FRAME_ZSTD = "frame_zstd"
+    const val UPLOAD_BINARY = "upload_binary"
 
     /** Capability list emitted in `client_caps` — deterministic order. */
-    val ANNOUNCED: List<String> = listOf(FOCUS, PANE_SEARCH, PANE_LINKS, LAYOUT)
+    val ANNOUNCED: List<String> = listOf(
+        FOCUS, PANE_SEARCH, PANE_LINKS, LAYOUT,
+        CONVO_SUB, FRAME_ZSTD, UPLOAD_BINARY,
+    )
 
     /** `preferred_inner_codec` — JSON inner frames; binary deferred (§0/Q4). */
     const val PREFERRED_INNER_CODEC = "json"

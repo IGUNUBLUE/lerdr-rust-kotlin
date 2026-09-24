@@ -61,7 +61,7 @@ class FeedViewModelAttachmentTest {
         tmpDir: File,
         files: Map<String, ByteArray>,
     ) {
-        private val scope = testScope.backgroundScope
+        val scope = testScope.backgroundScope
         val credentials = FakeCredentialStore()
         private val relayStore = PreferenceDataStoreFactory.create(scope = scope) {
             File(tmpDir, "relays.preferences_pb")
@@ -183,7 +183,7 @@ class FeedViewModelAttachmentTest {
     }
 
     private fun Harness.viewModel(): FeedViewModel =
-        FeedViewModel(paneId, repository, drafts, uploads)
+        FeedViewModel(paneId, repository, drafts, uploads, scope)
 
     @Test
     fun `picked files upload and Attachment refs land in the composer draft`() = runTest {

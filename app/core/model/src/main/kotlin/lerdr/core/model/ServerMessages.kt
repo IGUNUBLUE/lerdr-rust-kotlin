@@ -212,6 +212,11 @@ data class PaneContentMessage(
     val truncated: Boolean? = null,
     @SerialName("viewport_only") val viewportOnly: Boolean? = null,
     @SerialName("viewport_rows") val viewportRows: Int? = null,
+    // Phase-5 §2.2 `frame_zstd` — when `encoding` is "zstd" the `content`
+    // member is folded into base64 `payload`; decode stays wire-faithful
+    // (`FrameZstd.decompressPaneContentPayload` restores it).
+    val encoding: String? = null,
+    val payload: String? = null,
 ) : ServerMessage
 
 /**
@@ -308,6 +313,23 @@ data class HerdrStatus(
 data class CapsUpdateMessage(
     @EncodeDefault(EncodeDefault.Mode.ALWAYS) override val type: String = "caps_update",
     val capabilities: List<String> = emptyList(),
+) : ServerMessage
+
+/**
+ * `conversation_update` — Phase-5 §2.3 `convo_sub` per-pane push.
+ * `messages` carries the same entry objects `get_conversation_history`
+ * returns, verbatim; `reset: true` marks a rebuilt history (initial
+ * frame, source rotation, pane replacement — drop the cached window),
+ * `reset: false` is an append-only tail. `generation` is the pane epoch
+ * for staleness checks; `target` echoes the resolved subscription.
+ */
+@Serializable
+data class ConversationUpdateMessage(
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS) override val type: String = "conversation_update",
+    val generation: Long? = null,
+    val messages: JsonElement? = null,
+    val reset: Boolean? = null,
+    val target: TargetRef? = null,
 ) : ServerMessage
 
 /** `herdr_status` broadcast. */
@@ -509,6 +531,8 @@ data class UploadBeginResult(
     @SerialName("chunk_bytes") val chunkBytes: Int? = null,
     @SerialName("expires_at") val expiresAt: String? = null,
     val limits: UploadLimits? = null,
+    /** Phase-5 §2.4 — `"binary"` while `upload_binary` is negotiated. */
+    @SerialName("chunk_encoding") val chunkEncoding: String? = null,
 )
 
 @Serializable
