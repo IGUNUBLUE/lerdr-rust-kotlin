@@ -647,6 +647,14 @@ impl Reader {
             total: entries.len() as i64,
             file_truncated: clipped,
             source_path: anchor.path.clone(),
+            // New records and `continued-in` links both land in the newest
+            // segment — the tip is the file a subscriber must stat; the
+            // anchor alone would miss every append past the first hop.
+            probe_path: chain
+                .segments
+                .last()
+                .map(|segment| segment.location.path.clone())
+                .unwrap_or_else(|| anchor.path.clone()),
             ..Page::default()
         };
         if !chain.incomplete_reason.is_empty() {

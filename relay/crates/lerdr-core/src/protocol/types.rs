@@ -28,10 +28,12 @@ pub const SPEECH_VOICE_MANAGEMENT_CAPABILITY: &str = "speech_voice_management";
 /// `protocol.Capabilities` — the capability list advertised in `push_config`.
 ///
 /// `"focus"` was the first Phase-5 §0 addition; `"pane_search"`,
-/// `"pane_links"`, and `"layout"` cover the §1 pane-content families.
-/// The relay advertises each while Herdr evidence does not refute the
-/// whole backing method family (`lerdr-coord`'s `caps_update` carries
-/// the mid-session flip).
+/// `"pane_links"`, and `"layout"` cover the §1 pane-content families, and
+/// `"convo_sub"` is the §2.3 per-pane conversation subscription. The relay
+/// advertises each while Herdr evidence does not refute the whole backing
+/// method family (`lerdr-coord`'s `caps_update` carries the mid-session
+/// flip); `convo_sub` is relay-local like `conversation_history`, so it is
+/// advertised whenever the conversation subsystem is present.
 pub const CAPABILITIES: &[&str] = &[
     "attention_classification",
     "clear_activities",
@@ -52,6 +54,7 @@ pub const CAPABILITIES: &[&str] = &[
     "pane_search",
     "pane_links",
     "layout",
+    "convo_sub",
 ];
 
 /// Error codes emitted by the relay (`ErrorInvalidRequest` etc.).
@@ -347,12 +350,13 @@ const fn mutate_action_unversioned(
 
 /// `protocol.actionCatalog` — the oracle's 70 actions plus the Phase-5
 /// additions: `client_caps`/`caps_update` negotiation, the `focus_*`
-/// family (docs/13 §§0-1.1), and the §1 pane-content families
+/// family (docs/13 §§0-1.1), the §1 pane-content families
 /// (`pane_search`, `pane_selection_read`, `pane_link_resolve`,
-/// `pane_link_activate`, `layout_export`, `layout_apply`). The
-/// negotiation frames classify `ReadOnly` so any authenticated device
-/// may announce its set; they are absorbed by the session layer before
-/// routing.
+/// `pane_link_activate`, `layout_export`, `layout_apply`), and the §2.3
+/// conversation subscription pair (`subscribe_conversation`,
+/// `unsubscribe_conversation`). The negotiation frames classify `ReadOnly`
+/// so any authenticated device may announce its set; they are absorbed by
+/// the session layer before routing.
 pub fn classify_action(operation: &str) -> Option<ActionMetadata> {
     let metadata = match operation {
         "acknowledge_pane" => mutate_action("acknowledge_pane", true, false),
@@ -415,8 +419,10 @@ pub fn classify_action(operation: &str) -> Option<ActionMetadata> {
         "speech_voice_install" => mutate_action("speech_voice_install", false, true),
         "speech_voice_remove" => mutate_action("speech_voice_remove", false, true),
         "speech_voices_list" => read_action("speech_voices_list"),
+        "subscribe_conversation" => read_action("subscribe_conversation"),
         "submit_prompt" => mutate_action("submit_prompt", true, true),
         "tab_reorder" => mutate_action("tab_reorder", true, true),
+        "unsubscribe_conversation" => read_action("unsubscribe_conversation"),
         "unwatch_pane" => read_action("unwatch_pane"),
         "upload_begin" => mutate_action("upload_begin", false, true),
         "upload_cancel" => mutate_action("upload_cancel", false, true),
@@ -460,6 +466,7 @@ pub fn required_capability(operation: &str) -> Option<&'static str> {
         "pane_search" | "pane_selection_read" => Some("pane_search"),
         "pane_link_resolve" | "pane_link_activate" => Some("pane_links"),
         "layout_export" | "layout_apply" => Some("layout"),
+        "subscribe_conversation" | "unsubscribe_conversation" => Some("convo_sub"),
         _ => None,
     }
 }
@@ -540,6 +547,8 @@ mod tests {
             "pane_link_resolve",
             "pane_search",
             "pane_selection_read",
+            "subscribe_conversation",
+            "unsubscribe_conversation",
             "watch_pane",
             "worktree_remove",
         ];
@@ -614,5 +623,20 @@ mod tests {
         for cap in ["pane_search", "pane_links", "layout"] {
             assert!(CAPABILITIES.contains(&cap), "{cap}");
         }
+    }
+
+    /// docs/13 §2.3 — the `convo_sub` pair is read-only (a subscription
+    /// mutates no upstream state) and both actions ride the same gate.
+    #[test]
+    fn convo_sub_actions_classify_and_gate_per_spec() {
+        for action in ["subscribe_conversation", "unsubscribe_conversation"] {
+            let meta = classify_action(action).unwrap();
+            assert_eq!(meta.class, ActionClass::ReadOnly, "{action}");
+            assert!(!meta.requires_protocol, "{action}");
+            assert!(!meta.coordinated, "{action}");
+            assert!(!meta.audited, "{action}");
+            assert_eq!(required_capability(action), Some("convo_sub"), "{action}");
+        }
+        assert!(CAPABILITIES.contains(&"convo_sub"));
     }
 }

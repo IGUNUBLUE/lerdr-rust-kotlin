@@ -40,6 +40,7 @@ mod actor;
 mod annotations;
 mod classify;
 pub mod conversation;
+mod convo_subs;
 mod fingerprint;
 mod history;
 pub mod release;

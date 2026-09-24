@@ -274,6 +274,7 @@ impl Reader {
             total: entries.len() as i64,
             file_truncated: clipped,
             source_path: location.path.clone(),
+            probe_path: location.path.clone(),
             ..Page::default()
         })
     }

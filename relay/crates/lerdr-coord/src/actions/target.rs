@@ -16,7 +16,11 @@
 //! IS the pane address). `layout_apply` is exempt the same way: its
 //! address is the `root` tree plus `workspace_id`/`tab_id`, so any
 //! `pane_id` is context — a pane that changed underneath must not veto
-//! rebuilding a layout around still-live panes.
+//! rebuilding a layout around still-live panes. `unsubscribe_conversation`
+//! joins the cleanup arm: the feed it stops is keyed by pane, so a stale
+//! tuple must not strand the client's own subscription (the subscribe
+//! side keeps the full check — subscribing against a stale tuple should
+//! fail like every other pane-directed read).
 
 use std::collections::BTreeMap;
 
@@ -51,7 +55,7 @@ pub(crate) fn validate_exact_pane_target(
     }
     if matches!(
         action_type,
-        "unwatch_pane" | "release_pane_size" | "cancel_speech"
+        "unwatch_pane" | "release_pane_size" | "cancel_speech" | "unsubscribe_conversation"
     ) {
         if target.is_some_and(|target| target.pane_id != pane_id) {
             return Some(invalid_field("target.pane_id"));
@@ -158,7 +162,12 @@ mod tests {
     #[test]
     fn exempt_actions_only_check_target_pane_id() {
         let t = topology();
-        for action in ["unwatch_pane", "release_pane_size", "cancel_speech"] {
+        for action in [
+            "unwatch_pane",
+            "release_pane_size",
+            "cancel_speech",
+            "unsubscribe_conversation",
+        ] {
             // No target still cleans up owner-scoped state.
             assert!(
                 validate_exact_pane_target(&t, action, "pane-1", None, true).is_none(),
