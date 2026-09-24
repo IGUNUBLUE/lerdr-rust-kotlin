@@ -13,7 +13,10 @@
 //! agent-session ids are the authoritative addresses there — a pane
 //! that changed underneath must not veto focusing a still-live tab,
 //! workspace, or agent (`focus_pane` keeps the full tuple check — it
-//! IS the pane address).
+//! IS the pane address). `layout_apply` is exempt the same way: its
+//! address is the `root` tree plus `workspace_id`/`tab_id`, so any
+//! `pane_id` is context — a pane that changed underneath must not veto
+//! rebuilding a layout around still-live panes.
 
 use std::collections::BTreeMap;
 
@@ -37,8 +40,13 @@ pub(crate) fn validate_exact_pane_target(
     // tab/workspace/agent-session id — any `pane_id` present is client
     // context, not the address, so neither the tuple nor pane equality
     // applies (`focus_pane` is NOT here: its pane is the address and
-    // keeps the full check below).
-    if matches!(action_type, "focus_tab" | "focus_workspace" | "focus_agent") {
+    // keeps the full check below). `layout_apply` joins them: the `root`
+    // tree and `workspace_id`/`tab_id` are the addresses — its pane_ids
+    // are requests inside the tree, not a target tuple.
+    if matches!(
+        action_type,
+        "focus_tab" | "focus_workspace" | "focus_agent" | "layout_apply"
+    ) {
         return None;
     }
     if matches!(
@@ -243,12 +251,18 @@ mod tests {
     }
 
     #[test]
-    fn non_pane_focus_actions_skip_target_checks() {
+    fn non_pane_addressed_actions_skip_target_checks() {
         let t = topology();
         // `focus_tab`/`focus_workspace`/`focus_agent` are addressed by
         // tab/workspace/session id — any pane fields are context, and a
         // stale (or absent, or mismatched) pane identity never vetoes.
-        for action in ["focus_tab", "focus_workspace", "focus_agent"] {
+        // `layout_apply` is addressed by its `root` tree — same rule.
+        for action in [
+            "focus_tab",
+            "focus_workspace",
+            "focus_agent",
+            "layout_apply",
+        ] {
             assert!(
                 validate_exact_pane_target(&t, action, "pane-1", None, true).is_none(),
                 "{action} without target"

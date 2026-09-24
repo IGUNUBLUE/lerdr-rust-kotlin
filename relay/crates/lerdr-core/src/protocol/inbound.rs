@@ -12,7 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::json::{de_default, RawJson};
+use crate::json::{de_default, de_str_loose, RawJson};
 
 /// `TargetRef` identifies the pane/tab/workspace a message is about.
 /// The five original fields are always emitted (no `omitempty` in Go);
@@ -300,9 +300,13 @@ pub struct Inbound {
         skip_serializing_if = "String::is_empty"
     )]
     pub before: String,
+    /// Pagination cursor for the legacy reads — Phase-5 `pane_search`/
+    /// `pane_selection_read` overload the key with a `{row,col}` object;
+    /// `de_str_loose` keeps strings verbatim and tolerates the object
+    /// (handlers read the structured form through `raw("cursor")`).
     #[serde(
         default,
-        deserialize_with = "de_default",
+        deserialize_with = "de_str_loose",
         skip_serializing_if = "String::is_empty"
     )]
     pub cursor: String,
@@ -744,6 +748,32 @@ mod tests {
         let msg = Inbound::decode(br#"{"type":"read_pane"}"#).unwrap();
         let encoded = String::from_utf8(msg.encode()).unwrap();
         assert!(!encoded.contains("capabilities"), "{encoded}");
+    }
+
+    #[test]
+    fn cursor_tolerates_the_phase5_object_shape() {
+        // `cursor` is a pagination string for the legacy reads; Phase-5
+        // `pane_search`/`pane_selection_read` send `{row,col}` — the
+        // typed field reads "" while the object stays reachable raw.
+        let msg = Inbound::decode(
+            br#"{"type":"pane_search","pane_id":"wE:p1","query":"panic","cursor":{"row":3,"col":4}}"#,
+        )
+        .unwrap();
+        assert_eq!(msg.cursor, "");
+        assert_eq!(
+            msg.raw("cursor").cloned(),
+            Some(serde_json::json!({"row": 3, "col": 4}))
+        );
+
+        // Strings still arrive verbatim; absent stays absent.
+        let msg = Inbound::decode(br#"{"type":"read_pane","cursor":"page-2"}"#).unwrap();
+        assert_eq!(msg.cursor, "page-2");
+        let msg = Inbound::decode(br#"{"type":"read_pane"}"#).unwrap();
+        assert_eq!(msg.cursor, "");
+        // Null and other non-strings degrade to "" rather than failing
+        // the whole request (a legacy `de_default` would have errored).
+        let msg = Inbound::decode(br#"{"type":"read_pane","cursor":null}"#).unwrap();
+        assert_eq!(msg.cursor, "");
     }
 
     #[test]

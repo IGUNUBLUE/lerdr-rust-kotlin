@@ -758,6 +758,90 @@ impl Client {
             .agent)
     }
 
+    // -- copy-engine family (Phase-5 `pane_search`/`pane_selection_read`) ----
+
+    /// `pane.copy_search` → `pane_copy_search` — server-side find over the
+    /// pane's full scrollback. `params.content_revision` is required
+    /// upstream: callers inject the pane's copy-engine watermark (see
+    /// [`pane_copy_motion`](Self::pane_copy_motion) for the unfenced probe
+    /// that learns it); a stale fence answers `stale_content`.
+    pub async fn pane_copy_search(
+        &self,
+        params: &PaneCopySearchParams,
+        timeout: Option<Duration>,
+    ) -> Result<PaneCopySearchResult, HerdrError> {
+        self.call_result_opts("pane.copy_search", params, "pane_copy_search", timeout)
+            .await
+    }
+
+    /// `pane.selection.read` → `pane_selection` — read an arbitrary
+    /// copy-engine range. `content_revision: None` reads unfenced.
+    pub async fn pane_selection_read(
+        &self,
+        params: &PaneSelectionReadParams,
+        timeout: Option<Duration>,
+    ) -> Result<PaneSelectionReadResult, HerdrError> {
+        self.call_result_opts("pane.selection.read", params, "pane_selection", timeout)
+            .await
+    }
+
+    /// `pane.copy_motion` → `pane_copy_motion` — the copy-engine cursor
+    /// move; with `content_revision: None` it is the family's revision
+    /// probe (the reply carries the pane's current copy revision).
+    pub async fn pane_copy_motion(
+        &self,
+        params: &PaneCopyMotionParams,
+        timeout: Option<Duration>,
+    ) -> Result<PaneCopyMotionResult, HerdrError> {
+        self.call_result_opts("pane.copy_motion", params, "pane_copy_motion", timeout)
+            .await
+    }
+
+    // -- pane links (Phase-5 `pane_link_*`) ---------------------------------
+
+    /// `pane.link.resolve` → `pane_link_resolved` — hit-test a viewport
+    /// cell for a link; the reply carries the link's cell regions (0.9.1
+    /// exposes bounds only — the target string surfaces on activate).
+    pub async fn pane_link_resolve(
+        &self,
+        params: &PaneLinkPointParams,
+        timeout: Option<Duration>,
+    ) -> Result<PaneLinkResolvedResult, HerdrError> {
+        self.call_result_opts("pane.link.resolve", params, "pane_link_resolved", timeout)
+            .await
+    }
+
+    /// `pane.link.activate` → `pane_link_activated` — open the link at the
+    /// viewport cell in the desktop browser; `{handled, url}` reports who
+    /// took it and the resolved target.
+    pub async fn pane_link_activate(
+        &self,
+        params: &PaneLinkPointParams,
+        timeout: Option<Duration>,
+    ) -> Result<PaneLinkActivatedResult, HerdrError> {
+        self.call_result_opts("pane.link.activate", params, "pane_link_activated", timeout)
+            .await
+    }
+
+    // -- layout (Phase-5 `layout_*`) ----------------------------------------
+
+    /// `layout.export` → `layout_export` — the pane/tab's layout tree;
+    /// empty params export the focused tab upstream.
+    pub async fn layout_export(
+        &self,
+        params: &LayoutExportParams,
+        timeout: Option<Duration>,
+    ) -> Result<LayoutDescription, HerdrError> {
+        #[derive(serde::Deserialize)]
+        struct R {
+            layout: LayoutDescription,
+        }
+        Ok(self
+            .call_result_opts::<_, R>("layout.export", params, "layout_export", timeout)
+            .await?
+            .layout)
+    }
+
     /// `agent.view.set` — install the transient declarative projection that
     /// drives Herdr's sidebar and its mobile Agents list.
     pub async fn agent_view_set(

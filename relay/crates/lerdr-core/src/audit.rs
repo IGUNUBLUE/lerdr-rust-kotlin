@@ -1194,6 +1194,7 @@ mod tests {
             "answer_question",
             "clarify_question",
             "create_device_invitation",
+            "layout_apply",
             "navigate_question",
             "push_test_device",
             "rename_device",
@@ -1220,7 +1221,7 @@ mod tests {
             "worktree_open",
             "worktree_remove",
         ];
-        assert_eq!(AUDITED.len(), 33);
+        assert_eq!(AUDITED.len(), 34);
         for action in AUDITED {
             assert!(is_audited(action), "{action} should be audited");
         }
@@ -1233,6 +1234,11 @@ mod tests {
             "push_policy_set",
             "speak_text",
             "worktree_list",
+            "pane_search",
+            "pane_selection_read",
+            "pane_link_resolve",
+            "pane_link_activate",
+            "layout_export",
             "no_such_action",
             "",
         ] {

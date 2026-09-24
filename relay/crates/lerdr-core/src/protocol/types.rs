@@ -27,9 +27,11 @@ pub const SPEECH_VOICE_MANAGEMENT_CAPABILITY: &str = "speech_voice_management";
 
 /// `protocol.Capabilities` — the capability list advertised in `push_config`.
 ///
-/// `"focus"` is the Phase-5 §0 addition: the relay advertises it while
-/// Herdr evidence does not refute the whole focus method family
-/// (`lerdr-coord`'s `caps_update` carries the mid-session flip).
+/// `"focus"` was the first Phase-5 §0 addition; `"pane_search"`,
+/// `"pane_links"`, and `"layout"` cover the §1 pane-content families.
+/// The relay advertises each while Herdr evidence does not refute the
+/// whole backing method family (`lerdr-coord`'s `caps_update` carries
+/// the mid-session flip).
 pub const CAPABILITIES: &[&str] = &[
     "attention_classification",
     "clear_activities",
@@ -47,6 +49,9 @@ pub const CAPABILITIES: &[&str] = &[
     "secret_input",
     "invitation_qr",
     "focus",
+    "pane_search",
+    "pane_links",
+    "layout",
 ];
 
 /// Error codes emitted by the relay (`ErrorInvalidRequest` etc.).
@@ -341,10 +346,13 @@ const fn mutate_action_unversioned(
 }
 
 /// `protocol.actionCatalog` — the oracle's 70 actions plus the Phase-5
-/// additions (`client_caps`/`caps_update` negotiation and the `focus_*`
-/// family, docs/13 §§0-1.1). The negotiation frames classify `ReadOnly`
-/// so any authenticated device may announce its set; they are absorbed
-/// by the session layer before routing.
+/// additions: `client_caps`/`caps_update` negotiation, the `focus_*`
+/// family (docs/13 §§0-1.1), and the §1 pane-content families
+/// (`pane_search`, `pane_selection_read`, `pane_link_resolve`,
+/// `pane_link_activate`, `layout_export`, `layout_apply`). The
+/// negotiation frames classify `ReadOnly` so any authenticated device
+/// may announce its set; they are absorbed by the session layer before
+/// routing.
 pub fn classify_action(operation: &str) -> Option<ActionMetadata> {
     let metadata = match operation {
         "acknowledge_pane" => mutate_action("acknowledge_pane", true, false),
@@ -374,8 +382,14 @@ pub fn classify_action(operation: &str) -> Option<ActionMetadata> {
         "lease_pane_size" => mutate_action("lease_pane_size", true, false),
         "list_directories" => read_action("list_directories"),
         "list_slash_commands" => read_action("list_slash_commands"),
+        "layout_apply" => mutate_action("layout_apply", true, true),
+        "layout_export" => read_action("layout_export"),
         "navigate_question" => mutate_action("navigate_question", true, true),
         "pane_applied" => read_action("pane_applied"),
+        "pane_link_activate" => mutate_action("pane_link_activate", true, false),
+        "pane_link_resolve" => read_action("pane_link_resolve"),
+        "pane_search" => read_action("pane_search"),
+        "pane_selection_read" => read_action("pane_selection_read"),
         "push_open_ref" => read_action("push_open_ref"),
         "push_policy_get" => read_action("push_policy_get"),
         "push_policy_set" => mutate_action("push_policy_set", false, false),
@@ -443,6 +457,9 @@ pub fn requires_protocol(message_type: &str) -> bool {
 pub fn required_capability(operation: &str) -> Option<&'static str> {
     match operation {
         "focus_pane" | "focus_tab" | "focus_workspace" | "focus_agent" => Some("focus"),
+        "pane_search" | "pane_selection_read" => Some("pane_search"),
+        "pane_link_resolve" | "pane_link_activate" => Some("pane_links"),
+        "layout_export" | "layout_apply" => Some("layout"),
         _ => None,
     }
 }
@@ -517,6 +534,12 @@ mod tests {
             "focus_workspace",
             "focus_agent",
             "install_update",
+            "layout_apply",
+            "layout_export",
+            "pane_link_activate",
+            "pane_link_resolve",
+            "pane_search",
+            "pane_selection_read",
             "watch_pane",
             "worktree_remove",
         ];
@@ -546,5 +569,50 @@ mod tests {
         }
         assert_eq!(required_capability("send_text"), None);
         assert!(CAPABILITIES.contains(&"focus"));
+    }
+
+    /// docs/13 §1 — the pane-content families' [R]/[M,C]/[M,C,A] marks
+    /// and their capability names.
+    #[test]
+    fn pane_content_actions_classify_and_gate_per_spec() {
+        for action in [
+            "pane_search",
+            "pane_selection_read",
+            "pane_link_resolve",
+            "layout_export",
+        ] {
+            let meta = classify_action(action).unwrap();
+            assert_eq!(meta.class, ActionClass::ReadOnly, "{action}");
+            assert!(!meta.audited, "{action}");
+            assert!(!meta.coordinated, "{action}");
+        }
+        // [M,C] mutating+coordinated but not audited.
+        let activate = classify_action("pane_link_activate").unwrap();
+        assert_eq!(activate.class, ActionClass::Mutating);
+        assert!(activate.requires_protocol);
+        assert!(activate.coordinated);
+        assert!(!activate.audited);
+        // [M,C,A] — the only audited action of the six.
+        let apply = classify_action("layout_apply").unwrap();
+        assert_eq!(apply.class, ActionClass::Mutating);
+        assert!(apply.requires_protocol);
+        assert!(apply.coordinated);
+        assert!(apply.audited);
+
+        assert_eq!(required_capability("pane_search"), Some("pane_search"));
+        assert_eq!(
+            required_capability("pane_selection_read"),
+            Some("pane_search")
+        );
+        assert_eq!(required_capability("pane_link_resolve"), Some("pane_links"));
+        assert_eq!(
+            required_capability("pane_link_activate"),
+            Some("pane_links")
+        );
+        assert_eq!(required_capability("layout_export"), Some("layout"));
+        assert_eq!(required_capability("layout_apply"), Some("layout"));
+        for cap in ["pane_search", "pane_links", "layout"] {
+            assert!(CAPABILITIES.contains(&cap), "{cap}");
+        }
     }
 }

@@ -162,7 +162,7 @@ async fn serve(mut conn: tokio::io::DuplexStream, script: Script) {
 /// An `ActionContext` wired to the script — see
 /// [`context_with_client`].
 fn context(script: &Script, agents: Vec<AgentInfo>) -> ActionContext {
-    context_with_client(script.client(), agents, Vec::new())
+    context_full(script.client(), agents, Vec::new(), Vec::new(), &[])
 }
 
 /// Same, with workspaces projected into the topology snapshot.
@@ -171,24 +171,77 @@ fn context_topo(
     agents: Vec<AgentInfo>,
     workspaces: Vec<lerdr_herdr::WorkspaceInfo>,
 ) -> ActionContext {
-    context_with_client(script.client(), agents, workspaces)
+    context_full(script.client(), agents, workspaces, Vec::new(), &[])
 }
 
-/// `ActionContext` over an arbitrary client: the topology snapshot carries
-/// `agents`/`workspaces`, the profile resolver points at an empty config
-/// dir, and the spawned supervisor shares the transport (its
-/// `events.subscribe` requests are filtered out of [`Script::requests`]).
+/// Same, with pane rows — `PaneInfo.revision` seeds the upstream
+/// `content_revision` watermark and `PaneInfo.scroll` the link actions'
+/// `offset_from_bottom`.
+fn context_panes(
+    script: &Script,
+    agents: Vec<AgentInfo>,
+    panes: Vec<lerdr_herdr::PaneInfo>,
+) -> ActionContext {
+    context_full(script.client(), agents, Vec::new(), panes, &[])
+}
+
+/// Same, plus capability-ledger rows (`(method, state)` — e.g.
+/// `("pane.copy_search", "unsupported")` refutes the method before
+/// dispatch).
+fn context_features(
+    script: &Script,
+    agents: Vec<AgentInfo>,
+    features: &[(&str, &str)],
+) -> ActionContext {
+    context_full(script.client(), agents, Vec::new(), Vec::new(), features)
+}
+
+/// `ActionContext` over an arbitrary client — the plain snapshot path.
 fn context_with_client(
     client: Client,
     agents: Vec<AgentInfo>,
     workspaces: Vec<lerdr_herdr::WorkspaceInfo>,
 ) -> ActionContext {
+    context_full(client, agents, workspaces, Vec::new(), &[])
+}
+
+/// `ActionContext` over an arbitrary client: the topology snapshot carries
+/// `agents`/`workspaces`/`panes`, `features` seeds the capability ledger
+/// rows `herdr_status.features` projects, the profile resolver points at
+/// an empty config dir, and the spawned supervisor shares the transport
+/// (its `events.subscribe` requests are filtered out of
+/// [`Script::requests`]).
+fn context_full(
+    client: Client,
+    agents: Vec<AgentInfo>,
+    workspaces: Vec<lerdr_herdr::WorkspaceInfo>,
+    panes: Vec<lerdr_herdr::PaneInfo>,
+    features: &[(&str, &str)],
+) -> ActionContext {
     let mut topology = Topology::default();
     topology.accept(SessionSnapshot {
         agents,
         workspaces,
+        panes,
         ..SessionSnapshot::default()
     });
+    if !features.is_empty() {
+        topology.herdr_status.features = lerdr_core::json::MaybeNull::Value(
+            features
+                .iter()
+                .map(|(name, state)| {
+                    (
+                        (*name).to_owned(),
+                        lerdr_core::protocol::HerdrFeatureStatus {
+                            state: (*state).to_owned(),
+                            reason: "schema_absent".to_owned(),
+                            generation: 1,
+                        },
+                    )
+                })
+                .collect(),
+        );
+    }
     ActionContext {
         handle: TopologyActor::spawn(client.clone(), CancellationToken::new()),
         leases: Leases::new(client.clone()),
@@ -1219,5 +1272,557 @@ async fn focus_workspace_requires_a_workspace_id() {
     let frames = frames_of(super::focus::focus_workspace(ctx, "r1", "a1", &msg).await);
     assert!(!frames.ok);
     assert_eq!(frames.phase, "failed");
+    assert!(script.requests().is_empty());
+}
+
+// ── Phase-5 pane content (docs/13 §1.2-1.5) ----------------------------------
+
+/// A `panes` row — `revision` seeds the upstream `content_revision`
+/// watermark the fenced copy family injects.
+fn pane_row(
+    pane_id: &str,
+    revision: u64,
+    scroll: Option<lerdr_herdr::PaneScrollInfo>,
+) -> lerdr_herdr::PaneInfo {
+    lerdr_herdr::PaneInfo {
+        pane_id: pane_id.to_owned(),
+        terminal_id: "term-1".to_owned(),
+        workspace_id: "wE".to_owned(),
+        tab_id: "wE:t1".to_owned(),
+        revision,
+        scroll,
+        ..lerdr_herdr::PaneInfo::default()
+    }
+}
+
+fn search_reply() -> serde_json::Value {
+    json!({
+        "type": "pane_copy_search",
+        "pane_id": "wE:p1",
+        "content_revision": 930,
+        "matches": [
+            {"start": {"row": 2, "col": 12}, "end": {"row": 2, "col": 16}},
+            {"start": {"row": 12, "col": 6}, "end": {"row": 12, "col": 10}}
+        ],
+        "total": 2,
+        "current": 1,
+        "current_global": 1
+    })
+}
+
+/// No watermark yet — the handler learns the fence through the unfenced
+/// `pane.copy_motion` probe, then dispatches `pane.copy_search` with it.
+#[tokio::test]
+async fn pane_search_probes_the_revision_then_searches() {
+    let script = Script::new([
+        (
+            "pane.copy_motion",
+            Step::Reply(json!({
+                "type": "pane_copy_motion",
+                "pane_id": "wE:p1",
+                "cursor": {"row": 0, "col": 0},
+                "content_revision": 930
+            })),
+        ),
+        ("pane.copy_search", Step::Reply(search_reply())),
+    ]);
+    let ctx = context(&script, vec![]);
+    let msg = message(serde_json::Map::from_iter([
+        ("type".into(), json!("pane_search")),
+        ("pane_id".into(), json!("wE:p1")),
+        ("query".into(), json!("panic")),
+        ("direction".into(), json!("backward")),
+        ("cursor".into(), json!({"row": 0, "col": 0})),
+        (
+            "previous".into(),
+            json!({"start": {"row": 2, "col": 12}, "end": {"row": 2, "col": 16}}),
+        ),
+    ]));
+    let frames = frames_of(super::content::pane_search(ctx, "r1", "a1", &msg).await);
+    assert!(frames.ok, "data: {:?}", frames.data);
+    assert_eq!(frames.receipt_phase, "confirmed");
+    let requests = script.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].0, "pane.copy_motion");
+    assert_eq!(
+        requests[0].1,
+        json!({
+            "pane_id": "wE:p1",
+            "cursor": {"row": 0, "col": 0},
+            "motion": "line_end"
+        })
+    );
+    assert_eq!(requests[1].0, "pane.copy_search");
+    assert_eq!(
+        requests[1].1,
+        json!({
+            "pane_id": "wE:p1",
+            "query": "panic",
+            "direction": "backward",
+            "cursor": {"row": 0, "col": 0},
+            "content_revision": 930,
+            "previous": {"start": {"row": 2, "col": 12}, "end": {"row": 2, "col": 16}}
+        })
+    );
+    let data = frames.data.expect("search data");
+    assert_eq!(data["content_revision"], 930);
+    assert_eq!(data["total"], 2);
+    assert_eq!(data["current"], 1);
+    assert_eq!(data["matches"].as_array().unwrap().len(), 2);
+    // The observed revision folded into the served watermark.
+    // (the shared ledger — the next action sees it without a probe)
+}
+
+/// A known watermark dispatches `pane.copy_search` directly — no probe.
+#[tokio::test]
+async fn pane_search_uses_the_served_watermark_without_probing() {
+    let script = Script::new([("pane.copy_search", Step::Reply(search_reply()))]);
+    let ctx = context_panes(&script, vec![], vec![pane_row("wE:p1", 12, None)]);
+    let msg = message(serde_json::Map::from_iter([
+        ("type".into(), json!("pane_search")),
+        ("pane_id".into(), json!("wE:p1")),
+        ("query".into(), json!("panic")),
+        ("direction".into(), json!("forward")),
+        ("cursor".into(), json!({"row": 3, "col": 4})),
+    ]));
+    let frames = frames_of(super::content::pane_search(ctx, "r1", "a1", &msg).await);
+    assert!(frames.ok, "data: {:?}", frames.data);
+    let requests = script.requests();
+    assert_eq!(requests.len(), 1, "no probe once the watermark is known");
+    assert_eq!(requests[0].0, "pane.copy_search");
+    assert_eq!(requests[0].1["content_revision"], 12);
+    // `previous` absent on the wire stays absent upstream.
+    assert!(requests[0].1.get("previous").is_none());
+}
+
+/// A `stale_content` refusal re-probes and retries once at the fresh mark.
+#[tokio::test]
+async fn pane_search_stale_fence_reprobes_and_retries() {
+    let script = Script::new([
+        (
+            "pane.copy_search",
+            Step::Refuse("stale_content", "content changed"),
+        ),
+        (
+            "pane.copy_motion",
+            Step::Reply(json!({
+                "type": "pane_copy_motion",
+                "pane_id": "wE:p1",
+                "cursor": {"row": 0, "col": 0},
+                "content_revision": 40
+            })),
+        ),
+        ("pane.copy_search", Step::Reply(search_reply())),
+    ]);
+    let ctx = context_panes(&script, vec![], vec![pane_row("wE:p1", 12, None)]);
+    let msg = message(serde_json::Map::from_iter([
+        ("type".into(), json!("pane_search")),
+        ("pane_id".into(), json!("wE:p1")),
+        ("query".into(), json!("panic")),
+        ("cursor".into(), json!({"row": 0, "col": 0})),
+    ]));
+    let frames = frames_of(super::content::pane_search(ctx, "r1", "a1", &msg).await);
+    assert!(frames.ok, "data: {:?}", frames.data);
+    let requests = script.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[0].1["content_revision"], 12);
+    assert_eq!(requests[1].0, "pane.copy_motion");
+    assert_eq!(requests[2].0, "pane.copy_search");
+    assert_eq!(requests[2].1["content_revision"], 40);
+}
+
+/// A definitive refusal reaches Herdr and back — `confirmed` receipt with
+/// the upstream code, `not_started` result.
+#[tokio::test]
+async fn pane_search_refusal_maps_to_not_started() {
+    let script = Script::new([("pane.copy_search", Step::Refuse("pane_not_found", "gone"))]);
+    let ctx = context_panes(&script, vec![], vec![pane_row("wE:p1", 12, None)]);
+    let msg = message(serde_json::Map::from_iter([
+        ("type".into(), json!("pane_search")),
+        ("pane_id".into(), json!("wE:p1")),
+        ("query".into(), json!("panic")),
+        ("cursor".into(), json!({"row": 0, "col": 0})),
+    ]));
+    let frames = frames_of(super::content::pane_search(ctx, "r1", "a1", &msg).await);
+    assert!(!frames.ok);
+    assert_eq!(frames.phase, "not_started");
+    assert_eq!(frames.receipt_phase, "confirmed");
+    assert_eq!(frames.receipt_code.as_deref(), Some("pane_not_found"));
+    assert_eq!(frames.data, Some(json!({ "code": "pane_not_found" })));
+}
+
+/// Bad shapes fail before the socket: missing query, missing cursor,
+/// malformed `previous`, unknown direction.
+#[tokio::test]
+async fn pane_search_validation_failures_stay_local() {
+    let script = Script::new([]);
+    let ctx = context(&script, vec![]);
+    for map in [
+        // no query
+        serde_json::Map::from_iter([
+            ("type".into(), json!("pane_search")),
+            ("pane_id".into(), json!("wE:p1")),
+            ("cursor".into(), json!({"row": 0, "col": 0})),
+        ]),
+        // no cursor
+        serde_json::Map::from_iter([
+            ("type".into(), json!("pane_search")),
+            ("pane_id".into(), json!("wE:p1")),
+            ("query".into(), json!("panic")),
+        ]),
+        // malformed previous
+        serde_json::Map::from_iter([
+            ("type".into(), json!("pane_search")),
+            ("pane_id".into(), json!("wE:p1")),
+            ("query".into(), json!("panic")),
+            ("cursor".into(), json!({"row": 0, "col": 0})),
+            ("previous".into(), json!("yes")),
+        ]),
+        // unknown direction
+        serde_json::Map::from_iter([
+            ("type".into(), json!("pane_search")),
+            ("pane_id".into(), json!("wE:p1")),
+            ("query".into(), json!("panic")),
+            ("cursor".into(), json!({"row": 0, "col": 0})),
+            ("direction".into(), json!("sideways")),
+        ]),
+    ] {
+        let msg = message(map);
+        let frames = frames_of(super::content::pane_search(ctx.clone(), "r1", "a1", &msg).await);
+        assert!(!frames.ok, "map: {msg:?}");
+        assert_eq!(frames.phase, "failed");
+        assert_eq!(frames.receipt_phase, "failed_before_dispatch");
+    }
+    assert!(script.requests().is_empty());
+}
+
+/// Live evidence that `pane.copy_search` is unsupported refutes the action
+/// without a socket call — same `capability_unsupported` code the session
+/// gate emits.
+#[tokio::test]
+async fn refuted_copy_method_gaps_without_socket_call() {
+    let script = Script::new([]);
+    let ctx = context_features(&script, vec![], &[("pane.copy_search", "unsupported")]);
+    let msg = message(serde_json::Map::from_iter([
+        ("type".into(), json!("pane_search")),
+        ("pane_id".into(), json!("wE:p1")),
+        ("query".into(), json!("panic")),
+        ("cursor".into(), json!({"row": 0, "col": 0})),
+    ]));
+    let frames = frames_of(super::content::pane_search(ctx, "r1", "a1", &msg).await);
+    assert!(!frames.ok);
+    assert_eq!(frames.phase, "not_started");
+    assert_eq!(frames.receipt_phase, "failed_before_dispatch");
+    assert_eq!(
+        frames.receipt_code.as_deref(),
+        Some("capability_unsupported")
+    );
+    assert!(script.requests().is_empty());
+}
+
+/// `pane_selection_read` rides the watermark fence and reports the range.
+#[tokio::test]
+async fn pane_selection_read_fences_and_decodes() {
+    let script = Script::new([(
+        "pane.selection.read",
+        Step::Reply(json!({
+            "type": "pane_selection",
+            "pane_id": "wE:p1",
+            "text": "selected text"
+        })),
+    )]);
+    let ctx = context_panes(&script, vec![], vec![pane_row("wE:p1", 41, None)]);
+    let msg = message(serde_json::Map::from_iter([
+        ("type".into(), json!("pane_selection_read")),
+        ("pane_id".into(), json!("wE:p1")),
+        ("anchor".into(), json!({"row": 1, "col": 3})),
+        ("cursor".into(), json!({"row": 4, "col": 9})),
+    ]));
+    let frames = frames_of(super::content::pane_selection_read(ctx, "r1", "a1", &msg).await);
+    assert!(frames.ok, "data: {:?}", frames.data);
+    let requests = script.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].0, "pane.selection.read");
+    assert_eq!(
+        requests[0].1,
+        json!({
+            "pane_id": "wE:p1",
+            "anchor": {"row": 1, "col": 3},
+            "cursor": {"row": 4, "col": 9},
+            "content_revision": 41
+        })
+    );
+    let data = frames.data.expect("selection data");
+    assert_eq!(data["text"], "selected text");
+    assert_eq!(data["content_revision"], 41);
+}
+
+/// An unobserved watermark reads unfenced — no `content_revision` upstream
+/// and `0` reported relay-side.
+#[tokio::test]
+async fn pane_selection_read_unfenced_when_unobserved() {
+    let script = Script::new([(
+        "pane.selection.read",
+        Step::Reply(json!({
+            "type": "pane_selection",
+            "pane_id": "wE:p1",
+            "text": ""
+        })),
+    )]);
+    let ctx = context(&script, vec![]);
+    let msg = message(serde_json::Map::from_iter([
+        ("type".into(), json!("pane_selection_read")),
+        ("pane_id".into(), json!("wE:p1")),
+        ("anchor".into(), json!({"row": 0, "col": 0})),
+        ("cursor".into(), json!({"row": 0, "col": 5})),
+    ]));
+    let frames = frames_of(super::content::pane_selection_read(ctx, "r1", "a1", &msg).await);
+    assert!(frames.ok);
+    let requests = script.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].1.get("content_revision").is_none());
+    assert_eq!(frames.data.expect("data")["content_revision"], 0);
+}
+
+/// `pane_link_resolve` translates `row`/`col` to upstream's
+/// `viewport_row`/`col`, carries the pane's scroll offset, and fences at
+/// the served watermark.
+#[tokio::test]
+async fn pane_link_resolve_maps_viewport_cell_and_decodes_regions() {
+    let script = Script::new([(
+        "pane.link.resolve",
+        Step::Reply(json!({
+            "type": "pane_link_resolved",
+            "regions": [{"row": 5, "start_col": 9, "end_col": 27}]
+        })),
+    )]);
+    let ctx = context_panes(
+        &script,
+        vec![],
+        vec![pane_row(
+            "wE:p1",
+            41,
+            Some(lerdr_herdr::PaneScrollInfo {
+                offset_from_bottom: 3,
+                max_offset_from_bottom: 60,
+                viewport_rows: 24,
+            }),
+        )],
+    );
+    let msg = message(serde_json::Map::from_iter([
+        ("type".into(), json!("pane_link_resolve")),
+        ("pane_id".into(), json!("wE:p1")),
+        ("row".into(), json!(5)),
+        ("col".into(), json!(12)),
+    ]));
+    let frames = frames_of(super::content::pane_link_resolve(ctx, "r1", "a1", &msg).await);
+    assert!(frames.ok, "data: {:?}", frames.data);
+    let requests = script.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].0, "pane.link.resolve");
+    assert_eq!(
+        requests[0].1,
+        json!({
+            "pane_id": "wE:p1",
+            "viewport_row": 5,
+            "col": 12,
+            "content_revision": 41,
+            "offset_from_bottom": 3
+        })
+    );
+    let regions = frames.data.expect("regions")["regions"].clone();
+    assert_eq!(regions[0]["row"], 5);
+    assert_eq!(regions[0]["start_col"], 9);
+    assert_eq!(regions[0]["end_col"], 27);
+}
+
+/// `pane_link_activate` is the mutating leg — `{handled,url}` reports who
+/// took the link and the resolved target.
+#[tokio::test]
+async fn pane_link_activate_reports_handled_and_url() {
+    let script = Script::new([(
+        "pane.link.activate",
+        Step::Reply(json!({
+            "type": "pane_link_activated",
+            "handled": true,
+            "url": "https://example.com"
+        })),
+    )]);
+    let ctx = context_panes(&script, vec![], vec![pane_row("wE:p1", 41, None)]);
+    let msg = message(serde_json::Map::from_iter([
+        ("type".into(), json!("pane_link_activate")),
+        ("pane_id".into(), json!("wE:p1")),
+        ("row".into(), json!(5)),
+        ("col".into(), json!(12)),
+    ]));
+    let frames = frames_of(super::content::pane_link_activate(ctx, "r1", "a1", &msg).await);
+    assert!(frames.ok, "data: {:?}", frames.data);
+    let requests = script.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].0, "pane.link.activate");
+    assert_eq!(requests[0].1["content_revision"], 41);
+    let data = frames.data.expect("activate data");
+    assert_eq!(data["handled"], true);
+    assert_eq!(data["url"], "https://example.com");
+}
+
+/// Links addressed outside the viewport bounds fail before the socket.
+#[tokio::test]
+async fn pane_link_coordinate_validation_stays_local() {
+    let script = Script::new([]);
+    let ctx = context(&script, vec![]);
+    for map in [
+        serde_json::Map::from_iter([
+            ("type".into(), json!("pane_link_resolve")),
+            ("pane_id".into(), json!("wE:p1")),
+            ("col".into(), json!(4)), // row missing
+        ]),
+        serde_json::Map::from_iter([
+            ("type".into(), json!("pane_link_resolve")),
+            ("pane_id".into(), json!("wE:p1")),
+            ("row".into(), json!(70_000)), // over u16
+            ("col".into(), json!(4)),
+        ]),
+        serde_json::Map::from_iter([
+            ("type".into(), json!("pane_link_activate")),
+            ("pane_id".into(), json!("wE:p1")),
+            ("row".into(), json!(-1)), // negative
+            ("col".into(), json!(4)),
+        ]),
+    ] {
+        let msg = message(map);
+        let action = msg.r#type.clone();
+        let frames = frames_of(if action == "pane_link_resolve" {
+            super::content::pane_link_resolve(ctx.clone(), "r1", "a1", &msg).await
+        } else {
+            super::content::pane_link_activate(ctx.clone(), "r1", "a1", &msg).await
+        });
+        assert!(!frames.ok);
+        assert_eq!(frames.phase, "failed");
+        assert_eq!(frames.receipt_phase, "failed_before_dispatch");
+    }
+    assert!(script.requests().is_empty());
+}
+
+/// `layout_export` addresses by tab or pane and projects the description's
+/// `root`.
+#[tokio::test]
+async fn layout_export_addresses_by_tab_and_projects_root() {
+    let root = json!({
+        "type": "split",
+        "direction": "right",
+        "ratio": 0.5,
+        "first": {"type": "pane", "pane_id": "wE:p1"},
+        "second": {"type": "pane", "pane_id": "wE:p2"}
+    });
+    let script = Script::new([(
+        "layout.export",
+        Step::Reply(json!({
+            "type": "layout_export",
+            "layout": {
+                "workspace_id": "wE",
+                "tab_id": "wE:t1",
+                "zoomed": false,
+                "focused_pane_id": "wE:p1",
+                "root": root
+            }
+        })),
+    )]);
+    let ctx = context(&script, vec![]);
+    let msg = message(serde_json::Map::from_iter([
+        ("type".into(), json!("layout_export")),
+        ("target".into(), json!({"tab_id": "wE:t1"})),
+    ]));
+    let frames = frames_of(super::content::layout_export(ctx, "r1", "a1", &msg).await);
+    assert!(frames.ok, "data: {:?}", frames.data);
+    let requests = script.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].0, "layout.export");
+    assert_eq!(requests[0].1, json!({ "tab_id": "wE:t1" }));
+    let data = frames.data.expect("export data");
+    assert_eq!(data["root"]["type"], "split");
+    assert_eq!(data["root"]["first"]["pane_id"], "wE:p1");
+}
+
+/// `layout_apply` serializes the root tree plus its addressing/option
+/// fields and reports the realized layout.
+#[tokio::test]
+async fn layout_apply_serializes_root_and_options() {
+    let script = Script::new([(
+        "layout.apply",
+        Step::Reply(json!({
+            "type": "layout_apply",
+            "layout": {
+                "workspace_id": "wE",
+                "tab_id": "wE:t2",
+                "zoomed": false,
+                "focused_pane_id": "wE:p3",
+                "root": {"type": "pane", "pane_id": "wE:p3"}
+            }
+        })),
+    )]);
+    let ctx = context(&script, vec![]);
+    let msg = message(serde_json::Map::from_iter([
+        ("type".into(), json!("layout_apply")),
+        (
+            "root".into(),
+            json!({
+                "type": "split",
+                "direction": "down",
+                "ratio": 0.3,
+                "first": {"type": "pane", "pane_id": "wE:p1"},
+                "second": {"type": "pane", "command": ["bash"], "cwd": "/tmp"}
+            }),
+        ),
+        ("tab_id".into(), json!("wE:t2")),
+        ("tab_label".into(), json!("rebuilt")),
+        ("focus".into(), json!(true)),
+    ]));
+    let frames = frames_of(super::content::layout_apply(ctx, "r1", "a1", &msg).await);
+    assert!(frames.ok, "data: {:?}", frames.data);
+    let requests = script.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].0, "layout.apply");
+    assert_eq!(
+        requests[0].1,
+        json!({
+            "root": {
+                "type": "split",
+                "direction": "down",
+                "ratio": 0.3,
+                "first": {"type": "pane", "pane_id": "wE:p1"},
+                "second": {"type": "pane", "command": ["bash"], "cwd": "/tmp"}
+            },
+            "tab_id": "wE:t2",
+            "tab_label": "rebuilt",
+            "focus": true
+        })
+    );
+    let data = frames.data.expect("apply data");
+    assert_eq!(data["layout"]["tab_id"], "wE:t2");
+}
+
+/// A missing or malformed `root` fails before the socket.
+#[tokio::test]
+async fn layout_apply_requires_a_valid_root() {
+    let script = Script::new([]);
+    let ctx = context(&script, vec![]);
+    for map in [
+        serde_json::Map::from_iter([("type".into(), json!("layout_apply"))]),
+        serde_json::Map::from_iter([
+            ("type".into(), json!("layout_apply")),
+            ("root".into(), json!("nope")),
+        ]),
+        serde_json::Map::from_iter([
+            ("type".into(), json!("layout_apply")),
+            ("root".into(), json!({"type": "portal"})),
+        ]),
+    ] {
+        let msg = message(map);
+        let frames = frames_of(super::content::layout_apply(ctx.clone(), "r1", "a1", &msg).await);
+        assert!(!frames.ok);
+        assert_eq!(frames.phase, "failed");
+        assert_eq!(frames.receipt_phase, "failed_before_dispatch");
+    }
     assert!(script.requests().is_empty());
 }

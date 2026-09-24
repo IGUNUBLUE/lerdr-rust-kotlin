@@ -83,6 +83,31 @@ pub mod features {
     /// `unsupported` (a partial family still serves the members Herdr
     /// ships).
     pub const FOCUS_METHODS: &[&str] = &[PANE_FOCUS, TAB_FOCUS, WORKSPACE_FOCUS, AGENT_FOCUS];
+    /// `pane.copy_search` method — Phase-5 `pane_search`.
+    pub const PANE_COPY_SEARCH: &str = "pane.copy_search";
+    /// `pane.selection.read` method — Phase-5 `pane_selection_read`.
+    pub const PANE_SELECTION_READ: &str = "pane.selection.read";
+    /// `pane.copy_motion` method — the copy-engine revision probe the
+    /// fenced copy family leans on: `pane.copy_search` requires a
+    /// `content_revision` the relay can only learn from an unfenced
+    /// `pane.copy_motion` or a prior search result.
+    pub const PANE_COPY_MOTION: &str = "pane.copy_motion";
+    /// The methods behind the Phase-5 `pane_search` wire capability —
+    /// same all-refuted rule as [`FOCUS_METHODS`].
+    pub const PANE_SEARCH_METHODS: &[&str] =
+        &[PANE_COPY_SEARCH, PANE_SELECTION_READ, PANE_COPY_MOTION];
+    /// `pane.link.resolve` method — Phase-5 `pane_link_resolve`.
+    pub const PANE_LINK_RESOLVE: &str = "pane.link.resolve";
+    /// `pane.link.activate` method — Phase-5 `pane_link_activate`.
+    pub const PANE_LINK_ACTIVATE: &str = "pane.link.activate";
+    /// The methods behind the Phase-5 `pane_links` wire capability.
+    pub const PANE_LINK_METHODS: &[&str] = &[PANE_LINK_RESOLVE, PANE_LINK_ACTIVATE];
+    /// `layout.export` method — Phase-5 `layout_export`.
+    pub const LAYOUT_EXPORT: &str = "layout.export";
+    /// `layout.apply` method — Phase-5 `layout_apply`.
+    pub const LAYOUT_APPLY: &str = "layout.apply";
+    /// The methods behind the Phase-5 `layout` wire capability.
+    pub const LAYOUT_METHODS: &[&str] = &[LAYOUT_EXPORT, LAYOUT_APPLY];
     /// `pane.report_metadata` — the relay's watch annotation token.
     pub const PANE_REPORT_METADATA: &str = "pane.report_metadata";
     /// `workspace.report_metadata` — the connected-device count token.
@@ -112,8 +137,9 @@ const BASE_FEATURES: &[&str] = &[
 /// The socket-observed features a bootstrap invalidates —
 /// `InvalidateLiveCapabilities`'s set (everything in [`BASE_FEATURES`]
 /// except `direct_terminal`, which is never probed), plus the focus
-/// methods: their `operation_succeeded`/`method_not_supported` notes are
-/// socket evidence and must not survive a handoff to a different build.
+/// family and the Phase-5 pane-content/link/layout methods: their
+/// `operation_succeeded`/`method_not_supported` notes are socket
+/// evidence and must not survive a handoff to a different build.
 const LIVE_FEATURES: &[&str] = &[
     features::ORDINARY_JSON,
     features::WORKSPACE_MOVE_BLOCK,
@@ -125,6 +151,13 @@ const LIVE_FEATURES: &[&str] = &[
     features::TAB_FOCUS,
     features::WORKSPACE_FOCUS,
     features::AGENT_FOCUS,
+    features::PANE_COPY_SEARCH,
+    features::PANE_SELECTION_READ,
+    features::PANE_COPY_MOTION,
+    features::PANE_LINK_RESOLVE,
+    features::PANE_LINK_ACTIVATE,
+    features::LAYOUT_EXPORT,
+    features::LAYOUT_APPLY,
 ];
 
 /// Methods beyond the oracle's three probes that get a schema verdict —
@@ -152,13 +185,19 @@ const TRACKED_METHODS: &[&str] = &[
     "integration.list",
     "integration.uninstall",
     "layout.apply",
+    "layout.export",
     "notification.show",
     "pane.close",
+    "pane.copy_motion",
+    "pane.copy_search",
     "pane.focus",
+    "pane.link.activate",
+    "pane.link.resolve",
     "pane.list",
     "pane.process_info",
     "pane.read",
     "pane.report_metadata",
+    "pane.selection.read",
     "pane.send_input",
     "pane.send_keys",
     "pane.send_text",
@@ -197,10 +236,12 @@ const TRACKED_METHODS: &[&str] = &[
 /// `noteSocketFeature`'s call sites (`workspace.move_block`, `tab.move`,
 /// `pane.read`) plus `agent.view.set`, the projection the relay owns,
 /// the Phase-5 focus family (an `unknown_method` refusal there retracts
-/// the advertised `focus` capability through `caps_update`), and the
-/// tier-2 surface: every relay-driven call gets schema adjudication plus
-/// observed notes so an absent method stops being attempted after the
-/// first definitive refusal.
+/// the advertised `focus` capability through `caps_update`), the Phase-5
+/// pane-content/link/layout families (same `caps_update` retraction for
+/// `pane_search`/`pane_links`/`layout`), and the tier-2 surface: every
+/// relay-driven call gets schema adjudication plus observed notes so an
+/// absent method stops being attempted after the first definitive
+/// refusal.
 pub(crate) const NOTED_METHODS: &[&str] = &[
     "workspace.move_block",
     "tab.move",
@@ -225,6 +266,15 @@ pub(crate) const NOTED_METHODS: &[&str] = &[
     "server.reload_agent_manifests",
     "integration.install",
     "integration.uninstall",
+    // Phase-5 pane-content families — an `unknown_method` refusal here
+    // retracts `pane_search`/`pane_links`/`layout` through `caps_update`.
+    "pane.copy_search",
+    "pane.selection.read",
+    "pane.copy_motion",
+    "pane.link.resolve",
+    "pane.link.activate",
+    "layout.export",
+    "layout.apply",
 ];
 
 /// `supported` / `unsupported` / `unknown` — the wire strings verbatim.
@@ -1023,5 +1073,35 @@ mod tests {
             ledger.report().feature("pane.read"),
             once.feature("pane.read")
         );
+    }
+
+    /// docs/13 §1 — the Phase-5 pane-content methods join every catalog:
+    /// schema adjudication (TRACKED), observed notes that retract the
+    /// advertised wire capability (NOTED), and handoff invalidation
+    /// (LIVE). Dropping one silently would wedge a family open or shut.
+    #[test]
+    fn phase5_methods_are_tracked_noted_and_live() {
+        for (family, methods) in [
+            ("pane_search", features::PANE_SEARCH_METHODS),
+            ("pane_links", features::PANE_LINK_METHODS),
+            ("layout", features::LAYOUT_METHODS),
+        ] {
+            for method in methods {
+                assert!(TRACKED_METHODS.contains(method), "{method} ({family})");
+                assert!(NOTED_METHODS.contains(method), "{method} ({family})");
+                assert!(LIVE_FEATURES.contains(method), "{method} ({family})");
+            }
+        }
+        // The family's invalidation actually clears live evidence.
+        let mut ledger = CapabilityLedger::default();
+        ledger.note(
+            features::PANE_LINK_RESOLVE,
+            FeatureState::Supported,
+            "operation_succeeded",
+        );
+        ledger.invalidate_live();
+        let f = ledger.report().feature(features::PANE_LINK_RESOLVE);
+        assert_eq!(f.state, FeatureState::Unknown);
+        assert_eq!(f.reason, "reconnect_required");
     }
 }

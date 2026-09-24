@@ -379,7 +379,10 @@ pub(crate) struct AttentionLedger {
     /// lives on the shared ledger so every published `Topology` clone —
     /// and every mid-read fence holding one — sees event folds the
     /// instant they land. `0` means absent/unreported (Herdr 0.9.1 stubs
-    /// `pane.read`'s revision at 0) and is never stored.
+    /// `pane.read`'s revision at 0) and is never stored. The Phase-5
+    /// copy family (`pane.copy_search`/`pane.selection.read`/
+    /// `pane.copy_motion`) reports the same upstream clock — its results
+    /// fold here too.
     upstream_revs: BTreeMap<String, u64>,
 }
 

@@ -11,11 +11,12 @@
 //! `focus` advertised while `workspace_focus` refuses with the same
 //! `capability_unsupported` code the session gate emits.
 
-use std::collections::BTreeMap;
+use lerdr_core::protocol::{Inbound, Outbound};
 
-use lerdr_core::protocol::{error_codes, ActionReceiptPhase, ApiError, Inbound, Outbound};
-
-use super::{dispatch_failure, ActionContext, Outcome, COMMAND_DEADLINE};
+use super::{
+    capability_gap, dispatch_failure, method_refuted, pane_of, ActionContext, Outcome,
+    COMMAND_DEADLINE,
+};
 
 /// `focus_pane` — raise the pane's tab and window. The exact-target check
 /// already ran at admission, so `pane_id` is a live, current pane.
@@ -149,46 +150,4 @@ pub(crate) async fn focus_agent(
         }
     };
     outcome.frames(request_id, "focus_agent", action_id)
-}
-
-/// The pane id the request addresses — the top-level field when the
-/// client mirrored it (pane-directed forms), else `target.pane_id`.
-fn pane_of(message: &Inbound) -> &str {
-    if !message.pane_id.is_empty() {
-        return message.pane_id.as_str();
-    }
-    message
-        .target
-        .as_ref()
-        .map(|t| t.pane_id.as_str())
-        .unwrap_or_default()
-}
-
-/// Live capability evidence refutes this method — the ledger read the
-/// method `unsupported` on the current Herdr build.
-fn method_refuted(ctx: &ActionContext, method: &str) -> bool {
-    ctx.topology
-        .herdr_status
-        .features
-        .value()
-        .and_then(|map| map.get(method))
-        .is_some_and(|status| status.state == "unsupported")
-}
-
-/// A method the capability ledger already knows this Herdr build lacks —
-/// nothing is dispatched; the receipt carries `capability_unsupported`
-/// like the session gate's wire error.
-fn capability_gap(method: &'static str, pane_id: &str) -> Outcome {
-    Outcome {
-        ok: false,
-        phase: "not_started",
-        error: "Herdr does not support this action".to_owned(),
-        pane_id: pane_id.to_owned(),
-        data: Some(serde_json::json!({ "code": error_codes::CAPABILITY_UNSUPPORTED })),
-        receipt_phase: ActionReceiptPhase::FAILED_BEFORE_DISPATCH,
-        receipt_error: Some(ApiError::new(
-            error_codes::CAPABILITY_UNSUPPORTED,
-            BTreeMap::from([("method".to_owned(), serde_json::Value::from(method))]),
-        )),
-    }
 }

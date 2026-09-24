@@ -596,6 +596,50 @@ impl ActionRouter for HerdRouter {
                 actions::focus::focus_agent
             ),
 
+            // --- pane content / links / layout (Phase-5 §1.2-1.5) -----------
+            "pane_search" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::content::pane_search
+            ),
+            "pane_selection_read" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::content::pane_selection_read
+            ),
+            "pane_link_resolve" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::content::pane_link_resolve
+            ),
+            "pane_link_activate" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::content::pane_link_activate
+            ),
+            "layout_export" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::content::layout_export
+            ),
+            "layout_apply" => spawn_action!(
+                self,
+                request_id,
+                action_id,
+                message,
+                actions::content::layout_apply
+            ),
+
             // --- uploads ---------------------------------------------------
             "upload_begin" => spawn_action!(
                 self,

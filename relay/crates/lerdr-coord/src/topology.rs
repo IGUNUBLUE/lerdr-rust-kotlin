@@ -732,6 +732,19 @@ impl Topology {
             .note_upstream_rev(pane_id, revision);
     }
 
+    /// The pane's upstream scroll offset (`PaneInfo.scroll.
+    /// offset_from_bottom`) — the viewport row base the link actions'
+    /// `offset_from_bottom` parameter rides on. `None` while the pane
+    /// reports no scroll metrics.
+    pub(crate) fn pane_scroll_offset(&self, pane_id: &str) -> Option<u64> {
+        self.snapshot
+            .panes
+            .iter()
+            .find(|pane| pane.pane_id == pane_id)
+            .and_then(|pane| pane.scroll)
+            .map(|scroll| scroll.offset_from_bottom)
+    }
+
     /// `State.AttentionRevision` (state.go:1150) — the push key's
     /// `interaction_revision`.
     pub(crate) fn attention_rev_of(&self, pane_id: &str) -> i64 {

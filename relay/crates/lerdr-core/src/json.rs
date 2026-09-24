@@ -189,6 +189,21 @@ where
     Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+/// String fields the wire overloads with structured shapes — `cursor`
+/// arrives as a pagination string for the legacy reads but as a
+/// `{row,col}` object for Phase-5 `pane_search`/`pane_selection_read`.
+/// Keep the string verbatim; read any other shape as `""` and leave it
+/// to the handler to consume the structured form through `raw()`.
+pub fn de_str_loose<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default())
+}
+
 /// `skip_serializing_if` for `Option<Vec<T>>` mirroring Go `omitempty` on
 /// slices: absent, `null`, and `[]` all omit the key.
 pub fn opt_vec_is_empty<T>(value: &Option<Vec<T>>) -> bool {

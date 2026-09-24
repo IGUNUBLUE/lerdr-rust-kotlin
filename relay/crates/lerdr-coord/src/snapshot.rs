@@ -57,22 +57,31 @@ pub fn compose_snapshot(topology: &Topology) -> Vec<Outbound> {
 /// The advertised capability set for one committed topology —
 /// `CAPABILITIES` minus any family whose Herdr methods are ALL refuted by
 /// live evidence (docs/13 §0). `focus` drops only once every `*.focus`
-/// method reads `unsupported` — a partial family still serves the methods
+/// method reads `unsupported`; the pane-content families apply the same
+/// rule (`pane_search` ← the copy family, `pane_links` ← the link pair,
+/// `layout` ← export+apply). A partial family still serves the methods
 /// the installed Herdr ships, so `unknown`/`supported` both keep it
 /// advertised. The same list rides `push_config` at connect and
 /// `caps_update` mid-session (the session gate sniffs both).
 pub fn effective_capabilities(topology: &Topology) -> Vec<String> {
     let features = topology.herdr_status.features.value();
-    let focus_refuted = lerdr_herdr::capabilities::features::FOCUS_METHODS
-        .iter()
-        .all(|method| {
+    let family_refuted = |methods: &[&str]| {
+        methods.iter().all(|method| {
             features
                 .and_then(|map| map.get(*method))
                 .is_some_and(|status| status.state == "unsupported")
-        });
+        })
+    };
+    use lerdr_herdr::capabilities::features as f;
+    let refuted = [
+        ("focus", family_refuted(f::FOCUS_METHODS)),
+        ("pane_search", family_refuted(f::PANE_SEARCH_METHODS)),
+        ("pane_links", family_refuted(f::PANE_LINK_METHODS)),
+        ("layout", family_refuted(f::LAYOUT_METHODS)),
+    ];
     CAPABILITIES
         .iter()
-        .filter(|cap| **cap != "focus" || !focus_refuted)
+        .filter(|cap| !refuted.iter().any(|(name, all)| *cap == name && *all))
         .map(|cap| (*cap).to_owned())
         .collect()
 }
@@ -438,6 +447,55 @@ mod tests {
         // Everything else stays — the drop is surgical.
         assert!(capabilities.contains(&"workspace_management".to_owned()));
         assert_eq!(capabilities.len(), CAPABILITIES.len() - 1);
+    }
+
+    /// docs/13 §1 — `pane_search`/`pane_links`/`layout` follow the same
+    /// all-refuted rule: a partial family stays advertised, a fully
+    /// refuted family drops, and other families are untouched.
+    #[test]
+    fn effective_capabilities_refute_each_family_independently() {
+        let mut topology = Topology::default();
+        // No evidence — all three advertised.
+        let caps = effective_capabilities(&topology);
+        for cap in ["pane_search", "pane_links", "layout"] {
+            assert!(caps.contains(&cap.to_owned()), "{cap} while unknown");
+        }
+        // Partial families stay advertised (one method still unknown).
+        set_features(
+            &mut topology,
+            &[
+                ("pane.copy_search", "unsupported"),
+                ("pane.selection.read", "unsupported"),
+                // pane.copy_motion unobserved — family alive.
+                ("pane.link.resolve", "unsupported"),
+                // pane.link.activate unobserved — family alive.
+                ("layout.export", "unsupported"),
+                // layout.apply unobserved — family alive.
+            ],
+        );
+        let caps = effective_capabilities(&topology);
+        for cap in ["pane_search", "pane_links", "layout"] {
+            assert!(caps.contains(&cap.to_owned()), "{cap} while partial");
+        }
+        // Refute the rest — each family drops independently.
+        set_features(
+            &mut topology,
+            &[
+                ("pane.copy_search", "unsupported"),
+                ("pane.selection.read", "unsupported"),
+                ("pane.copy_motion", "unsupported"),
+                ("pane.link.resolve", "unsupported"),
+                ("pane.link.activate", "unsupported"),
+                ("layout.export", "unsupported"),
+                ("layout.apply", "unsupported"),
+            ],
+        );
+        let caps = effective_capabilities(&topology);
+        for cap in ["pane_search", "pane_links", "layout"] {
+            assert!(!caps.contains(&cap.to_owned()), "{cap} once refuted");
+        }
+        assert!(caps.contains(&"focus".to_owned()));
+        assert_eq!(caps.len(), CAPABILITIES.len() - 3);
     }
 
     #[test]

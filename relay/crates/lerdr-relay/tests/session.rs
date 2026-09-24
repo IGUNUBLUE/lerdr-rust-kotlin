@@ -605,3 +605,125 @@ async fn peer_close_reports_code_and_reason() {
         }
     ));
 }
+
+// ── Phase-5 Track-A families (docs/13 §1) ───────────────────────────────────
+
+/// The six Track-A actions sit behind three independent capability gates.
+/// Before any announcement every one of them is `capability_unsupported`,
+/// and each reports the capability its family requires.
+#[tokio::test]
+async fn phase5_actions_gate_per_family_before_announcement() {
+    let store = Arc::new(MemoryAuthStore::new());
+    let (mut client, mut session, server, _sink_rx) =
+        establish(store, test_config(), CancellationToken::new()).await;
+
+    let cases: [(&str, &str); 6] = [
+        ("pane_search", "pane_search"),
+        ("pane_selection_read", "pane_search"),
+        ("pane_link_resolve", "pane_links"),
+        ("pane_link_activate", "pane_links"),
+        ("layout_export", "layout"),
+        ("layout_apply", "layout"),
+    ];
+    for (action, capability) in cases {
+        let frame = format!(
+            r#"{{"type":"{action}","protocol":3,"request_id":"req-{action}","target":{{"pane_id":"wE:p1"}}}}"#
+        );
+        client.send_json(&mut session, frame.as_bytes()).await;
+        let reply = client.read_until_type(&mut session, "error").await;
+        assert_eq!(reply["request_id"], format!("req-{action}"), "{action}");
+        assert_eq!(reply["error"]["code"], "capability_unsupported", "{action}");
+        assert_eq!(
+            reply["error"]["args"]["capability"],
+            serde_json::json!(capability),
+            "{action}"
+        );
+        assert_eq!(
+            reply["error"]["args"]["operation"],
+            serde_json::json!(action),
+            "{action}"
+        );
+    }
+
+    drop(client);
+    server.await.expect("server joins");
+}
+
+/// Announcing the three Track-A capabilities opens all six gates — the
+/// stub router's `dispatched_unknown` receipt proves each action routed.
+#[tokio::test]
+async fn client_caps_with_phase5_caps_routes_all_track_a_actions() {
+    let store = Arc::new(MemoryAuthStore::new());
+    let (mut client, mut session, server, _sink_rx) =
+        establish(store, test_config(), CancellationToken::new()).await;
+
+    client
+        .send_json(
+            &mut session,
+            br#"{"type":"client_caps","protocol":3,"capabilities":["pane_search","pane_links","layout"]}"#,
+        )
+        .await;
+    for action in [
+        "pane_search",
+        "pane_selection_read",
+        "pane_link_resolve",
+        "pane_link_activate",
+        "layout_export",
+        "layout_apply",
+    ] {
+        let frame = format!(
+            r#"{{"type":"{action}","protocol":3,"request_id":"req-{action}","action_id":"a-{action}","target":{{"pane_id":"wE:p1"}}}}"#
+        );
+        client.send_json(&mut session, frame.as_bytes()).await;
+        let reply = client.read_until_type(&mut session, "action_receipt").await;
+        assert_eq!(reply["request_id"], format!("req-{action}"), "{action}");
+        assert_eq!(reply["receipt"]["phase"], "dispatched_unknown", "{action}");
+    }
+
+    drop(client);
+    server.await.expect("server joins");
+}
+
+/// Families gate independently: `pane_links` alone opens only the link
+/// pair — `pane_search` stays closed, `layout` stays closed.
+#[tokio::test]
+async fn phase5_families_gate_independently() {
+    let store = Arc::new(MemoryAuthStore::new());
+    let (mut client, mut session, server, _sink_rx) =
+        establish(store, test_config(), CancellationToken::new()).await;
+
+    client
+        .send_json(
+            &mut session,
+            br#"{"type":"client_caps","protocol":3,"capabilities":["pane_links"]}"#,
+        )
+        .await;
+    client
+        .send_json(
+            &mut session,
+            br#"{"type":"pane_link_resolve","protocol":3,"request_id":"req-open","target":{"pane_id":"wE:p1"}}"#,
+        )
+        .await;
+    let routed = client.read_until_type(&mut session, "action_receipt").await;
+    assert_eq!(routed["receipt"]["phase"], "dispatched_unknown");
+
+    for (action, capability) in [("pane_search", "pane_search"), ("layout_apply", "layout")] {
+        let frame = format!(
+            r#"{{"type":"{action}","protocol":3,"request_id":"req-{action}","target":{{"pane_id":"wE:p1"}}}}"#
+        );
+        client.send_json(&mut session, frame.as_bytes()).await;
+        let denied = client.read_until_type(&mut session, "error").await;
+        assert_eq!(
+            denied["error"]["code"], "capability_unsupported",
+            "{action}"
+        );
+        assert_eq!(
+            denied["error"]["args"]["capability"],
+            serde_json::json!(capability),
+            "{action}"
+        );
+    }
+
+    drop(client);
+    server.await.expect("server joins");
+}

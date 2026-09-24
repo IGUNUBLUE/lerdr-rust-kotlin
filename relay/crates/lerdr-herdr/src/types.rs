@@ -1139,10 +1139,177 @@ pub struct PaneSelection {
     pub content_revision: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneTextPoint {
     pub row: u32,
     pub col: u16,
+}
+
+/// A `start`/`end` cell pair in copy-engine coordinates — the
+/// `pane.copy_search` match/`*previous*` shape and `pane.selection.read`'s
+/// range vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneTextRange {
+    pub start: PaneTextPoint,
+    pub end: PaneTextPoint,
+}
+
+/// `pane.copy_search` direction — the upstream enum verbatim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneCopySearchDirection {
+    Forward,
+    Backward,
+    #[serde(other)]
+    Unrecognized,
+}
+
+/// `pane.copy_search` params — server-side find over full scrollback
+/// (Phase-5 `pane_search`). `content_revision` is required upstream; the
+/// relay injects the pane's copy-engine watermark — app clients never send
+/// it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PaneCopySearchParams {
+    pub pane_id: String,
+    pub query: String,
+    pub direction: PaneCopySearchDirection,
+    pub cursor: PaneTextPoint,
+    pub content_revision: u64,
+    /// Prior hit to continue from — `null` omits the anchor upstream.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous: Option<PaneTextRange>,
+}
+
+/// `pane.copy_search` result (`pane_copy_search`). `current`/`current_global`
+/// are the hit cursor positions when Herdr tracks them (`null` on
+/// builds/searches that do not).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PaneCopySearchResult {
+    pub pane_id: String,
+    /// The copy-engine content revision the matches were computed against —
+    /// feeds back into the next fenced call's `content_revision`.
+    pub content_revision: u64,
+    #[serde(default)]
+    pub matches: Vec<PaneTextRange>,
+    pub total: u64,
+    #[serde(default)]
+    pub current: Option<u32>,
+    #[serde(default)]
+    pub current_global: Option<u64>,
+}
+
+/// `pane.selection.read` params — an arbitrary copy-engine range (Phase-5
+/// `pane_selection_read`). `content_revision` is optional upstream; `None`
+/// reads unfenced.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PaneSelectionReadParams {
+    pub pane_id: String,
+    pub anchor: PaneTextPoint,
+    pub cursor: PaneTextPoint,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_revision: Option<u64>,
+}
+
+/// `pane.selection.read` result (`pane_selection`). Upstream carries no
+/// revision — the fence the request ran under is the only revision witness.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PaneSelectionReadResult {
+    pub pane_id: String,
+    pub text: String,
+}
+
+/// `pane.copy_motion` params — the copy-engine cursor move. With
+/// `content_revision: None` the call is unfenced and answers the pane's
+/// *current* copy revision — the relay's revision probe for the fenced
+/// copy family (`pane.copy_search` requires a revision it cannot learn
+/// any other way).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PaneCopyMotionParams {
+    pub pane_id: String,
+    pub cursor: PaneTextPoint,
+    pub motion: PaneCopyMotion,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_revision: Option<u64>,
+}
+
+/// `pane.copy_motion` motion vocabulary (upstream enum verbatim).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneCopyMotion {
+    LineEnd,
+    FirstNonBlank,
+    NextWordStart,
+    PreviousWordStart,
+    NextWordEnd,
+    NextBigWordStart,
+    PreviousBigWordStart,
+    NextBigWordEnd,
+    PreviousParagraph,
+    NextParagraph,
+    #[serde(other)]
+    Unrecognized,
+}
+
+/// `pane.copy_motion` result — the landing cursor plus the copy-engine
+/// revision it ran against.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneCopyMotionResult {
+    pub pane_id: String,
+    pub cursor: PaneTextPoint,
+    pub content_revision: u64,
+}
+
+/// `pane.link.resolve`/`pane.link.activate` params — upstream shares one
+/// shape (`PaneLinkActivateParams`). `viewport_row`/`col` address a cell in
+/// the pane's rendered viewport; `offset_from_bottom` shifts the row into
+/// scrollback space; `content_revision` fences the read (`None` unfenced).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PaneLinkPointParams {
+    pub pane_id: String,
+    pub viewport_row: u16,
+    pub col: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset_from_bottom: Option<u64>,
+}
+
+/// One link's inclusive display-cell bounds on the pane's current viewport
+/// (`PaneLinkRegion`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneLinkRegion {
+    pub row: u16,
+    pub start_col: u16,
+    pub end_col: u16,
+}
+
+/// `pane.link.resolve` result (`pane_link_resolved`) — the hit-tested
+/// link's cell regions. Upstream exposes *bounds only* in 0.9.1: the link
+/// target string surfaces on `pane.link.activate`, never here.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PaneLinkResolvedResult {
+    #[serde(default)]
+    pub regions: Vec<PaneLinkRegion>,
+}
+
+/// `pane.link.activate` result (`pane_link_activated`). `handled` reports
+/// whether a registered handler opened the link; `url` is the resolved
+/// target — present even when `handled` is false (verified on 0.9.1).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PaneLinkActivatedResult {
+    pub handled: bool,
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+/// `layout.export` params — pane- or tab-addressed; both absent exports
+/// the focused tab's layout upstream.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct LayoutExportParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_id: Option<String>,
 }
 
 /// `plugin.action.invoke` params.
