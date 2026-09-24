@@ -173,6 +173,55 @@ read-only actions — enforced server-side.
 | `webrtc_offer/answer/ice/closed` | DataChannel signaling | |
 | `upload_*` progress | chunk acks | |
 
+### 4.1 Capability contract (canonical)
+
+`push_config.capabilities` (and mid-session `caps_update.capabilities`)
+is the authoritative list a client may gate on. This table is the
+contract — the relay advertises exactly these names, and no other
+source defines them.
+
+| Capability | Unlocks | Gate |
+|---|---|---|
+| `attention_classification` | attention kinds on agents/activities | always |
+| `clear_activities` | `clear_activities` action | always |
+| `directory_browser` | `list_directories` | always |
+| `workspace_management` | workspace create/rename/close | always |
+| `worktree_management` | `worktree_*` actions | always |
+| `self_update` | `check_updates`/`install_update` | always |
+| `structured_questions` | `question` frames / `answer_question` | always |
+| `slash_commands` | `commands_list` catalog | always |
+| `conversation_history` | `conversation_history` pull | always |
+| `pane_size_lease` / `pane_size_lease_rows` | `lease_pane_size` viewport claim | always |
+| `workspace_inspection` | `inspect_workspace` deep read | always |
+| `semantic_input` | semantic pane intents | always |
+| `secret_input` | `send_text` `secret:true` (no echo/backlog) | always |
+| `invitation_qr` | `device_invitation_qr` | always |
+| `typed_push` | typed push notification payloads | always — VAPID worker is unconditional (startup fails on a bad key file) |
+| `push_policy` | `push_policy_get`/`push_policy_set`, `push_policy` broadcasts | always — same push worker |
+| `device_management` | `device_list`, `create_device_invitation`, `reset_devices` | always — device-auth store backs the session admin actions |
+| `pane_realtime_delta` | `watch_pane`/`unwatch_pane` arming | Herdr `pane.read` not refuted |
+| `tab_reorder` | `tab_reorder` (drag reorder) | Herdr `tab.move` not refuted |
+| `workspace_reorder_block` | `workspace_reorder` block encoding | Herdr `workspace.move_block` not refuted |
+| `focus` | `pane_focus`/`tab_focus`/`workspace_focus`/`agent_focus` | not all `*.focus` methods refuted |
+| `pane_search` | `pane_search`, `pane_selection_read` | not all copy-family methods refuted |
+| `pane_links` | `pane_link_resolve`, `pane_link_activate` | not all link methods refuted |
+| `layout` | `layout_export`, `layout_apply` | not all layout methods refuted |
+| `convo_sub` | `subscribe_conversation` push stream | always — relay-local |
+| `frame_zstd` | `pane_content` zstd payloads | always — transport upgrade |
+| `upload_binary` | `0x03` binary upload chunks | always — transport upgrade |
+
+Defined but **not advertised** by this relay:
+
+- `agent_response_copy` — there is no host clipboard backend; the
+  action always answers clipboard-unavailable. Advertising would lie.
+- `speech_synthesis` / `speech_voice_management` — the speech engine
+  (piper/espeak/say) is real, but its catalog status is dynamic and not
+  yet plumbed into the snapshot adjudicator (docs/10 tracks it).
+
+Herdr-gated entries drop from `caps_update` mid-session when live
+evidence refutes every backing method; `unknown`/`supported` keep them
+advertised (a partial family still serves what is installed).
+
 ## 5. Realtime pane watch — the correctness boundary
 
 ```

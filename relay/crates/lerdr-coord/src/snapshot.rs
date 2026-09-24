@@ -84,6 +84,15 @@ pub fn effective_capabilities(topology: &Topology) -> Vec<String> {
         // `pane.read` support (server.go:1409); the client gates its
         // `watch_pane` arming on this advertisement.
         ("pane_realtime_delta", family_refuted(&[f::PANE_READ])),
+        // Reorder caps follow the same evidence rule: `tab_reorder`
+        // backs `tab.move`, `workspace_reorder_block` backs
+        // `workspace.move_block`; the client chooses the reorder
+        // encoding from the advertisement.
+        ("tab_reorder", family_refuted(&[f::TAB_MOVE])),
+        (
+            "workspace_reorder_block",
+            family_refuted(&[f::WORKSPACE_MOVE_BLOCK]),
+        ),
     ];
     CAPABILITIES
         .iter()
@@ -467,6 +476,44 @@ mod tests {
         assert!(effective_capabilities(&topology).contains(&"pane_realtime_delta".to_owned()));
         set_features(&mut topology, &[("pane.read", "unsupported")]);
         assert!(!effective_capabilities(&topology).contains(&"pane_realtime_delta".to_owned()));
+    }
+
+    /// The reorder caps ride their single backing methods: `tab.move`
+    /// and `workspace.move_block` refuted drops the advertisement the
+    /// client reads to pick its reorder encoding.
+    #[test]
+    fn effective_capabilities_gate_reorder_caps_on_move_methods() {
+        let mut topology = Topology::default();
+        let caps = effective_capabilities(&topology);
+        for cap in ["tab_reorder", "workspace_reorder_block"] {
+            assert!(caps.contains(&cap.to_owned()), "{cap} while unknown");
+        }
+        set_features(
+            &mut topology,
+            &[
+                ("tab.move", "supported"),
+                ("workspace.move_block", "supported"),
+            ],
+        );
+        let caps = effective_capabilities(&topology);
+        for cap in ["tab_reorder", "workspace_reorder_block"] {
+            assert!(caps.contains(&cap.to_owned()), "{cap} while supported");
+        }
+        set_features(
+            &mut topology,
+            &[
+                ("tab.move", "unsupported"),
+                ("workspace.move_block", "unsupported"),
+            ],
+        );
+        let caps = effective_capabilities(&topology);
+        for cap in ["tab_reorder", "workspace_reorder_block"] {
+            assert!(!caps.contains(&cap.to_owned()), "{cap} while refuted");
+        }
+        // Relay-local/unconditional caps never drop on Herdr evidence.
+        for cap in ["typed_push", "push_policy", "device_management"] {
+            assert!(caps.contains(&cap.to_owned()), "{cap} unconditional");
+        }
     }
 
     /// docs/13 §1 — `pane_search`/`pane_links`/`layout` follow the same

@@ -1158,3 +1158,38 @@ semantic all IDENTICAL, frozen vectors untouched.
 
 Phase-5 is closed: every ratified capability is implemented,
 negotiated, and exercised end-to-end on both sides.
+
+## Round 21 — capability contract made canonical (2026)
+
+- **The gap**: `push_config.capabilities` was assembled in code but the
+  full list existed nowhere in the spec — the oracle's source was the
+  de-facto enumeration, and its conditional tail
+  (`server.go:1409-1444`) had never been ported. Consequence observed
+  live: `pane_realtime_delta` was never advertised, so the app's
+  `watch_pane` gate never armed and terminals ran on manual reads
+  alone. `tab_reorder`, `workspace_reorder_block`, `push_policy`,
+  `typed_push`, `device_management`, `agent_response_copy`, and the
+  `speech_*` pair were likewise absent.
+- **The fix**: `docs/03` §4.1 now declares the canonical table — every
+  advertised name, what it unlocks, and its gate — and the code is
+  derived from it, not the other way around. The oracle is provenance
+  for wire shapes; this table is the contract.
+- **Wired**: `tab_reorder`/`workspace_reorder_block` refute on their
+  single backing methods (`tab.move`, `workspace.move_block`) like the
+  other Herdr-gated caps; `typed_push`, `push_policy`, and
+  `device_management` are unconditional — the VAPID push worker always
+  runs (startup fails on a bad key) and the device-auth store backs the
+  session admin actions unconditionally.
+- **Deliberately not advertised**: `agent_response_copy` — the relay has
+  no host clipboard backend and the action always answers
+  clipboard-unavailable; advertising it would light a button that only
+  fails. Revisit only if a clipboard backend is ever added.
+- **Deferred (tracked, not dropped)**: `speech_synthesis` /
+  `speech_voice_management` — the engine (piper/espeak/say detect,
+  self-install runtime assets) is real, but `Catalog` status is dynamic
+  and `effective_capabilities` sees only `Topology`. Honest gate needs a
+  relay-local facts feed (engine installed? management supported?) into
+  the snapshot adjudicator — shallow plumbing: compute at bootstrap,
+  refresh on the existing `speech_voices` notice path, expose via a
+  watch cell the `SnapshotFn` closure reads. Until then the speech UI
+  stays dark rather than advertise a maybe.

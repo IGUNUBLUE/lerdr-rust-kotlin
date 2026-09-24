@@ -41,6 +41,18 @@ pub const SPEECH_VOICE_MANAGEMENT_CAPABILITY: &str = "speech_voice_management";
 /// `frame_zstd`/`upload_binary` have no Herdr method behind them at
 /// all — all three are advertised unconditionally (the negotiated gate
 /// is the client-side intersection).
+///
+/// `"tab_reorder"`/`"workspace_reorder_block"` are Herdr-gated like the
+/// Phase-5 families (`tab.move`/`workspace.move_block` evidence).
+/// `"typed_push"`, `"push_policy"`, and `"device_management"` are
+/// unconditional: the VAPID push worker always runs (startup fails on a
+/// bad key file), and the device-auth store backs the session-level
+/// admin actions unconditionally. `agent_response_copy` is deliberately
+/// absent — the relay has no host clipboard backend, so the action
+/// always answers clipboard-unavailable; advertising it would lie.
+/// `speech_synthesis`/`speech_voice_management` are likewise absent
+/// until the speech catalog status reaches the snapshot adjudicator
+/// (docs/10 — pending plumbing, not a wire gap).
 pub const CAPABILITIES: &[&str] = &[
     "attention_classification",
     "clear_activities",
@@ -57,7 +69,12 @@ pub const CAPABILITIES: &[&str] = &[
     "semantic_input",
     "secret_input",
     "invitation_qr",
+    "typed_push",
+    "push_policy",
+    "device_management",
     "pane_realtime_delta",
+    "tab_reorder",
+    "workspace_reorder_block",
     "focus",
     "pane_search",
     "pane_links",
