@@ -203,7 +203,7 @@ impl TopologyHandle {
     /// live-handoff'ed — re-read topology and re-assert the transient
     /// `agent.view.set` projection. Cheap to call redundantly; a full
     /// inbox already implies a queued refresh, so a drop just skips one
-    /// re-assert (the next `Synced`/hook re-fires it).
+    /// re-assert (the next hook re-fires it).
     pub async fn startup_hook(&self) {
         let _ = self.commands.try_send(TopologyCommand::StartupHook);
     }
@@ -244,6 +244,12 @@ impl TopologyActor {
                     client.supervise_events(EventSupervisor::topology());
                 let mut published = PublishedView::default();
                 let mut events_active = false;
+                // `agent.view` survives event-stream resubscribes — its
+                // documented loss points are restore/handoff (the
+                // `[[startup]]` hook) and explicit clear/replace — so
+                // only the process's first `Synced` runs the view
+                // assert; later resyncs collect capabilities only.
+                let mut first_sync = true;
                 // `Poller.Run`'s leading poll (poller.go:92) — one
                 // inventory reconcile up front so the committed view does
                 // not wait on the event bootstrap; failures fold into the
@@ -297,10 +303,19 @@ impl TopologyActor {
                                     forward_outcome(&transitions, outcome).await;
                                     // Bootstrap/resync done — the server may
                                     // be a different build (live handoff):
-                                    // re-collect capabilities and re-assert
-                                    // the transient agent view, off-loop so
+                                    // re-collect capabilities, off-loop so
                                     // slow probes never stall invalidations.
-                                    spawn_post_sync(&client, &cmd_tx);
+                                    // The view assert rides only on the
+                                    // first sync — a resubscribe cannot have
+                                    // lost it, and re-asserting would stomp
+                                    // a view another writer installed
+                                    // mid-session.
+                                    if first_sync {
+                                        first_sync = false;
+                                        spawn_post_sync(&client, &cmd_tx);
+                                    } else {
+                                        spawn_collect(&client, &cmd_tx);
+                                    }
                                 }
                                 SupervisorSignal::Invalidated { event, .. } => {
                                     // Pane lifecycle events mutate the
@@ -588,8 +603,12 @@ async fn collect_enrichments(
 /// select loop: refresh the capability ledger and hand the report back
 /// through the command lane (deduped there), then re-assert the canonical
 /// `agent.view.set` projection — transient per-server state that session
-/// restore and `server.live_handoff` drop. Overlapping collects serialize
-/// inside the client (`refreshMu`); view asserts are idempotent.
+/// restore and `server.live_handoff` drop. Called from the first `Synced`
+/// and the `[[startup]]` hook only: an event-stream resubscribe does not
+/// kill the server-side view, so asserting there would stomp a view
+/// another writer legitimately installed mid-session. Overlapping
+/// collects serialize inside the client (`refreshMu`); view asserts are
+/// idempotent.
 fn spawn_post_sync(client: &Client, commands: &mpsc::Sender<TopologyCommand>) {
     let client = client.clone();
     let commands = commands.clone();
@@ -839,6 +858,11 @@ mod tests {
     struct MiniHerdr {
         view_sets: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         snapshots: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        /// `events.subscribe` conns seen — the first
+        /// `drop_subscriptions` close right after the handshake so the
+        /// supervisor walks its resubscribe → `Synced` path.
+        subscriptions: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        drop_subscriptions: usize,
         events: std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
         /// Pane rows every `session.snapshot` replies with.
         snapshot_panes: std::sync::Arc<Vec<serde_json::Value>>,
@@ -857,8 +881,20 @@ mod tests {
             Self {
                 view_sets: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 snapshots: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                subscriptions: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                drop_subscriptions: 0,
                 events: std::sync::Arc::new(std::sync::Mutex::new(events)),
                 snapshot_panes: std::sync::Arc::new(snapshot_panes),
+            }
+        }
+
+        /// The first `drops` subscription conns close right after the
+        /// handshake — each clean close drives the supervisor through
+        /// `Reconnecting` → re-bootstrap → `Synced`.
+        fn resyncing(drops: usize) -> Self {
+            Self {
+                drop_subscriptions: drops,
+                ..Self::new()
             }
         }
 
@@ -867,6 +903,9 @@ mod tests {
         }
         fn snapshots(&self) -> usize {
             self.snapshots.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn subscriptions(&self) -> usize {
+            self.subscriptions.load(std::sync::atomic::Ordering::SeqCst)
         }
     }
 
@@ -878,6 +917,8 @@ mod tests {
         > {
             let view_sets = self.view_sets.clone();
             let snapshots = self.snapshots.clone();
+            let subscriptions = self.subscriptions.clone();
+            let drop_subscriptions = self.drop_subscriptions;
             let events = self.events.clone();
             let snapshot_panes = self.snapshot_panes.clone();
             Box::pin(async move {
@@ -886,6 +927,8 @@ mod tests {
                     server_end,
                     view_sets,
                     snapshots,
+                    subscriptions,
+                    drop_subscriptions,
                     events,
                     snapshot_panes,
                 ));
@@ -902,6 +945,8 @@ mod tests {
         mut conn: tokio::io::DuplexStream,
         view_sets: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         snapshots: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        subscriptions: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        drop_subscriptions: usize,
         events: std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
         snapshot_panes: std::sync::Arc<Vec<serde_json::Value>>,
     ) {
@@ -949,6 +994,13 @@ mod tests {
                     if conn.write_all(b"\n").await.is_err() {
                         return;
                     }
+                }
+                // A scripted drop closes the conn cleanly — the client
+                // sees EOF and walks its resubscribe path.
+                if subscriptions.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    < drop_subscriptions
+                {
+                    return;
                 }
                 // Hold the subscription open until the client drops it.
                 let mut sink = [0u8; 256];
@@ -1114,6 +1166,40 @@ mod tests {
         })
         .await;
         until(5, "startup-hook view re-assert", || server.view_sets() >= 2).await;
+        cancel.cancel();
+    }
+
+    /// `agent.view` survives event-stream resubscribes — the documented
+    /// loss points are restore/handoff (`[[startup]]`) and explicit
+    /// clear/replace — so the assert rides the first `Synced` only.
+    /// Two forced stream drops here produce two resync `Synced`s, which
+    /// must run capabilities collect without touching the view; the
+    /// `[[startup]]` hook remains a loss point and re-asserts.
+    #[tokio::test]
+    async fn resyncs_do_not_reassert_view() {
+        let server = Arc::new(MiniHerdr::resyncing(2));
+        let client = mini_client(&server);
+        let cancel = CancellationToken::new();
+        let handle = TopologyActor::spawn(client, cancel.clone());
+
+        until(5, "initial view assert", || server.view_sets() == 1).await;
+        // The first two subscription conns close post-handshake; the
+        // third holds open — three `Synced`s total.
+        until(15, "forced resyncs completed", || {
+            server.subscriptions() >= 3
+        })
+        .await;
+        // Let the last resync's post-sync collect run to completion —
+        // a buggy re-assert lands right after it.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(
+            server.view_sets(),
+            1,
+            "resubscribe Synceds must not re-assert agent.view"
+        );
+
+        handle.startup_hook().await;
+        until(5, "startup-hook view re-assert", || server.view_sets() == 2).await;
         cancel.cancel();
     }
 
