@@ -26,6 +26,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
+use lerdr_core::audit;
 use lerdr_core::json::{de_default, MaybeNull, RawJson};
 use lerdr_core::protocol::{ApiError, Inbound, Outbound, TargetRef, UploadResultMessage};
 use serde::{Deserialize, Serialize};
@@ -1096,6 +1097,63 @@ impl Uploads {
         // Any post-lock failure discards the session (with a tombstone).
         if result.is_err() {
             discard_locked(&mut shared, &self.inner.dir, &request.upload_id, true);
+        }
+        result
+    }
+
+    /// The Phase-5 §2.4 `0x03` carrier's server-anchored fields: the
+    /// staged session itself supplies `target` and `file_index` (the
+    /// binary frame cannot claim either). Same lookup discipline as
+    /// `lock_session` minus the scope compare — unknown id answers
+    /// `upload_session_not_found`, a stale one evicts and answers
+    /// `upload_session_expired`.
+    fn staged_target(&self, upload_id: &str) -> Result<(TargetRef, i64), UploadError> {
+        let mut shared = self.lock();
+        let now = self.now();
+        let Some(session) = shared.sessions.get(upload_id) else {
+            return Err(UploadError::new("upload_session_not_found"));
+        };
+        if now >= session.expires_at {
+            let mut session = shared.sessions.remove(upload_id).expect("checked above");
+            session.close_files();
+            let _ = fs::remove_dir_all(self.inner.dir.join(SESSIONS_DIR).join(upload_id));
+            return Err(UploadError::new("upload_session_expired"));
+        }
+        Ok((session.target.clone(), session.current as i64))
+    }
+
+    /// `m.Chunk` over the §2.4 binary carrier — the identical machinery
+    /// as `chunk`, with `target`/`file_index` anchored to the staged
+    /// session and `sha256` measured on receipt. The AES-GCM envelope
+    /// already authenticates the bytes; running the measured digest
+    /// through the shared check keeps both carriers' outcomes — and the
+    /// `upload_chunk_digest_mismatch` family — identical.
+    fn chunk_binary(
+        &self,
+        upload_id: &str,
+        sequence: i64,
+        data: Vec<u8>,
+    ) -> Result<ChunkResultPayload, UploadError> {
+        let mut shared = self.lock();
+        let now = self.now();
+        let Some(session) = shared.sessions.get(upload_id) else {
+            return Err(UploadError::new("upload_session_not_found"));
+        };
+        let target = session.target.clone();
+        let session = lock_session(&mut shared, &self.inner.dir, now, upload_id, &target)?;
+        let request = ChunkRequest {
+            target,
+            upload_id: upload_id.to_owned(),
+            file_index: session.current as i64,
+            sequence,
+            sha256: hex::encode(Sha256::digest(&data)),
+            data,
+        };
+        let result = chunk_locked(session, &request);
+        // Any post-lock failure discards the session (with a tombstone) —
+        // the same discipline `chunk` applies.
+        if result.is_err() {
+            discard_locked(&mut shared, &self.inner.dir, upload_id, true);
         }
         result
     }
@@ -2775,6 +2833,103 @@ pub(crate) async fn upload_chunk(
     }
 }
 
+/// `handleUploadChunk` on the Phase-5 §2.4 `0x03` binary carrier. The
+/// frame supplies `upload_id`/`sequence`/raw bytes only — `target` and
+/// `file_index` anchor to the staged session (the client cannot claim
+/// either) and `sha256` is measured on receipt. Every other check is the
+/// shared [`chunk_locked`] machinery, so ordering, dedup, size, capacity,
+/// and the discard-on-failure rules match the JSON form exactly.
+/// The ack stays JSON: `upload_chunk_result` with an empty `request_id`
+/// — the carrier has none, and `next_sequence` is the correlation.
+pub(crate) async fn upload_chunk_binary(
+    ctx: ActionContext,
+    chunk: lerdr_core::uploadbinary::BinaryChunk,
+) -> Vec<Outbound> {
+    // The staged session anchors `target`/`file_index`; on an unknown or
+    // expired id this is the same `lock_session` failure the JSON arm
+    // reports from inside `m.Chunk`.
+    let staged = ctx.uploads.staged_target(&chunk.upload_id);
+    // `recordWriteAudit(client, msg, nil)` — the admission `attempt` row,
+    // written where the JSON arm's session layer puts it: before the
+    // action's own checks run. The synthesized map is the JSON-equivalent
+    // request this carrier stands for, so `data_bytes`/`payload_sha256`
+    // and the pane attribution read exactly like a JSON chunk's record.
+    if let Some(log) = &ctx.audit {
+        let mut raw = serde_json::Map::new();
+        raw.insert("type".to_owned(), "upload_chunk".into());
+        raw.insert("upload_id".to_owned(), chunk.upload_id.clone().into());
+        raw.insert("sequence".to_owned(), chunk.sequence.into());
+        raw.insert(
+            "data".to_owned(),
+            base64::engine::general_purpose::STANDARD
+                .encode(&chunk.data)
+                .into(),
+        );
+        raw.insert(
+            "sha256".to_owned(),
+            hex::encode(Sha256::digest(&chunk.data)).into(),
+        );
+        if let Ok((target, file_index)) = &staged {
+            if let Ok(target) = serde_json::to_value(target) {
+                raw.insert("target".to_owned(), target);
+            }
+            raw.insert("file_index".to_owned(), (*file_index).into());
+        }
+        let req = audit::RequestContext::from_message(&raw, &ctx.client_id);
+        let attribution = super::audit_attribution(&ctx.handle.topology.borrow(), &req.pane_id);
+        if let Err(error) = log.append(audit::attempt_record(&req, &raw, attribution)) {
+            tracing::warn!(%error, "remote write audit append failed");
+        }
+    }
+    let (target, _staged_file_index) = match staged {
+        Ok(anchored) => anchored,
+        Err(error) => {
+            return vec![upload_error(
+                "",
+                ResultKind::Chunk,
+                public_upload_error_code(error.code),
+                error.args,
+            )]
+        }
+    };
+    // The staged target must still resolve to a live pane — the same
+    // `validateUploadTarget` arm the JSON form runs, including its
+    // failure side effect.
+    if let Err(error) = validate_upload_target(&ctx.topology, &target) {
+        // `s.uploadM.Cancel(...)` on scope failure — discards the staged
+        // session under the mismatched target.
+        if ctx.uploads.is_available() {
+            let _ = ctx.uploads.cancel(&target, &chunk.upload_id);
+        }
+        return vec![upload_error(
+            "",
+            ResultKind::Chunk,
+            public_upload_error_code(error.code),
+            error.args,
+        )];
+    }
+    if !ctx.uploads.is_available() {
+        return vec![upload_error(
+            "",
+            ResultKind::Chunk,
+            "attachment_upload_unavailable",
+            BTreeMap::new(),
+        )];
+    }
+    match ctx
+        .uploads
+        .chunk_binary(&chunk.upload_id, chunk.sequence, chunk.data)
+    {
+        Ok(result) => vec![upload_result("", ResultKind::Chunk, &result)],
+        Err(error) => vec![upload_error(
+            "",
+            ResultKind::Chunk,
+            public_upload_error_code(error.code),
+            error.args,
+        )],
+    }
+}
+
 /// `handleUploadFinish`.
 pub(crate) async fn upload_finish(
     ctx: ActionContext,
@@ -3943,5 +4098,258 @@ mod tests {
         assert_eq!(frame["type"], "upload_cancel_result");
         assert_eq!(frame["request_id"], "r4");
         assert_eq!(frame["result"], serde_json::json!({}));
+    }
+
+    // ── Phase-5 §2.4 `0x03` binary chunk carrier ──────────────────────
+
+    fn bin_chunk(
+        upload_id: &str,
+        sequence: i64,
+        data: &[u8],
+    ) -> lerdr_core::uploadbinary::BinaryChunk {
+        lerdr_core::uploadbinary::BinaryChunk {
+            upload_id: upload_id.to_owned(),
+            sequence,
+            data: data.to_vec(),
+        }
+    }
+
+    /// The binary carrier produces the same `upload_chunk_result` JSON —
+    /// with the empty `request_id` the carrier implies — and lands the
+    /// same staged bytes `upload_finish` publishes.
+    #[tokio::test]
+    async fn binary_chunk_handler_round_trips_with_json_ack() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let ctx = test_ctx(vec![agent()], dir);
+        let body = png_body();
+        let begin = message(serde_json::json!({
+            "target": target_json(),
+            "files": [{"name":"a.png","media_type":"image/png","bytes":body.len() as i64}],
+        }));
+        let frames = upload_begin(ctx.clone(), "r1", "a1", &begin).await;
+        let upload_id = frame_json(&frames[0])["result"]["upload_id"]
+            .as_str()
+            .expect("id")
+            .to_owned();
+
+        let frames = upload_chunk_binary(ctx.clone(), bin_chunk(&upload_id, 0, &body)).await;
+        let frame = frame_json(&frames[0]);
+        assert_eq!(frame["type"], "upload_chunk_result");
+        assert_eq!(frame["request_id"], "", "the carrier has no request id");
+        assert_eq!(frame["result"]["file_index"].as_i64(), Some(0));
+        assert_eq!(frame["result"]["next_sequence"].as_i64(), Some(1));
+        assert_eq!(frame["result"]["received_bytes"], body.len() as i64);
+
+        let finish = message(serde_json::json!({
+            "target": target_json(),
+            "upload_id": upload_id,
+            "files": [{"file_index": 0, "sha256": sha(&body)}],
+        }));
+        let frames = upload_finish(ctx.clone(), "r3", "a3", &finish).await;
+        let frame = frame_json(&frames[0]);
+        assert!(frame.get("error").is_none() || frame["error"].is_null());
+        assert!(frame["result"]["attachments"][0]["ref"].is_string());
+    }
+
+    /// The shared `chunk_locked` machinery means every semantic failure
+    /// answers identically to the JSON form — same public code, same
+    /// args, same discard-on-failure.
+    #[tokio::test]
+    async fn binary_chunk_validation_matches_json() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let ctx = test_ctx(vec![agent()], dir);
+        let body = png_body();
+
+        // Unknown id — `lock_session`'s not_found, without any claim to
+        // check first.
+        let frames =
+            upload_chunk_binary(ctx.clone(), bin_chunk("w".repeat(32).as_str(), 0, &body)).await;
+        let frame = frame_json(&frames[0]);
+        assert_eq!(frame["request_id"], "");
+        assert_eq!(frame["error"]["code"], "attachment_upload_state_unknown");
+
+        let begin = message(serde_json::json!({
+            "target": target_json(),
+            "files": [{"name":"a.png","media_type":"image/png","bytes":body.len() as i64}],
+        }));
+        let frames = upload_begin(ctx.clone(), "r1", "a1", &begin).await;
+        let upload_id = frame_json(&frames[0])["result"]["upload_id"]
+            .as_str()
+            .expect("id")
+            .to_owned();
+
+        // Out-of-order — the same error shape and args JSON produces.
+        let frames = upload_chunk_binary(ctx.clone(), bin_chunk(&upload_id, 3, &body)).await;
+        let frame = frame_json(&frames[0]);
+        assert_eq!(frame["error"]["code"], "attachment_upload_state_unknown");
+        assert_eq!(
+            frame["error"]["args"]["expected_sequence"].as_i64(),
+            Some(0)
+        );
+        assert_eq!(
+            frame["error"]["args"]["expected_file_index"].as_i64(),
+            Some(0)
+        );
+        // Post-lock failure discarded the session — a retry at the
+        // correct sequence is now session_not_found.
+        let frames = upload_chunk_binary(ctx.clone(), bin_chunk(&upload_id, 0, &body)).await;
+        assert_eq!(
+            frame_json(&frames[0])["error"]["code"],
+            "attachment_upload_state_unknown"
+        );
+    }
+
+    /// Size and capacity rules come through the shared machinery too:
+    /// empty and oversize payloads answer `attachment_upload_failed`
+    /// (`upload_chunk_size_invalid`), and a chunk that would overrun the
+    /// declared file size answers `attachment_file_too_large`. Digest
+    /// mismatch is unreachable on this carrier by construction — the
+    /// relay measures the digest of the bytes it actually received, and
+    /// the AES-GCM envelope already authenticates them.
+    #[tokio::test]
+    async fn binary_chunk_size_and_capacity_rules() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let ctx = test_ctx(vec![agent()], dir);
+
+        let begin = message(serde_json::json!({
+            "target": target_json(),
+            "files": [{"name":"a.png","media_type":"image/png","bytes":4}],
+        }));
+        let frames = upload_begin(ctx.clone(), "r1", "a1", &begin).await;
+        let upload_id = frame_json(&frames[0])["result"]["upload_id"]
+            .as_str()
+            .expect("id")
+            .to_owned();
+
+        // Empty payload — the same `data.is_empty()` arm as an empty
+        // base64 `data` string on the JSON form.
+        let frames = upload_chunk_binary(ctx.clone(), bin_chunk(&upload_id, 0, b"")).await;
+        let frame = frame_json(&frames[0]);
+        assert_eq!(frame["error"]["code"], "attachment_upload_failed");
+        assert_eq!(
+            frame["error"]["args"]["max_bytes"].as_i64(),
+            Some(CHUNK_BYTES as i64)
+        );
+        // The failed chunk discarded the session — stage a fresh one to
+        // exercise capacity.
+        let begin = message(serde_json::json!({
+            "target": target_json(),
+            "files": [{"name":"b.png","media_type":"image/png","bytes":4}],
+        }));
+        let frames = upload_begin(ctx.clone(), "r2", "a2", &begin).await;
+        let upload_id = frame_json(&frames[0])["result"]["upload_id"]
+            .as_str()
+            .expect("id")
+            .to_owned();
+        let frames = upload_chunk_binary(ctx.clone(), bin_chunk(&upload_id, 0, &body5())).await;
+        let frame = frame_json(&frames[0]);
+        assert_eq!(frame["error"]["code"], "attachment_file_too_large");
+        assert_eq!(frame["error"]["args"]["expected_bytes"].as_i64(), Some(4));
+    }
+
+    fn body5() -> Vec<u8> {
+        vec![0x89, b'P', b'N', b'G', 0x0D]
+    }
+
+    /// Carriers may be mixed within one upload — the sequence domain is
+    /// the staged session's counter, so JSON and `0x03` chunks interleave
+    /// freely as long as the global order holds.
+    #[tokio::test]
+    async fn mixed_json_and_binary_chunks_share_sequence() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let ctx = test_ctx(vec![agent()], dir);
+        let body = png_body();
+        let (part_a, part_b) = body.split_at(body.len() / 2);
+        let begin = message(serde_json::json!({
+            "target": target_json(),
+            "files": [{"name":"a.png","media_type":"image/png","bytes":body.len() as i64}],
+        }));
+        let frames = upload_begin(ctx.clone(), "r1", "a1", &begin).await;
+        let upload_id = frame_json(&frames[0])["result"]["upload_id"]
+            .as_str()
+            .expect("id")
+            .to_owned();
+
+        // seq 0 on the JSON carrier.
+        let chunk = message(serde_json::json!({
+            "target": target_json(),
+            "upload_id": upload_id,
+            "file_index": 0,
+            "sequence": 0,
+            "data": b64(part_a),
+            "sha256": sha(part_a),
+        }));
+        let frames = upload_chunk(ctx.clone(), "r2", "a2", &chunk).await;
+        assert_eq!(
+            frame_json(&frames[0])["result"]["next_sequence"].as_i64(),
+            Some(1)
+        );
+        // seq 1 on the binary carrier — same counter, same session.
+        let frames = upload_chunk_binary(ctx.clone(), bin_chunk(&upload_id, 1, part_b)).await;
+        let frame = frame_json(&frames[0]);
+        assert_eq!(frame["result"]["next_sequence"].as_i64(), Some(2));
+        assert_eq!(frame["result"]["received_bytes"], body.len() as i64);
+
+        let finish = message(serde_json::json!({
+            "target": target_json(),
+            "upload_id": upload_id,
+            "files": [{"file_index": 0, "sha256": sha(&body)}],
+        }));
+        let frames = upload_finish(ctx.clone(), "r3", "a3", &finish).await;
+        assert!(frame_json(&frames[0])["result"]["attachments"][0]["ref"].is_string());
+    }
+
+    /// The `recordWriteAudit` admission row for a binary chunk is the
+    /// JSON-equivalent record: `upload_chunk` attempt with the measured
+    /// `data_bytes`/`payload_sha256` details and the staged pane's
+    /// attribution — indistinguishable from the JSON carrier's row.
+    #[tokio::test]
+    async fn binary_chunk_writes_audit_attempt_row() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let audit_dir = dir.join("audit-root");
+        let mut ctx = test_ctx(vec![agent()], dir);
+        ctx.audit = Some(Arc::new(
+            audit::AuditLog::open(&audit_dir).expect("audit log opens"),
+        ));
+        let body = png_body();
+        let begin = message(serde_json::json!({
+            "target": target_json(),
+            "files": [{"name":"a.png","media_type":"image/png","bytes":body.len() as i64}],
+        }));
+        let frames = upload_begin(ctx.clone(), "r1", "a1", &begin).await;
+        let upload_id = frame_json(&frames[0])["result"]["upload_id"]
+            .as_str()
+            .expect("id")
+            .to_owned();
+
+        let frames = upload_chunk_binary(ctx.clone(), bin_chunk(&upload_id, 0, &body)).await;
+        assert_eq!(
+            frame_json(&frames[0])["result"]["next_sequence"].as_i64(),
+            Some(1)
+        );
+
+        let path = audit_dir.join("audit").join("remote-writes.jsonl");
+        let rows: Vec<serde_json::Value> = std::fs::read_to_string(&path)
+            .expect("audit log readable")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("row is JSON"))
+            .collect();
+        let attempt = rows
+            .iter()
+            .find(|row| row["action"] == "upload_chunk")
+            .expect("upload_chunk attempt row");
+        assert_eq!(attempt["stage"], "attempt");
+        // The carrier has no request id — the empty member omits itself
+        // (`request_id,omitempty`), like the wire envelope.
+        assert!(attempt.get("request_id").is_none() || attempt["request_id"].is_null());
+        assert_eq!(attempt["client_id"], "connection:client-1");
+        assert_eq!(attempt["pane_id"], "pane-a");
+        // `data` was synthesized as the base64 a JSON client would send:
+        // `data_bytes` counts its string length like the JSON arm.
+        assert_eq!(
+            attempt["details"]["data_bytes"].as_u64(),
+            Some(b64(&body).len() as u64)
+        );
+        assert!(attempt["details"]["payload_sha256"].is_string());
     }
 }

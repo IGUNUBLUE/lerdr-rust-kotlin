@@ -1090,10 +1090,39 @@ frozen vectors untouched. Track B in flight: `convo_sub` → `frame_zstd`
   explicit inflate-and-restore for clients and tooling, bounded at the
   outbound byte cap against zip bombs. Measured on a realistic watch
   frame: 6099 B plaintext → 569 B on the wire at zstd level 1.
-- Still deferred: `inner_codec_binary` (CBOR), `upload_binary`.
+- **`upload_binary` landed** (this branch): negotiated raw-binary upload
+  chunks per §2.4. A decrypted `0x03` payload —
+  `[0x03][upload_id:32 ASCII][chunk_seq:BE64][bytes…]` — is dispatched
+  before the JSON decode in the session frame path; the header carries
+  the begin-issued opaque id verbatim (32-char base64url — the sketch's
+  `upload_id:16` became the full string so no relay-side id mapping
+  exists). `target`/`file_index` anchor to the staged session and
+  `sha256` is measured on receipt; ordering/dedup/size/capacity/digest
+  run the shared `chunk_locked` machinery so every outcome (and the
+  `attachment_*` public codes) matches the JSON form, including the
+  discard-on-failure rule. Acks stay JSON (`upload_chunk_result` with
+  an empty `request_id`; `next_sequence` correlates); the
+  `recordWriteAudit` attempt row is synthesized as the JSON-equivalent
+  message so audit records read identically. The capability gates both
+  directions: inbound `0x03` without negotiation answers
+  `capability_unsupported` (session kept — a mid-flight retraction is
+  not a kill race), a malformed header evicts like non-JSON plaintext,
+  and `upload_begin_result` gains `chunk_encoding:"binary"` only while
+  the capability is live — the same encode-time gate pair
+  (`Actor::enqueue`, `ClientSink::try_send`) `frame_zstd` uses, now a
+  shared `Negotiated` flag set. JSON/base64 chunks for non-negotiated
+  clients are untouched, and carriers may be mixed within one upload
+  (the sequence counter is the shared domain).
+- Still deferred: `inner_codec_binary` (CBOR).
 
-Verification: workspace tests + 5 new session tests green (negotiation
-off → plaintext identical, on → compressed shape + inflate round-trip,
-client- and server-side mid-session retraction, non-content pane frames
-exempt), fmt/clippy `-D warnings` clean, `shadow_diff.py` core/watch/
+Verification: workspace tests green — 6 new `uploadbinary` unit tests
+(header round-trip, edge sequences, every malformed shape, foreign id
+rejection, encoding stamp), 5 new upload-manager/handler tests (binary
+round-trip + JSON ack, validation parity incl. out-of-order args and
+discard, size/capacity rules, mixed JSON↔binary sequence sharing,
+audit attempt row), 5 new session tests (capability gate answers
+`capability_unsupported` + session survives, negotiated `0x03` routes
+through the e2ee pipe to the router, malformed header evicts,
+`chunk_encoding` stamp follows announce/retract, error results never
+stamped) — fmt/clippy `-D warnings` clean, `shadow_diff.py` core/watch/
 semantic all IDENTICAL, frozen vectors untouched.

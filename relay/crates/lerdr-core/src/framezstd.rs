@@ -222,10 +222,18 @@ mod tests {
         assert!(matches!(plain.decompress_payload(), Ok(false)));
     }
 
+    /// The `frame_zstd`-only negotiated flag set.
+    fn zstd() -> crate::protocol::Negotiated {
+        crate::protocol::Negotiated {
+            frame_zstd: true,
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn negotiated_encode_matches_wire_shape_and_round_trips() {
         let frame = Outbound::PaneContent(Box::new(watch_frame(&big_content())));
-        let encoded = frame.encode_negotiated(true);
+        let encoded = frame.encode_negotiated(zstd());
         let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(json["type"], "pane_content");
         assert_eq!(json["encoding"], "zstd");
@@ -258,17 +266,17 @@ mod tests {
     #[test]
     fn negotiated_off_encodes_plaintext_identically() {
         let frame = Outbound::PaneContent(Box::new(watch_frame("content")));
-        assert_eq!(frame.encode_negotiated(false), frame.encode());
+        assert_eq!(frame.encode_negotiated(Default::default()), frame.encode());
         // Non-pane frames never transform either.
         let resync = Outbound::PaneResync(crate::protocol::PaneResync {
             r#type: "pane_resync".to_owned(),
             pane_id: Some("wE:p1".to_owned()),
             ..Default::default()
         });
-        assert_eq!(resync.encode_negotiated(true), resync.encode());
+        assert_eq!(resync.encode_negotiated(zstd()), resync.encode());
         // `pane_delta` stays uncompressed by spec.
         let delta = Outbound::PaneDelta(Box::default());
-        assert_eq!(delta.encode_negotiated(true), delta.encode());
+        assert_eq!(delta.encode_negotiated(zstd()), delta.encode());
     }
 
     #[test]

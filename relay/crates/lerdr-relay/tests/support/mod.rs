@@ -251,13 +251,35 @@ pub fn seed_invitation(store: &MemoryAuthStore) -> (AuthSelector, [u8; SECRET_BY
     )
 }
 
-/// Spawn `serve_connection` over `io` against `store`; returns the join
-/// handle plus a oneshot delivering the [`ClientSink`] once the session
-/// registers. (A blocking `std::sync::mpsc` recv would stall the
-/// current-thread test runtime — the server task lives on it too.)
+/// Spawn `serve_connection` over `io` against `store` with the stub
+/// router; returns the join handle plus a oneshot delivering the
+/// [`ClientSink`] once the session registers. (A blocking
+/// `std::sync::mpsc` recv would stall the current-thread test runtime —
+/// the server task lives on it too.)
 pub fn serve(
     io: DuplexIo,
     store: Arc<MemoryAuthStore>,
+    config: SessionConfig,
+    parent: CancellationToken,
+) -> (
+    JoinHandle<ConnectionEnd>,
+    tokio::sync::oneshot::Receiver<lerdr_relay::session::ClientSink>,
+) {
+    serve_with(
+        io,
+        store,
+        lerdr_relay::router::StubRouter::new(),
+        config,
+        parent,
+    )
+}
+
+/// [`serve`] with a caller-chosen router — tests that assert on routing
+/// (the §2.4 `0x03` binary-chunk path) plug their recorder in here.
+pub fn serve_with<R: lerdr_relay::router::ActionRouter + 'static>(
+    io: DuplexIo,
+    store: Arc<MemoryAuthStore>,
+    router: R,
     config: SessionConfig,
     parent: CancellationToken,
 ) -> (
@@ -270,7 +292,7 @@ pub fn serve(
             io,
             &*store,
             &mut lerdr_relay::handshake::OsKeySource,
-            lerdr_relay::router::StubRouter::new(),
+            router,
             "client-1".to_owned(),
             config,
             parent,

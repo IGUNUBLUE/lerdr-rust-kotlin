@@ -1047,3 +1047,295 @@ async fn non_content_pane_frames_never_compress() {
     drop(client);
     server.await.expect("server joins");
 }
+
+// ── Phase-5 Track-B `upload_binary` (docs/13 §2.4) ────────────────────
+
+/// A 32-char base64url opaque id — the shape `upload_begin` mints and
+/// the `0x03` header carries verbatim.
+const UPLOAD_ID: &str = "abcdefghijklmnopqrstuvwxyz123456";
+
+/// A router that records binary chunks as the dispatch seam sees them
+/// and answers with the same JSON `upload_chunk_result` the real
+/// handler produces — `request_id:""`, `next_sequence` correlating.
+/// JSON actions delegate to the stub so liveness barriers (an
+/// `action_receipt`) work the same as in the other tests.
+#[derive(Default)]
+struct BinaryRecorder {
+    chunks: Arc<std::sync::Mutex<Vec<lerdr_core::uploadbinary::BinaryChunk>>>,
+    stub: lerdr_relay::router::StubRouter,
+}
+
+impl lerdr_relay::router::ActionRouter for BinaryRecorder {
+    fn route(
+        &mut self,
+        ctx: &lerdr_relay::router::ClientContext<'_>,
+        scope: &lerdr_core::protocol::RequestScope,
+        message: &lerdr_core::protocol::Inbound,
+    ) -> lerdr_relay::router::RouterReply {
+        self.stub.route(ctx, scope, message)
+    }
+
+    fn route_binary_chunk(
+        &mut self,
+        _ctx: &lerdr_relay::router::ClientContext<'_>,
+        chunk: lerdr_core::uploadbinary::BinaryChunk,
+    ) -> lerdr_relay::router::RouterReply {
+        let next_sequence = chunk.sequence + 1;
+        self.chunks.lock().expect("chunks").push(chunk);
+        let result = serde_json::value::RawValue::from_string(format!(
+            r#"{{"file_index":0,"next_sequence":{next_sequence},"received_bytes":7}}"#
+        ))
+        .expect("result JSON");
+        lerdr_relay::router::RouterReply::send(vec![
+            lerdr_core::protocol::Outbound::UploadChunkResult(
+                lerdr_core::protocol::UploadResultMessage {
+                    r#type: "upload_chunk_result".to_owned(),
+                    request_id: Some(String::new()),
+                    result: Some(lerdr_core::json::MaybeNull::Value(
+                        lerdr_core::json::RawJson(result),
+                    )),
+                    ..Default::default()
+                },
+            ),
+        ])
+    }
+}
+
+/// `establish` against a recording router; the session `client-1` id
+/// matches `serve_with`'s label.
+async fn establish_binary(
+    store: Arc<MemoryAuthStore>,
+    router: BinaryRecorder,
+) -> (
+    TestClient,
+    lerdr_e2ee::Session,
+    tokio::task::JoinHandle<ConnectionEnd>,
+    tokio::sync::oneshot::Receiver<lerdr_relay::session::ClientSink>,
+) {
+    let (selector, secret) = seed_credential(&store);
+    let (mut client, server_io) = TestClient::pair(64 * 1024);
+    let (server, sink_rx) = serve_with(
+        server_io,
+        store,
+        router,
+        test_config(),
+        CancellationToken::new(),
+    );
+    let established = client.handshake(&selector, &secret).await;
+    (client, established.session, server, sink_rx)
+}
+
+/// A `0x03` frame from a client that never announced `upload_binary`
+/// answers `capability_unsupported` — the gated-action reply shape with
+/// an empty correlation — and the session survives (a mid-flight
+/// `caps_update` retraction must not become a kill race).
+#[tokio::test]
+async fn binary_chunk_without_capability_is_capability_unsupported() {
+    let store = Arc::new(MemoryAuthStore::new());
+    let (mut client, mut session, server, _sink_rx) =
+        establish_binary(store, BinaryRecorder::default()).await;
+
+    let frame = lerdr_core::uploadbinary::encode_chunk(UPLOAD_ID, 0, b"raw").expect("frame");
+    client.send_json(&mut session, &frame).await;
+    let reply = client.read_until_type(&mut session, "error").await;
+    // The carrier has no request id — the member is omitted, matching
+    // the oracle's `request_id,omitempty` envelope.
+    assert!(reply.get("request_id").is_none() || reply["request_id"].is_null());
+    assert_eq!(reply["error"]["code"], "capability_unsupported");
+    assert_eq!(reply["error"]["args"]["operation"], "upload_chunk");
+    assert_eq!(reply["error"]["args"]["capability"], "upload_binary");
+
+    // The connection is alive — a follow-up action routes normally.
+    client
+        .send_json(
+            &mut session,
+            br#"{"type":"get_activity","protocol":3,"request_id":"req-barrier"}"#,
+        )
+        .await;
+    let barrier = client.read_until_type(&mut session, "action_receipt").await;
+    assert_eq!(barrier["request_id"], "req-barrier");
+
+    drop(client);
+    server.await.expect("server joins");
+}
+
+/// Negotiated `upload_binary`: a well-formed `0x03` frame reaches the
+/// router with the verbatim id, the BE64 sequence, and the raw bytes;
+/// the ack rides back as JSON `upload_chunk_result` with an empty
+/// `request_id`.
+#[tokio::test]
+async fn binary_chunk_routes_when_negotiated() {
+    let recorder = BinaryRecorder::default();
+    let seen = recorder.chunks.clone();
+    let store = Arc::new(MemoryAuthStore::new());
+    let (mut client, mut session, server, _sink_rx) = establish_binary(store, recorder).await;
+
+    client
+        .send_json(
+            &mut session,
+            br#"{"type":"client_caps","protocol":3,"capabilities":["upload_binary"]}"#,
+        )
+        .await;
+    // The negotiation reply is the barrier: the actor recorded the
+    // client set before the next inbound is dispatched.
+    let reply = client.read_until_type(&mut session, "caps_update").await;
+    assert!(reply["capabilities"]
+        .as_array()
+        .expect("capabilities array")
+        .iter()
+        .any(|cap| cap == "upload_binary"));
+
+    let payload = b"raw bytes \x00\x01\xff";
+    let frame = lerdr_core::uploadbinary::encode_chunk(UPLOAD_ID, 0, payload).expect("frame");
+    client.send_json(&mut session, &frame).await;
+    let reply = client
+        .read_until_type(&mut session, "upload_chunk_result")
+        .await;
+    assert_eq!(reply["request_id"], "");
+    assert_eq!(reply["result"]["next_sequence"], 1);
+
+    let seen = seen.lock().expect("chunks").clone();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].upload_id, UPLOAD_ID);
+    assert_eq!(seen[0].sequence, 0);
+    assert_eq!(seen[0].data, payload);
+
+    drop(client);
+    server.await.expect("server joins");
+}
+
+/// A negotiated client that authors a malformed `0x03` — truncated
+/// header or an id outside the base64url alphabet — committed a
+/// protocol violation inside the authenticated channel: the connection
+/// closes exactly like non-JSON plaintext does.
+#[tokio::test]
+async fn malformed_binary_chunk_evicts() {
+    let recorder = BinaryRecorder::default();
+    let store = Arc::new(MemoryAuthStore::new());
+    let (mut client, mut session, server, _sink_rx) = establish_binary(store, recorder).await;
+
+    client
+        .send_json(
+            &mut session,
+            br#"{"type":"client_caps","protocol":3,"capabilities":["upload_binary"]}"#,
+        )
+        .await;
+    client.read_until_type(&mut session, "caps_update").await;
+
+    // The bare type byte — far short of the 41-byte header.
+    client.send_json(&mut session, &[0x03]).await;
+    let end = server.await.expect("server joins");
+    assert!(matches!(
+        end,
+        ConnectionEnd::Evicted(EvictReason::MalformedMessage)
+    ));
+}
+
+/// `chunk_encoding:"binary"` lands on `upload_begin_result` payloads
+/// only while the capability is negotiated — the encode-time gate
+/// follows the same announce/retract cadence as `frame_zstd`.
+#[tokio::test]
+async fn chunk_encoding_stamp_follows_negotiation() {
+    let begin_result = || {
+        lerdr_core::protocol::Outbound::UploadBeginResult(
+            lerdr_core::protocol::UploadResultMessage {
+                r#type: "upload_begin_result".to_owned(),
+                request_id: Some("r1".to_owned()),
+                result: Some(lerdr_core::json::MaybeNull::Value(
+                    lerdr_core::json::RawJson(
+                        serde_json::value::RawValue::from_string(
+                            r#"{"upload_id":"u","chunk_bytes":262144,"limits":{}}"#.to_owned(),
+                        )
+                        .expect("result JSON"),
+                    ),
+                )),
+                ..Default::default()
+            },
+        )
+    };
+    let store = Arc::new(MemoryAuthStore::new());
+    let (mut client, mut session, server, sink_rx) =
+        establish_binary(store, BinaryRecorder::default()).await;
+    let sink = sink_rx.await.expect("sink registered");
+
+    // No announcement — the result rides through untouched.
+    sink.try_send(&begin_result()).expect("begin push");
+    let reply = client
+        .read_until_type(&mut session, "upload_begin_result")
+        .await;
+    assert!(reply["result"].get("chunk_encoding").is_none());
+
+    // Negotiate — the next begin result reports the binary carrier.
+    client
+        .send_json(
+            &mut session,
+            br#"{"type":"client_caps","protocol":3,"capabilities":["upload_binary"]}"#,
+        )
+        .await;
+    client.read_until_type(&mut session, "caps_update").await;
+    sink.try_send(&begin_result()).expect("begin push");
+    let reply = client
+        .read_until_type(&mut session, "upload_begin_result")
+        .await;
+    assert_eq!(reply["result"]["chunk_encoding"], "binary");
+    assert_eq!(reply["result"]["upload_id"], "u");
+
+    // Retract mid-session — the stamp disappears again.
+    client
+        .send_json(&mut session, br#"{"type":"caps_update","capabilities":[]}"#)
+        .await;
+    client
+        .send_json(
+            &mut session,
+            br#"{"type":"get_activity","protocol":3,"request_id":"req-barrier"}"#,
+        )
+        .await;
+    client.read_until_type(&mut session, "action_receipt").await;
+    sink.try_send(&begin_result()).expect("begin push");
+    let reply = client
+        .read_until_type(&mut session, "upload_begin_result")
+        .await;
+    assert!(reply["result"].get("chunk_encoding").is_none());
+
+    drop(client);
+    server.await.expect("server joins");
+}
+
+/// Error `upload_begin_result`s never carry the marker — a failed begin
+/// stages nothing the client could stream into.
+#[tokio::test]
+async fn chunk_encoding_never_stamps_error_results() {
+    let store = Arc::new(MemoryAuthStore::new());
+    let (mut client, mut session, server, sink_rx) =
+        establish_binary(store, BinaryRecorder::default()).await;
+    let sink = sink_rx.await.expect("sink registered");
+
+    client
+        .send_json(
+            &mut session,
+            br#"{"type":"client_caps","protocol":3,"capabilities":["upload_binary"]}"#,
+        )
+        .await;
+    client.read_until_type(&mut session, "caps_update").await;
+
+    sink.try_send(&lerdr_core::protocol::Outbound::UploadBeginResult(
+        lerdr_core::protocol::UploadResultMessage {
+            r#type: "upload_begin_result".to_owned(),
+            request_id: Some("r9".to_owned()),
+            error: Some(lerdr_core::protocol::ApiError::new(
+                "attachment_upload_busy",
+                std::collections::BTreeMap::new(),
+            )),
+            ..Default::default()
+        },
+    ))
+    .expect("error begin push");
+    let reply = client
+        .read_until_type(&mut session, "upload_begin_result")
+        .await;
+    assert_eq!(reply["error"]["code"], "attachment_upload_busy");
+    assert!(reply.get("result").is_none() || reply["result"].is_null());
+
+    drop(client);
+    server.await.expect("server joins");
+}

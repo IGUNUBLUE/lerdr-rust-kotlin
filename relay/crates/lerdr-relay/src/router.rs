@@ -17,6 +17,7 @@ use lerdr_core::protocol::{
     action_receipt_response, ActionReceipt, ActionReceiptPhase, ApiError, Inbound, Outbound,
     RequestScope,
 };
+use lerdr_core::uploadbinary::BinaryChunk;
 
 use crate::auth::AuthenticatedIdentity;
 
@@ -68,6 +69,19 @@ pub trait ActionRouter: Send {
         message: &Inbound,
     ) -> RouterReply;
 
+    /// Phase-5 §2.4 — route one decrypted `0x03` upload chunk (the
+    /// binary carrier for `upload_chunk`). The session layer applies the
+    /// negotiated-capability gate, the header parse, and the
+    /// `upload_chunk` credential/role authorization before this call, so
+    /// what arrives is a well-formed, authorized chunk; `target`,
+    /// `file_index`, and `sha256` are server-anchored downstream, not
+    /// carried on the frame. Default: absorbed silently — routers with
+    /// no upload backend have nothing meaningful to ack (`acks ride
+    /// `upload_chunk_result`, which only the upload machinery produces).
+    fn route_binary_chunk(&mut self, _ctx: &ClientContext<'_>, _chunk: BinaryChunk) -> RouterReply {
+        RouterReply::empty()
+    }
+
     /// `validateExactPaneTarget` (server.go:676) — the session runs this
     /// after `server_session_id` fencing and `authorize`, before the
     /// write-audit attempt: a stale or absent `target` rejects a
@@ -88,6 +102,10 @@ impl ActionRouter for Box<dyn ActionRouter> {
         message: &Inbound,
     ) -> RouterReply {
         (**self).route(ctx, scope, message)
+    }
+
+    fn route_binary_chunk(&mut self, ctx: &ClientContext<'_>, chunk: BinaryChunk) -> RouterReply {
+        (**self).route_binary_chunk(ctx, chunk)
     }
 
     fn validate_pane_target(&self, message: &Inbound) -> Option<ApiError> {
@@ -130,6 +148,20 @@ impl ActionRouter for StubRouter {
         RouterReply::send(vec![Outbound::ActionReceipt(action_receipt_response(
             &message.request_id,
             receipt,
+        ))])
+    }
+
+    /// The stub's honest terminal for the binary carrier too — same
+    /// `dispatched_unknown` receipt the JSON `upload_chunk` gets here
+    /// (the carrier has no request_id/action_id to echo).
+    fn route_binary_chunk(&mut self, _ctx: &ClientContext<'_>, _chunk: BinaryChunk) -> RouterReply {
+        let receipt = ActionReceipt {
+            action_id: String::new(),
+            phase: ActionReceiptPhase::from(ActionReceiptPhase::DISPATCHED_UNKNOWN),
+            error: None,
+        };
+        RouterReply::send(vec![Outbound::ActionReceipt(action_receipt_response(
+            "", receipt,
         ))])
     }
 }

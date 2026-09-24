@@ -25,6 +25,7 @@ use lerdr_core::protocol::{
     action_receipt_response, error_codes, error_response, ActionReceipt, ActionReceiptPhase,
     ApiError, Inbound, Outbound, PaneContent, RequestScope, TargetRef,
 };
+use lerdr_core::uploadbinary::BinaryChunk;
 #[cfg(test)]
 use lerdr_herdr::{DispatchPhase, HerdrError};
 use lerdr_herdr::{PaneReadResult, ReadFormat};
@@ -480,6 +481,18 @@ impl ActionRouter for HerdRouter {
             inbound.target.as_ref(),
             true,
         )
+    }
+
+    /// Phase-5 §2.4 — a decrypted `0x03` frame is an `upload_chunk` on
+    /// the binary carrier: the staged session anchors `target`/
+    /// `file_index` and the digest is measured on receipt, so the same
+    /// spawn discipline as the JSON arm applies — the handler's
+    /// `upload_chunk_result` ack rides `push_later`.
+    fn route_binary_chunk(&mut self, ctx: &ClientContext<'_>, chunk: BinaryChunk) -> RouterReply {
+        self.ensure_started(ctx);
+        let action = self.action_context();
+        self.push_later(async move { actions::uploads::upload_chunk_binary(action, chunk).await });
+        RouterReply::empty()
     }
 
     fn route(

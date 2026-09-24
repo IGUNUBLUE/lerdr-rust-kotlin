@@ -196,12 +196,46 @@ wastes bandwidth on feeds never opened.
 
 ### 2.4 Upload binary chunks (`upload_binary`)
 
-`upload_chunk` today is base64-in-JSON (+33%). Proposal: when
-negotiated, `upload_begin` returns `"chunk_encoding":"binary"` and
-chunks travel as **raw binary WS frames**:
-`[0x03][upload_id:16][BE64 seq][bytes…]` — a new E2EE frame type `0x03`
-inside the encrypted channel (same seq discipline). `upload_finish`
-unchanged.
+`upload_chunk` is base64-in-JSON (+33%). While `upload_binary` is live
+on both capability lists (§0), `upload_begin` reports
+`"chunk_encoding":"binary"` in its result payload and chunks travel as
+**raw binary plaintext inside the E2EE channel** — the outer envelope
+(AES-GCM, per-direction BE64 sequence discipline, the negotiated outer
+codec) is unchanged. The *decrypted* chunk payload is:
+
+```text
+[0x03][upload_id: 32 ASCII bytes][chunk_seq: BE64 i64][raw bytes…]
+```
+
+- The inner type byte `0x03` distinguishes a binary chunk from JSON
+  plaintext (always `{`, 0x7B). It is not an outer-codec revision —
+  `0x02` remains the outer binary codec header.
+- `upload_id` carries the 32-char base64url opaque id (192 bits,
+  `upload_begin`'s minted form) **verbatim as ASCII** — the begin result
+  hands the client that exact string, so the header is fixed-width and
+  self-describing with no relay-side id mapping. (The original sketch
+  said `upload_id:16`; truncating or hashing would have needed a second
+  lookup table to save 16 bytes per ≤256 KiB chunk.)
+- `chunk_seq` is the same global counter domain as JSON
+  `upload_chunk.sequence`.
+- Fields the JSON form carries and the carrier omits are anchored
+  server-side: `target` and `file_index` come from the staged session
+  (the client cannot claim either), and `sha256` is measured on receipt
+  — the AES-GCM envelope already authenticates the bytes. Ordering,
+  dedup, size, capacity, and digest verification run the identical
+  machinery as JSON chunks; mixed JSON/binary carriers within one
+  upload share the sequence counter and interleave freely while order
+  holds.
+- Acks stay JSON: `upload_chunk_result`/`upload_*_result` reply shapes
+  are unchanged, with an omitted/empty `request_id` on binary-chunk acks
+  (the carrier has no correlation field; `next_sequence` correlates).
+  `upload_begin`, `upload_finish`, `upload_cancel` remain JSON-only.
+- A `0x03` frame from a client that never announced the capability (or
+  after a mid-flight `caps_update` retraction) answers
+  `capability_unsupported` like a gated action — the session is kept.
+  A malformed `0x03` (truncated header, non-base64url id) closes the
+  connection exactly like non-JSON plaintext does.
+- Non-negotiated clients keep the base64 `upload_chunk` form unchanged.
 
 ## 3. Implementation order (ratified)
 

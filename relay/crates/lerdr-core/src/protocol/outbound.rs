@@ -1338,17 +1338,24 @@ impl Outbound {
         }
     }
 
-    /// Serialize with the negotiated Phase-5 transport upgrades applied.
-    /// `frame_zstd` (docs/13 §2.2) folds a `pane_content.content` member
-    /// into the compressed `payload`; every other message — and every
-    /// frame while the gate is off — encodes exactly like [`encode`].
+    /// Serialize with the negotiated Phase-5 transport upgrades applied —
+    /// one [`Negotiated`] flag per Track-B feature that reshapes wire
+    /// bytes. Every other message, and every frame while its gate is off,
+    /// encodes exactly like [`encode`].
     ///
     /// [`encode`]: Self::encode
-    pub fn encode_negotiated(&self, frame_zstd: bool) -> Vec<u8> {
+    pub fn encode_negotiated(&self, negotiated: Negotiated) -> Vec<u8> {
         match self {
-            Outbound::PaneContent(message) if frame_zstd => {
+            Outbound::PaneContent(message) if negotiated.frame_zstd => {
                 let mut message = (**message).clone();
                 if !message.compress_payload() {
+                    return self.encode();
+                }
+                crate::json::to_vec(&message).expect("outbound message serialization cannot fail")
+            }
+            Outbound::UploadBeginResult(message) if negotiated.upload_binary => {
+                let mut message = message.clone();
+                if !crate::uploadbinary::mark_chunk_encoding(&mut message) {
                     return self.encode();
                 }
                 crate::json::to_vec(&message).expect("outbound message serialization cannot fail")
@@ -1356,6 +1363,20 @@ impl Outbound {
             _ => self.encode(),
         }
     }
+}
+
+/// The negotiated Phase-5 Track-B transport upgrades — one flag per
+/// feature that reshapes wire bytes. The session's capability
+/// intersection (advertised ∩ announced, docs/13 §0) computes it per
+/// frame; a flag is set only while its capability is live on both lists.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Negotiated {
+    /// §2.2 — fold a `pane_content.content` member into the compressed
+    /// `payload`.
+    pub frame_zstd: bool,
+    /// §2.4 — stamp `chunk_encoding:"binary"` on `upload_begin_result`
+    /// payloads.
+    pub upload_binary: bool,
 }
 
 // ---------------------------------------------------------------------------

@@ -24,12 +24,13 @@ use lerdr_core::audit;
 use lerdr_core::framezstd;
 use lerdr_core::json::{MaybeNull, RawJson};
 use lerdr_core::protocol::{
-    action_receipt_response, compatible, decode_failure_response, error_codes, error_response,
-    incompatible_response, required_capability, ActionClass, ActionMetadata, ActionReceipt,
-    ActionReceiptPhase, ApiError, CapsUpdateMessage, CommandResultMessage, HerdrStatus, Inbound,
-    Outbound, PushConfig, RequestScope, CAPABILITIES, VERSION,
+    action_receipt_response, classify_action, compatible, decode_failure_response, error_codes,
+    error_response, incompatible_response, required_capability, ActionClass, ActionMetadata,
+    ActionReceipt, ActionReceiptPhase, ApiError, CapsUpdateMessage, CommandResultMessage,
+    HerdrStatus, Inbound, Negotiated, Outbound, PushConfig, RequestScope, CAPABILITIES, VERSION,
 };
 use lerdr_core::sendbuffer::{is_replaceable, PushResult, RejectReason, SendBuffer};
+use lerdr_core::uploadbinary;
 use lerdr_e2ee::Session;
 use serde::Serialize;
 use tokio::sync::mpsc;
@@ -285,15 +286,16 @@ impl OutboundPush {
     /// serialize, sniff `type`, `replaceable` iff the type is in the
     /// coalescing set.
     pub fn of(message: &Outbound) -> Self {
-        Self::of_negotiated(message, false)
+        Self::of_negotiated(message, Negotiated::default())
     }
 
-    /// [`of`](Self::of) with the negotiated Phase-5 §2.2 `frame_zstd`
-    /// transform: a `pane_content` payload compresses only while the gate
-    /// is live — every other message, and every frame while it is off,
-    /// serializes to the same plaintext as always.
-    pub fn of_negotiated(message: &Outbound, frame_zstd: bool) -> Self {
-        let data = message.encode_negotiated(frame_zstd);
+    /// [`of`](Self::of) with the negotiated Phase-5 transport transforms:
+    /// a `pane_content` payload compresses while §2.2 `frame_zstd` is
+    /// live, an `upload_begin_result` gains `chunk_encoding` while §2.4
+    /// `upload_binary` is live — every other message, and every frame
+    /// while its gate is off, serializes to the same plaintext as always.
+    pub fn of_negotiated(message: &Outbound, negotiated: Negotiated) -> Self {
+        let data = message.encode_negotiated(negotiated);
         let kind = sniff_message_type(&data).unwrap_or_default();
         let replaceable = is_replaceable(&kind);
         Self {
@@ -337,11 +339,42 @@ pub enum LagError {
 #[derive(Clone)]
 pub struct ClientSink {
     tx: mpsc::Sender<OutboundPush>,
-    /// The session's negotiated §2.2 `frame_zstd` gate — consulted at
-    /// encode time by [`try_send`](Self::try_send). The actor keeps it in
-    /// sync with `NegotiatedCaps::live`, so mid-session `caps_update`
-    /// flips apply to subsequent frames.
-    frame_zstd: Arc<AtomicBool>,
+    /// The session's negotiated Phase-5 transport gates — consulted at
+    /// encode time by [`try_send`](Self::try_send). The actor keeps them
+    /// in sync with `NegotiatedCaps`, so mid-session `caps_update` flips
+    /// apply to subsequent frames.
+    gates: Arc<NegotiatedGates>,
+}
+
+/// The negotiated Phase-5 transport gates shared between the actor's
+/// [`NegotiatedCaps`] (writes, on every caps mutation) and this session's
+/// [`ClientSink`] clones (reads, at encode time). One atomic per feature
+/// that reshapes wire bytes.
+#[derive(Debug, Default)]
+struct NegotiatedGates {
+    /// §2.2 — `pane_content` payloads compress.
+    frame_zstd: AtomicBool,
+    /// §2.4 — `upload_begin_result` reports `chunk_encoding:"binary"`.
+    upload_binary: AtomicBool,
+}
+
+impl NegotiatedGates {
+    /// Snapshot both flags for one encode.
+    fn load(&self) -> Negotiated {
+        Negotiated {
+            frame_zstd: self.frame_zstd.load(Ordering::Acquire),
+            upload_binary: self.upload_binary.load(Ordering::Acquire),
+        }
+    }
+
+    /// Publish both flags atomically as a pair — a client sees the two
+    /// transforms go live (or drop) on the same frame boundary.
+    fn store(&self, negotiated: Negotiated) {
+        self.frame_zstd
+            .store(negotiated.frame_zstd, Ordering::Release);
+        self.upload_binary
+            .store(negotiated.upload_binary, Ordering::Release);
+    }
 }
 
 impl ClientSink {
@@ -354,12 +387,10 @@ impl ClientSink {
     }
 
     /// Non-blocking push of a typed envelope (`Hub.Send(client, message)`).
-    /// Applies the negotiated `frame_zstd` transform to `pane_content`.
+    /// Applies the negotiated Phase-5 transforms (`frame_zstd` on
+    /// `pane_content`, `upload_binary` on `upload_begin_result`).
     pub fn try_send(&self, message: &Outbound) -> Result<(), LagError> {
-        self.try_push(OutboundPush::of_negotiated(
-            message,
-            self.frame_zstd.load(Ordering::Acquire),
-        ))
+        self.try_push(OutboundPush::of_negotiated(message, self.gates.load()))
     }
 
     /// Backpressure push — waits for capacity, `Closed` if the client left.
@@ -594,9 +625,9 @@ where
     let signal = Signal::new();
     let (inbound_tx, inbound_rx) = mpsc::channel(config.inbound_capacity);
     let (outbound_tx, outbound_rx) = mpsc::channel(config.outbound_capacity);
-    // One §2.2 gate per session: `NegotiatedCaps` (actor side) writes it
+    // One gate set per session: `NegotiatedCaps` (actor side) writes it
     // on every caps mutation, `ClientSink` clones read it when they encode.
-    let frame_zstd_gate = Arc::new(AtomicBool::new(false));
+    let gates = Arc::new(NegotiatedGates::default());
     // Sealed frames ride a channel sized to one full buffer.
     let (sealed_tx, sealed_rx) = mpsc::channel(config.send_buffer_items);
 
@@ -607,7 +638,7 @@ where
         hook(ClientRegistration {
             sink: ClientSink {
                 tx: outbound_tx.clone(),
-                frame_zstd: Arc::clone(&frame_zstd_gate),
+                gates: Arc::clone(&gates),
             },
             identity: identity.clone(),
             signal: signal.clone(),
@@ -651,7 +682,7 @@ where
         pending_disconnects: Vec::new(),
         self_disconnect: false,
         caps: NegotiatedCaps {
-            frame_zstd_gate,
+            gates,
             ..NegotiatedCaps::default()
         },
     };
@@ -700,10 +731,11 @@ struct NegotiatedCaps {
     /// `preferred_inner_codec` off `client_caps` — kept for the deferred
     /// Track-B negotiation; this build only ever serves JSON.
     preferred_codec: String,
-    /// The encode-time §2.2 `frame_zstd` gate shared with this session's
-    /// [`ClientSink`] clones — mirrors `live(framezstd::CAPABILITY)` so
-    /// sink-side producers apply compression without reaching the actor.
-    frame_zstd_gate: Arc<AtomicBool>,
+    /// The encode-time transport gates shared with this session's
+    /// [`ClientSink`] clones — mirror `live(..)` for each negotiated
+    /// wire-shape feature so sink-side producers apply the transforms
+    /// without reaching the actor.
+    gates: Arc<NegotiatedGates>,
 }
 
 impl Default for NegotiatedCaps {
@@ -712,7 +744,7 @@ impl Default for NegotiatedCaps {
             server: CAPABILITIES.iter().map(|cap| (*cap).to_owned()).collect(),
             client: None,
             preferred_codec: String::new(),
-            frame_zstd_gate: Arc::new(AtomicBool::new(false)),
+            gates: Arc::new(NegotiatedGates::default()),
         }
     }
 }
@@ -764,11 +796,20 @@ impl NegotiatedCaps {
         }
     }
 
-    /// Publish the negotiated §2.2 verdict to the encode-side gate — both
-    /// mutators call it so the flag always tracks `live(framezstd::CAPABILITY)`.
+    /// The live negotiated transport set — one flag per Phase-5 feature
+    /// that reshapes wire bytes, each true only while its capability is
+    /// on BOTH lists (§0).
+    fn negotiated(&self) -> Negotiated {
+        Negotiated {
+            frame_zstd: self.live(framezstd::CAPABILITY),
+            upload_binary: self.live(uploadbinary::CAPABILITY),
+        }
+    }
+
+    /// Publish the negotiated verdict to the encode-side gates — both
+    /// mutators call it so the flags always track [`negotiated`](Self::negotiated).
     fn sync_gate(&self) {
-        self.frame_zstd_gate
-            .store(self.live(framezstd::CAPABILITY), Ordering::Release);
+        self.gates.store(self.negotiated());
     }
 }
 
@@ -886,6 +927,11 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
                 return self.evict(EvictReason::DecryptFailed);
             }
         };
+        // Phase-5 §2.4 — a decrypted `0x03` payload is a binary upload
+        // chunk, not JSON (`{` is 0x7B; the type byte cannot collide).
+        if uploadbinary::is_binary_frame(&plaintext) {
+            return self.dispatch_binary(&plaintext);
+        }
         // Go `decodeWebSocketMessage`: a decrypted payload that is not a JSON
         // object closes an encrypted connection outright.
         let raw_map: serde_json::Map<String, serde_json::Value> =
@@ -1060,6 +1106,68 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
                 BTreeMap::from([("field".to_owned(), serde_json::Value::from(field))]),
             ),
         )))
+    }
+
+    /// Phase-5 §2.4 — a decrypted `0x03` frame is an `upload_chunk` on
+    /// the binary carrier. The carrier runs the same admission spine the
+    /// JSON form gets, minus what the frame cannot express: the
+    /// negotiated-capability gate (an unnegotiated `0x03` is a frame the
+    /// client was never told it could send), authorization as
+    /// `upload_chunk`, then the router. `target`/`file_index`/`sha256`
+    /// are server-anchored downstream, and the ack stays JSON —
+    /// `upload_chunk_result` with an empty `request_id` (the carrier has
+    /// none; `next_sequence` is the correlation).
+    fn dispatch_binary(&mut self, plaintext: &[u8]) -> Step {
+        // The §0 gate answers like a gated action does —
+        // `capability_unsupported` — but keeps the session: a mid-flight
+        // `caps_update` retraction must not turn into a kill race. The
+        // empty `request_id` mirrors the ack shape (no correlation field
+        // on the carrier).
+        if !self.caps.live(uploadbinary::CAPABILITY) {
+            return self.enqueue(Outbound::Error(error_response(
+                "",
+                ApiError::new(
+                    error_codes::CAPABILITY_UNSUPPORTED,
+                    BTreeMap::from([
+                        (
+                            "operation".to_owned(),
+                            serde_json::Value::from("upload_chunk"),
+                        ),
+                        (
+                            "capability".to_owned(),
+                            serde_json::Value::from(uploadbinary::CAPABILITY),
+                        ),
+                    ]),
+                ),
+            )));
+        }
+        let Some(chunk) = uploadbinary::decode_chunk(plaintext) else {
+            // Same severity as non-JSON plaintext: the decrypted
+            // payload's shape is a violation the peer authored inside
+            // the authenticated channel.
+            debug!("malformed binary upload chunk, evicting");
+            return self.evict(EvictReason::MalformedMessage);
+        };
+        // `authorizeDeviceAction` + role gate, the `upload_chunk` arm —
+        // the carrier has no `device_id`, so the session identity
+        // supplies it (an empty claim would behave identically: it is
+        // only consulted for `revoke_device`).
+        let action = classify_action("upload_chunk").expect("upload_chunk is cataloged");
+        if let Some(error) = self.authorize(&action, &self.identity.device_id) {
+            return self.enqueue(Outbound::Error(error_response("", error)));
+        }
+        let ctx = ClientContext {
+            client_id: &self.client_id,
+            identity: &self.identity,
+            transport: self.transport,
+        };
+        let reply = self.router.route_binary_chunk(&ctx, chunk);
+        for message in reply.outbound {
+            if self.enqueue(message) == STOP {
+                return STOP;
+            }
+        }
+        CONTINUE
     }
 
     /// `authorizeDeviceAction` + `authorizeAuthenticatedIdentity`: the
@@ -1296,10 +1404,10 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
             .map(|c| c.credential_id))
     }
 
-    /// `Hub.Send` → `push` → evict-on-reject — with the negotiated §2.2
-    /// `frame_zstd` transform applied at serialize time.
+    /// `Hub.Send` → `push` → evict-on-reject — with the negotiated
+    /// Phase-5 transport transforms applied at serialize time.
     fn enqueue(&mut self, message: Outbound) -> Step {
-        let push = OutboundPush::of_negotiated(&message, self.caps.live(framezstd::CAPABILITY));
+        let push = OutboundPush::of_negotiated(&message, self.caps.negotiated());
         self.handle_push(push)
     }
 

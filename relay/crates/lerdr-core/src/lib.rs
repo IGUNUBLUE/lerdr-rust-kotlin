@@ -22,6 +22,7 @@ pub mod json;
 pub mod lease;
 pub mod protocol;
 pub mod sendbuffer;
+pub mod uploadbinary;
 
 /// The relay's release version — the one honest answer every surface
 /// (`push_config.version`, `update_status`, `version` subcommand,
