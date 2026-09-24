@@ -43,6 +43,16 @@ git push origin v<x.y.z>
 - The release is `--latest` when the tag is on `main`, `--prerelease`
   otherwise (the in-app update check skips prereleases).
 
+## Installing the APK
+
+- Release APKs are signed with the release keystore (`CN=Lerdr`) and
+  **cannot install over a debug build** — Android fails with
+  `INSTALL_FAILED_UPDATE_INCOMPATIBLE`. Uninstall the debug app first,
+  install the release APK, then re-pair via the deep link (device
+  credentials do not survive the uninstall).
+- Same-class updates (release-over-release, same signer) install
+  normally and keep the paired credential.
+
 ## Gates before publish
 
 1. `verify` — version sync + every check workflow that ran for the tagged
