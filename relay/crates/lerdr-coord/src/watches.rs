@@ -653,6 +653,7 @@ async fn watch_loop(
                                 r#type: "pane_resync".to_owned(),
                                 pane_id: Some(pane_id.clone()),
                                 target: Some(MaybeNull::Value(spec.target.clone())),
+                                ..PaneResync::default()
                             }));
                         }
                     }

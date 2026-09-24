@@ -1062,3 +1062,38 @@ watch coalescing, fmt/clippy clean, shadow self-mode IDENTICAL.
 Verification: 730+ workspace tests green post-merge, fmt/clippy clean,
 frozen vectors untouched. Track B in flight: `convo_sub` → `frame_zstd`
 → `upload_binary`.
+
+## Round 19 — Phase-5 Track B transport upgrades (2026)
+
+- **`convo_sub` landed** (`eb532ee`): per-pane conversation
+  subscriptions — `subscribe_conversation`/`unsubscribe_conversation`
+  gate on the capability; `conversation_update` pushes ride
+  `reset:true` for initial/rotation/rebuild frames and `reset:false`
+  for append-only tails, coalescible like the other snapshot streams.
+- **`frame_zstd` landed** (this branch): negotiated zstd compression of
+  `pane_content` payloads per §2.2. The envelope stays plaintext —
+  `type`/`pane_id`/`target`/`content_fingerprint`/`ack_required` and the
+  semantic fields route and coalesce as before — while `content` folds
+  into `encoding:"zstd"` + `payload` = base64(zstd(`{"content":"…"}`)).
+  `pane_delta` is exempt by spec (deltas already compress well);
+  `pane_resync` carries no payload member to compress. Compression is
+  applied at encode time inside the session send path — `Actor::enqueue`
+  and `ClientSink::try_send` both consult the negotiated gate (an
+  `AtomicBool` `NegotiatedCaps` keeps in sync on every `client_caps`,
+  inbound `caps_update`, and observed outbound `push_config`/
+  `caps_update`), so mid-session flips apply to the very next frame and
+  `SendBuffer` byte accounting sees the wire shape. The capability is
+  advertised unconditionally — no Herdr method stands behind it — and
+  `effective_capabilities` never refutes it. `Outbound::decode` stays
+  wire-faithful (compressed members pass through so decode+encode
+  round-trips byte-exact); `PaneContent::decompress_payload` is the
+  explicit inflate-and-restore for clients and tooling, bounded at the
+  outbound byte cap against zip bombs. Measured on a realistic watch
+  frame: 6099 B plaintext → 569 B on the wire at zstd level 1.
+- Still deferred: `inner_codec_binary` (CBOR), `upload_binary`.
+
+Verification: workspace tests + 5 new session tests green (negotiation
+off → plaintext identical, on → compressed shape + inflate round-trip,
+client- and server-side mid-session retraction, non-content pane frames
+exempt), fmt/clippy `-D warnings` clean, `shadow_diff.py` core/watch/
+semantic all IDENTICAL, frozen vectors untouched.

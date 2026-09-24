@@ -776,6 +776,11 @@ pub struct InventoryStatusMessage {
 
 /// `pane_content` — full frame or read response. The error variant carries
 /// only `{content:"",error,format,pane_id,type}`.
+///
+/// Phase-5 §2.2 (`frame_zstd`): when the capability is negotiated both ways,
+/// `content` travels compressed — `encoding:"zstd"` + `payload` hold
+/// base64(zstd(`{"content":"…"}`)) and the `content` key is absent. An absent
+/// `encoding` always means plaintext JSON.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PaneContent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -788,6 +793,10 @@ pub struct PaneContent {
     pub content: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_fingerprint: Option<String>,
+    /// Phase-5 §2.2 — `"zstd"` when `payload` carries the compressed
+    /// `content` member; absent on plaintext frames.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -810,6 +819,10 @@ pub struct PaneContent {
     pub options: Option<MaybeNull<Vec<String>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_id: Option<String>,
+    /// Phase-5 §2.2 — base64(zstd(payload-json)) carrying the compressed
+    /// members (`{"content":"…"}`); present iff `encoding` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -915,10 +928,20 @@ pub struct PaneProbe {
 }
 
 /// `pane_resync` — stale-ack nudge; the client re-reads.
+///
+/// Phase-5 §2.2 lists this frame in the `frame_zstd` schema — the optional
+/// `encoding`/`payload` members decode here for parity — but the message
+/// carries no payload field to compress, so this relay never emits them.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PaneResync {
+    /// Phase-5 §2.2 — tolerated on decode; never emitted (no payload).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_id: Option<String>,
+    /// Phase-5 §2.2 — tolerated on decode; never emitted (no payload).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<String>,
     #[serde(
         default,
         deserialize_with = "de_nullable",
@@ -1216,6 +1239,11 @@ struct TypeProbe {
 impl Outbound {
     /// Decode a wire frame into the typed view. Unknown message types are
     /// preserved as [`Outbound::Unknown`].
+    ///
+    /// Decode is wire-faithful: a §2.2-compressed `pane_content` keeps its
+    /// `encoding`/`payload` members (so `decode` + [`encode`](Self::encode)
+    /// round-trips byte-exact). Call
+    /// [`PaneContent::decompress_payload`] for the logical, inflated view.
     pub fn decode(bytes: &[u8]) -> Result<Self, serde_json::Error> {
         let probe: TypeProbe = serde_json::from_slice(bytes)?;
         macro_rules! typed {
@@ -1307,6 +1335,25 @@ impl Outbound {
             Outbound::WebrtcIce(m) => enc!(m),
             Outbound::Workspaces(m) => enc!(m),
             Outbound::Unknown(raw) => raw.get().as_bytes().to_vec(),
+        }
+    }
+
+    /// Serialize with the negotiated Phase-5 transport upgrades applied.
+    /// `frame_zstd` (docs/13 §2.2) folds a `pane_content.content` member
+    /// into the compressed `payload`; every other message — and every
+    /// frame while the gate is off — encodes exactly like [`encode`].
+    ///
+    /// [`encode`]: Self::encode
+    pub fn encode_negotiated(&self, frame_zstd: bool) -> Vec<u8> {
+        match self {
+            Outbound::PaneContent(message) if frame_zstd => {
+                let mut message = (**message).clone();
+                if !message.compress_payload() {
+                    return self.encode();
+                }
+                crate::json::to_vec(&message).expect("outbound message serialization cannot fail")
+            }
+            _ => self.encode(),
         }
     }
 }

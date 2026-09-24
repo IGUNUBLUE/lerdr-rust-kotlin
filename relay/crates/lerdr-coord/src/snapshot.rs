@@ -61,7 +61,9 @@ pub fn compose_snapshot(topology: &Topology) -> Vec<Outbound> {
 /// rule (`pane_search` ← the copy family, `pane_links` ← the link pair,
 /// `layout` ← export+apply). A partial family still serves the methods
 /// the installed Herdr ships, so `unknown`/`supported` both keep it
-/// advertised. The same list rides `push_config` at connect and
+/// advertised. Relay-local capabilities with no Herdr method behind them
+/// (`convo_sub`, `frame_zstd`) are never refuted — they stay advertised
+/// unconditionally. The same list rides `push_config` at connect and
 /// `caps_update` mid-session (the session gate sniffs both).
 pub fn effective_capabilities(topology: &Topology) -> Vec<String> {
     let features = topology.herdr_status.features.value();

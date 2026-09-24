@@ -16,10 +16,12 @@
 //! runs inside the actor so the writer pump never touches key state.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use lerdr_core::audit;
+use lerdr_core::framezstd;
 use lerdr_core::json::{MaybeNull, RawJson};
 use lerdr_core::protocol::{
     action_receipt_response, compatible, decode_failure_response, error_codes, error_response,
@@ -283,7 +285,15 @@ impl OutboundPush {
     /// serialize, sniff `type`, `replaceable` iff the type is in the
     /// coalescing set.
     pub fn of(message: &Outbound) -> Self {
-        let data = message.encode();
+        Self::of_negotiated(message, false)
+    }
+
+    /// [`of`](Self::of) with the negotiated Phase-5 §2.2 `frame_zstd`
+    /// transform: a `pane_content` payload compresses only while the gate
+    /// is live — every other message, and every frame while it is off,
+    /// serializes to the same plaintext as always.
+    pub fn of_negotiated(message: &Outbound, frame_zstd: bool) -> Self {
+        let data = message.encode_negotiated(frame_zstd);
         let kind = sniff_message_type(&data).unwrap_or_default();
         let replaceable = is_replaceable(&kind);
         Self {
@@ -327,6 +337,11 @@ pub enum LagError {
 #[derive(Clone)]
 pub struct ClientSink {
     tx: mpsc::Sender<OutboundPush>,
+    /// The session's negotiated §2.2 `frame_zstd` gate — consulted at
+    /// encode time by [`try_send`](Self::try_send). The actor keeps it in
+    /// sync with `NegotiatedCaps::live`, so mid-session `caps_update`
+    /// flips apply to subsequent frames.
+    frame_zstd: Arc<AtomicBool>,
 }
 
 impl ClientSink {
@@ -339,8 +354,12 @@ impl ClientSink {
     }
 
     /// Non-blocking push of a typed envelope (`Hub.Send(client, message)`).
+    /// Applies the negotiated `frame_zstd` transform to `pane_content`.
     pub fn try_send(&self, message: &Outbound) -> Result<(), LagError> {
-        self.try_push(OutboundPush::of(message))
+        self.try_push(OutboundPush::of_negotiated(
+            message,
+            self.frame_zstd.load(Ordering::Acquire),
+        ))
     }
 
     /// Backpressure push — waits for capacity, `Closed` if the client left.
@@ -575,6 +594,9 @@ where
     let signal = Signal::new();
     let (inbound_tx, inbound_rx) = mpsc::channel(config.inbound_capacity);
     let (outbound_tx, outbound_rx) = mpsc::channel(config.outbound_capacity);
+    // One §2.2 gate per session: `NegotiatedCaps` (actor side) writes it
+    // on every caps mutation, `ClientSink` clones read it when they encode.
+    let frame_zstd_gate = Arc::new(AtomicBool::new(false));
     // Sealed frames ride a channel sized to one full buffer.
     let (sealed_tx, sealed_rx) = mpsc::channel(config.send_buffer_items);
 
@@ -585,6 +607,7 @@ where
         hook(ClientRegistration {
             sink: ClientSink {
                 tx: outbound_tx.clone(),
+                frame_zstd: Arc::clone(&frame_zstd_gate),
             },
             identity: identity.clone(),
             signal: signal.clone(),
@@ -627,7 +650,10 @@ where
         revoked_at: None,
         pending_disconnects: Vec::new(),
         self_disconnect: false,
-        caps: NegotiatedCaps::default(),
+        caps: NegotiatedCaps {
+            frame_zstd_gate,
+            ..NegotiatedCaps::default()
+        },
     };
 
     // The actor runs inline — it IS the supervisor's payload. Producers
@@ -674,6 +700,10 @@ struct NegotiatedCaps {
     /// `preferred_inner_codec` off `client_caps` — kept for the deferred
     /// Track-B negotiation; this build only ever serves JSON.
     preferred_codec: String,
+    /// The encode-time §2.2 `frame_zstd` gate shared with this session's
+    /// [`ClientSink`] clones — mirrors `live(framezstd::CAPABILITY)` so
+    /// sink-side producers apply compression without reaching the actor.
+    frame_zstd_gate: Arc<AtomicBool>,
 }
 
 impl Default for NegotiatedCaps {
@@ -682,6 +712,7 @@ impl Default for NegotiatedCaps {
             server: CAPABILITIES.iter().map(|cap| (*cap).to_owned()).collect(),
             client: None,
             preferred_codec: String::new(),
+            frame_zstd_gate: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -702,6 +733,7 @@ impl NegotiatedCaps {
     /// app ignores; this one simply records and moves on.
     fn announce(&mut self, inbound: &Inbound) {
         self.client = Some(inbound.capabilities.iter().cloned().collect());
+        self.sync_gate();
         if inbound.r#type == "client_caps" && !inbound.preferred_inner_codec.is_empty() {
             self.preferred_codec = inbound.preferred_inner_codec.clone();
             debug!(
@@ -727,8 +759,16 @@ impl NegotiatedCaps {
         if let Ok(fields) = serde_json::from_slice::<CapsFields>(&push.data) {
             if let Some(list) = fields.capabilities {
                 self.server = list.into_iter().collect();
+                self.sync_gate();
             }
         }
+    }
+
+    /// Publish the negotiated §2.2 verdict to the encode-side gate — both
+    /// mutators call it so the flag always tracks `live(framezstd::CAPABILITY)`.
+    fn sync_gate(&self) {
+        self.frame_zstd_gate
+            .store(self.live(framezstd::CAPABILITY), Ordering::Release);
     }
 }
 
@@ -758,7 +798,8 @@ struct Actor<'a, A: DeviceAuthStore + ?Sized, R: ActionRouter> {
     /// This connection's own credential is among `pending_disconnects`.
     self_disconnect: bool,
     /// Phase-5 §0 negotiated capabilities — announced client set ×
-    /// advertised server set; gates the `focus_*` family.
+    /// advertised server set; gates the capability-gated action families
+    /// and the §2.2 `frame_zstd` encode transform.
     caps: NegotiatedCaps,
 }
 
@@ -1255,9 +1296,10 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
             .map(|c| c.credential_id))
     }
 
-    /// `Hub.Send` → `push` → evict-on-reject.
+    /// `Hub.Send` → `push` → evict-on-reject — with the negotiated §2.2
+    /// `frame_zstd` transform applied at serialize time.
     fn enqueue(&mut self, message: Outbound) -> Step {
-        let push = OutboundPush::of(&message);
+        let push = OutboundPush::of_negotiated(&message, self.caps.live(framezstd::CAPABILITY));
         self.handle_push(push)
     }
 

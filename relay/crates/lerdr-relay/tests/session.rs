@@ -797,3 +797,253 @@ async fn client_caps_with_convo_sub_routes_subscription_actions() {
     drop(client);
     server.await.expect("server joins");
 }
+
+// ── Phase-5 Track-B `frame_zstd` (docs/13 §2.2) ───────────────────────────────
+
+/// A watch-shaped `pane_content` — the kind a watch task pushes through
+/// the sink — with a repetitive multi-KB body so zstd visibly wins.
+fn pane_frame() -> lerdr_core::protocol::Outbound {
+    lerdr_core::protocol::Outbound::PaneContent(Box::new(lerdr_core::protocol::PaneContent {
+        r#type: "pane_content".to_owned(),
+        pane_id: Some("wE:p1".to_owned()),
+        content: Some("The quick brown fox jumps over the lazy dog. $ cargo test\n".repeat(64)),
+        content_fingerprint: Some("0123456789abcdef".to_owned()),
+        ack_required: Some(true),
+        format: Some("text".to_owned()),
+        ..Default::default()
+    }))
+}
+
+/// Inflate a received `pane_content` frame back to its logical `content`
+/// through the public decode path (`Outbound::decode` +
+/// `PaneContent::decompress_payload`).
+fn inflated_content(reply: &serde_json::Value) -> String {
+    let bytes = serde_json::to_vec(reply).expect("frame re-serializes");
+    let decoded = lerdr_core::protocol::Outbound::decode(&bytes).expect("typed decode");
+    let lerdr_core::protocol::Outbound::PaneContent(mut message) = decoded else {
+        panic!("expected pane_content");
+    };
+    message.decompress_payload().expect("payload inflates");
+    message.content.expect("content restored")
+}
+
+/// Without the client announcing `frame_zstd`, a producer-pushed
+/// `pane_content` rides the wire exactly as before — plaintext `content`,
+/// no `encoding`/`payload`.
+#[tokio::test]
+async fn pane_content_stays_plaintext_without_frame_zstd() {
+    let store = Arc::new(MemoryAuthStore::new());
+    let (mut client, mut session, server, sink_rx) =
+        establish(store, test_config(), CancellationToken::new()).await;
+    let sink = sink_rx.await.expect("sink registered");
+
+    sink.try_send(&pane_frame()).expect("sink push");
+    let reply = client.read_until_type(&mut session, "pane_content").await;
+    assert_eq!(reply["type"], "pane_content");
+    assert!(
+        reply["content"].as_str().is_some_and(|s| s.len() > 1024),
+        "plaintext content rides the envelope"
+    );
+    assert!(reply.get("encoding").is_none());
+    assert!(reply.get("payload").is_none());
+    assert_eq!(reply["content_fingerprint"], "0123456789abcdef");
+
+    drop(client);
+    server.await.expect("server joins");
+}
+
+/// `frame_zstd` on both lists flips the encode path: the same pushed
+/// `pane_content` arrives with the envelope intact and `content` folded
+/// into `payload` — and the compressed form beats the raw content even
+/// after base64.
+#[tokio::test]
+async fn frame_zstd_negotiation_compresses_pane_content() {
+    let store = Arc::new(MemoryAuthStore::new());
+    let (mut client, mut session, server, sink_rx) =
+        establish(store, test_config(), CancellationToken::new()).await;
+    let sink = sink_rx.await.expect("sink registered");
+
+    client
+        .send_json(
+            &mut session,
+            br#"{"type":"client_caps","protocol":3,"capabilities":["frame_zstd"]}"#,
+        )
+        .await;
+    // The negotiation reply doubles as the barrier — reading it proves
+    // the actor recorded the client set (and published the gate) before
+    // the next sink push encodes.
+    let reply = client.read_until_type(&mut session, "caps_update").await;
+    assert!(reply["capabilities"]
+        .as_array()
+        .expect("capabilities array")
+        .iter()
+        .any(|cap| cap == "frame_zstd"));
+
+    sink.try_send(&pane_frame()).expect("sink push");
+    let reply = client.read_until_type(&mut session, "pane_content").await;
+    assert_eq!(reply["type"], "pane_content");
+    assert_eq!(reply["encoding"], "zstd");
+    assert!(
+        reply.get("content").is_none(),
+        "content folded into payload"
+    );
+    // Envelope stays plaintext — routing/coalescing metadata untouched.
+    assert_eq!(reply["pane_id"], "wE:p1");
+    assert_eq!(reply["content_fingerprint"], "0123456789abcdef");
+    assert_eq!(reply["ack_required"], true);
+    let payload = reply["payload"].as_str().expect("base64 payload");
+    let raw = "The quick brown fox jumps over the lazy dog. $ cargo test\n".repeat(64);
+    assert!(
+        payload.len() < raw.len(),
+        "payload {} should beat raw content {}",
+        payload.len(),
+        raw.len()
+    );
+    assert_eq!(inflated_content(&reply), raw);
+
+    // A second push stays compressed — the gate holds.
+    sink.try_send(&pane_frame()).expect("sink push");
+    let reply = client.read_until_type(&mut session, "pane_content").await;
+    assert_eq!(reply["encoding"], "zstd");
+
+    drop(client);
+    server.await.expect("server joins");
+}
+
+/// The client retracts `frame_zstd` mid-session via its own `caps_update`
+/// — the very next pushed frame encodes plaintext again.
+#[tokio::test]
+async fn client_caps_update_retraction_returns_plaintext() {
+    let store = Arc::new(MemoryAuthStore::new());
+    let (mut client, mut session, server, sink_rx) =
+        establish(store, test_config(), CancellationToken::new()).await;
+    let sink = sink_rx.await.expect("sink registered");
+
+    client
+        .send_json(
+            &mut session,
+            br#"{"type":"client_caps","protocol":3,"capabilities":["frame_zstd"]}"#,
+        )
+        .await;
+    client.read_until_type(&mut session, "caps_update").await;
+    sink.try_send(&pane_frame()).expect("sink push");
+    let reply = client.read_until_type(&mut session, "pane_content").await;
+    assert_eq!(reply["encoding"], "zstd");
+
+    // Client-side retraction — absorbed silently, so the following
+    // receipt is the barrier proving the actor processed it.
+    client
+        .send_json(&mut session, br#"{"type":"caps_update","capabilities":[]}"#)
+        .await;
+    client
+        .send_json(
+            &mut session,
+            br#"{"type":"get_activity","protocol":3,"request_id":"req-barrier","action_id":"act-b"}"#,
+        )
+        .await;
+    let barrier = client.read_until_type(&mut session, "action_receipt").await;
+    assert_eq!(barrier["request_id"], "req-barrier");
+
+    sink.try_send(&pane_frame()).expect("sink push");
+    let reply = client.read_until_type(&mut session, "pane_content").await;
+    assert!(reply.get("encoding").is_none());
+    assert!(reply.get("payload").is_none());
+    assert!(reply["content"].as_str().is_some_and(|s| s.len() > 1024));
+
+    drop(client);
+    server.await.expect("server joins");
+}
+
+/// A server-side `caps_update` that drops `frame_zstd` retracts the live
+/// capability — the gate the sink encodes against follows the advertised
+/// list the client was actually sent.
+#[tokio::test]
+async fn server_caps_update_retraction_returns_plaintext() {
+    let store = Arc::new(MemoryAuthStore::new());
+    let (mut client, mut session, server, sink_rx) =
+        establish(store, test_config(), CancellationToken::new()).await;
+    let sink = sink_rx.await.expect("sink registered");
+
+    client
+        .send_json(
+            &mut session,
+            br#"{"type":"client_caps","protocol":3,"capabilities":["frame_zstd"]}"#,
+        )
+        .await;
+    client.read_until_type(&mut session, "caps_update").await;
+    sink.try_send(&pane_frame()).expect("sink push");
+    let reply = client.read_until_type(&mut session, "pane_content").await;
+    assert_eq!(reply["encoding"], "zstd");
+
+    // Server-side retraction — lerdr-coord pushes this when the advertised
+    // set changes. Reading the frame proves `observe` already ran.
+    sink.try_send(&lerdr_core::protocol::Outbound::CapsUpdate(
+        lerdr_core::protocol::CapsUpdateMessage {
+            r#type: "caps_update".to_owned(),
+            capabilities: Some(lerdr_core::json::MaybeNull::Value(vec![
+                "workspace_management".to_owned(),
+            ])),
+        },
+    ))
+    .expect("caps_update push");
+    let update = client.read_until_type(&mut session, "caps_update").await;
+    assert_eq!(
+        update["capabilities"],
+        serde_json::json!(["workspace_management"])
+    );
+
+    sink.try_send(&pane_frame()).expect("sink push");
+    let reply = client.read_until_type(&mut session, "pane_content").await;
+    assert!(reply.get("encoding").is_none());
+    assert!(reply["content"].as_str().is_some_and(|s| s.len() > 1024));
+
+    drop(client);
+    server.await.expect("server joins");
+}
+
+/// Only `pane_content` transforms: `pane_delta` (spec: deltas already
+/// compress well) and `pane_resync` (no payload member) ride plaintext
+/// even while the gate is live.
+#[tokio::test]
+async fn non_content_pane_frames_never_compress() {
+    let store = Arc::new(MemoryAuthStore::new());
+    let (mut client, mut session, server, sink_rx) =
+        establish(store, test_config(), CancellationToken::new()).await;
+    let sink = sink_rx.await.expect("sink registered");
+
+    client
+        .send_json(
+            &mut session,
+            br#"{"type":"client_caps","protocol":3,"capabilities":["frame_zstd"]}"#,
+        )
+        .await;
+    client.read_until_type(&mut session, "caps_update").await;
+
+    sink.try_send(&lerdr_core::protocol::Outbound::PaneDelta(Box::new(
+        lerdr_core::protocol::PaneDelta {
+            r#type: "pane_delta".to_owned(),
+            pane_id: Some("wE:p1".to_owned()),
+            content_fingerprint: Some("deadbeefcafebabe".to_owned()),
+            ..Default::default()
+        },
+    )))
+    .expect("delta push");
+    let reply = client.read_until_type(&mut session, "pane_delta").await;
+    assert!(reply.get("encoding").is_none());
+    assert!(reply.get("payload").is_none());
+
+    sink.try_send(&lerdr_core::protocol::Outbound::PaneResync(
+        lerdr_core::protocol::PaneResync {
+            r#type: "pane_resync".to_owned(),
+            pane_id: Some("wE:p1".to_owned()),
+            ..Default::default()
+        },
+    ))
+    .expect("resync push");
+    let reply = client.read_until_type(&mut session, "pane_resync").await;
+    assert!(reply.get("encoding").is_none());
+    assert!(reply.get("payload").is_none());
+
+    drop(client);
+    server.await.expect("server joins");
+}

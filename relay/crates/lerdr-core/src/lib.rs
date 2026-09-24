@@ -17,6 +17,7 @@
 
 pub mod audit;
 pub mod delta;
+pub mod framezstd;
 pub mod json;
 pub mod lease;
 pub mod protocol;
