@@ -153,6 +153,20 @@ impl HerdRouterFactory {
         let conversation_browser = Arc::new(crate::conversation::ConversationBrowser::with_reader(
             conversations,
         ));
+        let speech = actions::speech::Speech::default();
+        // Feed the snapshot adjudicator the relay-local speech facts —
+        // engine detection is a filesystem probe, so this lands shortly
+        // after startup; the changed caps ride `caps_update` to live
+        // sessions and later connects read them in `push_config` (the
+        // `speech_languages` field fills from the same facts). Voice
+        // install/remove re-pushes from `change_speech_voice`.
+        {
+            let probe = speech.clone();
+            let handle = handle.clone();
+            tokio::spawn(async move {
+                handle.speech_facts(probe.local_facts().await);
+            });
+        }
         Self {
             handle: handle.clone(),
             sink_of,
@@ -164,7 +178,7 @@ impl HerdRouterFactory {
                 uploads: actions::uploads::Uploads::new(runtime_dir.join("uploads")),
                 activities,
                 push,
-                speech: actions::speech::Speech::default(),
+                speech,
                 notices,
                 history,
                 annotations: crate::annotations::WatchAnnotations::spawn(

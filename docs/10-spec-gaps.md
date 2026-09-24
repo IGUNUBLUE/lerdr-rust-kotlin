@@ -1184,12 +1184,19 @@ negotiated, and exercised end-to-end on both sides.
   no host clipboard backend and the action always answers
   clipboard-unavailable; advertising it would light a button that only
   fails. Revisit only if a clipboard backend is ever added.
-- **Deferred (tracked, not dropped)**: `speech_synthesis` /
-  `speech_voice_management` — the engine (piper/espeak/say detect,
-  self-install runtime assets) is real, but `Catalog` status is dynamic
-  and `effective_capabilities` sees only `Topology`. Honest gate needs a
-  relay-local facts feed (engine installed? management supported?) into
-  the snapshot adjudicator — shallow plumbing: compute at bootstrap,
-  refresh on the existing `speech_voices` notice path, expose via a
-  watch cell the `SnapshotFn` closure reads. Until then the speech UI
-  stays dark rather than advertise a maybe.
+- **Deferred (tracked, not dropped)** — later wired in this round:
+  `speech_synthesis` / `speech_voice_management` / the
+  `push_config.speech_languages` field. `Topology::local_speech`
+  (`LocalSpeech{languages, management_supported}`) carries the
+  relay-local catalog facts through the same commit→publish→`caps_update`
+  path as Herdr evidence; `TopologyCommand::SpeechFacts` feeds it from
+  the factory's post-construction `Speech::local_facts()` probe and the
+  `change_speech_voice` handlers. `speech_synthesis` advertises when ≥1
+  speakable language exists, `speech_voice_management` when the catalog
+  reports management support, and `speech_languages` fills on the
+  handshake (mid-session catalog changes move the caps, not the field).
+  Confirmed against the app: `device_management` needs no client gate
+  (its five admin actions all exist session-side), `typed_push` is
+  unused but harmless, and `herdr-hybrid-v2` is intentionally absent —
+  the hybrid/WebRTC transport is out of scope for the Tailscale-only
+  deployment.

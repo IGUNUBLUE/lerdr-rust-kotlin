@@ -138,6 +138,13 @@ pub struct Topology {
     /// empty object until the first report lands. Survives `accept()`
     /// like `generations` — it is relay-side evidence, not snapshot data.
     pub herdr_status: HerdrStatus,
+    /// Relay-local speech catalog facts — the `speech_synthesis`/
+    /// `speech_voice_management` capability gates and the
+    /// `push_config.speech_languages` field all read this. Pushed by the
+    /// factory's post-construction catalog probe and the voice-change
+    /// handlers; the zero value advertises neither cap and emits no
+    /// `speech_languages` field (honest until the catalog lands).
+    pub local_speech: LocalSpeech,
     /// The `publishCurrentInventory` batch for this revision
     /// (server.go:3435-3514): the actor computes the changed-vs-published
     /// diff once per commit and stamps it here, so every per-client
@@ -146,6 +153,21 @@ pub struct Topology {
     /// published view actually moved. `compose_snapshot` never consults
     /// it: the handshake burst always sends the full inventory.
     pub(crate) broadcast_frames: Vec<lerdr_core::protocol::Outbound>,
+}
+
+/// The relay-local speech catalog facts — `Status.Languages` (offered
+/// languages an installed engine can actually speak) and
+/// `Status.ManagementSupported` (voice install/remove works). Unlike
+/// `herdr_status` this is not Herdr evidence: it describes this relay's
+/// own subsystem, probed post-startup and refreshed on voice changes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LocalSpeech {
+    /// Speakable offered languages — gates `speech_synthesis` and fills
+    /// `push_config.speech_languages`.
+    pub languages: Vec<String>,
+    /// Voice install/remove is supported — gates
+    /// `speech_voice_management`.
+    pub management_supported: bool,
 }
 
 fn now_millis() -> i64 {
@@ -176,6 +198,7 @@ impl Default for Topology {
                 features: MaybeNull::Value(BTreeMap::new()),
                 ..HerdrStatus::default()
             },
+            local_speech: LocalSpeech::default(),
             broadcast_frames: Vec::new(),
         }
     }
@@ -619,6 +642,19 @@ impl Topology {
             return false;
         }
         self.herdr_status = status;
+        self.revision += 1;
+        true
+    }
+
+    /// Install the relay-local speech catalog facts — pushed by the
+    /// factory's post-construction probe and by the voice-change
+    /// handlers. Dedupes like `set_herdr_status`: returns `true` only
+    /// when the committed view actually moved.
+    pub(crate) fn set_local_speech(&mut self, facts: LocalSpeech) -> bool {
+        if self.local_speech == facts {
+            return false;
+        }
+        self.local_speech = facts;
         self.revision += 1;
         true
     }

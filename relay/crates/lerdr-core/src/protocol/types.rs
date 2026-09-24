@@ -50,9 +50,10 @@ pub const SPEECH_VOICE_MANAGEMENT_CAPABILITY: &str = "speech_voice_management";
 /// admin actions unconditionally. `agent_response_copy` is deliberately
 /// absent — the relay has no host clipboard backend, so the action
 /// always answers clipboard-unavailable; advertising it would lie.
-/// `speech_synthesis`/`speech_voice_management` are likewise absent
-/// until the speech catalog status reaches the snapshot adjudicator
-/// (docs/10 — pending plumbing, not a wire gap).
+/// `"speech_synthesis"`/`"speech_voice_management"` gate on the
+/// relay-local speech catalog (`Topology::local_speech` — probed
+/// post-startup, refreshed on voice changes): absent until the catalog
+/// lands or when no engine exists.
 pub const CAPABILITIES: &[&str] = &[
     "attention_classification",
     "clear_activities",
@@ -75,6 +76,8 @@ pub const CAPABILITIES: &[&str] = &[
     "pane_realtime_delta",
     "tab_reorder",
     "workspace_reorder_block",
+    "speech_synthesis",
+    "speech_voice_management",
     "focus",
     "pane_search",
     "pane_links",

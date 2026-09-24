@@ -59,7 +59,7 @@ pub use annotations::{update_window_title, ClientCountLookup};
 pub use fingerprint::content_fingerprint;
 pub use router::{ClientSinkLookup, HerdRouter, HerdRouterFactory};
 pub use snapshot::{compose_snapshot, inventory_status};
-pub use topology::Topology;
+pub use topology::{LocalSpeech, Topology};
 pub use watches::{pane_unchanged, WatchCtl, WatchSet, ACK_TIMEOUT, DEFAULT_LINES};
 
 /// The relay's release version — re-exported from `lerdr-core`, which

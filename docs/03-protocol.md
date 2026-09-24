@@ -209,18 +209,26 @@ source defines them.
 | `convo_sub` | `subscribe_conversation` push stream | always — relay-local |
 | `frame_zstd` | `pane_content` zstd payloads | always — transport upgrade |
 | `upload_binary` | `0x03` binary upload chunks | always — transport upgrade |
+| `speech_synthesis` | `speak_text`, `cancel_speech` | relay-local: catalog landed **and** ≥1 speakable language |
+| `speech_voice_management` | `speech_voice_install`/`speech_voice_remove` | relay-local: catalog `management_supported` |
 
 Defined but **not advertised** by this relay:
 
 - `agent_response_copy` — there is no host clipboard backend; the
   action always answers clipboard-unavailable. Advertising would lie.
-- `speech_synthesis` / `speech_voice_management` — the speech engine
-  (piper/espeak/say) is real, but its catalog status is dynamic and not
-  yet plumbed into the snapshot adjudicator (docs/10 tracks it).
 
 Herdr-gated entries drop from `caps_update` mid-session when live
 evidence refutes every backing method; `unknown`/`supported` keep them
-advertised (a partial family still serves what is installed).
+advertised (a partial family still serves what is installed). The
+speech pair rides the same `caps_update` path but gates on relay-local
+facts (`Topology::local_speech`): the factory probes the engine catalog
+post-startup and voice install/remove pushes a refresh, so a speech
+engine appearing mid-session flips the caps live.
+
+`push_config.speech_languages` (the speakable-language list the client
+intersects against its voices) fills from the same facts — handshake
+only; a mid-session catalog change moves the caps but refreshes the
+field on next connect.
 
 ## 5. Realtime pane watch — the correctness boundary
 

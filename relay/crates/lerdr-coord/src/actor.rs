@@ -32,7 +32,7 @@ use tracing::{debug, info, warn, Instrument};
 
 use crate::classify::Classification;
 use crate::snapshot::{broadcast_diff, PublishedView};
-use crate::topology::{AcceptOutcome, CommitKind, Topology};
+use crate::topology::{AcceptOutcome, CommitKind, LocalSpeech, Topology};
 
 /// Pane-class invalidation signal for watch tasks. `gap` events (arriving
 /// between `subscription_started` and the bootstrap snapshot) are forwarded
@@ -118,6 +118,11 @@ enum TopologyCommand {
     /// Internal lane: a spawned post-sync capability collect finished;
     /// install its report (`set_herdr_status` dedupes).
     CapabilitiesReady(CapabilityReport),
+    /// Relay-local lane: the speech catalog probe (or a voice-change
+    /// handler) delivered fresh `LocalSpeech` facts — the snapshot
+    /// adjudicator gates `speech_*` capabilities and fills
+    /// `push_config.speech_languages` from them.
+    SpeechFacts(LocalSpeech),
 }
 
 impl TopologyHandle {
@@ -207,6 +212,16 @@ impl TopologyHandle {
     /// hook re-fires it).
     pub async fn startup_hook(&self) {
         let _ = self.commands.try_send(TopologyCommand::StartupHook);
+    }
+
+    /// Push relay-local speech catalog facts into the committed view —
+    /// the factory's post-construction probe and the voice-change
+    /// handlers call this; the snapshot adjudicator reads them for the
+    /// `speech_*` capability gates and `push_config.speech_languages`.
+    /// Cheap and deduped actor-side (`set_local_speech`), so callers
+    /// re-push freely after any catalog-affecting operation.
+    pub(crate) fn speech_facts(&self, facts: LocalSpeech) {
+        let _ = self.commands.try_send(TopologyCommand::SpeechFacts(facts));
     }
 }
 
@@ -465,6 +480,16 @@ impl TopologyActor {
                                         publish(&state, &mut published, &topology_tx);
                                     }
                                 }
+                                Some(TopologyCommand::SpeechFacts(facts)) => {
+                                    // Same dedupe + publish pattern as
+                                    // CapabilitiesReady — unchanged facts
+                                    // carry no republish; changed ones
+                                    // ride the broadcast batch (a flipped
+                                    // speech cap emits `caps_update`).
+                                    if state.set_local_speech(facts) {
+                                        publish(&state, &mut published, &topology_tx);
+                                    }
+                                }
                                 None => break,
                             }
                         }
@@ -717,6 +742,7 @@ fn clone_topology(state: &Topology) -> Topology {
         inventory_error_code: state.inventory_error_code.clone(),
         inventory_message: state.inventory_message.clone(),
         herdr_status: state.herdr_status.clone(),
+        local_speech: state.local_speech.clone(),
         // Stamped by `publish` — clones carry the batch decided for the
         // commit that produced them, never the previous one.
         broadcast_frames: Vec::new(),

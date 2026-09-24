@@ -351,6 +351,17 @@ impl Speech {
         self.catalog().await.languages
     }
 
+    /// The snapshot adjudicator's view of the catalog — pushed into
+    /// `Topology::local_speech` by the factory's post-construction probe
+    /// and re-pushed by the voice-change handlers.
+    pub(crate) async fn local_facts(&self) -> crate::topology::LocalSpeech {
+        let catalog = self.catalog().await;
+        crate::topology::LocalSpeech {
+            languages: catalog.languages,
+            management_supported: catalog.management_supported,
+        }
+    }
+
     /// `speakText`'s map insert: a same-key predecessor gets cancelled
     /// (unless it was already cancelled, in which case the new request
     /// inherits the flag — tombstone pre-cancellation included).
@@ -1935,6 +1946,13 @@ async fn change_speech_voice(
     // requester is excluded from the fanout because the frame below is
     // already its first response (preserving broadcast-before-result).
     ctx.notices.send(voices.clone(), ctx.client_id.clone());
+    // The voice change may have flipped the capability gates (an engine
+    // appearing/disappearing moves `languages`/`management_supported`) —
+    // push the fresh facts so `caps_update` carries the flip.
+    ctx.handle.speech_facts(crate::topology::LocalSpeech {
+        languages: status.languages.clone(),
+        management_supported: status.management_supported,
+    });
     let mut frames = vec![voices];
     frames.extend(Outcome::completed("", Some(payload)).frames(request_id, action, action_id));
     frames

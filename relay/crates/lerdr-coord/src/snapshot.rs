@@ -35,6 +35,11 @@ pub fn compose_snapshot(topology: &Topology) -> Vec<Outbound> {
             release_version: crate::release_version().to_owned(),
             capabilities: MaybeNull::Value(effective_capabilities(topology)),
             herdr_status: status.clone(),
+            // `speech_languages` rides the handshake only — voice
+            // changes mid-session flip the caps via `caps_update`, the
+            // field refreshes on the next connect (same as the oracle).
+            speech_languages: (!topology.local_speech.languages.is_empty())
+                .then(|| topology.local_speech.languages.clone()),
             ..PushConfig::default()
         })),
         Outbound::HerdrStatus(HerdrStatusMessage {
@@ -92,6 +97,17 @@ pub fn effective_capabilities(topology: &Topology) -> Vec<String> {
         (
             "workspace_reorder_block",
             family_refuted(&[f::WORKSPACE_MOVE_BLOCK]),
+        ),
+        // Relay-local gates — the speech catalog is probed post-startup
+        // and pushed as `LocalSpeech` facts; until it lands (or when no
+        // engine exists) the speech pair stays off the wire.
+        (
+            "speech_synthesis",
+            topology.local_speech.languages.is_empty(),
+        ),
+        (
+            "speech_voice_management",
+            !topology.local_speech.management_supported,
         ),
     ];
     CAPABILITIES
@@ -430,9 +446,19 @@ mod tests {
         );
     }
 
+    /// Land the speech catalog facts so the speech pair advertises —
+    /// keeps count assertions scoped to the family under test.
+    fn with_speech(topology: &mut Topology) {
+        topology.local_speech = crate::topology::LocalSpeech {
+            languages: vec!["en".to_owned()],
+            management_supported: true,
+        };
+    }
+
     #[test]
     fn effective_capabilities_keep_focus_until_every_method_is_refuted() {
         let mut topology = Topology::default();
+        with_speech(&mut topology);
         // No evidence yet — `focus` stays advertised (advertise while not
         // refuted, docs/13 §0).
         assert!(effective_capabilities(&topology).contains(&"focus".to_owned()));
@@ -516,12 +542,52 @@ mod tests {
         }
     }
 
+    /// The speech pair gates on relay-local catalog facts — absent until
+    /// the factory's post-startup probe lands, `speech_synthesis` rides
+    /// the speakable-language list, `speech_voice_management` the
+    /// management flag, and `push_config.speech_languages` fills from
+    /// the same facts.
+    #[test]
+    fn effective_capabilities_gate_speech_on_local_facts() {
+        let mut topology = Topology::default();
+        let caps = effective_capabilities(&topology);
+        assert!(!caps.contains(&"speech_synthesis".to_owned()));
+        assert!(!caps.contains(&"speech_voice_management".to_owned()));
+        // Languages without management support — synthesis only.
+        topology.local_speech = crate::topology::LocalSpeech {
+            languages: vec!["en".to_owned()],
+            management_supported: false,
+        };
+        let caps = effective_capabilities(&topology);
+        assert!(caps.contains(&"speech_synthesis".to_owned()));
+        assert!(!caps.contains(&"speech_voice_management".to_owned()));
+        topology.local_speech.management_supported = true;
+        assert!(effective_capabilities(&topology).contains(&"speech_voice_management".to_owned()));
+        // The handshake field rides the same facts — absent when empty,
+        // the speakable list when the probe landed.
+        let frames = compose_snapshot(&topology);
+        let Outbound::PushConfig(push_config) = &frames[0] else {
+            panic!("first snapshot frame is push_config");
+        };
+        assert_eq!(
+            push_config.speech_languages.as_deref(),
+            Some(["en".to_owned()].as_slice())
+        );
+        topology.local_speech = crate::topology::LocalSpeech::default();
+        let frames = compose_snapshot(&topology);
+        let Outbound::PushConfig(push_config) = &frames[0] else {
+            panic!("first snapshot frame is push_config");
+        };
+        assert!(push_config.speech_languages.is_none());
+    }
+
     /// docs/13 §1 — `pane_search`/`pane_links`/`layout` follow the same
     /// all-refuted rule: a partial family stays advertised, a fully
     /// refuted family drops, and other families are untouched.
     #[test]
     fn effective_capabilities_refute_each_family_independently() {
         let mut topology = Topology::default();
+        with_speech(&mut topology);
         // No evidence — all three advertised.
         let caps = effective_capabilities(&topology);
         for cap in ["pane_search", "pane_links", "layout"] {
