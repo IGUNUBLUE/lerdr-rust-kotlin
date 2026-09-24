@@ -30,6 +30,12 @@ data class TerminalSpanUi(
     val dim: Boolean = false,
     /** `terminal-link` leaf — the normalized http(s) target. */
     val href: String? = null,
+    /**
+     * Cell width of this span on the grid — a leaf carries its real
+     * width (wide graphemes = 2); a run maps one column per code point.
+     * Selection maps cell columns back to text through it.
+     */
+    val cells: Int = 0,
 )
 
 /**
@@ -88,19 +94,24 @@ private fun TerminalSpan.toUi(): TerminalSpanUi = TerminalSpanUi(
     underline = underline,
     dim = dim,
     href = href,
+    cells = spanCells(this),
 )
 
 /**
- * Cell width of one span. `preserveTerminalCells` tags run leaves with
- * `width_cells`; individual cell leaves carry no width — `terminal-cell-wide`
- * is 2 cells, every other single-grapheme leaf (box drawing included) is 1.
- * Zero-width marks never appear standalone — `BreakIterator` keeps them
- * attached to their base cluster.
+ * Cell width of one span. `preserveTerminalCells` tags run/horizontal
+ * leaves with `width_cells`; individual cell leaves carry no width —
+ * `terminal-cell-wide` is 2 cells, every other cell leaf is one grapheme
+ * at 1 column (a multi-codepoint cluster like `e`+́ still occupies one
+ * cell). Zero-width marks never appear standalone — `BreakIterator` keeps
+ * them attached to their base cluster. Plain-format spans carry no tags —
+ * one column per code point.
  */
 private fun spanCells(span: TerminalSpan): Int {
     span.widthCells?.let { return it }
     if (span.text.isEmpty()) return 0
-    if (span.className?.contains("terminal-cell-wide") == true) return 2
+    val className = span.className ?: return span.text.codePointCount(0, span.text.length)
+    if (className.contains("terminal-cell-wide")) return 2
+    if (className.contains("terminal-cell")) return 1
     return span.text.codePointCount(0, span.text.length)
 }
 

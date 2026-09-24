@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 Releases are **pre-release / beta** — no compatibility guarantees yet.
 
+## [Unreleased]
+
+### Added
+
+- **Terminal text selection** — long-press-drag marks a cell range and
+  the release menu offers "Copy selection" / "Share selection", so part
+  of an agent's output can be copied into another session's input. A
+  held press without travel still opens the row menu; a tap dismisses
+  the selection. Wide graphemes and multi-codepoint clusters select
+  atomically. Dragging raises the platform magnifier above the finger,
+  and committed selections grow draggable teardrop handles that re-range
+  the endpoints — a tap inside the selection reopens the copy menu.
+  While a selection is marked the grid freezes its rendered rows
+  (copy-mode semantics), so live pane output can no longer slide the
+  text out from under the highlight in a truncated scrollback.
+
+### Changed
+
+- **Terminal is edge-to-edge** — the pane card and the cell grid no
+  longer pay double horizontal margins, so the negotiated lease tracks
+  the real screen width (~8 more columns on a phone).
+
 ## [0.0.4] — 2026-09-24
 
 ### Added

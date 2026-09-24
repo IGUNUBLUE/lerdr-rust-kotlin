@@ -366,8 +366,7 @@ fun TerminalContent(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding)
-                .padding(horizontal = spacing.medium),
+                .padding(innerPadding),
         ) {
             if (findOpen) {
                 TerminalFindBar(
@@ -424,7 +423,10 @@ fun TerminalContent(
                                     rows = uiState.rows,
                                     cursor = uiState.cursor,
                                     revision = uiState.revision,
-                                    contentPadding = PaddingValues(spacing.medium),
+                                    contentPadding = PaddingValues(
+                                        horizontal = spacing.small,
+                                        vertical = spacing.extraSmall,
+                                    ),
                                     state = surfaceState,
                                     findRanges = findRanges,
                                     onViewportMeasured = onViewportMeasured,

@@ -1,11 +1,13 @@
 package com.lerdr.app.ui.terminal
 
 import android.content.Intent
+import android.os.Build
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
@@ -14,6 +16,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.foundation.magnifier
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.DropdownMenu
@@ -30,6 +33,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
@@ -44,6 +48,7 @@ import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
@@ -120,6 +125,7 @@ fun TerminalSurface(
     val textMeasurer = rememberTextMeasurer()
     val clipboard = LocalClipboard.current
     val context = LocalContext.current
+    val viewConfiguration = LocalViewConfiguration.current
     val menuScope = rememberCoroutineScope()
     val baseStyle: TextStyle = LerdrTextStyles.terminal.let { style ->
         // Pinch zoom rescales the font — the metrics re-probe below turns
@@ -142,10 +148,19 @@ fun TerminalSurface(
         )
     }
 
+    // Copy-mode freeze: while a selection is marked the grid renders the
+    // rows it was marked against — live commits would shift the index
+    // space under the highlight (truncated scrollback drops leading
+    // lines). On clear, [renderRows] snaps back to the latest frame.
+    val renderRows = state.frozenRows ?: rows
+    // Find marks map to live row indices — they would paint the wrong
+    // cells over a frozen buffer, so they are suppressed until unfreeze.
+    val renderFindRanges = if (state.frozenRows == null) findRanges else emptyMap()
+
     // Row layouts — built once per committed frame, not per draw.
-    val rowLayouts = remember(rows, textMeasurer, baseStyle, textColor) {
+    val rowLayouts = remember(renderRows, textMeasurer, baseStyle, textColor) {
         val style = baseStyle.copy(color = textColor)
-        rows.map { row ->
+        renderRows.map { row ->
             textMeasurer.measure(
                 text = row.toAnnotatedString(textColor),
                 style = style,
@@ -160,13 +175,13 @@ fun TerminalSurface(
     // oracle's dark mark fg over the SGR color. Keyed on the range map, so
     // query/active changes leave the committed row layouts untouched.
     val findLayouts = remember(
-        rows, findRanges, textMeasurer, baseStyle, textColor, findTextColor,
+        renderRows, renderFindRanges, textMeasurer, baseStyle, textColor, findTextColor,
     ) {
-        if (findRanges.isEmpty()) {
+        if (renderFindRanges.isEmpty()) {
             emptyMap()
         } else {
-            findRanges.mapNotNull { (index, ranges) ->
-                val row = rows.getOrNull(index) ?: return@mapNotNull null
+            renderFindRanges.mapNotNull { (index, ranges) ->
+                val row = renderRows.getOrNull(index) ?: return@mapNotNull null
                 index to textMeasurer.measure(
                     text = row.toAnnotatedString(textColor, ranges, findTextColor),
                     style = baseStyle.copy(color = textColor),
@@ -245,6 +260,56 @@ fun TerminalSurface(
 
         var contextMenu by remember { mutableStateOf<TerminalMenuTarget?>(null) }
 
+        // Gesture handlers must read the rows committed NOW — keying
+        // pointerInput on the list would restart (and cancel) the
+        // gesture mid-drag on every pane delta. Under a freeze this is
+        // the frozen epoch, so selection math stays aligned with the
+        // drawn grid.
+        val currentRows by rememberUpdatedState(renderRows)
+
+        val handleStemPx = with(density) { HANDLE_STEM_DP.dp.toPx() }
+        val handleRadiusPx = with(density) { HANDLE_RADIUS_DP.dp.toPx() }
+        val handleHitRadiusPx = with(density) { HANDLE_HIT_DP.dp.toPx() }
+        val magnifierLiftPx = metrics.rowHeight * MAGNIFIER_LIFT_ROWS
+
+        // Two coordinate spaces meet here: the drag detector sits inside
+        // the scrolled content (its positions are already content-relative),
+        // while openMenu is called with viewport offsets — it must add the
+        // scroll deltas back to hit the same cells.
+        fun contentCellAt(content: Offset): TerminalCell = TerminalCell(
+            row = floor(content.y / metrics.rowHeight)
+                .toInt()
+                .coerceIn(0, (currentRows.size - 1).coerceAtLeast(0)),
+            col = floor(content.x / metrics.cellWidth).toInt().coerceAtLeast(0),
+        )
+
+        fun cellAt(viewport: Offset): TerminalCell = contentCellAt(
+            Offset(
+                viewport.x + horizontalScroll.value,
+                viewport.y + verticalScroll.value,
+            ),
+        )
+
+        fun openMenu(point: Offset, selection: String?) {
+            val cell = cellAt(point)
+            val row = currentRows.getOrNull(cell.row)
+            val links = row?.spans
+                ?.mapNotNull { it.href }
+                ?.distinct()
+                .orEmpty()
+            contextMenu = TerminalMenuTarget(
+                offset = Offset(
+                    point.x.coerceIn(0f, viewportWidth),
+                    point.y.coerceIn(0f, viewportHeight),
+                ),
+                rowText = row?.plainText().orEmpty(),
+                links = links,
+                row = cell.row,
+                col = cell.col,
+                selection = selection,
+            )
+        }
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -264,43 +329,188 @@ fun TerminalSurface(
                         }
                     }
                 }
-                .pointerInput(metrics, rows) {
+                .pointerInput(Unit) {
                     detectTapGestures(
-                        onTap = { onTapSurface() },
-                        onLongPress = { point ->
-                            val contentX = point.x + horizontalScroll.value
-                            val contentY = point.y + verticalScroll.value
-                            val rowIndex = floor(contentY / metrics.rowHeight).toInt()
-                            val row = rows.getOrNull(rowIndex)
-                            val links = row?.spans
-                                ?.mapNotNull { it.href }
-                                ?.distinct()
-                                .orEmpty()
-                            contextMenu = TerminalMenuTarget(
-                                offset = Offset(
-                                    point.x.coerceIn(0f, viewportWidth),
-                                    point.y.coerceIn(0f, viewportHeight),
-                                ),
-                                rowText = row?.plainText().orEmpty(),
-                                links = links,
-                                row = rowIndex,
-                                col = floor(contentX / metrics.cellWidth).toInt(),
-                            )
+                        onTap = { point ->
+                            // A tap inside a committed selection reopens
+                            // its copy/share menu; a tap outside dismisses
+                            // — either way it must not summon the keyboard.
+                            val anchor = state.selectionAnchor
+                            val cursor = state.selectionCursor
+                            val insideText = if (anchor != null && cursor != null) {
+                                val cell = cellAt(point)
+                                selectionCellRanges(currentRows, anchor, cursor)[cell.row]
+                                    ?.takeIf { cell.col in it }
+                                    ?.let { selectedText(currentRows, anchor, cursor) }
+                                    ?.takeIf { it.isNotBlank() }
+                            } else {
+                                null
+                            }
+                            when {
+                                insideText != null -> openMenu(point, insideText)
+                                state.hasSelection -> state.clearSelection()
+                                else -> onTapSurface()
+                            }
                         },
                     )
                 }
                 .verticalScroll(verticalScroll)
-                .horizontalScroll(horizontalScroll),
+                .horizontalScroll(horizontalScroll)
+                // Long-press-drag selects a cell range; a held press that
+                // never moves past the touch slop opens the context menu
+                // (the gesture the oracle bound to long-press). The
+                // detector sits AFTER the scrollers — innermost on the
+                // Main pass — so once the long-press wins, its moves are
+                // consumed before the scroll drag can claim them.
+                .pointerInput(metrics) {
+                    detectDragGesturesAfterLongPress(
+                        onDragStart = { point ->
+                            // Inside the scroll container — content space.
+                            // Freeze the rendered epoch: pane commits keep
+                            // landing while the user drags, and the row
+                            // indices they mark must keep pointing at the
+                            // same text.
+                            state.frozenRows = currentRows
+                            state.selectionAnchor = contentCellAt(point)
+                            state.selectionCursor = state.selectionAnchor
+                            state.magnifierPoint = null
+                        },
+                        onDrag = { change, dragAmount ->
+                            state.selectionCursor = contentCellAt(change.position)
+                            state.magnifierPoint = change.position
+                            state.selectionDistance += dragAmount.getDistance()
+                            // Selecting means staring at fixed content —
+                            // release follow-live once the drag is real.
+                            if (state.selectionDistance > viewConfiguration.touchSlop) {
+                                state.stickToBottom = false
+                            }
+                        },
+                        onDragEnd = {
+                            state.magnifierPoint = null
+                            val anchor = state.selectionAnchor
+                            val cursor = state.selectionCursor
+                            val text = if (anchor != null && cursor != null &&
+                                state.selectionDistance > viewConfiguration.touchSlop
+                            ) {
+                                selectedText(currentRows, anchor, cursor)
+                                    .takeIf { it.isNotBlank() }
+                            } else {
+                                null
+                            }
+                            if (cursor != null && text != null) {
+                                // A real range — commit, keep the
+                                // highlight, and offer copy/share at the
+                                // release point (the floating toolbar).
+                                state.selectionCommitted = true
+                                openMenu(
+                                    cursor.toOffset(
+                                        metrics, verticalScroll, horizontalScroll,
+                                    ),
+                                    text,
+                                )
+                            } else {
+                                // Held press with no travel — the menu.
+                                state.clearSelection()
+                                anchor?.toOffset(
+                                    metrics, verticalScroll, horizontalScroll,
+                                )?.let { openMenu(it, selection = null) }
+                            }
+                        },
+                        onDragCancel = { state.clearSelection() },
+                    )
+                }
+                // Adjustment handles — a down on a committed teardrop is
+                // consumed here, innermost, so the scroll and long-press
+                // detectors never observe it. Dragging moves that end of
+                // the range; the magnifier rides along.
+                .pointerInput(metrics) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        if (!state.selectionCommitted) return@awaitEachGesture
+                        val handles = state.selectionHandles ?: return@awaitEachGesture
+                        val hitDy = Offset(0f, handleStemPx + handleRadiusPx)
+                        val nearStart = (down.position - handles.first - hitDy)
+                            .getDistance() <= handleHitRadiusPx
+                        val nearEnd = !nearStart &&
+                            (down.position - handles.second - hitDy)
+                                .getDistance() <= handleHitRadiusPx
+                        if (!nearStart && !nearEnd) return@awaitEachGesture
+                        down.consume()
+                        state.stickToBottom = false
+                        // Repoint so `selectionCursor` tracks the dragged end.
+                        val anchor = state.selectionAnchor ?: return@awaitEachGesture
+                        val cursor = state.selectionCursor ?: return@awaitEachGesture
+                        val (selStart, selEnd) = normalizeSelection(anchor, cursor)
+                        state.selectionAnchor = if (nearStart) selEnd else selStart
+                        state.selectionCursor = contentCellAt(down.position)
+                        state.magnifierPoint = down.position
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            if (event.changes.none { it.pressed }) break
+                            val change = event.changes.firstOrNull { it.id == down.id }
+                                ?: continue
+                            state.selectionCursor = contentCellAt(change.position)
+                            state.magnifierPoint = change.position
+                            change.consume()
+                        }
+                        state.magnifierPoint = null
+                    }
+                }
+                // The platform lens — content coords, lifted above the
+                // finger like the text-field magnifier. android.widget
+                // .Magnifier has no Robolectric shadow (it NPEs inside
+                // the widget) — the lens is real-device only.
+                .then(
+                    if (MAGNIFIER_SUPPORTED) {
+                        Modifier.magnifier(
+                            sourceCenter = {
+                                state.magnifierPoint ?: Offset.Unspecified
+                            },
+                            magnifierCenter = {
+                                state.magnifierPoint
+                                    ?.minus(Offset(0f, magnifierLiftPx))
+                                    ?: Offset.Unspecified
+                            },
+                        )
+                    } else {
+                        Modifier
+                    },
+                ),
         ) {
+            // Selection overlay — live while dragging, held once committed.
+            // Reads the state's cells so a drag repaints without recomposing
+            // the committed row layouts.
+            val anchor = state.selectionAnchor
+            val selectionCursor = state.selectionCursor
+            val selectionRanges = if (anchor != null && selectionCursor != null) {
+                selectionCellRanges(renderRows, anchor, selectionCursor)
+            } else {
+                emptyMap()
+            }
+            // Teardrops only once committed — during the drag the finger
+            // covers its own end. Stashed on state for the hit-test and
+            // for tests reading handle positions.
+            val handlePoints = if (state.selectionCommitted) {
+                selectionHandlePoints(
+                    selectionRanges, metrics.cellWidth, metrics.rowHeight,
+                )
+            } else {
+                null
+            }
+            SideEffect { state.selectionHandles = handlePoints }
             TerminalGrid(
-                rows = rows,
+                rows = renderRows,
                 rowLayouts = rowLayouts,
                 findLayouts = findLayouts,
-                findRanges = findRanges,
+                findRanges = renderFindRanges,
                 findMatchColor = findMatchColor,
                 findActiveColor = findActiveColor,
+                selectionRanges = selectionRanges,
+                handlePoints = handlePoints,
                 metrics = metrics,
-                cursor = cursor,
+                // The write cursor tracks live output — meaningless on a
+                // frozen copy-mode buffer.
+                cursor = if (state.frozenRows == null) cursor else null,
                 cursorOn = cursorOn,
                 cursorColor = cursorColor,
                 viewportWidthPx = viewportWidth,
@@ -310,7 +520,7 @@ fun TerminalSurface(
 
         val menu = contextMenu
         if (menu != null) {
-            val transcript = rows.joinToString("\n") { it.plainText() }.trimEnd()
+            val transcript = renderRows.joinToString("\n") { it.plainText() }.trimEnd()
             DropdownMenu(
                 expanded = true,
                 onDismissRequest = { contextMenu = null },
@@ -318,6 +528,51 @@ fun TerminalSurface(
                     DpOffset(menu.offset.x.toDp(), menu.offset.y.toDp())
                 },
             ) {
+                // A drag-committed selection offers its own copy/share —
+                // the row items below still work on the tapped line.
+                val selection = menu.selection
+                if (selection != null) {
+                    // Handles may have re-ranged the selection since the
+                    // menu opened — copy/share read the live cells, with
+                    // the menu's snapshot as fallback.
+                    fun liveSelection(): String {
+                        val a = state.selectionAnchor
+                        val c = state.selectionCursor
+                        return if (a != null && c != null) {
+                            selectedText(currentRows, a, c).ifBlank { selection }
+                        } else {
+                            selection
+                        }
+                    }
+                    DropdownMenuItem(
+                        text = { Text("Copy selection") },
+                        onClick = {
+                            menuScope.launch {
+                                clipboard.setClipEntry(
+                                    ClipEntry(
+                                        android.content.ClipData.newPlainText(
+                                            "terminal selection",
+                                            liveSelection(),
+                                        ),
+                                    ),
+                                )
+                            }
+                            state.clearSelection()
+                            contextMenu = null
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Share selection") },
+                        onClick = {
+                            val send = Intent(Intent.ACTION_SEND)
+                                .setType("text/plain")
+                                .putExtra(Intent.EXTRA_TEXT, liveSelection())
+                            context.startActivity(Intent.createChooser(send, null))
+                            state.clearSelection()
+                            contextMenu = null
+                        },
+                    )
+                }
                 if (menu.rowText.isNotBlank()) {
                     DropdownMenuItem(
                         text = { Text("Copy line") },
@@ -404,6 +659,10 @@ private fun TerminalGrid(
     findRanges: Map<Int, List<TerminalFindRange>>,
     findMatchColor: Color,
     findActiveColor: Color,
+    /** Row index → selected cell columns `[first..last]` — long-press-drag. */
+    selectionRanges: Map<Int, IntRange>,
+    /** Committed selection's teardrop edges (start, end) in content px. */
+    handlePoints: Pair<Offset, Offset>?,
     metrics: CellMetrics,
     cursor: TerminalCursorUi?,
     cursorOn: Boolean,
@@ -433,6 +692,22 @@ private fun TerminalGrid(
             .coerceIn(firstRow, rowLayouts.size)
         for (index in firstRow until lastRow) {
             val layout = findLayouts[index] ?: rowLayouts[index]
+            val selection = selectionRanges[index]
+            if (selection != null) {
+                // Cell-grid fill — unlike find marks, which ride glyph
+                // extents, the selection covers whole columns.
+                drawRect(
+                    color = SELECTION_FILL_COLOR,
+                    topLeft = Offset(
+                        x = selection.first * metrics.cellWidth,
+                        y = index * metrics.rowHeight,
+                    ),
+                    size = Size(
+                        width = (selection.last - selection.first + 1) * metrics.cellWidth,
+                        height = metrics.rowHeight,
+                    ),
+                )
+            }
             val ranges = findRanges[index]
             if (ranges != null) {
                 // The mark fill — getPathForRange resolves the exact
@@ -474,6 +749,24 @@ private fun TerminalGrid(
                 alpha = CURSOR_ALPHA,
             )
         }
+        if (handlePoints != null) {
+            val stem = with(density) { HANDLE_STEM_DP.dp.toPx() }
+            val radius = with(density) { HANDLE_RADIUS_DP.dp.toPx() }
+            val drop = Offset(0f, stem + radius)
+            for (edge in listOf(handlePoints.first, handlePoints.second)) {
+                drawLine(
+                    color = SELECTION_HANDLE_COLOR,
+                    start = edge,
+                    end = edge + Offset(0f, stem),
+                    strokeWidth = HANDLE_STEM_WIDTH_PX,
+                )
+                drawCircle(
+                    color = SELECTION_HANDLE_COLOR,
+                    radius = radius,
+                    center = edge + drop,
+                )
+            }
+        }
     }
 }
 
@@ -491,6 +784,48 @@ class TerminalSurfaceState internal constructor(
     internal var rowHeightPx = 0f
     internal var stickThresholdPx = 0f
     internal var programmaticScrolls = 0
+
+    // Cell-range selection — long-press-drag marks anchor→cursor cells;
+    // the accumulated drag distance decides select-vs-menu on release.
+    var selectionAnchor by mutableStateOf<TerminalCell?>(null)
+        internal set
+    var selectionCursor by mutableStateOf<TerminalCell?>(null)
+        internal set
+    var selectionCommitted by mutableStateOf(false)
+        internal set
+    internal var selectionDistance = 0f
+
+    /** Pointer position under the lens while a selection drag runs — null hides it. */
+    internal var magnifierPoint by mutableStateOf<Offset?>(null)
+
+    /**
+     * Committed selection's teardrop edges in content px — refreshed by
+     * the surface's composition, read by the handle-drag hit test.
+     */
+    internal var selectionHandles: Pair<Offset, Offset>? = null
+
+    /**
+     * The rows a live selection was marked against — pane commits keep
+     * arriving while a selection is open, and in a truncated scrollback
+     * every appended line shifts the index space under the highlight.
+     * Freezing the rendered rows is the copy-mode contract: the view
+     * holds still until the selection clears, then snaps to live.
+     */
+    internal var frozenRows by mutableStateOf<List<TerminalRowUi>?>(null)
+
+    /** A selection is committed or in flight — a tap should dismiss it. */
+    val hasSelection: Boolean
+        get() = selectionAnchor != null && selectionCursor != null
+
+    internal fun clearSelection() {
+        selectionAnchor = null
+        selectionCursor = null
+        selectionCommitted = false
+        selectionDistance = 0f
+        magnifierPoint = null
+        selectionHandles = null
+        frozenRows = null
+    }
 
     /** Follow-live pin — new commits keep the write edge in view while set. */
     var stickToBottom by mutableStateOf(true)
@@ -566,6 +901,24 @@ private val FIND_TEXT_COLOR = Color(0xFF17120A)
 private val FIND_ACTIVE_RING_COLOR = Color(0x66FFFFFF)
 private const val ACTIVE_RING_WIDTH = 2f
 
+/** Selection fill — translucent blue, distinct from the find marks. */
+private val SELECTION_FILL_COLOR = Color(0x553B82F6)
+
+/** Teardrop handles — solid blue stem + knob under each selection edge. */
+private val SELECTION_HANDLE_COLOR = Color(0xFF3B82F6)
+private const val HANDLE_STEM_DP = 5
+private const val HANDLE_RADIUS_DP = 6
+private const val HANDLE_STEM_WIDTH_PX = 4f
+
+/** Down-target around a handle knob — generous for a small visual. */
+private const val HANDLE_HIT_DP = 24
+
+/** Lens center floats this many rows above the dragging finger. */
+private const val MAGNIFIER_LIFT_ROWS = 4f
+
+/** Robolectric reports no usable android.widget.Magnifier — lens off in tests. */
+private val MAGNIFIER_SUPPORTED = Build.FINGERPRINT != "robolectric"
+
 /** Follow-live re-pin distance — the oracle's 48 px bottom edge. */
 private const val STICK_THRESHOLD_DP = 48
 
@@ -594,6 +947,18 @@ private class TerminalMenuTarget(
     val links: List<String>,
     val row: Int,
     val col: Int,
+    /** Text of a committed cell-range selection — null on plain long-press. */
+    val selection: String? = null,
+)
+
+/** Cell → on-screen offset — the context menu anchors where the drag ended. */
+private fun TerminalCell.toOffset(
+    metrics: CellMetrics,
+    verticalScroll: ScrollState,
+    horizontalScroll: ScrollState,
+): Offset = Offset(
+    col * metrics.cellWidth - horizontalScroll.value,
+    row * metrics.rowHeight - verticalScroll.value,
 )
 
 /** A row's printable text — trailing whitespace is draw padding, not content. */
