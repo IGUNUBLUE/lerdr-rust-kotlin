@@ -199,7 +199,7 @@ jobs:
           aligned="dist/android/app-release-aligned.apk"
           "$build_tools/zipalign" -p -f 4 "$unsigned" "$aligned"
           if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
-            cp "$aligned" "dist/android/lerdr_${version}_universal-unsigned.apk"
+            cp "$aligned" "dist/release/lerdr_${version}_universal-unsigned.apk"
             echo "ANDROID_KEYSTORE_BASE64 is not configured; uploaded the aligned unsigned APK only." >&2
             exit 0
           fi
@@ -218,9 +218,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: android-apk
-          path: |
-            dist/release/lerdr_*.apk
-            dist/android/lerdr_*-unsigned.apk
+          path: dist/release/lerdr_*.apk
           retention-days: 1
           if-no-files-found: error
 
