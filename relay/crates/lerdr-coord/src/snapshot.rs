@@ -80,6 +80,10 @@ pub fn effective_capabilities(topology: &Topology) -> Vec<String> {
         ("pane_search", family_refuted(f::PANE_SEARCH_METHODS)),
         ("pane_links", family_refuted(f::PANE_LINK_METHODS)),
         ("layout", family_refuted(f::LAYOUT_METHODS)),
+        // The oracle's conditional tail — `pane_realtime_delta` rides on
+        // `pane.read` support (server.go:1409); the client gates its
+        // `watch_pane` arming on this advertisement.
+        ("pane_realtime_delta", family_refuted(&[f::PANE_READ])),
     ];
     CAPABILITIES
         .iter()
@@ -449,6 +453,20 @@ mod tests {
         // Everything else stays — the drop is surgical.
         assert!(capabilities.contains(&"workspace_management".to_owned()));
         assert_eq!(capabilities.len(), CAPABILITIES.len() - 1);
+    }
+
+    /// The oracle's conditional tail — `pane_realtime_delta` advertises
+    /// while `pane.read` is not refuted and drops when the probe reports
+    /// `unsupported` (server.go:1409 gates on `FeaturePaneRead`).
+    #[test]
+    fn effective_capabilities_gate_realtime_delta_on_pane_read() {
+        let mut topology = Topology::default();
+        // No evidence — advertised (the client may arm `watch_pane`).
+        assert!(effective_capabilities(&topology).contains(&"pane_realtime_delta".to_owned()));
+        set_features(&mut topology, &[("pane.read", "supported")]);
+        assert!(effective_capabilities(&topology).contains(&"pane_realtime_delta".to_owned()));
+        set_features(&mut topology, &[("pane.read", "unsupported")]);
+        assert!(!effective_capabilities(&topology).contains(&"pane_realtime_delta".to_owned()));
     }
 
     /// docs/13 §1 — `pane_search`/`pane_links`/`layout` follow the same

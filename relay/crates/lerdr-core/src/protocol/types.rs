@@ -27,16 +27,20 @@ pub const SPEECH_VOICE_MANAGEMENT_CAPABILITY: &str = "speech_voice_management";
 
 /// `protocol.Capabilities` — the capability list advertised in `push_config`.
 ///
-/// `"focus"` was the first Phase-5 §0 addition; `"pane_search"`,
-/// `"pane_links"`, and `"layout"` cover the §1 pane-content families,
-/// `"convo_sub"` is the §2.3 per-pane conversation subscription, and
-/// `"frame_zstd"`/`"upload_binary"` are the §2.2/§2.4 transport upgrades.
-/// The relay advertises each while Herdr evidence does not refute the
-/// whole backing method family (`lerdr-coord`'s `caps_update` carries the
-/// mid-session flip); `convo_sub` is relay-local like
-/// `conversation_history`, and `frame_zstd`/`upload_binary` have no Herdr
-/// method behind them at all — all three are advertised unconditionally
-/// (the negotiated gate is the client-side intersection).
+/// `"pane_realtime_delta"` is the oracle's conditional tail entry —
+/// advertised while Herdr's `pane.read` probe is not refuted
+/// (`effective_capabilities` applies the gate; the client arms
+/// `watch_pane` on it). `"focus"` was the first Phase-5 §0 addition;
+/// `"pane_search"`, `"pane_links"`, and `"layout"` cover the §1
+/// pane-content families, `"convo_sub"` is the §2.3 per-pane
+/// conversation subscription, and `"frame_zstd"`/`"upload_binary"` are
+/// the §2.2/§2.4 transport upgrades. The relay advertises each while
+/// Herdr evidence does not refute the whole backing method family
+/// (`lerdr-coord`'s `caps_update` carries the mid-session flip);
+/// `convo_sub` is relay-local like `conversation_history`, and
+/// `frame_zstd`/`upload_binary` have no Herdr method behind them at
+/// all — all three are advertised unconditionally (the negotiated gate
+/// is the client-side intersection).
 pub const CAPABILITIES: &[&str] = &[
     "attention_classification",
     "clear_activities",
@@ -53,6 +57,7 @@ pub const CAPABILITIES: &[&str] = &[
     "semantic_input",
     "secret_input",
     "invitation_qr",
+    "pane_realtime_delta",
     "focus",
     "pane_search",
     "pane_links",
