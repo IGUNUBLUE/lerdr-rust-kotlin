@@ -44,6 +44,14 @@ pub struct Config {
     pub instance_id: String,
     /// `cfg.LogLevel` — validated `debug`/`info`/`warn`/`error`.
     pub log_level: Option<String>,
+    /// `LERDR_RELAY_AGENT_VIEW` — whether the relay installs its canonical
+    /// `agent.view` ordering into Herdr's single global view slot. Off by
+    /// default: the projection is a courtesy for sidebar/mobile ordering
+    /// (lerdr's own data path never reads it), the slot is
+    /// last-writer-wins across every plugin, and a co-installed view
+    /// writer (e.g. herdr-radar) keeps it — opting in is the operator's
+    /// call, like radar's own view toggle.
+    pub agent_view: bool,
     /// The `ws(s)://` origin printed inside pairing links (`relay=` param).
     /// Defaults to `ws://<host>:<port>`; override where the reachable address
     /// differs from the bind address (Tailscale serve, port forwards).
@@ -79,6 +87,11 @@ pub enum ConfigError {
     /// the oracle's message names the new spelling even when `HERDR_` was read.
     #[error("invalid LERDR_RELAY_LOG_LEVEL {0:?}: want debug, info, warn, or error")]
     LogLevel(String),
+    /// `invalid LERDR_RELAY_AGENT_VIEW %q: want on or off` — validated like
+    /// `log_level`: silently falling back could re-enable a stomping
+    /// assert the operator meant to disable.
+    #[error("invalid LERDR_RELAY_AGENT_VIEW {0:?}: want on or off")]
+    AgentView(String),
 }
 
 /// Resolve the effective configuration.
@@ -118,6 +131,14 @@ pub fn resolve(
             _ => return Err(ConfigError::LogLevel(raw)),
         },
         None => None,
+    };
+    let agent_view = match relay_env(vars, "RELAY_AGENT_VIEW") {
+        Some(raw) => match raw.trim().to_lowercase().as_str() {
+            "1" | "t" | "true" | "on" => true,
+            "0" | "f" | "false" | "off" => false,
+            _ => return Err(ConfigError::AgentView(raw)),
+        },
+        None => false,
     };
 
     let config_home = env(vars, "XDG_CONFIG_HOME")
@@ -179,6 +200,7 @@ pub fn resolve(
         rearm_bootstrap,
         instance_id,
         log_level,
+        agent_view,
         advertised_url,
     })
 }
@@ -299,6 +321,31 @@ mod tests {
             Path::new("/home/op/.config/herdr/herdr.sock")
         );
         assert_eq!(cfg.socket_url(), "ws://127.0.0.1:8375");
+        assert!(!cfg.agent_view);
+    }
+
+    #[test]
+    fn agent_view_is_opt_in() {
+        let cfg = resolve_env(&[("HOME", "/h"), ("LERDR_RELAY_AGENT_VIEW", "on")]).unwrap();
+        assert!(cfg.agent_view);
+        let cfg = resolve_env(&[("HOME", "/h"), ("HERDR_RELAY_AGENT_VIEW", "1")]).unwrap();
+        assert!(cfg.agent_view);
+        let cfg = resolve_env(&[("HOME", "/h"), ("LERDR_RELAY_AGENT_VIEW", "off")]).unwrap();
+        assert!(!cfg.agent_view);
+        // LERDR spelling wins; a bad value is a startup error, never a
+        // silent default.
+        let cfg = resolve_env(&[
+            ("HOME", "/h"),
+            ("LERDR_RELAY_AGENT_VIEW", "true"),
+            ("HERDR_RELAY_AGENT_VIEW", "off"),
+        ])
+        .unwrap();
+        assert!(cfg.agent_view);
+        let err = resolve_env(&[("HOME", "/h"), ("LERDR_RELAY_AGENT_VIEW", "maybe")]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid LERDR_RELAY_AGENT_VIEW \"maybe\": want on or off"
+        );
     }
 
     #[test]

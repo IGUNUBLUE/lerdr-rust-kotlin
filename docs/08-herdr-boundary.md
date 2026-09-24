@@ -229,8 +229,12 @@ reverse-engineered notes above:
   fallback, not primary.
 - **`agent.view.set`**: transient declarative filter+sort projection
   (`plugin:<id>` source) that drives the sidebar **and Herdr's own mobile
-  Agents list**. Install lerdr's canonical attention-sorted view so phone
-  and terminal share ordering. Reapply from the `[[startup]]` hook.
+  Agents list**. The slot is a single global last-writer-wins resource,
+  so asserting lerdr's canonical attention-sorted view is opt-in:
+  `LERDR_RELAY_AGENT_VIEW=on` (default off, like herdr-radar's own view
+  toggle) installs it on the first sync and reapplies it from the
+  `[[startup]]` hook — never on event-stream resubscribes, which cannot
+  lose it.
 - **`client_shell.surface.set` + `command.invoke`**: Herdr's designed
   remote-UI surface (endpoint generation negotiation, `surface_interest`,
   `health_check` capabilities). Phase-2 investigation: the Kotlin app may

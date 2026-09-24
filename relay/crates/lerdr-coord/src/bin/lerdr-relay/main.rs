@@ -796,7 +796,7 @@ async fn run(args: ServeArgs) -> Result<(), BoxError> {
         Arc::new(move |id: &str| cell.get().and_then(|r: &Relay| r.client_sink(id)))
     };
     let shutdown = CancellationToken::new();
-    let topology = TopologyActor::spawn(herdr, shutdown.clone());
+    let topology = TopologyActor::spawn_with_agent_view(herdr, shutdown.clone(), cfg.agent_view);
     // `audit.Open(cfg.CacheDir)` — one process-wide append-only log shared
     // by the session layer (attempt + admin rows) and the router's spawned
     // handlers (result rows). A failed open degrades to the no-op logger

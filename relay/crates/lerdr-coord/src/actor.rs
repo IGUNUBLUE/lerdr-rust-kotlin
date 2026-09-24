@@ -201,9 +201,10 @@ impl TopologyHandle {
     /// Herdr `[[startup]]` hook datagram (`lerdr-relay startup-hook`,
     /// delivered over UDP): the session was restored or the server
     /// live-handoff'ed — re-read topology and re-assert the transient
-    /// `agent.view.set` projection. Cheap to call redundantly; a full
-    /// inbox already implies a queued refresh, so a drop just skips one
-    /// re-assert (the next hook re-fires it).
+    /// `agent.view.set` projection when the actor was spawned with it
+    /// enabled. Cheap to call redundantly; a full inbox already implies
+    /// a queued refresh, so a drop just skips one re-assert (the next
+    /// hook re-fires it).
     pub async fn startup_hook(&self) {
         let _ = self.commands.try_send(TopologyCommand::StartupHook);
     }
@@ -216,8 +217,21 @@ impl TopologyActor {
     /// Spawn the supervisor loop. `cancel` terminates the task (wire it to
     /// the relay's shutdown token). Returns the handle immediately — the
     /// first `Synced` may lag; `Topology::default()` is `stale=true` until
-    /// then.
+    /// then. The `agent.view` assert is off here — the shipped default —
+    /// matching `Config::agent_view`; [`spawn_with_agent_view`] opts in.
     pub fn spawn(client: Client, cancel: CancellationToken) -> TopologyHandle {
+        Self::spawn_with_agent_view(client, cancel, false)
+    }
+
+    /// Same as [`spawn`](Self::spawn) with an explicit `agent.view` choice.
+    /// The projection is a courtesy for Herdr's sidebar/mobile ordering —
+    /// lerdr's own data path never reads it — and the slot is a single
+    /// global last-writer-wins resource, so asserting is opt-in.
+    pub fn spawn_with_agent_view(
+        client: Client,
+        cancel: CancellationToken,
+        agent_view: bool,
+    ) -> TopologyHandle {
         let (topology_tx, topology_rx) = watch::channel(Arc::new(Topology::default()));
         let (inv_tx, _) = broadcast::channel(256);
         let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
@@ -248,7 +262,9 @@ impl TopologyActor {
                 // documented loss points are restore/handoff (the
                 // `[[startup]]` hook) and explicit clear/replace — so
                 // only the process's first `Synced` runs the view
-                // assert; later resyncs collect capabilities only.
+                // assert; later resyncs collect capabilities only. The
+                // assert itself is opt-in (`agent_view`): an operator
+                // running another view writer keeps the slot.
                 let mut first_sync = true;
                 // `Poller.Run`'s leading poll (poller.go:92) — one
                 // inventory reconcile up front so the committed view does
@@ -312,7 +328,7 @@ impl TopologyActor {
                                     // mid-session.
                                     if first_sync {
                                         first_sync = false;
-                                        spawn_post_sync(&client, &cmd_tx);
+                                        spawn_post_sync(&client, &cmd_tx, agent_view);
                                     } else {
                                         spawn_collect(&client, &cmd_tx);
                                     }
@@ -432,7 +448,7 @@ impl TopologyActor {
                                         tokio::time::Instant::now()
                                             + poll_interval(events_active, poll_failures),
                                     );
-                                    spawn_post_sync(&client, &cmd_tx);
+                                    spawn_post_sync(&client, &cmd_tx, agent_view);
                                 }
                                 Some(TopologyCommand::BumpGeneration(pane_id)) => {
                                     state.bump_generation(&pane_id);
@@ -603,13 +619,13 @@ async fn collect_enrichments(
 /// select loop: refresh the capability ledger and hand the report back
 /// through the command lane (deduped there), then re-assert the canonical
 /// `agent.view.set` projection — transient per-server state that session
-/// restore and `server.live_handoff` drop. Called from the first `Synced`
-/// and the `[[startup]]` hook only: an event-stream resubscribe does not
-/// kill the server-side view, so asserting there would stomp a view
-/// another writer legitimately installed mid-session. Overlapping
-/// collects serialize inside the client (`refreshMu`); view asserts are
-/// idempotent.
-fn spawn_post_sync(client: &Client, commands: &mpsc::Sender<TopologyCommand>) {
+/// restore and `server.live_handoff` drop — when `agent_view` is on.
+/// Called from the first `Synced` and the `[[startup]]` hook only: an
+/// event-stream resubscribe does not kill the server-side view, so
+/// asserting there would stomp a view another writer legitimately
+/// installed mid-session. Overlapping collects serialize inside the
+/// client (`refreshMu`); view asserts are idempotent.
+fn spawn_post_sync(client: &Client, commands: &mpsc::Sender<TopologyCommand>, agent_view: bool) {
     let client = client.clone();
     let commands = commands.clone();
     tokio::spawn(async move {
@@ -619,6 +635,9 @@ fn spawn_post_sync(client: &Client, commands: &mpsc::Sender<TopologyCommand>) {
         let _ = commands
             .send(TopologyCommand::CapabilitiesReady(report))
             .await;
+        if !agent_view {
+            return;
+        }
         match assert_agent_view(&client).await {
             ViewAssertOutcome::Installed => debug!("canonical agent view asserted"),
             ViewAssertOutcome::KnownUnsupported => {
@@ -1109,7 +1128,7 @@ mod tests {
         let server = Arc::new(MiniHerdr::new());
         let client = mini_client(&server);
         let cancel = CancellationToken::new();
-        let handle = TopologyActor::spawn(client, cancel.clone());
+        let handle = TopologyActor::spawn_with_agent_view(client, cancel.clone(), true);
         let mut rx = handle.topology.clone();
 
         // Synced → snapshot accepted; capability evidence lands a moment
@@ -1154,7 +1173,7 @@ mod tests {
         let server = Arc::new(MiniHerdr::new());
         let client = mini_client(&server);
         let cancel = CancellationToken::new();
-        let handle = TopologyActor::spawn(client, cancel.clone());
+        let handle = TopologyActor::spawn_with_agent_view(client, cancel.clone(), true);
 
         until(5, "initial view assert", || server.view_sets() >= 1).await;
         let snapshots_before = server.snapshots();
@@ -1180,7 +1199,7 @@ mod tests {
         let server = Arc::new(MiniHerdr::resyncing(2));
         let client = mini_client(&server);
         let cancel = CancellationToken::new();
-        let handle = TopologyActor::spawn(client, cancel.clone());
+        let handle = TopologyActor::spawn_with_agent_view(client, cancel.clone(), true);
 
         until(5, "initial view assert", || server.view_sets() == 1).await;
         // The first two subscription conns close post-handshake; the
@@ -1200,6 +1219,35 @@ mod tests {
 
         handle.startup_hook().await;
         until(5, "startup-hook view re-assert", || server.view_sets() == 2).await;
+        cancel.cancel();
+    }
+
+    /// `agent_view` off — the shipped default — never writes the slot:
+    /// no bootstrap assert and no `[[startup]]` re-assert, while
+    /// capability collect still runs on both (the snapshot counts move).
+    #[tokio::test]
+    async fn agent_view_disabled_never_asserts() {
+        let server = Arc::new(MiniHerdr::new());
+        let client = mini_client(&server);
+        let cancel = CancellationToken::new();
+        let handle = TopologyActor::spawn(client, cancel.clone());
+
+        until(5, "bootstrap snapshot committed", || {
+            server.snapshots() >= 1
+        })
+        .await;
+        // Let post-sync work settle — a stray assert lands right after it.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(server.view_sets(), 0, "default spawn must not assert");
+
+        let snapshots_before = server.snapshots();
+        handle.startup_hook().await;
+        until(5, "startup-hook snapshot re-read", || {
+            server.snapshots() > snapshots_before
+        })
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(server.view_sets(), 0, "startup hook must not assert");
         cancel.cancel();
     }
 
