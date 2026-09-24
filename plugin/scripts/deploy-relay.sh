@@ -27,7 +27,10 @@ PORT="${LERDR_RELAY_PORT:-${HERDR_RELAY_PORT:-8375}}"
 
 if [ "${SKIP_BUILD:-0}" != 1 ]; then
     echo "Building release binary..."
-    (cd "$RELAY_DIR" && cargo build --release -p lerdr-coord --bin lerdr-relay)
+    # Stamp the checkout revision like package-release.sh does — otherwise
+    # healthz reports "dev" and there's no telling which commit is running.
+    (cd "$RELAY_DIR" && LERDR_REVISION="$(git rev-parse --short HEAD)" \
+        cargo build --release -p lerdr-coord --bin lerdr-relay)
 fi
 [ -x "$RELAY_BIN" ] || { echo "missing $RELAY_BIN (build failed?)" >&2; exit 1; }
 
