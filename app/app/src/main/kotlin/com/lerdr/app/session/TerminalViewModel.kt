@@ -16,6 +16,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import lerdr.core.model.ClientCapabilities
+import lerdr.core.model.PaneLinkActivatedResult
+import lerdr.core.model.PaneSearchResult
 import lerdr.core.store.Agent
 import lerdr.core.store.RelayStatus
 import lerdr.core.terminal.PaneSurface
@@ -62,6 +65,18 @@ data class TerminalUiState(
      * prompt banner carries the oracle's too-old-relay hint instead.
      */
     val secretInputSupported: Boolean = false,
+    /**
+     * Relay `pane_links` capability — the server hit-test path
+     * (`pane_link_resolve`/`pane_link_activate`) that reaches OSC8 links
+     * whose URL never appears in the served text.
+     */
+    val paneLinksSupported: Boolean = false,
+    /**
+     * Relay `pane_search` capability — server-side find over the pane's
+     * full scrollback; the find bar annotates its count beyond the
+     * rendered buffer.
+     */
+    val paneSearchSupported: Boolean = false,
     /** Transient action failure — rendered as a snackbar/inline error. */
     val lastError: String? = null,
 )
@@ -146,6 +161,10 @@ class TerminalViewModel(
             canControl = sessions.canControl(relayId),
             secretInputSupported = connection?.capabilities
                 ?.contains(SessionRepository.SECRET_CAPABILITY) == true,
+            paneLinksSupported = connection?.capabilities
+                ?.contains(ClientCapabilities.PANE_LINKS) == true,
+            paneSearchSupported = connection?.capabilities
+                ?.contains(ClientCapabilities.PANE_SEARCH) == true,
             lastError = error,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TerminalUiState(paneId))
@@ -287,6 +306,49 @@ class TerminalViewModel(
     fun dismissError() {
         lastError.value = null
     }
+
+    /**
+     * `pane_link_resolve` — hit-test a viewport cell for a link the served
+     * text cannot expose (OSC8). True when herdr reports cell regions; any
+     * failure (capability gone, stale frame) means "no server link here".
+     */
+    suspend fun paneLinkRegions(row: Int, col: Int): Boolean =
+        try {
+            sessions.paneLinkResolve(paneId, row, col).regions.isNotEmpty()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            false
+        }
+
+    /**
+     * `pane_link_activate` — open the link under a viewport cell. The pane
+     * host's browser takes it when `handled`; the returned `url` still
+     * lets the caller open it locally. Failures surface via [lastError].
+     */
+    suspend fun activatePaneLink(row: Int, col: Int): PaneLinkActivatedResult? =
+        try {
+            sessions.paneLinkActivate(paneId, row, col)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            lastError.value = failure.message
+            null
+        }
+
+    /**
+     * `pane_search` — full-scrollback find. The find bar only wants the
+     * server's hit count beyond the rendered buffer, so failures fold to
+     * null and the local matcher stays the source of truth.
+     */
+    suspend fun paneSearch(query: String): PaneSearchResult? =
+        try {
+            sessions.paneSearch(paneId, query)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
+        }
 
     /** Pull-to-refresh — the gate coalesces non-forced reads at 35 s. */
     fun refresh() {

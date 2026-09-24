@@ -11,14 +11,18 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.lerdr.app.session.TerminalContent
 import com.lerdr.app.session.TerminalUiState
 import com.lerdr.core.designsystem.theme.LerdrTheme
+import lerdr.core.model.PaneSearchResult
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -128,6 +132,97 @@ class TerminalFindScreenshotTest {
         }
         composeRule.waitForIdle()
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    /**
+     * `pane_search` negotiated — the bar annotates hits living in the
+     * pane's full scrollback beyond the rendered buffer.
+     */
+    @Test
+    fun findOpen_scrollbackCount() {
+        composeRule.setContent {
+            LerdrTheme {
+                TerminalContent(
+                    uiState = terminalState().copy(paneSearchSupported = true),
+                    onOpenFeed = {},
+                    onOpenFiles = {},
+                    onBack = {},
+                    onSendKeys = {},
+                    onSendText = {},
+                    onViewportMeasured = { _, _ -> },
+                    onRefresh = {},
+                    onPaneSearch = { PaneSearchResult(total = 47) },
+                )
+            }
+        }
+        composeRule.onNodeWithContentDescription("Session actions").performClick()
+        composeRule.onNodeWithText("Find in terminal").performClick()
+        composeRule.onNodeWithTag("terminalFindField").performTextInput("ok")
+        // Step past the scrollback-count debounce, then settle.
+        composeRule.mainClock.advanceTimeBy(500)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("1 of 4 · 47 in scrollback").assertExists()
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    /**
+     * `pane_links` negotiated — the long-press menu gains the server
+     * hit-test item once resolve reports link regions at the cell.
+     */
+    @Test
+    fun linkMenu_serverLinkItem() {
+        composeRule.setContent {
+            LerdrTheme {
+                Surface(
+                    color = LerdrTheme.extendedColors.terminalSurface,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(300.dp),
+                ) {
+                    TerminalSurface(
+                        rows = uiRows,
+                        cursor = null,
+                        revision = 1,
+                        contentPadding = PaddingValues(8.dp),
+                        paneLinksSupported = true,
+                        onResolveLink = { _, _ -> true },
+                    )
+                }
+            }
+        }
+        composeRule.onRoot().performTouchInput { longClick(Offset(120f, 100f)) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("Open link on desktop").assertExists()
+    }
+
+    /**
+     * No `pane_links`, or resolve reporting no regions — the menu keeps
+     * only its client-side items.
+     */
+    @Test
+    fun linkMenu_noServerLink() {
+        composeRule.setContent {
+            LerdrTheme {
+                Surface(
+                    color = LerdrTheme.extendedColors.terminalSurface,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(300.dp),
+                ) {
+                    TerminalSurface(
+                        rows = uiRows,
+                        cursor = null,
+                        revision = 1,
+                        contentPadding = PaddingValues(8.dp),
+                        paneLinksSupported = true,
+                        onResolveLink = { _, _ -> false },
+                    )
+                }
+            }
+        }
+        composeRule.onRoot().performTouchInput { longClick(Offset(120f, 100f)) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("Open link on desktop").assertDoesNotExist()
     }
 
     @Test

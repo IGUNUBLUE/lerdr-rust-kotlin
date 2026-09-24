@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 Releases are **pre-release / beta** — no compatibility guarantees yet.
 
+## Unreleased
+
+### Added
+
+- **`pane_links` in the terminal** — the long-press menu now hit-tests
+  the cell server-side (`pane_link_resolve`) and gains an "Open link on
+  desktop" item when herdr reports link regions. This reaches OSC8
+  escape-sequence links whose URL never appears in the served text;
+  `pane_link_activate` opens on the pane host's browser and reports the
+  target, with a local-open fallback when upstream resolves but cannot
+  handle. Negotiated via the `pane_links` capability — older relays keep
+  the client-side linkified items only.
+- **`pane_search` scrollback count** — the terminal find bar annotates
+  the local "n of m" with the server's full-scrollback hit count
+  ("· N in scrollback") when `pane_search` is negotiated and hits live
+  beyond the rendered buffer. Debounced per query; local matching stays
+  the source of truth for highlights and navigation.
+
 ## [0.0.3] — 2026-09-24
 
 ### Added

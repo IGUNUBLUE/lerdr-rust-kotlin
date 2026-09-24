@@ -433,6 +433,149 @@ class TerminalViewModelTest {
         assertThat(viewModel.uiState.value.canControl).isFalse()
     }
 
+    @Test
+    fun `pane_search rides the negotiated capability and returns the scrollback count`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        h.handle().emit(
+            json("""{"type":"push_config","capabilities":["pane_search"]}"""),
+        )
+        h.handle().responder = { message ->
+            lerdr.core.model.CommandResultMessage(
+                action = message.type,
+                ok = true,
+                phase = lerdr.core.model.CommandResultMessage.PHASE_COMPLETED,
+                requestId = message.requestId,
+                data = json(
+                    """{"matches":[{"start":{"row":12,"col":4},"end":{"row":12,"col":9}}],"content_revision":42,"total":7,"current":3,"current_global":19}""",
+                ),
+            )
+        }
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        backgroundScope.launch { viewModel.uiState.collect { } }
+        h.pump()
+
+        assertThat(viewModel.uiState.value.paneSearchSupported).isTrue()
+
+        val result = viewModel.paneSearch("panic")
+
+        val request = h.handle().requests.single { it.type == "pane_search" }
+        assertThat(request.query).isEqualTo("panic")
+        assertThat(request.direction).isEqualTo("forward")
+        assertThat(result?.total).isEqualTo(7)
+        assertThat(result?.matches).hasSize(1)
+    }
+
+    @Test
+    fun `pane_search without the capability stays local`() = runTest {
+        val h = Harness(this, tmp.root)
+        // connectReady's push_config does not advertise `pane_search`.
+        h.connectReady()
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        backgroundScope.launch { viewModel.uiState.collect { } }
+        h.pump()
+
+        assertThat(viewModel.uiState.value.paneSearchSupported).isFalse()
+
+        // The bar treats null as "no server count" — nothing is sent.
+        assertThat(viewModel.paneSearch("panic")).isNull()
+        assertThat(h.handle().requests.map { it.type }).doesNotContain("pane_search")
+        assertThat(viewModel.uiState.value.lastError).isNull()
+    }
+
+    @Test
+    fun `pane_link_resolve reports a hit only when regions exist`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        h.handle().emit(
+            json("""{"type":"push_config","capabilities":["pane_links"]}"""),
+        )
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        backgroundScope.launch { viewModel.uiState.collect { } }
+        h.pump()
+
+        assertThat(viewModel.uiState.value.paneLinksSupported).isTrue()
+
+        h.handle().responder = { message ->
+            lerdr.core.model.CommandResultMessage(
+                action = message.type,
+                ok = true,
+                phase = lerdr.core.model.CommandResultMessage.PHASE_COMPLETED,
+                requestId = message.requestId,
+                data = json(
+                    """{"regions":[{"row":2,"start_col":3,"end_col":44}]}""",
+                ),
+            )
+        }
+        assertThat(viewModel.paneLinkRegions(row = 2, col = 30)).isTrue()
+
+        val request = h.handle().requests.single { it.type == "pane_link_resolve" }
+        assertThat(request.row).isEqualTo(2)
+        assertThat(request.col).isEqualTo(30)
+
+        h.handle().responder = { message ->
+            lerdr.core.model.CommandResultMessage(
+                action = message.type,
+                ok = true,
+                phase = lerdr.core.model.CommandResultMessage.PHASE_COMPLETED,
+                requestId = message.requestId,
+                data = json("""{"regions":[]}"""),
+            )
+        }
+        assertThat(viewModel.paneLinkRegions(row = 0, col = 0)).isFalse()
+    }
+
+    @Test
+    fun `pane_link_activate returns the handled flag and url`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        h.handle().emit(
+            json("""{"type":"push_config","capabilities":["pane_links"]}"""),
+        )
+        h.handle().responder = { message ->
+            lerdr.core.model.CommandResultMessage(
+                action = message.type,
+                ok = true,
+                phase = lerdr.core.model.CommandResultMessage.PHASE_COMPLETED,
+                requestId = message.requestId,
+                data = json("""{"handled":true,"url":"https://example.com/spec"}"""),
+            )
+        }
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        backgroundScope.launch { viewModel.uiState.collect { } }
+        h.pump()
+
+        val result = viewModel.activatePaneLink(row = 2, col = 30)
+
+        val request = h.handle().requests.single { it.type == "pane_link_activate" }
+        assertThat(request.row).isEqualTo(2)
+        assertThat(request.col).isEqualTo(30)
+        assertThat(result?.handled).isTrue()
+        assertThat(result?.url).isEqualTo("https://example.com/spec")
+        assertThat(viewModel.uiState.value.lastError).isNull()
+    }
+
+    @Test
+    fun `pane_link actions without the capability fail closed`() = runTest {
+        val h = Harness(this, tmp.root)
+        // connectReady's push_config does not advertise `pane_links`.
+        h.connectReady()
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        backgroundScope.launch { viewModel.uiState.collect { } }
+        h.pump()
+
+        assertThat(viewModel.uiState.value.paneLinksSupported).isFalse()
+
+        // Resolve folds to "no link" — the menu item never renders.
+        assertThat(viewModel.paneLinkRegions(row = 0, col = 0)).isFalse()
+        // Activate surfaces the gate — the snackbar explains the miss.
+        assertThat(viewModel.activatePaneLink(row = 0, col = 0)).isNull()
+        assertThat(viewModel.uiState.value.lastError)
+            .isEqualTo("This relay does not support pane_links")
+        assertThat(h.handle().requests.map { it.type })
+            .containsNoneOf("pane_link_resolve", "pane_link_activate")
+    }
+
     private fun credential(role: DeviceRole) = RelayDeviceCredential(
         id = "cred-1",
         version = 1,

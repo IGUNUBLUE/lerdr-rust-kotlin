@@ -1,5 +1,7 @@
 package com.lerdr.app.session
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -93,7 +95,10 @@ import com.lerdr.app.ui.terminal.wrapFindIndex
 import com.lerdr.core.designsystem.theme.LerdrTextStyles
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import dagger.hilt.android.EntryPointAccessors
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import lerdr.core.model.PaneLinkActivatedResult
+import lerdr.core.model.PaneSearchResult
 
 /**
  * Terminal mode — the machine itself (docs/04 §Terminal mode). The pane
@@ -127,6 +132,9 @@ fun TerminalScreen(
         onDismissError = viewModel::dismissError,
         onViewportMeasured = viewModel::onViewportMeasured,
         onRefresh = viewModel::refresh,
+        onPaneLinkResolve = viewModel::paneLinkRegions,
+        onPaneLinkActivate = viewModel::activatePaneLink,
+        onPaneSearch = viewModel::paneSearch,
     )
 }
 
@@ -145,11 +153,18 @@ fun TerminalContent(
     onDismissError: () -> Unit = {},
     onViewportMeasured: (columns: Int, rows: Int) -> Unit,
     onRefresh: () -> Unit,
+    /** `pane_link_resolve` — viewport cell → has server-side link regions. */
+    onPaneLinkResolve: suspend (row: Int, col: Int) -> Boolean = { _, _ -> false },
+    /** `pane_link_activate` — null when the action failed upstream. */
+    onPaneLinkActivate: suspend (row: Int, col: Int) -> PaneLinkActivatedResult? = { _, _ -> null },
+    /** `pane_search` — full-scrollback result; null when unsupported/failed. */
+    onPaneSearch: suspend (query: String) -> PaneSearchResult? = { null },
 ) {
     val spacing = LerdrTheme.spacing
     val colors = LerdrTheme.extendedColors
     val scope = rememberCoroutineScope()
     val surfaceState = rememberTerminalSurfaceState()
+    val context = LocalContext.current
 
     // Find-in-buffer — view-local like the oracle's TerminalView state:
     // the composition is per-pane, so the bar closes with the pane switch.
@@ -223,6 +238,20 @@ fun TerminalContent(
     LaunchedEffect(findQuery) {
         activeFindIndex = -1
         if (findResult.matches.isNotEmpty()) revealFindMatch(0)
+    }
+
+    // `pane_search` — the server's full-scrollback count annotates the
+    // local "n of m" when hits live beyond the rendered buffer. Debounced
+    // so each keystroke doesn't pay a fenced upstream call.
+    var scrollbackFindTotal by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(findQuery, findOpen, uiState.paneSearchSupported) {
+        val query = findQuery.trim()
+        scrollbackFindTotal = if (findOpen && query.isNotEmpty() && uiState.paneSearchSupported) {
+            delay(SCROLLBACK_FIND_DEBOUNCE_MS)
+            onPaneSearch(query)?.total
+        } else {
+            null
+        }
     }
 
     // Commits move the corpus under a stable query — keep the index inside
@@ -347,6 +376,7 @@ fun TerminalContent(
                     matchCount = findResult.matches.size,
                     activeIndex = activeFindIndex,
                     truncated = findResult.truncated,
+                    scrollbackTotal = scrollbackFindTotal,
                     onStep = { delta -> revealFindMatch(activeFindIndex + delta) },
                     onClose = ::closeFind,
                     modifier = Modifier
@@ -404,6 +434,34 @@ fun TerminalContent(
                                         if (uiState.canControl) {
                                             inputFocus.requestFocus()
                                             keyboardController?.show()
+                                        }
+                                    },
+                                    paneLinksSupported = uiState.paneLinksSupported,
+                                    onResolveLink = onPaneLinkResolve,
+                                    onActivateLink = activate@{ row, col ->
+                                        val result = onPaneLinkActivate(row, col)
+                                            ?: return@activate
+                                        when {
+                                            // The pane host's browser took
+                                            // it — surface the target, which
+                                            // OSC8 hides from the text.
+                                            result.handled -> snackbarHostState.showSnackbar(
+                                                result.url
+                                                    ?.let { "Opened on desktop · $it" }
+                                                    ?: "Opened on desktop",
+                                            )
+                                            // Resolved but not handled
+                                            // upstream — open it here.
+                                            result.url != null -> runCatching {
+                                                context.startActivity(
+                                                    Intent(Intent.ACTION_VIEW, Uri.parse(result.url)),
+                                                )
+                                            }.onFailure {
+                                                snackbarHostState.showSnackbar(
+                                                    "No app can open that link",
+                                                )
+                                            }
+                                            else -> Unit
                                         }
                                     },
                                 )
@@ -471,6 +529,8 @@ internal fun TerminalFindBar(
     onStep: (Int) -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
+    /** `pane_search` full-scrollback hit count — beyond the rendered rows. */
+    scrollbackTotal: Long? = null,
 ) {
     val spacing = LerdrTheme.spacing
     val focusRequester = remember { FocusRequester() }
@@ -526,12 +586,17 @@ internal fun TerminalFindBar(
                     },
             )
             if (query.trim().isNotEmpty()) {
+                // `pane_search` counts the full scrollback — mention hits
+                // living beyond the rendered buffer instead of implying
+                // "n of m" is the whole pane.
+                val deeper = scrollbackTotal?.takeIf { it > matchCount }
+                val count = if (matchCount == 0) {
+                    "No matches"
+                } else {
+                    "${activeIndex + 1} of $matchCount${if (truncated) "+" else ""}"
+                }
                 Text(
-                    text = if (matchCount == 0) {
-                        "No matches"
-                    } else {
-                        "${activeIndex + 1} of $matchCount${if (truncated) "+" else ""}"
-                    },
+                    text = if (deeper != null) "$count · $deeper in scrollback" else count,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -922,3 +987,6 @@ private fun TerminalContentPreview() {
         )
     }
 }
+
+/** Keystroke settle before the fenced `pane_search` call — search-as-you-type. */
+private const val SCROLLBACK_FIND_DEBOUNCE_MS = 350L

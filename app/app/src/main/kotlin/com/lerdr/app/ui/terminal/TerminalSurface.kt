@@ -105,6 +105,15 @@ fun TerminalSurface(
     findTextColor: Color = FIND_TEXT_COLOR,
     onViewportMeasured: (columns: Int, rows: Int) -> Unit = { _, _ -> },
     onTapSurface: () -> Unit = {},
+    /**
+     * Relay `pane_links` negotiated — enables the server hit-test item in
+     * the long-press menu for links the served text cannot expose (OSC8).
+     */
+    paneLinksSupported: Boolean = false,
+    /** `pane_link_resolve` — true when a viewport cell has link regions. */
+    onResolveLink: suspend (row: Int, col: Int) -> Boolean = { _, _ -> false },
+    /** `pane_link_activate` — the caller owns the result policy. */
+    onActivateLink: suspend (row: Int, col: Int) -> Unit = { _, _ -> },
 ) {
     val density = LocalDensity.current
     val layoutDirection = LocalLayoutDirection.current
@@ -274,6 +283,8 @@ fun TerminalSurface(
                                 ),
                                 rowText = row?.plainText().orEmpty(),
                                 links = links,
+                                row = rowIndex,
+                                col = floor(contentX / metrics.cellWidth).toInt(),
                             )
                         },
                     )
@@ -358,6 +369,26 @@ fun TerminalSurface(
                             contextMenu = null
                         },
                     )
+                }
+                // OSC8 escape-sequence links carry no text the client can
+                // regex — only the server's hit-test sees them. The item
+                // appears once resolve reports cell regions; activate
+                // opens on the pane host's browser.
+                if (paneLinksSupported) {
+                    val serverLink by produceState(false, menu.row, menu.col) {
+                        value = onResolveLink(menu.row, menu.col)
+                    }
+                    if (serverLink) {
+                        DropdownMenuItem(
+                            text = { Text("Open link on desktop") },
+                            onClick = {
+                                menuScope.launch {
+                                    onActivateLink(menu.row, menu.col)
+                                }
+                                contextMenu = null
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -551,11 +582,18 @@ private const val MENU_LABEL_MAX = 44
 
 private class CellMetrics(val cellWidth: Float, val rowHeight: Float)
 
-/** Long-press menu anchor — viewport offset, the row under it, its links. */
+/**
+ * Long-press menu anchor — viewport offset, the row under it, its
+ * client-visible links, and the cell the server hit-tests (`row`/`col`
+ * are the last served frame's viewport coordinates — the `rowIndex`/`col`
+ * the gestures compute).
+ */
 private class TerminalMenuTarget(
     val offset: Offset,
     val rowText: String,
     val links: List<String>,
+    val row: Int,
+    val col: Int,
 )
 
 /** A row's printable text — trailing whitespace is draw padding, not content. */

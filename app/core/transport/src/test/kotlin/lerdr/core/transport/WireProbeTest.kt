@@ -176,6 +176,36 @@ class WireProbeTest {
             onFailure = { "pane_search → ${it::class.simpleName}: ${it.message?.take(160)}" },
         )
         System.err.println("TRACK-A $line")
+
+        // `pane_link_resolve` — read-only hit-test of the top-left
+        // viewport cell; `pane_link_activate` is deliberately absent here
+        // (it opens the pane host's browser — a real side effect).
+        val linkResult = runCatching {
+            withTimeout(15_000) {
+                session.request(
+                    Inbound(
+                        type = "pane_link_resolve",
+                        paneId = paneId,
+                        target = TargetRef(
+                            serverSessionId = field("server_session_id"),
+                            paneId = paneId,
+                            terminalId = field("terminal_id"),
+                            generation = field("generation").toLongOrNull() ?: 0,
+                            agentSessionId = field("agent_session_id"),
+                        ),
+                        row = 0,
+                        col = 0,
+                    ),
+                )
+            }
+        }
+        val linkLine = linkResult.fold(
+            onSuccess = { "pane_link_resolve → ok=${it.ok} data=${it.data}" },
+            onFailure = {
+                "pane_link_resolve → ${it::class.simpleName}: ${it.message?.take(160)}"
+            },
+        )
+        System.err.println("TRACK-A $linkLine")
     }
 
     /**
