@@ -1652,7 +1652,7 @@ class SessionRepository @Inject constructor(
                 }
             }
             queue.removeFirst()
-        } ?: return
+        }
         pending.timeoutJob?.cancel()
         pending.deferred.complete(message)
     }

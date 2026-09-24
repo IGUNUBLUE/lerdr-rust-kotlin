@@ -1028,7 +1028,7 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "lerdr-coord"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "aes-gcm",
  "base64 0.23.1",
@@ -1061,7 +1061,7 @@ dependencies = [
 
 [[package]]
 name = "lerdr-core"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "base64 0.23.1",
  "hex",
@@ -1075,7 +1075,7 @@ dependencies = [
 
 [[package]]
 name = "lerdr-e2ee"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1095,7 +1095,7 @@ dependencies = [
 
 [[package]]
 name = "lerdr-fixture"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "base64 0.23.1",
  "hex",
@@ -1106,7 +1106,7 @@ dependencies = [
 
 [[package]]
 name = "lerdr-herdr"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "futures-core",
  "futures-util",
@@ -1121,7 +1121,7 @@ dependencies = [
 
 [[package]]
 name = "lerdr-relay"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -1146,7 +1146,7 @@ dependencies = [
 
 [[package]]
 name = "lerdr-shadow"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "futures-util",
  "lerdr-core",
