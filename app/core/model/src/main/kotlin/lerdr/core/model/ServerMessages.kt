@@ -167,6 +167,8 @@ data class WorkspaceInfo(
     @EncodeDefault(EncodeDefault.Mode.ALWAYS) @SerialName("agent_status") val agentStatus: String = "",
     val cwd: String = "",
     val worktree: WorkspaceWorktree? = null,
+    /** `workspace.report_metadata` tokens — sidebar row badges. */
+    val tokens: Map<String, String> = emptyMap(),
 )
 
 /** `herdr.WorkspaceWorktree`. */

@@ -223,6 +223,28 @@ class WireProbeTest {
             }.toString(),
         )
 
+        // report_metadata projection — the watch above should surface as
+        // `tokens.lerdr_watching="1"` on this pane's next agents row.
+        val annotated = withTimeoutOrNull(10_000) {
+            while (true) {
+                val hit = agentsFrames.lastOrNull()
+                    ?.get("agents")?.jsonArray
+                    ?.firstOrNull { it.jsonObject["pane_id"]?.jsonPrimitive?.content == paneId }
+                    ?.jsonObject
+                if (hit?.get("tokens")?.jsonObject?.containsKey("lerdr_watching") == true) {
+                    return@withTimeoutOrNull hit
+                }
+                delay(250)
+            }
+            @Suppress("UNREACHABLE_CODE")
+            null
+        }
+        System.err.println(
+            "TRACK-C annotation → " +
+                (annotated?.let { "tokens=${it["tokens"]} labels=${it["state_labels"]}" }
+                    ?: "no lerdr_watching within 10s"),
+        )
+
         // §2.3 — subscribe; the reset snapshot lands on `incoming`.
         val sub = runCatching {
             withTimeout(15_000) {

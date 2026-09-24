@@ -28,10 +28,12 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -630,14 +632,33 @@ private fun GroupHeader(
     group: AgentGroupUi,
     modifier: Modifier = Modifier,
 ) {
-    Text(
-        "${group.relayLabel} ▸ ${group.label}",
-        style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
         modifier = modifier.padding(top = LerdrTheme.spacing.extraSmall),
-    )
+    ) {
+        Text(
+            "${group.relayLabel} ▸ ${group.label}",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
+        )
+        group.watchingDevices?.let { devices ->
+            Spacer(Modifier.width(LerdrTheme.spacing.extraSmall))
+            Icon(
+                Icons.Filled.PhoneAndroid,
+                contentDescription = "$devices device(s) on this workspace",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(14.dp),
+            )
+            Text(
+                "$devices",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
 }
 
 private enum class ApprovalTone { APPROVE, TRUST, DENY }
@@ -942,12 +963,24 @@ private fun AgentRow(
                 AgentAvatar(provider = agent.provider, label = agent.title)
                 Spacer(Modifier.width(LerdrTheme.spacing.small))
                 Column(Modifier.weight(1f)) {
-                    Text(
-                        agent.title,
-                        style = MaterialTheme.typography.titleSmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            agent.title,
+                            style = MaterialTheme.typography.titleSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        if (agent.watching) {
+                            Spacer(Modifier.width(LerdrTheme.spacing.extraSmall))
+                            Icon(
+                                Icons.Filled.Visibility,
+                                contentDescription = "Watched by a device",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(14.dp),
+                            )
+                        }
+                    }
                     Text(
                         agent.statusLine,
                         style = MaterialTheme.typography.bodySmall,
@@ -958,6 +991,29 @@ private fun AgentRow(
                 }
                 Spacer(Modifier.width(LerdrTheme.spacing.small))
                 ElapsedChip(agent = agent)
+            }
+            if (agent.stateLabels.isNotEmpty()) {
+                Spacer(Modifier.height(LerdrTheme.spacing.extraSmall))
+                Row(horizontalArrangement = Arrangement.spacedBy(LerdrTheme.spacing.extraSmall)) {
+                    agent.stateLabels.forEach { label ->
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            shape = MaterialTheme.shapes.small,
+                        ) {
+                            Text(
+                                label,
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(
+                                    horizontal = LerdrTheme.spacing.extraSmall,
+                                    vertical = 2.dp,
+                                ),
+                            )
+                        }
+                    }
+                }
             }
             if (agent.working) {
                 Spacer(Modifier.height(LerdrTheme.spacing.small))

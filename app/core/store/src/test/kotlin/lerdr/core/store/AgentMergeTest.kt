@@ -2,6 +2,7 @@ package lerdr.core.store
 
 import com.google.common.truth.Truth.assertThat
 import lerdr.core.model.AgentState
+import lerdr.core.model.AgentUpdateMessage
 import lerdr.core.model.Interaction
 import lerdr.core.model.Option
 import lerdr.core.model.Other
@@ -31,6 +32,8 @@ class AgentMergeTest {
         project: String = "proj",
         sessionName: String = "sess",
         serverSessionId: String = "",
+        tokens: Map<String, String> = emptyMap(),
+        stateLabels: Map<String, String> = emptyMap(),
     ) = AgentState(
         paneId = paneId,
         rawPaneId = paneId,
@@ -50,6 +53,8 @@ class AgentMergeTest {
         project = project,
         sessionName = sessionName,
         serverSessionId = serverSessionId,
+        tokens = tokens,
+        stateLabels = stateLabels,
     )
 
     private fun questionInteraction(id: String = "q1") = Interaction(
@@ -307,6 +312,67 @@ class AgentMergeTest {
         val merged = mergeAgentList(current, "r1", listOf(staleRow), misses, emptySet())
         assertThat(merged[0]).isSameInstanceAs(current[0])
         assertThat(merged[0].status).isEqualTo("working")
+    }
+
+    // ── report_metadata maps (tokens / state_labels) ─────────────────
+
+    @Test
+    fun `snapshot adopts tokens and state labels`() {
+        val misses = mutableMapOf<String, Int>()
+        val row = normalize(
+            state(
+                "p1",
+                tokens = mapOf("lerdr_watching" to "1"),
+                stateLabels = mapOf("mode" to "planning"),
+            ),
+        )
+        val merged = mergeAgentList(emptyList(), "r1", listOf(row), misses, emptySet())
+        assertThat(merged[0].tokens).containsExactly("lerdr_watching", "1")
+        assertThat(merged[0].stateLabels).containsExactly("mode", "planning")
+    }
+
+    @Test
+    fun `snapshot without the keys clears a previously reported map`() {
+        val misses = mutableMapOf<String, Int>()
+        val first = mergeAgentList(
+            emptyList(), "r1",
+            listOf(normalize(state("p1", tokens = mapOf("lerdr_watching" to "1")))),
+            misses, emptySet(),
+        )
+        // TTL expiry / unwatch: the next snapshot simply omits the keys —
+        // decode yields empty maps and the stored row must clear, not stick.
+        val second = mergeAgentList(
+            first, "r1", listOf(normalize(state("p1"))), misses, emptySet(),
+        )
+        assertThat(second[0].tokens).isEmpty()
+        assertThat(second[0].stateLabels).isEmpty()
+    }
+
+    @Test
+    fun `agent_update delta keeps the stored maps`() {
+        val misses = mutableMapOf<String, Int>()
+        val first = mergeAgentList(
+            emptyList(), "r1",
+            listOf(
+                normalize(
+                    state(
+                        "p1",
+                        tokens = mapOf("lerdr_watching" to "1"),
+                        stateLabels = mapOf("mode" to "planning"),
+                    ),
+                ),
+            ),
+            misses, emptySet(),
+        )
+        // Deltas never carry the maps — absent must keep, never clear.
+        val delta = normalizeAgent(
+            "r1", "relay one",
+            AgentUpdateMessage(paneId = "p1", status = "idle").asPatch(),
+            false,
+        )
+        val merged = mergeAgentDetails(first[0], delta)
+        assertThat(merged.tokens).containsExactly("lerdr_watching", "1")
+        assertThat(merged.stateLabels).containsExactly("mode", "planning")
     }
 
     // ── normalizeAgentAttention ──────────────────────────────────────

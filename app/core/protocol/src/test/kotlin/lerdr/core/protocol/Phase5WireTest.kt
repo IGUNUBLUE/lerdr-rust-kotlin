@@ -11,6 +11,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
+import lerdr.core.model.AgentsMessage
 import lerdr.core.model.CapsUpdateMessage
 import lerdr.core.model.ClientCapabilities
 import lerdr.core.model.Inbound
@@ -22,6 +23,7 @@ import lerdr.core.model.PaneTextPoint
 import lerdr.core.model.PaneTextRange
 import lerdr.core.model.TargetRef
 import lerdr.core.model.UnknownServerMessage
+import lerdr.core.model.WorkspacesMessage
 import org.junit.Test
 
 /**
@@ -354,5 +356,39 @@ class Phase5WireTest {
             """{"start":{"row":0,"col":1},"end":{"row":2,"col":3}}""",
         )
         assertThat(range.end.row).isEqualTo(2)
+    }
+
+    // ── report_metadata projections (tokens / state_labels) ──────────
+
+    @Test
+    fun agentsRowDecodesTokensAndStateLabels() {
+        val message = ServerMessageCodec.decode(
+            """{"type":"agents","agents":[{"pane_id":"wE:p1","agent":"devin",
+            "tokens":{"lerdr_watching":"1"},
+            "state_labels":{"mode":"planning"}}]}""",
+        )
+        val row = (message as AgentsMessage).agents!!.single()
+        assertThat(row.tokens).containsExactly("lerdr_watching", "1")
+        assertThat(row.stateLabels).containsExactly("mode", "planning")
+    }
+
+    @Test
+    fun agentsRowWithoutMetadataDecodesEmptyMaps() {
+        val message = ServerMessageCodec.decode(
+            """{"type":"agents","agents":[{"pane_id":"wE:p1","agent":"devin"}]}""",
+        )
+        val row = (message as AgentsMessage).agents!!.single()
+        assertThat(row.tokens).isEmpty()
+        assertThat(row.stateLabels).isEmpty()
+    }
+
+    @Test
+    fun workspaceRowDecodesTokens() {
+        val message = ServerMessageCodec.decode(
+            """{"type":"workspaces","workspaces":[{"workspace_id":"wE",
+            "tokens":{"lerdr_devices":"2"}}]}""",
+        )
+        val row = (message as WorkspacesMessage).workspaces!!.single()
+        assertThat(row.tokens).containsExactly("lerdr_devices", "2")
     }
 }

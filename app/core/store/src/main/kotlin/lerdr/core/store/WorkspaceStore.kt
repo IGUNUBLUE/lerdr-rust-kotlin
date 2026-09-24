@@ -23,6 +23,8 @@ data class RelayWorkspace(
     val agentStatus: String = "",
     val cwd: String = "",
     val worktree: WorkspaceWorktree? = null,
+    /** `workspace.report_metadata` tokens — e.g. `lerdr_devices` count. */
+    val tokens: Map<String, String> = emptyMap(),
 )
 
 /** `normalizeWorkspace` — drops rows without a `workspace_id`, caps the label. */
@@ -45,6 +47,7 @@ fun normalizeWorkspace(
         agentStatus = info.agentStatus,
         cwd = info.cwd,
         worktree = info.worktree,
+        tokens = info.tokens,
     )
 }
 

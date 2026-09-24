@@ -68,6 +68,7 @@ class HomeScreenScreenshotTest {
                                 key = "sd\u0000lerdr",
                                 relayLabel = "sd",
                                 label = "lerdr",
+                                watchingDevices = 2,
                                 agents = listOf(
                                     AgentListItemUi(
                                         paneId = "sd::%3",
@@ -79,6 +80,8 @@ class HomeScreenScreenshotTest {
                                         working = true,
                                         controllable = true,
                                         provider = "claude",
+                                        watching = true,
+                                        stateLabels = listOf("planning"),
                                     ),
                                 ),
                             ),

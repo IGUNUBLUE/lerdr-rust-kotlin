@@ -65,6 +65,14 @@ data class Agent(
     val tabNumber: Int? = null,
     val tabOrder: Int? = null,
     val workspaceId: String = "",
+    /**
+     * Herdr `pane.report_metadata` projections — only `agents` snapshots
+     * carry them; `null` means a delta source that never reports them
+     * (merge keeps the previous value). Snapshots decode absent→empty,
+     * so an empty map is authoritative "cleared".
+     */
+    val tokens: Map<String, String>? = null,
+    val stateLabels: Map<String, String>? = null,
 )
 
 /**
@@ -112,6 +120,8 @@ data class AgentPatch(
     val questionLayout: Boolean? = null,
     val conversationHistoryAvailable: Boolean? = null,
     val paneRevision: Long? = null,
+    val tokens: Map<String, String>? = null,
+    val stateLabels: Map<String, String>? = null,
 ) {
     /**
      * The oracle's `{ ...before, ...message }` spread: fields this patch
@@ -154,6 +164,8 @@ data class AgentPatch(
         conversationHistoryAvailable = conversationHistoryAvailable
             ?: previous.conversationHistoryAvailable,
         paneRevision = paneRevision ?: previous.paneRevision,
+        tokens = tokens ?: previous.tokens,
+        stateLabels = stateLabels ?: previous.stateLabels,
     )
 }
 
@@ -193,6 +205,10 @@ fun AgentState.asPatch(): AgentPatch = AgentPatch(
     questionLayout = questionLayout.takeIf { it },
     conversationHistoryAvailable = conversationHistoryAvailable.takeIf { it },
     paneRevision = paneRevision.takeIf { it != 0L },
+    // Snapshot-authoritative: absent on the wire decodes to an empty map,
+    // which must propagate as "cleared" — never collapse to absent here.
+    tokens = tokens,
+    stateLabels = stateLabels,
 )
 
 /** `agent_update` frame → patch. Every field the relay omits stays absent. */

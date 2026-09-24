@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 Releases are **pre-release / beta** — no compatibility guarantees yet.
 
+## [Unreleased]
+
+### Added
+
+- **Terminal send + watch cadence** — the terminal input bar's Send
+  action now rides `send_input` (text + Enter as one action) instead of
+  literal `send_text`; the special-keys bar still exposes literal input.
+  `watch_pane` requests `interval_ms=100` (the lowest whitelisted
+  cadence) now that `pane_realtime_delta` is advertised and watches arm
+  automatically.
+- **report_metadata badges** — `agents[]` rows decode herdr
+  `pane.report_metadata` projections (`tokens`, `state_labels`) and
+  `workspaces[]` rows decode `tokens`. Home renders a watching eye on
+  panes carrying `lerdr_watching`, a device-count chip on workspace
+  groups carrying `lerdr_devices`, and state-label chips on agent rows.
+  Snapshot semantics: absent keys clear (herdr TTL expiry), deltas keep.
+
+### Removed
+
+- Dead capability constants (`herdr-hybrid-v2` — hybrid transport is
+  out of scope per docs/12; a duplicated `agent_response_copy`).
+
 ## [0.0.2] — 2026-09-24
 
 ### Added

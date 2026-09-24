@@ -173,6 +173,10 @@ class RealHomeRepository @Inject constructor(
                         ?: members.first().relayLabel,
                     label = record?.label ?: groupLabel(members),
                     agents = members.map(map),
+                    watchingDevices = record?.tokens
+                        ?.get(WATCHING_DEVICES_TOKEN)
+                        ?.toIntOrNull()
+                        ?.takeIf { it > 0 },
                 )
             }
     }
@@ -265,6 +269,8 @@ class RealHomeRepository @Inject constructor(
         activity: lerdr.core.model.ActivityEntry?,
     ): AgentListItemUi {
         val statusText = status?.takeIf { it.isNotEmpty() } ?: "unknown"
+        val watching = tokens?.containsKey(WATCHING_TOKEN) == true
+        val labels = stateLabels?.values?.filter { it.isNotEmpty() }.orEmpty()
         return if (working) {
             AgentListItemUi(
                 paneId = paneId,
@@ -277,6 +283,8 @@ class RealHomeRepository @Inject constructor(
                 working = true,
                 controllable = sessions.canControl(relayId),
                 provider = agent?.takeIf { it.isNotEmpty() },
+                watching = watching,
+                stateLabels = labels,
             )
         } else {
             AgentListItemUi(
@@ -289,6 +297,8 @@ class RealHomeRepository @Inject constructor(
                 working = false,
                 controllable = sessions.canControl(relayId),
                 provider = agent?.takeIf { it.isNotEmpty() },
+                watching = watching,
+                stateLabels = labels,
             )
         }
     }
@@ -323,6 +333,12 @@ class RealHomeRepository @Inject constructor(
 
     private companion object {
         const val AGE_TICK_MS = 30_000L
+
+        /** `pane.report_metadata` token set while a lerdr device watches. */
+        const val WATCHING_TOKEN = "lerdr_watching"
+
+        /** `workspace.report_metadata` token — connected device count. */
+        const val WATCHING_DEVICES_TOKEN = "lerdr_devices"
     }
 }
 

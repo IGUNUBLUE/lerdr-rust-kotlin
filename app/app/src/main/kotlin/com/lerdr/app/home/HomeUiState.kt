@@ -109,6 +109,10 @@ data class AgentListItemUi(
     val controllable: Boolean = false,
     /** Normalized agent identity (e.g. "claude") — drives the avatar logo. */
     val provider: String? = null,
+    /** `lerdr_watching` token — a lerdr device is watching this pane. */
+    val watching: Boolean = false,
+    /** Herdr `pane.report_metadata` state label values — rendered as chips. */
+    val stateLabels: List<String> = emptyList(),
 )
 
 /**
@@ -127,6 +131,8 @@ data class AgentGroupUi(
      */
     val label: String,
     val agents: List<AgentListItemUi>,
+    /** `lerdr_devices` workspace token — lerdr devices on this workspace. */
+    val watchingDevices: Int? = null,
 )
 
 /** One computer card on the relays strip / Computers tab. */

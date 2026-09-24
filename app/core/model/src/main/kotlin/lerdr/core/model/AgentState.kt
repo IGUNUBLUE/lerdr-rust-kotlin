@@ -44,6 +44,10 @@ data class AgentState(
     @SerialName("question_layout") val questionLayout: Boolean = false,
     @SerialName("conversation_history_available") val conversationHistoryAvailable: Boolean = false,
     @SerialName("pane_revision") val paneRevision: Long = 0,
+    // Herdr-reported display metadata (`pane.report_metadata`) — absent
+    // until a hook annotates the pane (`lerdr_watching` et al.).
+    val tokens: Map<String, String> = emptyMap(),
+    @SerialName("state_labels") val stateLabels: Map<String, String> = emptyMap(),
 ) {
     companion object {
         const val STATUS_WORKING = "working"

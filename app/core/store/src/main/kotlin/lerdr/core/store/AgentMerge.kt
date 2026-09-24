@@ -126,6 +126,8 @@ fun normalizeAgent(
             tabNumber = patch.tabNumber,
             tabOrder = patch.tabOrder,
             workspaceId = patch.workspaceId ?: "",
+            tokens = patch.tokens,
+            stateLabels = patch.stateLabels,
         ),
         attentionCapable,
     )
@@ -306,6 +308,10 @@ fun mergeAgentDetails(previous: Agent?, next: Agent): Agent {
         activitySeq = next.activitySeq ?: previous.activitySeq,
         paneRevision = (maxOf(agentPaneRevision(previous), agentPaneRevision(next)))
             .takeIf { it > 0 },
+        // Snapshot-authoritative maps: snapshots always produce non-null
+        // (absent wire → emptyMap = cleared); deltas produce null → keep.
+        tokens = next.tokens ?: previous.tokens,
+        stateLabels = next.stateLabels ?: previous.stateLabels,
     )
     // `mergedAgentEquals` — value-equal merges collapse to the stored
     // instance so keyed lists see the same identity.
