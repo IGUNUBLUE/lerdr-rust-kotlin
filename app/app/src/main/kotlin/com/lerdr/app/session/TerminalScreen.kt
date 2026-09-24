@@ -122,7 +122,7 @@ fun TerminalScreen(
         onSelectTab = onSelectTab,
         tabsPaneId = paneId,
         onSendKeys = viewModel::sendKeys,
-        onSendText = viewModel::sendLiteralText,
+        onSendText = viewModel::sendText,
         onSendSecret = viewModel::sendSecret,
         onDismissError = viewModel::dismissError,
         onViewportMeasured = viewModel::onViewportMeasured,

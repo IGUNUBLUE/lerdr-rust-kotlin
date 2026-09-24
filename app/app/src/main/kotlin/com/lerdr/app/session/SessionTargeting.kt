@@ -122,7 +122,7 @@ data class PaneBudget(
 ) {
     companion object {
         const val DEFAULT_LINES = 400
-        const val DEFAULT_INTERVAL_MS = 500L
+        const val DEFAULT_INTERVAL_MS = 100L
     }
 }
 

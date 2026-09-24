@@ -32,12 +32,12 @@ import androidx.compose.ui.tooling.preview.PreviewLightDark
 import com.lerdr.core.designsystem.theme.LerdrTheme
 
 /**
- * Terminal input row — the `send_text` / `send_keys` seam of terminal mode
- * (docs/04 §Terminal mode: typing injects literal text, Enter is a key).
+ * Terminal input row — the `send_input` seam of terminal mode: Send is
+ * the composer action (text + Enter as one action, like the feed
+ * composer). Literal `send_text` injection stays reachable through the
+ * special-keys bar (Enter is a key chip there).
  *
- * The field buffers a draft locally; Send injects it verbatim via
- * `send_text` (no Enter appended — the pane echoes or ignores it). The
- * key chips live on the special-keys bar above — one bar per the mockup.
+ * The field buffers a draft locally.
  * [focusRequester] backs that bar's "show keyboard" affordance.
  *
  * Secret mode ([secretMode] while the pane reports `no_echo`): the same
