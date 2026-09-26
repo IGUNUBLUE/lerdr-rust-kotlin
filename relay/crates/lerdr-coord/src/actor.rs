@@ -30,6 +30,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn, Instrument};
 
+use crate::actions::profiles;
 use crate::classify::Classification;
 use crate::snapshot::{broadcast_diff, PublishedView};
 use crate::topology::{AcceptOutcome, AgentProfile, CommitKind, LocalSpeech, Topology};
@@ -118,8 +119,8 @@ enum TopologyCommand {
     /// Internal lane: a spawned post-sync capability collect finished;
     /// install its report (`set_herdr_status` dedupes).
     CapabilitiesReady(CapabilityReport),
-    /// Internal lane: the post-sync `server.agent_manifests` fetch
-    /// finished; install its rows as `push_config.agent_profiles`
+    /// Internal lane: the post-sync launch-profile discovery finished;
+    /// install its rows as `push_config.agent_profiles`
     /// (`set_agent_profiles` dedupes).
     AgentProfilesReady(Vec<AgentProfile>),
     /// Relay-local lane: the speech catalog probe (or a voice-change
@@ -273,6 +274,10 @@ impl TopologyActor {
                     resolver,
                     ..Topology::default()
                 };
+                // Launch-profile resolver for `push_config.agent_profiles`
+                // — shares `agent_start`'s validation source so the picker
+                // can only offer ids the action accepts.
+                let profiles_resolver = profiles::Resolver::new();
                 let mut stream =
                     client.supervise_events(EventSupervisor::topology());
                 let mut published = PublishedView::default();
@@ -347,9 +352,9 @@ impl TopologyActor {
                                     // mid-session.
                                     if first_sync {
                                         first_sync = false;
-                                        spawn_post_sync(&client, &cmd_tx, agent_view);
+                                        spawn_post_sync(&client, &cmd_tx, &profiles_resolver, agent_view);
                                     } else {
-                                        spawn_collect(&client, &cmd_tx);
+                                        spawn_collect(&client, &cmd_tx, &profiles_resolver);
                                     }
                                 }
                                 SupervisorSignal::Invalidated { event, .. } => {
@@ -467,7 +472,7 @@ impl TopologyActor {
                                         tokio::time::Instant::now()
                                             + poll_interval(events_active, poll_failures),
                                     );
-                                    spawn_post_sync(&client, &cmd_tx, agent_view);
+                                    spawn_post_sync(&client, &cmd_tx, &profiles_resolver, agent_view);
                                 }
                                 Some(TopologyCommand::BumpGeneration(pane_id)) => {
                                     state.bump_generation(&pane_id);
@@ -508,7 +513,7 @@ impl TopologyActor {
                         _ = capability_tick.tick() => {
                             // Periodic re-probe — collect only; the view
                             // assert stays on bootstrap/startup paths.
-                            spawn_collect(&client, &cmd_tx);
+                            spawn_collect(&client, &cmd_tx, &profiles_resolver);
                         }
                     }
                 }
@@ -662,11 +667,17 @@ async fn collect_enrichments(
 /// asserting there would stomp a view another writer legitimately
 /// installed mid-session. Overlapping collects serialize inside the
 /// client (`refreshMu`); view asserts are idempotent.
-fn spawn_post_sync(client: &Client, commands: &mpsc::Sender<TopologyCommand>, agent_view: bool) {
+fn spawn_post_sync(
+    client: &Client,
+    commands: &mpsc::Sender<TopologyCommand>,
+    resolver: &profiles::Resolver,
+    agent_view: bool,
+) {
     let client = client.clone();
     let commands = commands.clone();
+    let resolver = resolver.clone();
     tokio::spawn(async move {
-        push_facts(&client, &commands).await;
+        push_facts(&client, &commands, &resolver).await;
         if !agent_view {
             return;
         }
@@ -684,38 +695,45 @@ fn spawn_post_sync(client: &Client, commands: &mpsc::Sender<TopologyCommand>, ag
 
 /// The periodic collect (`RunCapabilityRefresh`'s tick) — same as
 /// [`spawn_post_sync`] minus the view assert.
-fn spawn_collect(client: &Client, commands: &mpsc::Sender<TopologyCommand>) {
+fn spawn_collect(
+    client: &Client,
+    commands: &mpsc::Sender<TopologyCommand>,
+    resolver: &profiles::Resolver,
+) {
     let client = client.clone();
     let commands = commands.clone();
+    let resolver = resolver.clone();
     tokio::spawn(async move {
-        push_facts(&client, &commands).await;
+        push_facts(&client, &commands, &resolver).await;
     });
 }
 
 /// The facts every collect pushes through the command lane: the
-/// capability report, then the `server.agent_manifests` rows shaped as
+/// capability report, then the resolved launch profiles shaped as
 /// `push_config.agent_profiles` entries. Bounded waits — the lane drains
 /// while the actor lives; a dead actor makes each send fail, which is
-/// fine. The manifests call fails open: a Herdr without the method
-/// leaves the field at `null`.
-async fn push_facts(client: &Client, commands: &mpsc::Sender<TopologyCommand>) {
+/// fine.
+async fn push_facts(
+    client: &Client,
+    commands: &mpsc::Sender<TopologyCommand>,
+    resolver: &profiles::Resolver,
+) {
     let report = client.collect_capabilities().await;
     let _ = commands
         .send(TopologyCommand::CapabilitiesReady(report))
         .await;
-    let Ok(status) = client.server_agent_manifests().await else {
-        return;
-    };
-    // Dedupe by manifest name — one agent can appear once per source;
-    // row order follows the server's listing.
-    let mut seen = std::collections::HashSet::new();
-    let profiles = status
-        .manifests
+    // `s.profiles.Profiles()` — the resolved launch set (INI ∪
+    // PATH-filtered defaults ∪ current/outdated integrations), NOT the
+    // raw `server.agent_manifests` list: manifests describe detection,
+    // not launchability, so they include agents the pane can't start
+    // (`agent_start` validates `profile_id` against this same resolver).
+    let profiles = resolver
+        .profiles(client)
+        .await
         .into_iter()
-        .filter(|m| seen.insert(m.agent.clone()))
-        .map(|m| AgentProfile {
-            id: m.agent.clone(),
-            label: m.agent,
+        .map(|p| AgentProfile {
+            id: p.id,
+            label: p.label,
         })
         .collect();
     let _ = commands
@@ -1126,21 +1144,21 @@ mod tests {
                     )
                     .await;
             }
-            "server.agent_manifests" => {
+            "integration.list" => {
                 let _ = conn
                     .write_all(
                         reply(serde_json::json!({
-                            "type": "agent_manifest_status",
-                            "manifests": [
+                            "type": "integration_list",
+                            "integrations": [
                                 {
-                                    "agent": "claude", "source": "builtin",
-                                    "source_kind": "builtin",
-                                    "local_override_shadowing_remote": false
+                                    "target": "lerdrtest", "label": "lerdrtest",
+                                    "command": "lerdrtest",
+                                    "available": true, "state": "current"
                                 },
                                 {
-                                    "agent": "pi", "source": "builtin",
-                                    "source_kind": "builtin",
-                                    "local_override_shadowing_remote": false
+                                    "target": "staletest", "label": "staletest",
+                                    "command": "staletest",
+                                    "available": false, "state": "not_installed"
                                 }
                             ]
                         }))
@@ -1335,11 +1353,14 @@ mod tests {
         cancel.cancel();
     }
 
-    /// `server.agent_manifests` rows land as `push_config.agent_profiles`
-    /// — the Start Agent picker's source list. The post-sync collect
-    /// carries them; the handshake snapshot projects whatever is known.
+    /// The resolved launch set (INI ∪ PATH-defaults ∪ current/outdated
+    /// `integration.list`) lands as `push_config.agent_profiles` — the
+    /// Start Agent picker's source list. The mini server's `lerdrtest`
+    /// integration must appear; the `not_installed` one must not. Rows
+    /// beyond those vary with the host's PATH, so assertions are
+    /// contains-style, not exact.
     #[tokio::test]
-    async fn manifests_land_as_agent_profiles() {
+    async fn resolved_profiles_land_as_agent_profiles() {
         let server = Arc::new(MiniHerdr::new());
         let client = mini_client(&server);
         let cancel = CancellationToken::new();
@@ -1357,7 +1378,11 @@ mod tests {
             .clone()
             .unwrap_or_default();
         let ids: Vec<&str> = profiles.iter().map(|p| p.id.as_str()).collect();
-        assert_eq!(ids, ["claude", "pi"]);
+        assert!(ids.contains(&"lerdrtest"), "current integration: {ids:?}");
+        assert!(
+            !ids.contains(&"staletest"),
+            "not_installed integration filtered: {ids:?}"
+        );
 
         // The handshake snapshot projects them into push_config.
         let frames = crate::snapshot::compose_snapshot(&handle.topology.borrow());
@@ -1374,12 +1399,13 @@ mod tests {
             .expect("agent_profiles populated");
         let decoded: serde_json::Value =
             serde_json::from_str(raw.get()).expect("agent_profiles json");
-        assert_eq!(
-            decoded,
-            serde_json::json!([
-                {"id": "claude", "label": "claude"},
-                {"id": "pi", "label": "pi"}
-            ])
+        assert!(
+            decoded
+                .as_array()
+                .expect("agent_profiles array")
+                .iter()
+                .any(|p| p["id"] == "lerdrtest"),
+            "{decoded}"
         );
         cancel.cancel();
     }

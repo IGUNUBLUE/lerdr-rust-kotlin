@@ -145,10 +145,11 @@ pub struct Topology {
     /// handlers; the zero value advertises neither cap and emits no
     /// `speech_languages` field (honest until the catalog lands).
     pub local_speech: LocalSpeech,
-    /// `push_config.agent_profiles` rows — the `server.agent_manifests`
-    /// agents the client's Start Agent picker offers, refreshed on every
-    /// capability collect. `None` until the first fetch lands (or on a
-    /// Herdr without the method): the field emits `null` then.
+    /// `push_config.agent_profiles` rows — the launch profiles the
+    /// resolver discovers (the same source `agent_start` validates
+    /// `profile_id` against), refreshed on every capability collect.
+    /// `None` until the first discovery lands: the field emits `null`
+    /// then.
     pub agent_profiles: Option<Vec<AgentProfile>>,
     /// The `publishCurrentInventory` batch for this revision
     /// (server.go:3435-3514): the actor computes the changed-vs-published
@@ -674,9 +675,9 @@ impl Topology {
         true
     }
 
-    /// Install the collected `server.agent_manifests` profile rows —
-    /// dedupes like `set_herdr_status`: the picker list only moves when
-    /// the server's manifest set does.
+    /// Install the resolved launch-profile rows — dedupes like
+    /// `set_herdr_status`: the picker list only moves when the resolved
+    /// set does.
     pub(crate) fn set_agent_profiles(&mut self, profiles: Vec<AgentProfile>) -> bool {
         if self.agent_profiles.as_deref() == Some(profiles.as_slice()) {
             return false;

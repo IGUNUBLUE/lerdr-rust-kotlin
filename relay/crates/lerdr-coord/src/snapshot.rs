@@ -40,9 +40,9 @@ pub fn compose_snapshot(topology: &Topology) -> Vec<Outbound> {
             // field refreshes on the next connect (same as the oracle).
             speech_languages: (!topology.local_speech.languages.is_empty())
                 .then(|| topology.local_speech.languages.clone()),
-            // `server.agent_manifests` rows for the Start Agent picker —
-            // `null` until the first collect lands (or on a Herdr
-            // without the method); the sheet shows its empty state then.
+            // Resolved launch profiles for the Start Agent picker —
+            // `null` until the first collect lands; the sheet shows its
+            // empty state then.
             agent_profiles: topology
                 .agent_profiles
                 .as_ref()
