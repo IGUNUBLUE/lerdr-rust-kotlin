@@ -414,10 +414,13 @@ class SessionWorkspaceTabsViewModelTest {
         // `pathBase` seeds the untouched label.
         assertThat(state.createLabel).isEqualTo("u")
         assertThat(state.directory?.directories).hasSize(2)
-
-        vm.toggleDirectoryBrowser()
+        // Home can't host a workspace — the folder list opens itself and
+        // the confirm gate stays shut until a descent.
+        assertThat(state.createCwdIsHome).isTrue()
+        assertThat(state.directoryOpen).isTrue()
+        vm.confirmCreate()
         h.pump()
-        assertThat(vm.uiState.value.directoryOpen).isTrue()
+        assertThat(h.sentOf("workspace_create")).isEmpty()
 
         // Descending reseeds cwd; the label stays (already filled).
         vm.loadDirectory("/home/u/lerdr")

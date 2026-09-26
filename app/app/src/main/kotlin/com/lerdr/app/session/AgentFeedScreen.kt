@@ -55,7 +55,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -64,6 +63,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.key.Key
@@ -74,6 +74,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -107,6 +108,12 @@ import kotlinx.coroutines.launch
 import lerdr.core.conversation.ConversationBrowseState
 import lerdr.core.conversation.ConversationEntry
 import lerdr.core.conversation.ConversationRole
+
+/** Oracle `trackScroll`: unpins once the settled gap passes 48 px. */
+private val PIN_BOTTOM_GAP = 48.dp
+
+/** Oracle's `>= lastScrollTop - 2` — sub-pixel settle noise keeps the pin. */
+private const val PIN_SCROLL_SLOP_PX = 2
 
 /**
  * Feed mode — semantic timeline (docs/04 §Feed). [AgentFeedScreen] owns the
@@ -329,12 +336,46 @@ fun AgentFeedContent(
     // Follow the tail only while the user is pinned to the bottom — a
     // "Load older" prepend keeps its anchor via the stable item keys, and
     // manual scroll-back must not yank the viewport down on new output.
-    val pinnedToBottom by remember {
-        derivedStateOf {
-            val info = listState.layoutInfo
-            val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: -1
-            lastVisible >= info.totalItemsCount - 1
-        }
+    //
+    // Oracle `ConversationHistory.trackScroll` parity: the pin is a sticky
+    // boolean that starts set (opening lands on the newest turn) and is only
+    // re-evaluated when a scroll settles. Deriving it from layoutInfo breaks
+    // under load — an appended item is not yet visible when the effect runs,
+    // so the pin drops on the first growth and never recovers.
+    var pinnedToBottom by remember { mutableStateOf(true) }
+    val bottomGapThreshold = with(LocalDensity.current) { PIN_BOTTOM_GAP.roundToPx() }
+    LaunchedEffect(listState) {
+        var lastScrollIndex = -1
+        var lastScrollOffset = -1
+        var lastTotalItems = -1
+        snapshotFlow { listState.isScrollInProgress }
+            .collect { inProgress ->
+                if (inProgress) return@collect
+                val info = listState.layoutInfo
+                val lastItem = info.visibleItemsInfo.lastOrNull()
+                val bottomGap = if (lastItem != null &&
+                    lastItem.index == info.totalItemsCount - 1
+                ) {
+                    info.viewportEndOffset - (lastItem.offset + lastItem.size)
+                } else {
+                    Int.MAX_VALUE
+                }
+                // Oracle `layoutDidNotScrollUp`: only an already-pinned
+                // viewport keeps its pin when content grows under it or the
+                // pin snap itself fired — a mid-list scroll still resolves
+                // through the gap check below.
+                val didNotScrollUp = pinnedToBottom &&
+                    info.totalItemsCount >= lastTotalItems &&
+                    lastScrollIndex >= 0 &&
+                    (listState.firstVisibleItemIndex > lastScrollIndex ||
+                        (listState.firstVisibleItemIndex == lastScrollIndex &&
+                            listState.firstVisibleItemScrollOffset >=
+                                lastScrollOffset - PIN_SCROLL_SLOP_PX))
+                lastScrollIndex = listState.firstVisibleItemIndex
+                lastScrollOffset = listState.firstVisibleItemScrollOffset
+                lastTotalItems = info.totalItemsCount
+                pinnedToBottom = didNotScrollUp || bottomGap < bottomGapThreshold
+            }
     }
     // The tail key changes on a new last entry and on in-place text growth
     // (streaming replies); prepends leave it untouched so no scroll fires.
@@ -345,7 +386,9 @@ fun AgentFeedContent(
             visibleEntries.size +
             (if (uiState.blocked != null) 1 else 0) +
             (if (uiState.working) 1 else 0) - 1
-        listState.animateScrollToItem(lastIndex.coerceAtLeast(0))
+        // Snap, like the oracle's `scrollTop = scrollHeight` — animating
+        // through a fast stream never converges.
+        listState.scrollToItem(lastIndex.coerceAtLeast(0))
     }
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },

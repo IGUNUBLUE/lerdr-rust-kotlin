@@ -212,4 +212,28 @@ class SessionTabsStripScreenshotTest {
         )
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
+
+    @Test
+    fun createSheet_homeRootRefused() {
+        showCreate(
+            baseState().copy(
+                createOpen = true,
+                directoryBrowserAvailable = true,
+                directoryOpen = true,
+                directory = DirectoryListing(
+                    currentPath = "/home/u",
+                    currentLabel = "u",
+                    parent = "",
+                    directories = listOf(
+                        DirectoryEntry("lerdr", "/home/u/lerdr"),
+                        DirectoryEntry("tmp", "/home/u/tmp"),
+                    ),
+                ),
+                createCwd = "/home/u",
+                createCwdIsHome = true,
+                createLabel = "u",
+            ),
+        )
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
 }
