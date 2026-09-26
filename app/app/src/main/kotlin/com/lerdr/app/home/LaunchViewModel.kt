@@ -87,6 +87,12 @@ data class LaunchUiState(
      * `directoryRelayId === relayId` submit gate.
      */
     val directoryReady: Boolean = false,
+    /**
+     * The browsed cwd sits on the jail root — `Lifecycle.ResolveCwd` refuses
+     * home itself ("strictly below"), so submit stays disabled until the
+     * reader descends into a project folder.
+     */
+    val cwdIsHome: Boolean = false,
     val directory: DirectoryBrowserUi = DirectoryBrowserUi(),
     // ── workspace form ──────────────────────────────────────────────
     val workspaceLabel: String = "",
@@ -230,25 +236,28 @@ class LaunchViewModel(
             it.copy(
                 profileId = profileId,
                 name = suggestedLaunchName(it.cwd, profileId),
+                status = null,
             )
         }
     }
 
     fun selectWorkspace(workspaceId: String) {
-        draft.update { it.copy(workspaceId = workspaceId) }
+        draft.update { it.copy(workspaceId = workspaceId, status = null) }
     }
 
     /** The oracle's name field: maxlength 32, `[a-z][a-z0-9_-]{0,31}`. */
     fun onNameChange(value: String) {
-        draft.update { it.copy(name = value.take(NAME_MAX)) }
+        draft.update { it.copy(name = value.take(NAME_MAX), status = null) }
     }
 
     fun onPromptChange(value: String) {
-        draft.update { it.copy(prompt = value.take(PROMPT_MAX)) }
+        draft.update { it.copy(prompt = value.take(PROMPT_MAX), status = null) }
     }
 
     fun onWorkspaceLabelChange(value: String) {
-        draft.update { it.copy(workspaceLabel = value.take(WORKSPACE_LABEL_MAX)) }
+        draft.update {
+            it.copy(workspaceLabel = value.take(WORKSPACE_LABEL_MAX), status = null)
+        }
     }
 
     fun openDirectoryBrowser() {
@@ -350,6 +359,7 @@ class LaunchViewModel(
         val state = uiState.value
         if (state.relayId.isEmpty() || state.readOnly || state.submitting ||
             state.directory.loading || !state.directoryReady ||
+            state.cwdIsHome ||
             state.profileId.isEmpty() || state.cwd.isEmpty() ||
             !validAgentName(state.name)
         ) {
@@ -406,6 +416,7 @@ class LaunchViewModel(
     fun submitWorkspace() {
         val state = uiState.value
         if (state.relayId.isEmpty() || state.readOnly || state.submitting ||
+            state.cwdIsHome ||
             state.cwd.isEmpty() || state.workspaceLabel.isBlank()
         ) {
             return
@@ -537,6 +548,9 @@ class LaunchViewModel(
             cwd = d.cwd,
             cwdLabel = d.cwdLabel,
             directoryReady = d.directoryRelayId == relayId && d.cwd.isNotEmpty(),
+            cwdIsHome = d.directory.listing?.let { listing ->
+                listing.parent.isEmpty() && listing.currentPath.isNotEmpty()
+            } == true,
             directory = run {
                 val supported = connection?.capabilities
                     ?.contains(DIRECTORY_BROWSER_CAPABILITY) == true

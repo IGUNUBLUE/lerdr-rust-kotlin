@@ -180,12 +180,29 @@ class LaunchViewModelTest {
 
         /** Answer the newest `list_directories` call with a root listing. */
         suspend fun answerDirectory() {
+            answerDirectoryListing(
+                """{"current":{"path":"/home/u","label":"u"},"parent":"","directories":[{"name":"lerdr","path":"/home/u/lerdr"}]}""",
+            )
+        }
+
+        /**
+         * Descend into `lerdr` — submits need a cwd strictly below home
+         * (`resolve_cwd` refuses the jail root).
+         */
+        suspend fun browseIntoProject() {
+            viewModel.loadDirectory("/home/u/lerdr")
+            answerDirectoryListing(
+                """{"current":{"path":"/home/u/lerdr","label":"lerdr"},"parent":"/home/u","directories":[]}""",
+            )
+        }
+
+        private suspend fun answerDirectoryListing(listing: String) {
             val sent = sentFrames().last {
                 it["type"]?.jsonPrimitive?.content == "list_directories"
             }
             handle().emit(
                 launchJson(
-                    """{"type":"command_result","request_id":"${sent["request_id"]!!.jsonPrimitive.content}","action":"list_directories","ok":true,"phase":"completed","data":{"current":{"path":"/home/u","label":"u"},"parent":"","directories":[{"name":"lerdr","path":"/home/u/lerdr"}]}}""",
+                    """{"type":"command_result","request_id":"${sent["request_id"]!!.jsonPrimitive.content}","action":"list_directories","ok":true,"phase":"completed","data":$listing}""",
                 ),
             )
             pump()
@@ -227,6 +244,9 @@ class LaunchViewModelTest {
         h.answerDirectory()
         assertThat(h.viewModel.uiState.value.cwd).isEqualTo("/home/u")
         assertThat(h.viewModel.uiState.value.directoryReady).isTrue()
+        // Home itself can't host a workspace — the reader descends first.
+        assertThat(h.viewModel.uiState.value.cwdIsHome).isTrue()
+        h.browseIntoProject()
 
         h.viewModel.onWorkspaceLabelChange("lerdr")
         h.viewModel.submitWorkspace()
@@ -234,7 +254,7 @@ class LaunchViewModelTest {
         val sent = h.sentFrames().single {
             it["type"]?.jsonPrimitive?.content == "workspace_create"
         }
-        assertThat(sent["cwd"]?.jsonPrimitive?.content).isEqualTo("/home/u")
+        assertThat(sent["cwd"]?.jsonPrimitive?.content).isEqualTo("/home/u/lerdr")
         assertThat(sent["label"]?.jsonPrimitive?.content).isEqualTo("lerdr")
         h.answer("workspace_create")
         assertThat(h.messages).contains("Created workspace lerdr.")
@@ -268,6 +288,9 @@ class LaunchViewModelTest {
         assertThat(state.relayId).isEqualTo("r1")
         assertThat(state.profileId).isEqualTo("claude")
         assertThat(state.readOnly).isFalse()
+        // Home itself can't host an agent — the reader descends first.
+        assertThat(state.cwdIsHome).isTrue()
+        h.browseIntoProject()
 
         h.viewModel.onNameChange("u-claude")
         h.viewModel.onPromptChange("fix the flaky test")
@@ -278,7 +301,7 @@ class LaunchViewModelTest {
         }
         assertThat(sent["profile_id"]?.jsonPrimitive?.content).isEqualTo("claude")
         assertThat(sent["name"]?.jsonPrimitive?.content).isEqualTo("u-claude")
-        assertThat(sent["cwd"]?.jsonPrimitive?.content).isEqualTo("/home/u")
+        assertThat(sent["cwd"]?.jsonPrimitive?.content).isEqualTo("/home/u/lerdr")
         assertThat(sent["prompt"]?.jsonPrimitive?.content)
             .isEqualTo("fix the flaky test")
         h.answer("agent_start", """{"pane_id":"%9"}""")

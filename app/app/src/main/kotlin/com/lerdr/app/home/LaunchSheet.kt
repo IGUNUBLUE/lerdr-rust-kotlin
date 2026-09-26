@@ -178,7 +178,14 @@ fun NewAgentSheetContent(
             enabled = !uiState.submitting,
             onClick = onBrowseDirectories,
         )
-        LaunchHint("The folder shown above is selected — tap it to browse.")
+        LaunchHint(
+            if (uiState.cwdIsHome) {
+                "The home directory can't host a workspace — tap the " +
+                    "folder to pick a project below it."
+            } else {
+                "The folder shown above is selected — tap it to browse."
+            },
+        )
 
         LaunchFieldLabel("Name")
         OutlinedTextField(
@@ -214,6 +221,7 @@ fun NewAgentSheetContent(
         Spacer(Modifier.height(spacing.extraSmall))
         val canSubmit = !uiState.submitting && !uiState.readOnly &&
             !uiState.directory.loading && uiState.directoryReady &&
+            !uiState.cwdIsHome &&
             uiState.relayId.isNotEmpty() && uiState.profileId.isNotEmpty() &&
             uiState.cwd.isNotEmpty() && validAgentName(uiState.name)
         Button(
@@ -293,7 +301,14 @@ fun NewWorkspaceSheetContent(
             enabled = !uiState.submitting,
             onClick = onBrowseDirectories,
         )
-        LaunchHint("The folder shown above is selected — tap it to browse.")
+        LaunchHint(
+            if (uiState.cwdIsHome) {
+                "The home directory can't host a workspace — tap the " +
+                    "folder to pick a project below it."
+            } else {
+                "The folder shown above is selected — tap it to browse."
+            },
+        )
 
         LaunchFieldLabel("Label")
         OutlinedTextField(
@@ -306,6 +321,7 @@ fun NewWorkspaceSheetContent(
 
         Spacer(Modifier.height(spacing.extraSmall))
         val canSubmit = !uiState.submitting && !uiState.readOnly &&
+            !uiState.cwdIsHome &&
             uiState.relayId.isNotEmpty() && uiState.cwd.isNotEmpty() &&
             uiState.workspaceLabel.isNotBlank()
         Button(

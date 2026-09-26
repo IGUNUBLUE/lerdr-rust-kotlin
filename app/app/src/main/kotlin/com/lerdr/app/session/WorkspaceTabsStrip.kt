@@ -156,6 +156,12 @@ data class WorkspaceTabsUiState(
     val createOpen: Boolean = false,
     val createCwd: String = "",
     val createLabel: String = "",
+    /**
+     * The browsed cwd sits on the jail root — `Lifecycle.ResolveCwd` refuses
+     * home itself ("strictly below"), so Confirm stays disabled until the
+     * reader descends into a project folder.
+     */
+    val createCwdIsHome: Boolean = false,
     val directoryOpen: Boolean = false,
     val directory: DirectoryListing? = null,
     val directoryLoading: Boolean = false,
@@ -430,6 +436,9 @@ class WorkspaceTabsViewModel(
             createOpen = local.createOpen,
             createCwd = local.createCwd,
             createLabel = local.createLabel,
+            createCwdIsHome = local.directory?.let { listing ->
+                listing.parent.isEmpty() && listing.currentPath.isNotEmpty()
+            } == true,
             directoryOpen = local.directoryOpen,
             directory = local.directory,
             directoryLoading = local.directoryLoading,
@@ -990,11 +999,13 @@ class WorkspaceTabsViewModel(
     }
 
     fun onCreateCwdChange(value: String) {
-        local.update { it.copy(createCwd = value) }
+        local.update { it.copy(createCwd = value, status = null) }
     }
 
     fun onCreateLabelChange(value: String) {
-        local.update { it.copy(createLabel = value.take(MAX_LABEL_RUNES)) }
+        local.update {
+            it.copy(createLabel = value.take(MAX_LABEL_RUNES), status = null)
+        }
     }
 
     fun toggleDirectoryBrowser() {
@@ -1019,6 +1030,12 @@ class WorkspaceTabsViewModel(
                         directoryLoading = false,
                         directory = listing,
                         directoryError = null,
+                        // A home-root landing auto-opens the folder list —
+                        // cwd=home is always refused, so the picker is the
+                        // only forward path.
+                        directoryOpen = it.directoryOpen || listing.parent.isEmpty(),
+                        // Picking a new folder retires the previous failure.
+                        status = null,
                         createCwd = listing.currentPath,
                         createLabel = it.createLabel.ifEmpty {
                             pathBaseOf(listing.currentPath)
@@ -1045,7 +1062,7 @@ class WorkspaceTabsViewModel(
      */
     fun confirmCreate() {
         val state = uiState.value
-        if (local.value.busy || !state.canControl) return
+        if (local.value.busy || !state.canControl || state.createCwdIsHome) return
         val cwd = state.createCwd.trim()
         val label = state.createLabel.trim()
         if (cwd.isEmpty() || label.isEmpty()) return
@@ -1363,20 +1380,24 @@ fun WorkspaceTabsStripContent(
                     .testTag(WorkspaceTabsStripTags.ERROR),
             )
         }
-        uiState.status?.let { status ->
-            Text(
-                status,
-                style = MaterialTheme.typography.labelSmall,
-                color = if (uiState.statusError) {
-                    colors.danger
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-                modifier = Modifier
-                    .padding(horizontal = spacing.medium)
-                    .semantics { liveRegion = LiveRegionMode.Polite }
-                    .testTag(WorkspaceTabsStripTags.STATUS),
-            )
+        // The create sheet covers the strip — while it's open the status
+        // renders inside the sheet instead (same tag, mutually exclusive).
+        if (!uiState.createOpen) {
+            uiState.status?.let { status ->
+                Text(
+                    status,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (uiState.statusError) {
+                        colors.danger
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    modifier = Modifier
+                        .padding(horizontal = spacing.medium)
+                        .semantics { liveRegion = LiveRegionMode.Polite }
+                        .testTag(WorkspaceTabsStripTags.STATUS),
+                )
+            }
         }
     }
 
@@ -1643,6 +1664,15 @@ fun WorkspaceCreateContent(
             }
         }
 
+        if (uiState.createCwdIsHome) {
+            Text(
+                "The home directory can't host a workspace — pick a " +
+                    "project folder below.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
         OutlinedTextField(
             value = uiState.createLabel,
             onValueChange = onLabelChange,
@@ -1656,6 +1686,21 @@ fun WorkspaceCreateContent(
             keyboardActions = KeyboardActions(onDone = { onConfirm() }),
         )
 
+        uiState.status?.let { status ->
+            Text(
+                status,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (uiState.statusError) {
+                    LerdrTheme.extendedColors.danger
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                modifier = Modifier
+                    .semantics { liveRegion = LiveRegionMode.Polite }
+                    .testTag(WorkspaceTabsStripTags.STATUS),
+            )
+        }
+
         Row(horizontalArrangement = Arrangement.spacedBy(spacing.small)) {
             OutlinedButton(
                 onClick = onCancel,
@@ -1667,6 +1712,7 @@ fun WorkspaceCreateContent(
             Button(
                 onClick = onConfirm,
                 enabled = !uiState.busy &&
+                    !uiState.createCwdIsHome &&
                     uiState.createCwd.isNotBlank() &&
                     uiState.createLabel.isNotBlank(),
                 modifier = Modifier
