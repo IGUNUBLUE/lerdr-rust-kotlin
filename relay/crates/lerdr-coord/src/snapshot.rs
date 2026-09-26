@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use lerdr_core::json::MaybeNull;
+use lerdr_core::json::{MaybeNull, RawJson};
 use lerdr_core::protocol::{
     AgentsMessage, CapsUpdateMessage, HerdrStatus, HerdrStatusMessage, InventoryStatusMessage,
     Outbound, PushConfig, WorkspacesMessage, CAPABILITIES, VERSION,
@@ -40,6 +40,19 @@ pub fn compose_snapshot(topology: &Topology) -> Vec<Outbound> {
             // field refreshes on the next connect (same as the oracle).
             speech_languages: (!topology.local_speech.languages.is_empty())
                 .then(|| topology.local_speech.languages.clone()),
+            // `server.agent_manifests` rows for the Start Agent picker —
+            // `null` until the first collect lands (or on a Herdr
+            // without the method); the sheet shows its empty state then.
+            agent_profiles: topology
+                .agent_profiles
+                .as_ref()
+                .and_then(|profiles| {
+                    serde_json::value::to_raw_value(profiles)
+                        .ok()
+                        .map(RawJson)
+                        .map(MaybeNull::Value)
+                })
+                .unwrap_or(MaybeNull::Null),
             ..PushConfig::default()
         })),
         Outbound::HerdrStatus(HerdrStatusMessage {

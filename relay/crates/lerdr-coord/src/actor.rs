@@ -32,7 +32,7 @@ use tracing::{debug, info, warn, Instrument};
 
 use crate::classify::Classification;
 use crate::snapshot::{broadcast_diff, PublishedView};
-use crate::topology::{AcceptOutcome, CommitKind, LocalSpeech, Topology};
+use crate::topology::{AcceptOutcome, AgentProfile, CommitKind, LocalSpeech, Topology};
 
 /// Pane-class invalidation signal for watch tasks. `gap` events (arriving
 /// between `subscription_started` and the bootstrap snapshot) are forwarded
@@ -118,6 +118,10 @@ enum TopologyCommand {
     /// Internal lane: a spawned post-sync capability collect finished;
     /// install its report (`set_herdr_status` dedupes).
     CapabilitiesReady(CapabilityReport),
+    /// Internal lane: the post-sync `server.agent_manifests` fetch
+    /// finished; install its rows as `push_config.agent_profiles`
+    /// (`set_agent_profiles` dedupes).
+    AgentProfilesReady(Vec<AgentProfile>),
     /// Relay-local lane: the speech catalog probe (or a voice-change
     /// handler) delivered fresh `LocalSpeech` facts — the snapshot
     /// adjudicator gates `speech_*` capabilities and fills
@@ -480,6 +484,14 @@ impl TopologyActor {
                                         publish(&state, &mut published, &topology_tx);
                                     }
                                 }
+                                Some(TopologyCommand::AgentProfilesReady(profiles)) => {
+                                    // Same dedupe + publish pattern as
+                                    // CapabilitiesReady — the picker rows
+                                    // only move when the manifest set does.
+                                    if state.set_agent_profiles(profiles) {
+                                        publish(&state, &mut published, &topology_tx);
+                                    }
+                                }
                                 Some(TopologyCommand::SpeechFacts(facts)) => {
                                     // Same dedupe + publish pattern as
                                     // CapabilitiesReady — unchanged facts
@@ -654,12 +666,7 @@ fn spawn_post_sync(client: &Client, commands: &mpsc::Sender<TopologyCommand>, ag
     let client = client.clone();
     let commands = commands.clone();
     tokio::spawn(async move {
-        let report = client.collect_capabilities().await;
-        // Bounded wait — the lane drains while the actor lives; a dead
-        // actor makes the send fail, which is fine.
-        let _ = commands
-            .send(TopologyCommand::CapabilitiesReady(report))
-            .await;
+        push_facts(&client, &commands).await;
         if !agent_view {
             return;
         }
@@ -681,11 +688,39 @@ fn spawn_collect(client: &Client, commands: &mpsc::Sender<TopologyCommand>) {
     let client = client.clone();
     let commands = commands.clone();
     tokio::spawn(async move {
-        let report = client.collect_capabilities().await;
-        let _ = commands
-            .send(TopologyCommand::CapabilitiesReady(report))
-            .await;
+        push_facts(&client, &commands).await;
     });
+}
+
+/// The facts every collect pushes through the command lane: the
+/// capability report, then the `server.agent_manifests` rows shaped as
+/// `push_config.agent_profiles` entries. Bounded waits — the lane drains
+/// while the actor lives; a dead actor makes each send fail, which is
+/// fine. The manifests call fails open: a Herdr without the method
+/// leaves the field at `null`.
+async fn push_facts(client: &Client, commands: &mpsc::Sender<TopologyCommand>) {
+    let report = client.collect_capabilities().await;
+    let _ = commands
+        .send(TopologyCommand::CapabilitiesReady(report))
+        .await;
+    let Ok(status) = client.server_agent_manifests().await else {
+        return;
+    };
+    // Dedupe by manifest name — one agent can appear once per source;
+    // row order follows the server's listing.
+    let mut seen = std::collections::HashSet::new();
+    let profiles = status
+        .manifests
+        .into_iter()
+        .filter(|m| seen.insert(m.agent.clone()))
+        .map(|m| AgentProfile {
+            id: m.agent.clone(),
+            label: m.agent,
+        })
+        .collect();
+    let _ = commands
+        .send(TopologyCommand::AgentProfilesReady(profiles))
+        .await;
 }
 
 /// `CapabilityReport` → the `herdrStatusPayload` wire shape — every field
@@ -743,6 +778,7 @@ fn clone_topology(state: &Topology) -> Topology {
         inventory_message: state.inventory_message.clone(),
         herdr_status: state.herdr_status.clone(),
         local_speech: state.local_speech.clone(),
+        agent_profiles: state.agent_profiles.clone(),
         // Stamped by `publish` — clones carry the batch decided for the
         // commit that produced them, never the previous one.
         broadcast_frames: Vec::new(),
@@ -1090,6 +1126,28 @@ mod tests {
                     )
                     .await;
             }
+            "server.agent_manifests" => {
+                let _ = conn
+                    .write_all(
+                        reply(serde_json::json!({
+                            "type": "agent_manifest_status",
+                            "manifests": [
+                                {
+                                    "agent": "claude", "source": "builtin",
+                                    "source_kind": "builtin",
+                                    "local_override_shadowing_remote": false
+                                },
+                                {
+                                    "agent": "pi", "source": "builtin",
+                                    "source_kind": "builtin",
+                                    "local_override_shadowing_remote": false
+                                }
+                            ]
+                        }))
+                        .as_bytes(),
+                    )
+                    .await;
+            }
             // The optimistic probes: each recognized validation refusal
             // proves the method without touching real state.
             m @ ("workspace.move_block" | "tab.move" | "pane.read") => {
@@ -1274,6 +1332,55 @@ mod tests {
         .await;
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         assert_eq!(server.view_sets(), 0, "startup hook must not assert");
+        cancel.cancel();
+    }
+
+    /// `server.agent_manifests` rows land as `push_config.agent_profiles`
+    /// — the Start Agent picker's source list. The post-sync collect
+    /// carries them; the handshake snapshot projects whatever is known.
+    #[tokio::test]
+    async fn manifests_land_as_agent_profiles() {
+        let server = Arc::new(MiniHerdr::new());
+        let client = mini_client(&server);
+        let cancel = CancellationToken::new();
+        let handle = TopologyActor::spawn(client, cancel.clone());
+
+        until(5, "agent profiles collected", || {
+            handle.topology.borrow().agent_profiles.is_some()
+        })
+        .await;
+
+        let profiles = handle
+            .topology
+            .borrow()
+            .agent_profiles
+            .clone()
+            .unwrap_or_default();
+        let ids: Vec<&str> = profiles.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["claude", "pi"]);
+
+        // The handshake snapshot projects them into push_config.
+        let frames = crate::snapshot::compose_snapshot(&handle.topology.borrow());
+        let push = frames
+            .iter()
+            .find_map(|f| match f {
+                lerdr_core::protocol::Outbound::PushConfig(p) => Some(p),
+                _ => None,
+            })
+            .expect("push_config frame");
+        let raw = push
+            .agent_profiles
+            .value()
+            .expect("agent_profiles populated");
+        let decoded: serde_json::Value =
+            serde_json::from_str(raw.get()).expect("agent_profiles json");
+        assert_eq!(
+            decoded,
+            serde_json::json!([
+                {"id": "claude", "label": "claude"},
+                {"id": "pi", "label": "pi"}
+            ])
+        );
         cancel.cancel();
     }
 
