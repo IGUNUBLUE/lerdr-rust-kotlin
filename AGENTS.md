@@ -39,6 +39,9 @@ questions; record unspecified behavior in `docs/10-spec-gaps.md`.
   (`platforms;android-37.2`), minSdk 28, targetSdk 36.
 - Fixture consumers: `com.lerdr.core.testing.Fixtures` (Kotlin),
   `lerdr-fixture` crate (Rust).
+- Emulator hygiene: always shut down any emulator you launched when the
+  work is done (`adb -s <serial> emu kill`) — QEMU burns CPU/RAM on the
+  shared box even when idle.
 - Live gates (not in CI): `LERDR_RUST_INTEROP=1 :core:transport:test
   --tests RustInteropTest` pairs a throwaway device against a spawned
   Rust relay; `HERDR_LIVE=1 cargo test -p lerdr-herdr --test live` hits
