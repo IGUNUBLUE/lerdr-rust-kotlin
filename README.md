@@ -128,17 +128,6 @@ Tag `v<x.y.z>` and `.github/workflows/release.yml` builds
 `checksums.txt`, and the universal APK (signed when keystore secrets
 are configured). See [docs/release.md](docs/release.md).
 
-## Layout
-
-| Path | Contents |
-|---|---|
-| `relay/` | Rust workspace — axum WS server, per-pane watchers, send buffers, Herdr socket client, update worker |
-| `app/` | Kotlin + Compose M3E — nowinandroid-style modules (`:core:*`, `:app`) |
-| `docs/` | The spec: protocol, architecture, UX design, roadmap, spec-gaps |
-| `fixtures/` | Frozen golden vectors anchoring `protocol v3` |
-| `tools/shadow/` | Determinism harness (`rust-a` vs `rust-b` through one fake Herdr) |
-| `plugin/` | Herdr plugin manifest + operator scripts (install, tailscale-serve, release packaging) |
-
 ## Contributing
 
 Contributions welcome — including AI-assisted ones (disclose them; see
