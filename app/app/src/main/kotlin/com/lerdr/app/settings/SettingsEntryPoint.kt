@@ -1,6 +1,7 @@
 package com.lerdr.app.settings
 
 import com.lerdr.app.session.SessionRepository
+import com.lerdr.app.update.AppUpdateManager
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
@@ -16,4 +17,5 @@ import dagger.hilt.components.SingletonComponent
 interface SettingsEntryPoint {
     fun sessionRepository(): SessionRepository
     fun appPreferences(): AppPreferences
+    fun appUpdateManager(): AppUpdateManager
 }

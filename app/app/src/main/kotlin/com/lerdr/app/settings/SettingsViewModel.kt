@@ -3,7 +3,10 @@ package com.lerdr.app.settings
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import android.content.Intent
 import com.lerdr.app.session.SessionRepository
+import com.lerdr.app.update.AppUpdateManager
+import com.lerdr.app.update.AppUpdateState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -41,6 +44,8 @@ data class SettingsUiState(
     val appLockEnabled: Boolean = false,
     /** Transient failure from an action — rendered once as a snackbar. */
     val lastError: String? = null,
+    /** GitHub self-update state — drives the About-section update row. */
+    val update: AppUpdateState = AppUpdateState(),
 )
 
 /**
@@ -63,22 +68,27 @@ data class SettingsUiState(
 class SettingsViewModel(
     private val sessions: SessionRepository,
     private val preferences: AppPreferences,
+    private val updates: AppUpdateManager,
 ) : ViewModel() {
 
     private val lastError = MutableStateFlow<String?>(null)
+
+    // combine() tops out at five typed flows — pair the sparse ones first.
+    private val extras = combine(lastError, updates.state, ::Pair)
 
     val uiState: StateFlow<SettingsUiState> = combine(
         sessions.relays,
         sessions.connections,
         preferences.themeMode,
         preferences.appLockEnabled,
-        lastError,
-    ) { relays, connections, themeMode, appLockEnabled, error ->
+        extras,
+    ) { relays, connections, themeMode, appLockEnabled, (error, update) ->
         SettingsUiState(
             relays = relays.map { it.toRelayRowUi(connections[it.id]) },
             themeMode = themeMode,
             appLockEnabled = appLockEnabled,
             lastError = error,
+            update = update,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState())
 
@@ -105,6 +115,24 @@ class SettingsViewModel(
     fun dismissError() {
         lastError.value = null
     }
+
+    // ── app update row ────────────────────────────────────────────────
+
+    /** "Check" button — manual GitHub latest-release probe. */
+    fun checkForUpdate() = updates.checkNow()
+
+    /**
+     * "Update" / "Install" row action — starts the APK download or hands
+     * the staged file to the installer; may flip the row to the
+     * install-permission gate instead.
+     */
+    fun startUpdate() = updates.startUpdate()
+
+    /** Post-resume hook — finishes the pending step after the grant. */
+    fun resumeUpdateAfterPermission() = updates.resumeAfterPermission()
+
+    /** System screen granting `REQUEST_INSTALL_PACKAGES` for Lerdr. */
+    fun installPermissionIntent(): Intent = updates.installPermissionIntent()
 }
 
 /**

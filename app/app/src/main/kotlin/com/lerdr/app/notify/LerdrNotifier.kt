@@ -55,6 +55,13 @@ class LerdrNotifier @Inject constructor(
                     ).apply {
                         description = "Keeps relay sessions alive while backgrounded"
                     },
+                    NotificationChannel(
+                        NotifyChannel.APP_UPDATE.id,
+                        "App updates",
+                        NotificationManager.IMPORTANCE_DEFAULT,
+                    ).apply {
+                        description = "New Lerdr releases published on GitHub"
+                    },
                 ),
             )
     }
@@ -107,6 +114,70 @@ class LerdrNotifier @Inject constructor(
             .build()
         try {
             compat.notify(command.notificationId, notification)
+        } catch (_: SecurityException) {
+            // Permission revoked between the check and the post — drop it.
+        }
+    }
+
+    // ── app-update cards ─────────────────────────────────────────────
+
+    /**
+     * "New release on GitHub" card — deep link lands on Settings where the
+     * update row drives the download. Returns false when notifications are
+     * denied so callers don't mark the tag as delivered.
+     */
+    fun postUpdateAvailable(version: String): Boolean {
+        if (!notificationsEnabled()) return false
+        ensureChannels()
+        val open = Intent(context, MainActivity::class.java).apply {
+            data = Uri.parse(NotifyDeepLinks.SETTINGS)
+            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            NotifyIds.APP_UPDATE,
+            open,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        notifySafely(
+            NotificationCompat.Builder(context, NotifyChannel.APP_UPDATE.id)
+                .setSmallIcon(com.lerdr.app.R.drawable.ic_notification)
+                .setContentTitle("Lerdr $version available")
+                .setContentText("Tap to open update settings")
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .setOnlyAlertOnce(true)
+                .build(),
+        )
+        return true
+    }
+
+    /**
+     * "APK downloaded" card posted by [com.lerdr.app.update]'s receiver —
+     * the tap intent is already built (installer or permission grant).
+     */
+    fun postUpdateDownloaded(version: String, body: String, tap: PendingIntent) {
+        if (!notificationsEnabled()) return
+        ensureChannels()
+        notifySafely(
+            NotificationCompat.Builder(context, NotifyChannel.APP_UPDATE.id)
+                .setSmallIcon(com.lerdr.app.R.drawable.ic_notification)
+                .setContentTitle("Lerdr $version downloaded")
+                .setContentText(body)
+                .setContentIntent(tap)
+                .setAutoCancel(true)
+                .build(),
+        )
+    }
+
+    /** Drops the update card — e.g. a fresh check says we're current. */
+    fun cancelUpdateNotification() {
+        compat.cancel(NotifyIds.APP_UPDATE)
+    }
+
+    private fun notifySafely(notification: Notification) {
+        try {
+            compat.notify(NotifyIds.APP_UPDATE, notification)
         } catch (_: SecurityException) {
             // Permission revoked between the check and the post — drop it.
         }

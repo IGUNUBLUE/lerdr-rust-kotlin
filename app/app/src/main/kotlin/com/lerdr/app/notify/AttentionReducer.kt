@@ -21,6 +21,9 @@ enum class NotifyChannel(val id: String) {
 
     /** Low — the foreground-service pin. */
     SERVICE("service"),
+
+    /** Default — a newer app release is published on GitHub. */
+    APP_UPDATE("app_update"),
 }
 
 /**
@@ -81,6 +84,9 @@ object NotifyIds {
     /** The collapsed "N agents need attention" card. */
     const val SUMMARY = 40_001
 
+    /** The "new Lerdr release available / downloaded" card. */
+    const val APP_UPDATE = 40_002
+
     private const val SPAN = 900_000
     private const val ATTENTION_BASE = 41_000_000
     private const val FINISHED_BASE = 42_000_000
@@ -104,6 +110,7 @@ object NotifyIds {
 object NotifyDeepLinks {
     const val AGENT = "lerdr://agent"
     const val AGENTS = "lerdr://agents"
+    const val SETTINGS = "lerdr://settings"
     const val PARAM_PANE_ID = "pane_id"
 
     fun agent(paneId: String): String =

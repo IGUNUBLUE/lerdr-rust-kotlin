@@ -144,7 +144,8 @@ gone.
   invitation QR for a new phone (controller or reader).
 - **Speech**: voice catalog, install/remove, language chips.
 - **App**: biometric lock toggle, theme mode (system/light/dark),
-  update check, diagnostics export.
+  update check/install (GitHub latest release → DownloadManager →
+  package installer), diagnostics export.
 
 ## Motion & theming (M3 Expressive)
 

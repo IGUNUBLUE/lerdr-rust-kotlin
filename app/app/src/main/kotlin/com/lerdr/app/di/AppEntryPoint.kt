@@ -3,6 +3,7 @@ package com.lerdr.app.di
 import com.lerdr.app.home.HomeRepository
 import com.lerdr.app.pairing.PairingManager
 import com.lerdr.app.session.SessionRepository
+import com.lerdr.app.update.AppUpdateManager
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
@@ -21,6 +22,7 @@ interface AppEntryPoint {
     fun sessionRepository(): SessionRepository
     fun pairingManager(): PairingManager
     fun draftStore(): DraftStore
+    fun appUpdateManager(): AppUpdateManager
 
     @AppScope
     fun appScope(): CoroutineScope
