@@ -136,6 +136,27 @@ class TerminalScreenScreenshotTest {
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
 
+    /**
+     * Bundled Nerd Font coverage — powerline separators, private-use icons,
+     * box drawing, and the prompt glyphs agent statuslines draw. The point
+     * of the golden is the glyphs actually paint, not the text content.
+     */
+    @Test
+    fun terminal_nerdFontGlyphs() {
+        val rows = parseTerminalRows(
+            listOf(
+                "[36m╭─[0m [35m\uE0B0[0m [34m\uF07B lerdr[0m [33m\uE0A0 main[0m \uE0B1",
+                "[32m\uF00C[0m build ok  \uF489 cargo  \uE795 rust  \uF24F node",
+                "\u2500\u2500 box \u2502 \u256D\u256E\u2570\u256F  spinner \u280B\u2819\u2838  dots \u25CF\u25CB\u25C9",
+                "[32m\u276F[0m [1m$[0m \u2588",
+            ),
+            TERMINAL_FORMAT_ANSI,
+        )
+        show(baseState().copy(rows = rows))
+        composeRule.waitForIdle()
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
     /** Reader role — keys/input disabled, the read-only hint chip shows. */
     @Test
     fun terminal_readOnly() {

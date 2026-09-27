@@ -8,8 +8,10 @@ import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -64,6 +66,7 @@ class TerminalViewModelTest {
         private val dataStore = PreferenceDataStoreFactory.create(scope = scope) {
             File(tmpDir, "relays.preferences_pb")
         }
+        val preferences = com.lerdr.app.settings.AppPreferences(dataStore)
         val registry = RelayRegistry(dataStore, scope)
         val agents = AgentStore(scope)
         val workspaces = WorkspaceStore()
@@ -148,7 +151,7 @@ class TerminalViewModelTest {
     fun `pane content commits to styled rows and a write cursor`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectReady()
-        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
         backgroundScope.launch { viewModel.uiState.collect { } }
         h.pump()
 
@@ -184,7 +187,7 @@ class TerminalViewModelTest {
     fun `metadata-only delta reuses the parsed row list`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectReady()
-        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
         backgroundScope.launch { viewModel.uiState.collect { } }
         h.pump()
         h.emitPaneContent("hello pane\n$ ")
@@ -209,7 +212,7 @@ class TerminalViewModelTest {
     fun `send hooks emit send_text, send_keys and send_input frames`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectReady()
-        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
         backgroundScope.launch { viewModel.uiState.collect { } }
         h.pump()
 
@@ -245,7 +248,7 @@ class TerminalViewModelTest {
     fun `a failed send surfaces as lastError`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectReady()
-        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
         backgroundScope.launch { viewModel.uiState.collect { } }
         h.pump()
 
@@ -272,7 +275,7 @@ class TerminalViewModelTest {
                 },
             )
         }
-        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
         backgroundScope.launch { viewModel.uiState.collect { } }
         h.pump()
         h.emitPaneContent("prompt$ ")
@@ -295,7 +298,7 @@ class TerminalViewModelTest {
     fun `state before the first frame keeps waitingForContent`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectReady()
-        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
         viewModel.uiState.test {
             val state = awaitItem()
             assertThat(state.waitingForContent).isTrue()
@@ -309,7 +312,7 @@ class TerminalViewModelTest {
     fun `delta-applied content reparses into new rows`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectReady()
-        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
         backgroundScope.launch { viewModel.uiState.collect { } }
         h.pump()
         h.emitPaneContent("one\ntwo\n$ ", fingerprint = "fp-1")
@@ -337,7 +340,7 @@ class TerminalViewModelTest {
             json("""{"type":"push_config","capabilities":["secret_input"]}"""),
         )
         h.pump()
-        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
         backgroundScope.launch { viewModel.uiState.collect { } }
         h.pump()
 
@@ -361,7 +364,7 @@ class TerminalViewModelTest {
         val h = Harness(this, tmp.root)
         // connectReady's push_config does not advertise `secret_input`.
         h.connectReady()
-        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
         backgroundScope.launch { viewModel.uiState.collect { } }
         h.pump()
 
@@ -384,7 +387,7 @@ class TerminalViewModelTest {
     fun `no_echo frame surfaces the hidden prompt in ui state`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectReady()
-        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
         backgroundScope.launch { viewModel.uiState.collect { } }
         h.pump()
 
@@ -411,7 +414,7 @@ class TerminalViewModelTest {
         h.repository.start()
         h.pump()
         h.connectReady()
-        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
         backgroundScope.launch { viewModel.uiState.collect { } }
         h.pump()
 
@@ -426,7 +429,7 @@ class TerminalViewModelTest {
         h.repository.start()
         h.pump()
         h.connectReady()
-        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
         backgroundScope.launch { viewModel.uiState.collect { } }
         h.pump()
 
@@ -451,7 +454,7 @@ class TerminalViewModelTest {
                 ),
             )
         }
-        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
         backgroundScope.launch { viewModel.uiState.collect { } }
         h.pump()
 
@@ -471,7 +474,7 @@ class TerminalViewModelTest {
         val h = Harness(this, tmp.root)
         // connectReady's push_config does not advertise `pane_search`.
         h.connectReady()
-        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
         backgroundScope.launch { viewModel.uiState.collect { } }
         h.pump()
 
@@ -490,7 +493,7 @@ class TerminalViewModelTest {
         h.handle().emit(
             json("""{"type":"push_config","capabilities":["pane_links"]}"""),
         )
-        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
         backgroundScope.launch { viewModel.uiState.collect { } }
         h.pump()
 
@@ -541,7 +544,7 @@ class TerminalViewModelTest {
                 data = json("""{"handled":true,"url":"https://example.com/spec"}"""),
             )
         }
-        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
         backgroundScope.launch { viewModel.uiState.collect { } }
         h.pump()
 
@@ -560,7 +563,7 @@ class TerminalViewModelTest {
         val h = Harness(this, tmp.root)
         // connectReady's push_config does not advertise `pane_links`.
         h.connectReady()
-        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope)
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
         backgroundScope.launch { viewModel.uiState.collect { } }
         h.pump()
 
@@ -574,6 +577,30 @@ class TerminalViewModelTest {
             .isEqualTo("This relay does not support pane_links")
         assertThat(h.handle().requests.map { it.type })
             .containsNoneOf("pane_link_resolve", "pane_link_activate")
+    }
+
+    @Test
+    fun `font scale persists through app preferences`() = runTest {
+        val h = Harness(this, tmp.root)
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
+
+        viewModel.persistFontScale(1.5f)
+        viewModel.persistFontScale(1.8f)
+
+        // The debounce is virtual-time (backgroundScope); the DataStore
+        // write it releases then rides the real clock.
+        advanceTimeBy(1_000)
+        runCurrent()
+        await { h.preferences.terminalFontScale.first() == 1.8f }
+    }
+
+    /** Real-clock poll — DataStore writes are off the test scheduler. */
+    private suspend fun await(condition: suspend () -> Boolean) {
+        val deadline = System.nanoTime() + 5_000_000_000L
+        while (!condition()) {
+            check(System.nanoTime() < deadline) { "timed out waiting" }
+            kotlinx.coroutines.delay(25)
+        }
     }
 
     private fun credential(role: DeviceRole) = RelayDeviceCredential(

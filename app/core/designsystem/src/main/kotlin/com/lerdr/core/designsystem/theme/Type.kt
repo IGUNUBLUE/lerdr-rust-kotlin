@@ -2,9 +2,11 @@ package com.lerdr.core.designsystem.theme
 
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import com.lerdr.core.designsystem.R
 
 /**
  * Lerdr type scale — Material defaults with product tweaks: titles read as
@@ -36,13 +38,24 @@ val LerdrTypography = Typography(
 )
 
 /**
+ * Bundled JetBrainsMono Nerd Font Mono — single-width coverage for the
+ * box-drawing, Powerline, and private-use icon ranges agent status lines
+ * draw with (OFL, see `OFL-JetBrainsMonoNerdFont.txt`). The `Mono` variant
+ * pins every icon to one cell so the terminal grid stays aligned; glyphs
+ * outside the font (CJK, emoji) still fall through to system fallback.
+ */
+private val LerdrMonoFamily = FontFamily(
+    Font(R.font.jbmono_nerd_regular, FontWeight.Normal),
+    Font(R.font.jbmono_nerd_bold, FontWeight.Bold),
+)
+
+/**
  * Product text styles outside the M3 scale. `terminal` is the face of the
- * terminal renderer — system monospace until the bundled font ships
- * (docs/04-app-design.md: monospace, ≥10sp effective).
+ * terminal renderer (docs/04-app-design.md: monospace, ≥10sp effective).
  */
 object LerdrTextStyles {
     val terminal = TextStyle(
-        fontFamily = FontFamily.Monospace,
+        fontFamily = LerdrMonoFamily,
         fontWeight = FontWeight.Normal,
         fontSize = 12.sp,
         lineHeight = 16.sp,
@@ -50,7 +63,7 @@ object LerdrTextStyles {
     )
 
     val code = TextStyle(
-        fontFamily = FontFamily.Monospace,
+        fontFamily = LerdrMonoFamily,
         fontWeight = FontWeight.Normal,
         fontSize = 13.sp,
         lineHeight = 18.sp,
