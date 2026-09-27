@@ -1,6 +1,8 @@
 package com.lerdr.app.ui.session
 
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.ui.test.isFocused
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -10,6 +12,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
+import com.google.common.truth.Truth.assertThat
 import com.lerdr.app.session.AgentFeedContent
 import com.lerdr.app.session.AttachmentBatch
 import com.lerdr.app.session.AttachmentIssue
@@ -160,7 +163,7 @@ class AgentFeedScreenshotTest {
         canAttach = true,
     )
 
-    private fun show(uiState: FeedUiState) {
+    private fun show(uiState: FeedUiState, listState: LazyListState? = null) {
         composeRule.setContent {
             LerdrTheme {
                 AgentFeedContent(
@@ -186,6 +189,7 @@ class AgentFeedScreenshotTest {
                     onRemoveAttachment = {},
                     onClearAttachments = {},
                     onRestartAttachments = {},
+                    listState = listState ?: rememberLazyListState(),
                 )
             }
         }
@@ -499,6 +503,34 @@ class AgentFeedScreenshotTest {
                     "Conversation history is not available for this agent.",
             ),
         )
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    /**
+     * Pinned tail must bottom-align: a last entry taller than the viewport
+     * (streaming reply) lands its *end* on the fold, not its top.
+     */
+    @Test
+    fun feed_tallEntryPinsToTail() {
+        val tall = ConversationEntry(
+            id = "eTall",
+            timestamp = "2026-01-01T10:01:00Z",
+            role = ConversationRole.ASSISTANT,
+            text = (1..40).joinToString("\n\n") { "Streaming paragraph $it of the reply." } +
+                "\n\nTAIL-OF-ENTRY",
+        )
+        val listState = LazyListState()
+        show(baseState().copy(entries = entries + tall), listState)
+        composeRule.waitForIdle()
+        // Semantics bounds clip at the list's edge, so they can't prove
+        // the tail is on screen — assert on the measured layout instead:
+        // the final item must be bottom-aligned inside the viewport.
+        composeRule.runOnIdle {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.last()
+            assertThat(last.index).isEqualTo(info.totalItemsCount - 1)
+            assertThat(last.offset + last.size).isAtMost(info.viewportEndOffset)
+        }
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
 }

@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardActions
@@ -207,10 +208,10 @@ fun AgentFeedContent(
     onRemoveAttachment: (String) -> Unit,
     onClearAttachments: () -> Unit,
     onRestartAttachments: () -> Unit,
+    listState: LazyListState = rememberLazyListState(),
 ) {
     val spacing = LerdrTheme.spacing
     val scope = rememberCoroutineScope()
-    val listState = rememberLazyListState()
     val clipboard = LocalClipboard.current
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -348,9 +349,18 @@ fun AgentFeedContent(
         var lastScrollIndex = -1
         var lastScrollOffset = -1
         var lastTotalItems = -1
+        var wasScrolling = false
         snapshotFlow { listState.isScrollInProgress }
             .collect { inProgress ->
-                if (inProgress) return@collect
+                if (inProgress) {
+                    wasScrolling = true
+                    return@collect
+                }
+                // Only a real scroll settle re-evaluates the pin — the
+                // stream's initial `false` would otherwise clear it before
+                // the first tail snap ever runs.
+                if (!wasScrolling) return@collect
+                wasScrolling = false
                 val info = listState.layoutInfo
                 val lastItem = info.visibleItemsInfo.lastOrNull()
                 val bottomGap = if (lastItem != null &&
@@ -377,18 +387,21 @@ fun AgentFeedContent(
                 pinnedToBottom = didNotScrollUp || bottomGap < bottomGapThreshold
             }
     }
-    // The tail key changes on a new last entry and on in-place text growth
-    // (streaming replies); prepends leave it untouched so no scroll fires.
-    val tailKey = visibleEntries.lastOrNull()?.let { "${it.id}:${it.text.length}" }
+    // The tail key changes on a new last entry and on any in-place growth —
+    // streaming text or tool output; prepends leave it untouched so no
+    // scroll fires. A plain `text.length` key misses tool-output growth.
+    val tailKey = visibleEntries.lastOrNull()?.hashCode()
     LaunchedEffect(tailKey, uiState.working, uiState.blocked != null) {
         if (tailKey == null || !pinnedToBottom) return@LaunchedEffect
         val lastIndex = headerOffset +
             visibleEntries.size +
             (if (uiState.blocked != null) 1 else 0) +
             (if (uiState.working) 1 else 0) - 1
-        // Snap, like the oracle's `scrollTop = scrollHeight` — animating
-        // through a fast stream never converges.
-        listState.scrollToItem(lastIndex.coerceAtLeast(0))
+        // Bottom-align, like the oracle's `scrollTop = scrollHeight` — a
+        // plain snap top-aligns the item, and once a streaming entry grows
+        // taller than the viewport the newest text lands below the fold.
+        // Int.MAX_VALUE clamps at the content end.
+        listState.scrollToItem(lastIndex.coerceAtLeast(0), scrollOffset = Int.MAX_VALUE)
     }
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
