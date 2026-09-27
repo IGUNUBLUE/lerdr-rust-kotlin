@@ -1,10 +1,17 @@
 # 09 — Distribution as a Herdr plugin
 
 Hard requirement: the Rust relay installs through Herdr's plugin workflow:
-`herdr plugin install IGUNUBLUE/lerdr/plugin`. The manifest lives under
-`plugin/`; local development uses `herdr plugin link plugin/`. This
-specification records the relevant Herdr integration facts and the current
-`plugin/herdr-plugin.toml`.
+`herdr plugin install IGUNUBLUE/lerdr-rust-kotlin/plugin`. The manifest
+lives under `plugin/`; local development uses `herdr plugin link plugin/`.
+This specification records the relevant Herdr integration facts and the
+current `plugin/herdr-plugin.toml`.
+
+Marketplace discovery: the repo carries the GitHub topic `herdr-plugin`,
+which is how `herdr.dev/plugins` indexes it — the crawler lists any public
+repo with that topic and a parseable `herdr-plugin.toml` on the default
+branch (subdirectory manifests count; one card per repo, one row per
+manifest). Do not remove the topic; the index refreshes roughly every 30
+minutes and rescans on default-branch head changes.
 
 ## The manifest contract
 
