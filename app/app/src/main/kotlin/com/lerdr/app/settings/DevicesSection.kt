@@ -67,7 +67,7 @@ import lerdr.core.model.HerdrFeatureStatus
 import lerdr.core.model.HerdrStatus
 
 /**
- * Devices settings section — the `DeviceSettings.svelte` port. Rendered once
+ * Devices settings section — the the corresponding screen port. Rendered once
  * per connected relay by the orchestrator; builds its own [DevicesViewModel]
  * through the screen's Hilt entry point, exactly like `SettingsScreen`.
  */
@@ -104,7 +104,7 @@ fun DevicesSection(relayId: String, modifier: Modifier = Modifier) {
 
 /**
  * Stateless body — the screenshot tests drive it with canned state.
- * Mirrors the oracle's card: heading + Invite affordance, storage hint,
+ * Mirrors Lerdr's card: heading + Invite affordance, storage hint,
  * status line, invitation block (link, QR, copy), current-device summary,
  * the paired list, then the danger actions.
  */
@@ -194,7 +194,7 @@ fun DevicesContent(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
-            // ── oracle `status` line — success or failure text ────────
+            // ── Lerdr `status` line — success or failure text ────────
             uiState.status?.let { status ->
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -217,10 +217,10 @@ fun DevicesContent(
                 }
             }
 
-            // ── Herdr status (oracle's per-relay version/warning lines) ─
+            // ── Herdr status (Lerdr's per-relay version/warning lines) ─
             HerdrBlock(uiState.herdrStatus)
 
-            // ── relay self-update (oracle's per-relay update row) ─────
+            // ── relay self-update (Lerdr's per-relay update row) ─────
             RelayUpdateBlock(
                 uiState = uiState,
                 onCheck = onCheckUpdate,
@@ -448,7 +448,7 @@ fun DevicesContent(
 
 // ── pieces ────────────────────────────────────────────────────────────
 
-/** The oracle's `updateStatus` — label + detail + warning per state. */
+/** Lerdr's `updateStatus` — label + detail + warning per state. */
 private data class UpdateStatusUi(
     val label: String,
     val detail: String,
@@ -531,7 +531,7 @@ private fun updateStatus(
     return UpdateStatusUi("Up to date", checked, warning = false)
 }
 
-/** The oracle's `shortRevision`: hex revisions shorten to 7 chars, `-dirty` kept. */
+/** Lerdr's `shortRevision`: hex revisions shorten to 7 chars, `-dirty` kept. */
 private fun shortRevision(revision: String): String {
     val dirty = revision.endsWith("-dirty")
     val base = if (dirty) revision.dropLast(6) else revision
@@ -614,7 +614,7 @@ private fun RelayUpdateBlock(
 }
 
 /**
- * The oracle's Herdr block on the relay card (SettingsView.svelte):
+ * Lerdr's Herdr block on the relay card:
  * client/server versions, protocol + endpoint generation, the static
  * recommendation hint, and the `herdrWarnings` feature line.
  */
@@ -663,7 +663,7 @@ private fun HerdrBlock(herdr: HerdrStatus?) {
 }
 
 /**
- * The oracle's `herdrWarnings` — degrades server features into a joined
+ * Lerdr's `herdrWarnings` — degrades server features into a joined
  * " · "-separated line. `supported` entries and benign `unknown` states
  * (not yet checked, never advertised) are filtered out.
  */
@@ -747,7 +747,7 @@ private fun DeviceRow(
             // .device-row: padding .8rem 0
             .padding(vertical = spacing.small + spacing.extraSmall),
     ) {
-        // The oracle's `@media (max-width: 36rem)`: narrow rows drop the
+        // Lerdr's `@media (max-width: 36rem)`: narrow rows drop the
         // actions below the metadata so a thumb gets the whole row.
         val wide = maxWidth >= WIDE_DEVICE_ROW_MIN
         Column {
@@ -943,7 +943,7 @@ private fun QrCanvas(qr: QrBitmapUi, modifier: Modifier = Modifier) {
             .fillMaxWidth()
             .aspectRatio(1f),
     ) {
-        // Oracle: viewBox="-2 -2 size+4 size+4" — a 2-module quiet zone.
+        // Lerdr: viewBox="-2 -2 size+4 size+4" — a 2-module quiet zone.
         val quiet = 2
         val cells = qr.size + quiet * 2
         val cell = size.width / cells
@@ -964,7 +964,7 @@ private fun QrCanvas(qr: QrBitmapUi, modifier: Modifier = Modifier) {
 
 // ── dialogs ───────────────────────────────────────────────────────────
 
-/** Oracle `rename-device-*` — names identify paired devices on this relay. */
+/** Lerdr `rename-device-*` — names identify paired devices on this relay. */
 @Composable
 private fun RenameDeviceDialog(
     device: DeviceUi,
@@ -1007,7 +1007,7 @@ private fun RenameDeviceDialog(
     )
 }
 
-/** Oracle `invite-device-*` — name + role + the one-use-secret warning. */
+/** Lerdr `invite-device-*` — name + role + the one-use-secret warning. */
 @Composable
 private fun InviteDeviceDialog(
     busy: Boolean,
@@ -1074,7 +1074,7 @@ private fun InviteDeviceDialog(
     )
 }
 
-/** Oracle `reset-devices-*` — gated on typing RESET. */
+/** Lerdr `reset-devices-*` — gated on typing RESET. */
 @Composable
 private fun ResetDevicesDialog(
     busy: Boolean,
@@ -1175,5 +1175,5 @@ private fun DevicesContentPreview() {
     }
 }
 
-/** Oracle `@media (max-width: 36rem)` — the device-row side/below breakpoint. */
+/** Lerdr `@media (max-width: 36rem)` — the device-row side/below breakpoint. */
 private val WIDE_DEVICE_ROW_MIN = 576.dp

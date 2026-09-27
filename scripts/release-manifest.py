@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 """Release-manifest build/verify for Lerdr release bundles.
 
-Mirrors the oracle's internal/release/manifest.go (schema 1): a staged
-release tree is hashed file-by-file into `release-manifest.json`, and the
-manifest is later re-verified against the extracted tree — offline, without
-executing the bundle's binaries (cross-target safe).
+Builds Lerdr's local schema-1 release manifest: a staged release tree is
+hashed file-by-file into `release-manifest.json`, then re-verified against the
+extracted tree offline without executing the bundle's binaries (cross-target
+safe).
 
-The Rust `lerdr-relay` binary is growing `release-manifest`/`verify-release`
-subcommands; once they land, package-release.sh prefers them and this file
-becomes the fallback. Until then this is the authoritative manifest path —
-the fields the installer consumes (`version`, `revision`, `target`,
-`web_hash`) and the `files` map use the oracle's exact schema so the Go and
-Rust bundle layouts stay interchangeable.
+The Rust `lerdr-relay` binary may provide `release-manifest`/`verify-release`
+subcommands; package-release.sh prefers them when available. This fallback
+implements the same complete local manifest contract: the fields the installer
+consumes (`version`, `revision`, `target`, `web_hash`) and the `files` map.
 
 Usage:
     release-manifest.py build ROOT VERSION REVISION TARGET
@@ -63,8 +61,7 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def clean_relative(name: str) -> str:
-    """Oracle's cleanRelative: non-empty slash path that cannot escape root."""
+    """Validate a non-empty slash path that cannot escape the release root."""
     if not name or "\\" in name or name.startswith("/"):
         fail(f"invalid manifest path {name!r}")
     clean = os.path.normpath(name).replace(os.sep, "/")
@@ -125,8 +122,7 @@ def cmd_build(args: argparse.Namespace) -> None:
     web_hash = hash_file_map(files, "web/")
     if web_hash is not None:
         manifest["web_hash"] = web_hash
-    data = json.dumps(manifest, indent=2) + "\n"
-    # Atomic write — same temp+rename the oracle uses.
+    # Atomic temp-file replacement keeps incomplete manifests out of releases.
     temp = root / f".{MANIFEST_NAME}.{os.getpid()}"
     try:
         temp.write_text(data)

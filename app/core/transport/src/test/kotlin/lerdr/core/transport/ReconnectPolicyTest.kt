@@ -71,7 +71,7 @@ class ReconnectPolicyTest {
     }
 
     @Test
-    fun oracleConstants() {
+    fun protocolTimingConstants() {
         assertThat(ReconnectPolicy.BASE_DELAY_MS).isEqualTo(1_000L)
         assertThat(ReconnectPolicy.MAX_DELAY_MS).isEqualTo(60_000L)
         assertThat(ReconnectPolicy.STALE_CONNECTING_MS).isEqualTo(5_000L)

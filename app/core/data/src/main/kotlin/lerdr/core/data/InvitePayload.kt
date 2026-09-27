@@ -2,14 +2,14 @@ package lerdr.core.data
 
 /**
  * The structured contents of a pairing link — what `importSetupLink` feeds
- * the registry and credential store (`config.ts` `quickSetupConfig` +
+ * the registry and credential store (the local implementation `quickSetupConfig` +
  * `quickSetupInvitation`, `store.ts:646-675`).
  *
  * Two payload kinds share the [setup] field:
  * - **Bootstrap**: `setup` is the raw relay key text (`SetupFragment`,
- *   `setuphelper.go:14-22`); [invitation] is null.
+ *   relay contract); [invitation] is null.
  * - **Device invitation**: `setup` is the 43-char b64url invitation secret
- *   and [invitation] carries id/version/expiry (`store.ts:1830-1840`).
+ *   and [invitation] carries id/version/expiry.
  */
 data class InvitePayload(
     /** Relay display name (`label=`, ≤48 chars, default "This computer"). */
@@ -24,14 +24,14 @@ data class InvitePayload(
     val source: Source,
 ) {
     enum class Source {
-        /** `http(s)://host/path#params` — the oracle's QR/clipboard link. */
+        /** `http(s)://host/path#params` — Lerdr's QR/clipboard link. */
         PAGE_LINK,
 
         /** `lerdr://pair#params` — the app's deep-link scheme. */
         LERDR_LINK,
     }
 
-    /** `quickSetupInvitation` (`config.ts:208-224`). */
+    /** `quickSetupInvitation`. */
     data class Invitation(
         val id: String,
         val version: Long,
@@ -54,7 +54,7 @@ data class InvitePayload(
      * The pending auth record to hand [CredentialStore.saveInvitation]:
      * the device invitation, or the bootstrap relay key. Bootstrap keys are
      * raw strings whose UTF-8 bytes must be exactly 32 — the relay refuses
-     * to run on anything else (`RELAY_KEY_BYTES`, `config.ts:105`).
+     * to run on anything else.
      */
     fun toPendingInvitation(): RelayInvitation {
         val invite = invitation

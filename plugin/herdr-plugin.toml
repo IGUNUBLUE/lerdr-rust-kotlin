@@ -133,9 +133,9 @@ command = ["sh", "scripts/plugin-on-event.sh"]
 
 # Regex URL patterns route a modified-click (Ctrl on every platform) inside a
 # pane to an existing action; handlers run in manifest order and the first
-# match wins. Spec-only per docs/09-plugin-distribution.md — the oracle never
-# shipped handlers, and no protocol action opens a URL on a phone yet, so the
-# canonical GitHub issue/PR pattern lands on the QR deep-link pane above.
+# match wins. The Herdr plugin distribution specification defines handlers,
+# and no protocol action opens a URL on a phone yet, so the canonical GitHub
+# issue/PR pattern lands on the QR deep-link pane above.
 [[link_handlers]]
 id = "github-issue-or-pr"
 title = "Lerdr: Open Link on Phone"

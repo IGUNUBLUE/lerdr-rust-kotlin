@@ -16,8 +16,8 @@ import lerdr.core.model.BlockedMessage
 import lerdr.core.model.Interaction
 
 /**
- * Agent inventory store — StateFlow-based port of the oracle's `agents` and
- * `responding` writables (`frontend/src/lib/store.ts`).
+ * Agent inventory store — StateFlow-based implementation of Lerdr's `agents` and
+ * `responding` writables.
  *
  * The list exposed through [agents] preserves instance identity: rows that
  * merge to an equal value keep their previous object, so Compose keys on
@@ -105,7 +105,7 @@ class AgentStore(
 
     /**
      * `agent_update` delta — upsert keyed on the *message* `pane_id` (the
-     * oracle's lookup key; [Agent.paneId] itself derives from `raw_pane_id`).
+     * Lerdr's lookup key; [Agent.paneId] itself derives from `raw_pane_id`).
      */
     fun applyAgentUpdate(
         relayId: String,
@@ -119,7 +119,7 @@ class AgentStore(
             val index = _agents.value.indexOfFirst { it.paneId == paneId }
             val before = index.takeIf { it >= 0 }?.let { _agents.value[it] }
             // Blocked delta without attention_kind keeps the previous row's
-            // attention payload via a spread (the oracle's `source` merge).
+            // attention payload via a spread (Lerdr's `source` merge).
             val patch = message.asPatch().let { patch ->
                 if (before != null && rawBlocked(patch) && patch.attentionKind == null) {
                     patch.fillingFrom(before)
@@ -227,7 +227,7 @@ class AgentStore(
 
     /**
      * `acknowledgePane`'s optimistic flip — a finished pane renders `idle`
-     * before the relay's next snapshot confirms (the oracle's
+     * before the relay's next snapshot confirms (Lerdr's
      * `agentsValue.map` write inside `acknowledgePane`).
      */
     fun acknowledgeDone(paneId: String) {
@@ -278,7 +278,7 @@ class AgentStore(
     }
 
     companion object {
-        /** The oracle's 10s `markResponding` expiry. */
+        /** Lerdr's 10s `markResponding` expiry. */
         const val RESPONDING_TIMEOUT_MS = 10_000L
     }
 }

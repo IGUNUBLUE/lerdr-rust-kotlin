@@ -463,7 +463,7 @@ fn parse_claude_record(record: &serde_json::Map<String, Value>) -> (String, Stri
         return (role, human_claude_text(raw));
     }
     if role == "user" {
-        // Filter per block, like the oracle: envelope checks anchor on the
+        // Filter per block, like the retired implementation: envelope checks anchor on the
         // start of each block's text.
         let blocks = text_block_list(content);
         let kept: Vec<String> = blocks

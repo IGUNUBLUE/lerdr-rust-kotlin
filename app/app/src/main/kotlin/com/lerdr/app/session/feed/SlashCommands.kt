@@ -28,13 +28,13 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 
 /**
- * Slash-command suggestions — the feed port of the oracle's
- * `TerminalView.svelte` popover, backed by the `list_slash_commands` wire
+ * Slash-command suggestions — the feed implementation of Lerdr's
+ * the corresponding screen popover, backed by the `list_slash_commands` wire
  * action (gated on the relay's `slash_commands` capability). Parsing and
  * filtering are pure functions so the ViewModel/screens stay testable.
  */
 
-/** One catalog row — oracle `SlashCommand`. */
+/** One catalog row — Lerdr `SlashCommand`. */
 @Immutable
 data class SlashCommand(
     /** `/name` including the leading slash, already wire-validated. */
@@ -62,7 +62,7 @@ data class SlashCommandCatalog(
  */
 internal const val SLASH_COMMAND_MAX_ENTRIES = 4_096
 
-/** Oracle `MAX_VISIBLE_SLASH_COMMANDS` — the popover renders at most this many. */
+/** Lerdr `MAX_VISIBLE_SLASH_COMMANDS` — the popover renders at most this many. */
 internal const val MAX_VISIBLE_SLASH_COMMANDS = 200
 
 /** Wire shape: `/name` — letter/digit start, `.`/`_`/`:`/`-` tail, ≤120. */
@@ -119,7 +119,7 @@ internal fun parseSlashCatalog(data: JsonElement?): SlashCommandCatalog {
 }
 
 /**
- * Oracle `slashQuery` — the composer must be `/token` with no whitespace.
+ * Lerdr `slashQuery` — the composer must be `/token` with no whitespace.
  * Returns null when suggestions stay closed; `""` (bare `/`) matches all.
  */
 internal fun slashQueryFor(draft: String): String? {
@@ -127,7 +127,7 @@ internal fun slashQueryFor(draft: String): String? {
     return draft.drop(1).lowercase()
 }
 
-/** Oracle `matchingSlashCommands` — case-insensitive prefix on the name. */
+/** Lerdr `matchingSlashCommands` — case-insensitive prefix on the name. */
 internal fun matchingSlashCommands(
     catalog: SlashCommandCatalog,
     query: String?,
@@ -139,19 +139,19 @@ internal fun matchingSlashCommands(
     }
 }
 
-/** Oracle `effectiveSlashIndex` — clamps the active row into the list. */
+/** Lerdr `effectiveSlashIndex` — clamps the active row into the list. */
 internal fun effectiveSlashIndex(activeIndex: Int, filteredSize: Int): Int =
     if (filteredSize > 0) activeIndex.coerceIn(0, filteredSize - 1) else -1
 
 /**
- * Oracle `selectSlashCommand` — the command plus a trailing space when the
+ * Lerdr `selectSlashCommand` — the command plus a trailing space when the
  * command takes an argument; the cursor lands at the end either way.
  */
 internal fun slashSelectionText(command: SlashCommand): String =
     command.command + if (command.argumentHint != null) " " else ""
 
 /**
- * The suggestion popover — header + rows + the oracle's status lines.
+ * The suggestion popover — header + rows + Lerdr's status lines.
  * [activeIndex] is the keyboard-highlighted row ([effectiveSlashIndex]).
  */
 @Composable

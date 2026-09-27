@@ -89,19 +89,19 @@ data class SpeechUiState(
 }
 
 /**
- * Speech settings for one relay — port of the oracle's `SettingsView`
- * Speech section (`SettingsView.svelte` §Speech).
+ * Speech settings for one relay — implementation of Lerdr's `SettingsView`
+ * Speech section.
  *
  * - Toggle/language intents persist through [SpeechPreferences]; language
  *   changes and disabling both stop playback (`setSpeechLanguage` and
- *   `setSpeechEnabled` call `stopSpeech` in the oracle — disabling is
+ *   `setSpeechEnabled` call `stopSpeech` in Lerdr — disabling is
  *   observed by the player itself, language switches stop here).
  * - `adoptRelaySpeech` runs whenever the relay advertises speakable
  *   languages (`push_config.speech_languages`, `speech_voices`, and the
  *   `speech_voices_list`/`speech_voice_*` payloads all carry them).
  * - The voice catalog auto-loads once when speech is on and the relay is
  *   connected + `speech_voice_management` capable, re-arming on reconnect —
- *   the oracle's `speechVoiceRequested` effect.
+ *   Lerdr's `speechVoiceRequested` effect.
  * - `speech_voices` broadcasts and voice-op `command_result` payloads share
  *   one merge path (`adoptSpeechVoices` parity).
  */
@@ -174,7 +174,7 @@ class SpeechViewModel(
                 (frame.message as? SpeechVoicesMessage)?.let { adoptCatalog(it) }
             }
         }
-        // The oracle's `$effect`: pull the catalog once per capable stretch
+        // Lerdr's `$effect`: pull the catalog once per capable stretch
         // while speech is on; a disconnect or lost capability re-arms it.
         viewModelScope.launch {
             var requested = false
@@ -201,7 +201,7 @@ class SpeechViewModel(
                 }
             }
         }
-        // Player failures surface like the oracle's `onIssue` toast.
+        // Player failures surface like Lerdr's `onIssue` toast.
         viewModelScope.launch {
             player.state.collect { state ->
                 if (state.phase == SpeechPhase.ERROR && state.issue != null) {
@@ -263,7 +263,7 @@ class SpeechViewModel(
     /**
      * `changeSpeechVoice` — one install/remove per language at a time; the
      * reply payload refreshes the catalog (the broadcast lands too — the
-     * merge is idempotent). Voice downloads get the oracle's 5-minute budget.
+     * merge is idempotent). Voice downloads get Lerdr's 5-minute budget.
      */
     private fun changeSpeechVoice(language: String, install: Boolean) {
         if (!isSpeechLanguage(language) || language in busyVoices.value) return
@@ -360,7 +360,7 @@ class SpeechViewModel(
     }
 
     /**
-     * One row per offered language — the oracle renders all five whether
+     * One row per offered language — Lerdr renders all five whether
      * or not the relay has a voice for them; missing rows read "No voice".
      */
     private fun voiceRows(

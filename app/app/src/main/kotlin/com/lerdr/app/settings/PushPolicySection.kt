@@ -46,8 +46,8 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 /**
- * Per-relay "Push notifications" card — the oracle's
- * `NotificationSettings.svelte` (docs/04 §Settings: "per-relay push policy
+ * Per-relay "Push notifications" card — Lerdr's
+ * the corresponding screen (docs/04 §Settings: "per-relay push policy
  * editor"). Wired into `SettingsScreen` per connected relay.
  *
  * [PushPolicySection] owns the ViewModel seam (entry-point lookup +
@@ -87,7 +87,7 @@ fun PushPolicySection(
 @Immutable
 private data class CategoryUi(val key: String, val label: String, val detail: String)
 
-/** Oracle `CATEGORY_LABELS`/`CONFIGURABLE_CATEGORIES` — the four editable categories. */
+/** Lerdr `CATEGORY_LABELS`/`CONFIGURABLE_CATEGORIES` — the four editable categories. */
 private val CONFIGURABLE_CATEGORIES = listOf(
     CategoryUi("attention", "Approval needed", "An agent needs your review."),
     CategoryUi("question", "Questions", "An agent needs your answer."),
@@ -95,7 +95,7 @@ private val CONFIGURABLE_CATEGORIES = listOf(
     CategoryUi("test", "Test notifications", "Delivery checks for this device."),
 )
 
-/** Oracle settle `<select>`: 0 / 2 s / 5 s / 15 s. */
+/** Lerdr settle `<select>`: 0 / 2 s / 5 s / 15 s. */
 private val SETTLE_OPTIONS = listOf(
     0L to "Immediately",
     2_000L to "2 seconds",
@@ -103,7 +103,7 @@ private val SETTLE_OPTIONS = listOf(
     15_000L to "15 seconds",
 )
 
-/** Oracle cooldown `<select>`: none / 30 s / 1 min / 5 min. */
+/** Lerdr cooldown `<select>`: none / 30 s / 1 min / 5 min. */
 private val COOLDOWN_OPTIONS = listOf(
     0L to "None",
     30_000L to "30 seconds",
@@ -111,7 +111,7 @@ private val COOLDOWN_OPTIONS = listOf(
     300_000L to "5 minutes",
 )
 
-/** Oracle snooze `<select>` timed options: 1 h / 8 h / 24 h. */
+/** Lerdr snooze `<select>` timed options: 1 h / 8 h / 24 h. */
 private val SNOOZE_DURATIONS = listOf(
     3_600_000L to "1 hour",
     28_800_000L to "8 hours",
@@ -364,7 +364,7 @@ private fun PolicyControls(
     }
 }
 
-/** One wrapping row of FilterChips — the Compose answer to the oracle's `<select>`. */
+/** One wrapping row of FilterChips — the Compose answer to Lerdr's `<select>`. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PolicyChips(
@@ -391,7 +391,7 @@ private fun PolicyChips(
 }
 
 /**
- * The oracle's snooze `<select>` as a chip group: Not snoozed / a display-only
+ * Lerdr's snooze `<select>` as a chip group: Not snoozed / a display-only
  * "Until …" chip while a timed snooze is armed / the fixed durations /
  * "Until I turn it back on".
  */
@@ -460,7 +460,7 @@ private fun cardItemColors() = ListItemDefaults.colors(
     containerColor = Color.Transparent,
 )
 
-/** Keep a foreign wire value selectable — the oracle's select would blank it. */
+/** Keep a foreign wire value selectable — Lerdr's select would blank it. */
 private fun optionsWithCurrent(
     options: List<Pair<Long, String>>,
     current: Long,
@@ -479,7 +479,7 @@ private fun formatSnoozeUntil(rfc3339: String): String = try {
     rfc3339
 }
 
-/** Oracle `testMessage` — relay-side acceptance only, verbatim copy. */
+/** Lerdr `testMessage` — relay-side acceptance only, verbatim copy. */
 private fun testMessage(test: PushTestUi): String = when (test) {
     PushTestUi.Sending -> "Asking the relay service to send a neutral test…"
     is PushTestUi.Accepted -> {

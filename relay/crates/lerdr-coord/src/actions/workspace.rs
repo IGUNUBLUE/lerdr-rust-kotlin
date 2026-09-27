@@ -1,11 +1,11 @@
 //! Workspace actions — `workspace.go`'s `HandleWorkspace*` port.
 //!
-//! Method mapping (oracle CLI → socket): `workspace create` →
+//! Method mapping (retired implementation CLI → socket): `workspace create` →
 //! `workspace.create`, `workspace rename` → `workspace.rename`,
 //! `WorkspaceMove` → `workspace.move`, `WorkspaceMoveBlock` →
 //! `workspace.move_block`, `WorkspaceClose` → `workspace.close`,
 //! `WorkspaceList` → `workspace.list`. The socket result JSON is passed
-//! through into `command_result.data` where the oracle surfaces created
+//! through into `command_result.data` where the retired implementation surfaces created
 //! ids; pre-dispatch group-consent refusals keep their structured codes.
 
 use std::collections::BTreeSet;
@@ -63,7 +63,7 @@ struct EmptyParams {}
 
 /// `HandleWorkspaceCreate` — label first, then the home-jailed cwd
 /// (`Lifecycle.ResolveCwd`), then `workspace.create{cwd,label,focus:false}`.
-/// The oracle passes `--no-focus` — a phone-initiated create must not steal
+/// The retired implementation passes `--no-focus` — a phone-initiated create must not steal
 /// the desktop's focus.
 pub(crate) async fn workspace_create(
     ctx: ActionContext,

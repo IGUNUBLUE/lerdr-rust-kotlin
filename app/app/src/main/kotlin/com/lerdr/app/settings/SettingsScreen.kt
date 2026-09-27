@@ -345,12 +345,6 @@ fun SettingsContent(
                             )
                         },
                     )
-                    LerdrSettingsDivider()
-                    ListItem(
-                        colors = listItemGroupColors(),
-                        headlineContent = { Text("Reference implementation") },
-                        supportingContent = { Text("github.com/IGUNUBLUE/lerdr") },
-                    )
                 }
             }
         }

@@ -16,7 +16,7 @@ import kotlinx.coroutines.launch
 
 /**
  * Process-scoped app-lock latch shared by the UI gate and the session
- * bootstrap. The oracle "verifies before it will connect at open"
+ * bootstrap. Lerdr "verifies before it will connect at open"
  * (docs/security.md) — [awaitUnlocked] is what `LerdrApp` suspends
  * `sessions.start()` on, so no relay socket opens before verification.
  *

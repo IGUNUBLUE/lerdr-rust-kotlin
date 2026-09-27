@@ -6,7 +6,7 @@ import kotlinx.serialization.Serializable
 
 /**
  * `Interaction` — the structured-question schema from
- * docs/specs/questions.md §1 (internal/question/parser.go).
+ * docs/specs/questions.md §1 (relay contract).
  *
  * `kind` is modeled as a raw string: the spec lists only
  * `single_select`/`multi_select`, but the protocol.envelope fixture carries

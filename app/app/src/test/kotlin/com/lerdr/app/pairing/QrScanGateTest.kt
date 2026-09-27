@@ -44,7 +44,7 @@ class QrScanGateTest {
     }
 
     @Test
-    fun `oracle page link is emitted`() {
+    fun `Lerdr page link is emitted`() {
         val gate = QrScanGate()
         val expires = System.currentTimeMillis() + 600_000
         val link = "https://relay.example.com/#setup=${"s".repeat(43)}" +

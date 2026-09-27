@@ -29,8 +29,8 @@ import lerdr.core.store.RelayStatus
 import lerdr.core.transport.RelaySession
 
 /**
- * One paired device row — the oracle's `DeviceSummary`
- * (`device-auth.ts:38-46`) plus the wire `revoked` flag so a tombstone
+ * One paired device row — Lerdr's `DeviceSummary`
+ * plus the wire `revoked` flag so a tombstone
  * that slips through the relay's filter still renders honestly.
  */
 @Immutable
@@ -40,7 +40,7 @@ data class DeviceUi(
     val name: String,
     val role: DeviceRole,
     val pairedAtEpochMs: Long,
-    /** null or ≤0 → "Never" (the wire emits Go's zero time for unseen). */
+    /** null or ≤0 → "Never" (the wire emits the wire's zero timestamp for unseen). */
     val lastSeenAtEpochMs: Long?,
     /** The relay marked this row as the caller's own credential. */
     val current: Boolean,
@@ -48,7 +48,7 @@ data class DeviceUi(
 )
 
 /**
- * A minted one-use invitation rendered as a shareable link — the oracle
+ * A minted one-use invitation rendered as a shareable link — Lerdr
  * builds `location.href#setup=…&invite=…`; here the equivalent
  * `lerdr://pair#…` deep link that `SetupLink.parse` round-trips.
  */
@@ -62,7 +62,7 @@ data class InvitationUi(
     val qr: QrBitmapUi?,
 )
 
-/** `qrBitmap` (`frontend/src/lib/qr.ts`) — the relay's packed module matrix, unpacked. */
+/** `qrBitmap` — the relay's packed module matrix, unpacked. */
 @Immutable
 data class QrBitmapUi(
     /** QR width in modules (21..177). */
@@ -91,14 +91,14 @@ data class DevicesUiState(
     val actionBusy: Boolean = false,
     /** `device_list` answered at least once — empty-list copy only then. */
     val fetched: Boolean = false,
-    /** Oracle `status` line — success text or failure detail. */
+    /** Lerdr `status` line — success text or failure detail. */
     val status: String? = null,
     val statusIsError: Boolean = false,
     /** Open invitation block — link (and QR when offered) + copy affordance. */
     val invitation: InvitationUi? = null,
     /** `self_update` capability — the update row renders when true. */
     val updateSupported: Boolean = false,
-    /** Live `connection.update` — the oracle's `updateStatus` source. */
+    /** Live `connection.update` — Lerdr's `updateStatus` source. */
     val update: UpdateState? = null,
     /** `check_update`/`install_update` in flight — latches both buttons. */
     val updateBusy: Boolean = false,
@@ -107,7 +107,7 @@ data class DevicesUiState(
 )
 
 /**
- * Devices card state owner — the `DeviceSettings.svelte` port.
+ * Devices card state owner — the the corresponding screen port.
  *
  * Wire calls (`SessionRepository.request`, payload in `command_result.data`):
  * - `device_list` → `{current_device_id, role, devices[]}` — each device is
@@ -115,7 +115,7 @@ data class DevicesUiState(
  *   version/revoked/current?` (RFC3339 timestamps).
  * - `rename_device` (`device_id`, `name`) → `{device}` — then re-list.
  * - `create_device_invitation` (`name`, `role`) → `{invitation}` — strict
- *   validation like the oracle before the link is composed.
+ *   validation like Lerdr before the link is composed.
  * - `revoke_device` (`device_id`) → `{device}` — then re-list; revoking our
  *   own row kills this session ~250 ms after the reply (deferred sweep).
  * - `reset_devices` → no data — wipes every credential incl. ours and
@@ -194,7 +194,7 @@ class DevicesViewModel(
         refresh()
     }
 
-    /** Header refresh affordance + post-mutation re-list (oracle `refreshDevices`). */
+    /** Header refresh affordance + post-mutation re-list (Lerdr `refreshDevices`). */
     fun refresh() {
         if (_uiState.value.refreshing) return
         viewModelScope.launch {
@@ -202,7 +202,7 @@ class DevicesViewModel(
             try {
                 applyList(sessions.request(relayId, Inbound(type = "device_list")).data)
             } catch (failure: Exception) {
-                // Offline fetches keep the stale list quietly — the oracle
+                // Offline fetches keep the stale list quietly — Lerdr
                 // only rethrows while the connection is live.
                 if (sessions.connectionNow(relayId)?.status == RelayStatus.CONNECTED) {
                     setStatus(failure.displayMessage(), isError = true)
@@ -258,7 +258,7 @@ class DevicesViewModel(
     /**
      * `resetDevices` — `{type}` only. Success wipes every credential on the
      * relay (ours included — the sweep closes this session) and re-arms
-     * bootstrap pairing; the local list clears like the oracle's.
+     * bootstrap pairing; the local list clears like Lerdr's.
      */
     fun resetDevices() {
         runAction("All device credentials were reset.") {
@@ -277,7 +277,7 @@ class DevicesViewModel(
 
     /**
      * `createDeviceInvitation` — `{type, name, role}`; the reply's
-     * `{invitation}` validates exactly like the oracle before it becomes a
+     * `{invitation}` validates exactly like Lerdr before it becomes a
      * `lerdr://pair#…` link. Then `qr_code` draws it when the relay
      * advertises `invitation_qr`.
      */
@@ -310,7 +310,7 @@ class DevicesViewModel(
                     "Invitation created. Share the one-use link below before it expires.",
                     isError = false,
                 )
-                // Detached like the oracle's `void onQrCode(link)` — the QR
+                // Detached like Lerdr's `void onQrCode(link)` — the QR
                 // pops in when the relay answers, busy is already clear.
                 viewModelScope.launch { fetchQr(link) }
             } catch (failure: Exception) {
@@ -321,7 +321,7 @@ class DevicesViewModel(
         }
     }
 
-    /** Copy succeeded — oracle's `'Invitation link copied.'` status line. */
+    /** Copy succeeded — Lerdr's `'Invitation link copied.'` status line. */
     fun invitationCopied() = setStatus("Invitation link copied.", isError = false)
 
     /** Clipboard write refused — the link stays selectable for manual copy. */
@@ -333,7 +333,7 @@ class DevicesViewModel(
     /**
      * `checkRelayUpdate` — the reply's `data.update` lands on the
      * connection row via `SessionRepository`; failures surface on the
-     * status line like the oracle's toast.
+     * status line like Lerdr's toast.
      */
     fun checkUpdate() {
         if (_uiState.value.updateBusy) return
@@ -374,7 +374,7 @@ class DevicesViewModel(
 
     // ── internals ─────────────────────────────────────────────────────
 
-    /** Oracle `run` — busy latch, status/error plumbing, success text. */
+    /** Lerdr `run` — busy latch, status/error plumbing, success text. */
     private fun runAction(success: String, action: suspend () -> Unit) {
         if (_uiState.value.actionBusy) return
         viewModelScope.launch {
@@ -415,7 +415,7 @@ class DevicesViewModel(
                 )
             }
         } catch (ignored: Exception) {
-            // The link itself is still shown and copyable (oracle parity).
+            // The link itself is still shown and copyable (Lerdr parity).
         }
     }
 
@@ -424,7 +424,7 @@ class DevicesViewModel(
         val devices = (obj?.get("devices") as? JsonArray)
             .orEmpty()
             .mapNotNull { (it as? JsonObject)?.toDeviceUi() }
-        // Oracle sort: current first, last-seen desc, then name asc.
+        // Lerdr sort: current first, last-seen desc, then name asc.
         val currentId = obj?.string("current_device_id") ?: _uiState.value.currentDeviceId
         _uiState.update {
             it.copy(
@@ -495,7 +495,7 @@ class DevicesViewModel(
         }
     }
 
-    // ── invitation + qr parsing (oracle-strict) ───────────────────────
+    // ── invitation + qr parsing (Lerdr-strict) ───────────────────────
 
     /** The relay's `invitation` payload after validation. */
     @Immutable
@@ -507,7 +507,7 @@ class DevicesViewModel(
     )
 
     /**
-     * `createDeviceInvitation`'s field checks (`store.ts:1818-1829`): the
+     * `createDeviceInvitation`'s field checks: the
      * id/secret shapes are exact, the version is a positive safe integer,
      * and the expiry parses. Anything else is a relay bug worth flagging.
      */
@@ -530,7 +530,7 @@ class DevicesViewModel(
         Exception("Relay returned an invalid device invitation")
 
     /**
-     * The oracle's `link.hash` params on a `lerdr://pair` deep link —
+     * Lerdr's `link.hash` params on a `lerdr://pair` deep link —
      * `SetupLink.parse` round-trips exactly these fields.
      */
     private fun invitationLink(
@@ -574,10 +574,10 @@ class DevicesViewModel(
         URLEncoder.encode(value, Charsets.UTF_8.name())
 
     private companion object {
-        /** Oracle `maxlength` on the name fields. */
+        /** Lerdr `maxlength` on the name fields. */
         const val MAX_DEVICE_NAME_CHARS = 64
 
-        /** The oracle's `.slice(0, 80)` clamp on the parsed summary name. */
+        /** Lerdr's `.slice(0, 80)` clamp on the parsed summary name. */
         const val MAX_SUMMARY_NAME_CHARS = 80
 
         /** Relay capability that backs the `qr_code` action. */

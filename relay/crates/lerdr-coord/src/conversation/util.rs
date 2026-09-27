@@ -1,4 +1,4 @@
-//! Shared text/encoding helpers — ports of the oracle's `history.NormalizeLine`,
+//! Shared text/encoding helpers — ports of the retired implementation's `history.NormalizeLine`,
 //! `sanitizeText`, `clampText`, `textValue`, `stableRowID`, and the
 //! `encoding/json` marshalling behaviour `textValue` relies on for non-string
 //! tool payloads.

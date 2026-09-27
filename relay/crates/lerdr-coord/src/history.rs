@@ -14,7 +14,7 @@
 //! (`seqmatch`) rebases the divergent tail — with a stale-refusal counter
 //! guarding ambiguous overlaps — and, failing both, the body appends.
 //!
-//! Persistence mirrors the oracle: one JSON file per pane under
+//! Persistence mirrors the retired implementation: one JSON file per pane under
 //! `<dir>/claude-history/` (`paneID` with `/`/`:` → `_`), written through
 //! a `.tmp` rename at most every `SAVE_INTERVAL`, loaded lazily on first
 //! touch, and reaped by [`Manager::reconcile`]/[`Manager::discard`].
@@ -101,7 +101,7 @@ impl<'a> Matcher<'a> {
                         // `i - k + 1`/`j - k + 1` written as `i + 1 - k`/
                         // `j + 1 - k`: the match ending at (i, j) can be
                         // at most i + 1 / j + 1 long, so the reorder is
-                        // exact — the oracle's signed ints compute
+                        // exact — the retired implementation's signed ints compute
                         // `0 - 1 + 1 = 0` for a first-line match, where a
                         // literal `j - k` would underflow.
                         besti = i + 1 - k;
@@ -188,7 +188,7 @@ impl<'a> Matcher<'a> {
 /// letter final, OSC terminated by BEL, the `\x1b()`/`[0-9A-B]` charset
 /// selects, `\x1b[>=<]`, and the `?`-mode CSI ending `[hlJKHfG]`. Kept
 /// separate deliberately — history normalization must erase exactly the
-/// sequences the oracle's regex does.
+/// sequences the retired implementation's regex does.
 fn strip_ansi_history(line: &str) -> String {
     let bytes = line.as_bytes();
     let mut out = String::with_capacity(line.len());
@@ -426,7 +426,7 @@ pub(crate) struct Manager {
 impl Manager {
     /// `history.NewManager(cacheDir)` — history lives under
     /// `<dir>/claude-history`. Directory creation is best-effort exactly
-    /// like the oracle (`os.MkdirAll` error discarded): persistence is an
+    /// like the retired implementation (`os.MkdirAll` error discarded): persistence is an
     /// optimization; the in-memory merge is the semantic part.
     pub(crate) fn new(dir: &Path) -> Self {
         let dir = dir.join("claude-history");
@@ -463,7 +463,7 @@ impl Manager {
     }
 
     /// `loadState` — the in-memory state else the persisted file
-    /// (malformed JSON reads as empty, like the oracle's discarded
+    /// (malformed JSON reads as empty, like the retired implementation's discarded
     /// `Unmarshal` error). Borrows only `states` so callers can still
     /// touch `last_save` under the same lock.
     fn load_state<'a>(
@@ -667,7 +667,7 @@ mod tests {
 
     /// Regression: `find_longest_match` computed `besti = i - k + 1` /
     /// `bestj = j - k + 1` — a length-1 match at `i == 0` or `j == 0`
-    /// underflows the subtraction before the `+1`. The oracle's signed
+    /// underflows the subtraction before the `+1`. The retired implementation's signed
     /// ints produce `0` there; the merged content must survive too.
     #[test]
     fn sequence_match_first_line_match_does_not_underflow() {

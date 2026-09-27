@@ -47,7 +47,7 @@ import com.lerdr.core.designsystem.theme.LerdrTheme
 import dagger.hilt.android.EntryPointAccessors
 
 /**
- * Speech settings for one relay (docs/04 §Settings; the oracle's
+ * Speech settings for one relay (docs/04 §Settings; Lerdr's
  * `SettingsView` §Speech) — the read-aloud toggle, language picker, a
  * Speak test, and the per-relay voice catalog when the relay advertises
  * `speech_voice_management`.
@@ -224,7 +224,7 @@ private fun SpeechSectionHeader() {
     }
 }
 
-/** `speech-language` select — all five offered languages, oracle parity. */
+/** `speech-language` select — all five offered languages, Lerdr parity. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LanguagePicker(
@@ -270,7 +270,7 @@ private fun LanguagePicker(
 }
 
 /**
- * Small status/warning line under a control — the oracle's `p.hint`.
+ * Small status/warning line under a control — Lerdr's `p.hint`.
  * Polite live region: appearing/changing hints announce to screen readers.
  */
 @Composable

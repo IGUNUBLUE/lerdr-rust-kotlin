@@ -636,7 +636,7 @@ pub(crate) fn contained_regular_file(path: &Path, root: &Path) -> Option<PathBuf
     let real_root = std::fs::canonicalize(root).ok()?;
     let real_path = std::fs::canonicalize(path).ok()?;
     let relative = real_path.strip_prefix(&real_root).ok()?;
-    // `..` escapes are already excluded by strip_prefix; the oracle also
+    // `..` escapes are already excluded by strip_prefix; the retired implementation also
     // rejects the root itself ("." and "..").
     if relative.as_os_str().is_empty() {
         return None;
@@ -684,7 +684,7 @@ pub(crate) fn load_tail_file(file: &std::fs::File, limit: i64) -> std::io::Resul
 
 /// `openConversationSource` — `O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK`.
 /// `O_NOFOLLOW` is passed via `OpenOptionsExt::custom_flags` so no `libc`
-/// dependency is needed; constants match the oracle's `darwin || linux` build.
+/// dependency is needed; constants match the retired implementation's `darwin || linux` build.
 #[cfg(target_os = "linux")]
 pub(crate) fn open_conversation_source(path: &Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;

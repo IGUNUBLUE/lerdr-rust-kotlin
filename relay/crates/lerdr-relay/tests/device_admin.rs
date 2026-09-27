@@ -1,9 +1,9 @@
 //! Device-administration actions — the `s.deviceAuth.*` arms of the
-//! oracle's action switch (`internal/app/server.go:757-853`) served by the
+//! retired implementation's action switch (`internal/app/server.go:757-853`) served by the
 //! relay's own auth store: `device_list`, `rename_device`, `revoke_device`,
 //! `create_device_invitation`, `reset_devices`.
 //!
-//! Success replies arrive as `command_result` (the oracle's whole reply)
+//! Success replies arrive as `command_result` (the retired implementation's whole reply)
 //! followed by a terminal `action_receipt` at `confirmed`; store refusals
 //! answer the `failed` `command_result` alone. `revoke_device` on the
 //! caller's own credential and `reset_devices` close the connection ~250 ms
@@ -235,7 +235,7 @@ async fn rename_device_unknown_device_fails() {
     assert_eq!(result["request_id"], "req-5");
     assert_eq!(result["ok"], false);
     assert_eq!(result["phase"], "failed");
-    // The oracle's `deviceCredentialID` miss string, verbatim.
+    // The retired implementation's `deviceCredentialID` miss string, verbatim.
     assert_eq!(result["error"], "Device credential was not found");
     assert!(result["data"].is_null());
 
@@ -308,7 +308,7 @@ async fn revoke_device_self_answers_then_disconnects() {
 
 #[tokio::test]
 async fn revoke_last_controller_is_refused() {
-    // device-1 is the only controller — the oracle refuses to orphan the hub.
+    // device-1 is the only controller — the retired implementation refuses to orphan the hub.
     let store = Arc::new(MemoryAuthStore::new());
     let (mut client, mut session, server, _sink_rx) = establish(&store, test_config()).await;
 
@@ -468,7 +468,7 @@ async fn reset_devices_wipes_rearms_and_disconnects() {
     .await;
     assert_eq!(result["ok"], true);
     assert_eq!(result["phase"], "completed");
-    // Reset success carries no data (the oracle's `nil` payload).
+    // Reset success carries no data (the retired implementation's `nil` payload).
     assert!(result["data"].is_null());
     assert_eq!(receipt["receipt"]["phase"], "confirmed");
 

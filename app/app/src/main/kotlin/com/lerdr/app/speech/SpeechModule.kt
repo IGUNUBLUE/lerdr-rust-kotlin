@@ -15,7 +15,7 @@ import kotlinx.coroutines.CoroutineScope
 
 /**
  * Speech bindings — the process-wide [RelaySpeechPlayer]. The player lives
- * on [AppScope] like the oracle's module-level speech state, so reading
+ * on [AppScope] like Lerdr's module-level speech state, so reading
  * survives leaving the screen that started it.
  */
 @Module

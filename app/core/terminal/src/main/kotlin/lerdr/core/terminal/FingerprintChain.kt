@@ -9,10 +9,10 @@ import kotlinx.serialization.json.JsonPrimitive
 /**
  * Rolling `content_fingerprint` validation — the per-pane integrity chain
  * the released client runs in its `pane_delta` / `pane_content` /
- * `pane_unchanged` handlers (`store.ts` pane frame dispatch).
+ * `pane_unchanged` handlers.
  *
  * The fingerprint itself is `hex(sha256(content_utf8))[0:16]`, computed
- * server-side (`server.go` `paneFingerprint`). The oracle client does NOT
+ * server-side (relay contract `paneFingerprint`). Lerdr client does NOT
  * recompute it on the hot path — `docs/03-protocol.md` §5: "recompute
  * nothing — the server sends the new fingerprint; store it as next base."
  * What the chain validates is *continuity*: a `pane_delta` applies only
@@ -158,7 +158,7 @@ class FingerprintChain {
 
         /**
          * Local re-hash of committed content against the claimed
-         * fingerprint — hardening beyond the oracle (which trusts the wire
+         * fingerprint — hardening beyond Lerdr (which trusts the wire
          * value). A mismatch proves the post-apply bytes diverged from the
          * server's frame (corrupted delta or non-conforming relay); the
          * correct reaction is a resync, identical to a chain break.

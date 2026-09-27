@@ -42,7 +42,7 @@ pub(crate) struct FileSource {
     pub revision: String,
 }
 
-/// `fileIdentity` — unix stat fields `Dev`/`Ino` joined as the oracle formats
+/// `fileIdentity` — unix stat fields `Dev`/`Ino` joined as the retired implementation formats
 /// them (`"Dev=…,Ino=…"`).
 pub(crate) fn file_identity(info: &std::fs::Metadata) -> String {
     format!("Dev={},Ino={}", info.dev(), info.ino())
@@ -357,7 +357,7 @@ fn inspect_claude_segment_footer(
             )
         }
     };
-    // The oracle also retains `FooterDigest`; it is only consumed by the
+    // The retired implementation also retains `FooterDigest`; it is only consumed by the
     // background evidence machinery this port does not carry.
     let segment = ClaudeSegment {
         session_id: session_id.to_string(),

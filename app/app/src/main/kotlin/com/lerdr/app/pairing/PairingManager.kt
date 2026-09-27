@@ -34,8 +34,8 @@ sealed interface PairingOutcome {
 }
 
 /**
- * `importSetupLink` parity: invitation → registry + pending credential →
- * connect → await the enrollment handshake.
+ * `importSetupLink` stores the invitation and pending credential, connects,
+ * then awaits the enrollment handshake.
  *
  * The transport needs no dedicated redemption call — presenting
  * `DeviceAuthentication.invitation` at dial runs the normal E2EE handshake,
@@ -103,7 +103,7 @@ class PairingManager @Inject constructor(
     }
 
     companion object {
-        /** Oracle budget for the whole redemption round-trip. */
+        /** Lerdr budget for the whole redemption round-trip. */
         const val PAIRING_TIMEOUT_MS = 30_000L
     }
 }

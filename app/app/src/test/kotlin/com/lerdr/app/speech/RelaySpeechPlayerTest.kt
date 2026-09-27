@@ -189,7 +189,7 @@ class RelaySpeechPlayerTest {
         h.pump()
 
         // Playback of chunk 0 parks; the loop must already hold chunk 1's
-        // request — the oracle's prefetch.
+        // request — Lerdr's prefetch.
         val parkedPlay = CompletableDeferred<Unit>()
         h.sink.gate = parkedPlay
         assertThat(h.player.speak("r1", TWO_CHUNKS)).isTrue()
@@ -321,7 +321,7 @@ class RelaySpeechPlayerTest {
     }
 
     @Test
-    fun `a reply without audio fails like the oracle`() = runTest {
+    fun `a reply without audio fails like Lerdr`() = runTest {
         val h = Harness(this)
         h.enabled.value = true
         h.pump()

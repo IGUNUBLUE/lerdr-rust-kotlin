@@ -5,7 +5,7 @@ import org.junit.Test
 
 /**
  * [AckGate] state machine — the client's side of the pane-watch ack
- * contract ported from `store.ts`. Every test asserts both the emitted
+ * contract ported from the local implementation. Every test asserts both the emitted
  * intents (in wire order) and the gate's observable state.
  */
 class AckGateTest {

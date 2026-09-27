@@ -8,9 +8,9 @@ import kotlinx.serialization.json.doubleOrNull
 import lerdr.core.model.Segment
 
 /**
- * Pane delta codec — `internal/panedelta/delta.go` semantics.
+ * Pane delta codec — relay contract semantics.
  *
- * [apply] is the Go `Apply` port (relay-side verifier semantics);
+ * [apply] is the prior relay implementation port (relay-side verifier semantics);
  * [applyStrict] is the normative client apply — the boundary-table model
  * the released JS client implements (docs/specs/pane-delta.md §6).
  */
@@ -21,7 +21,7 @@ object PaneDelta {
     const val SEGMENT_OVERHEAD_BYTES = 64
 
     /**
-     * Go `strings.SplitAfter(s, "\n")`: each element keeps its trailing
+     * prior relay implementation: each element keeps its trailing
      * `\n`, and a final `\n` leaves a trailing `""` element. Kotlin's
      * `split` drops trailing empties, so this is a manual scan.
      */
@@ -39,7 +39,7 @@ object PaneDelta {
     }
 
     /**
-     * Go `Apply(previous, segments)`: `copy_lines > 0` selects a line range
+     * prior relay implementation: `copy_lines > 0` selects a line range
      * out of `splitAfterNewline(previous)`; anything else appends `text`.
      * Returns null on a bounds violation (caller forces a `read_pane`).
      */
@@ -59,7 +59,7 @@ object PaneDelta {
     }
 
     /**
-     * The deployed client's apply (store.ts `applyPaneDelta`): indexes
+     * The deployed client's apply: indexes
      * `previous` by a newline boundary table, so `copy_lines` may legally
      * reach `count("\n")+1` — the shape the relay emits for metadata-only
      * frames. Rejects malformed segments where Go's `Apply` would treat
@@ -103,7 +103,7 @@ object PaneDelta {
     }
 
     /**
-     * Go `Build(previous, current)` — sender-side reference port, kept for
+     * prior relay implementation — sender-side reference port, kept for
      * fixture verification (the client never builds deltas).
      */
     fun build(previous: String, current: String): List<Segment> {
@@ -154,7 +154,7 @@ object PaneDelta {
         return segments
     }
 
-    /** Go `Efficient` — all lengths are UTF-8 bytes. */
+    /** prior relay implementation — all lengths are UTF-8 bytes. */
     fun efficient(segments: List<Segment>, current: String): Boolean {
         var literalBytes = 0
         for (segment in segments) literalBytes += segment.text.encodeToByteArray().size

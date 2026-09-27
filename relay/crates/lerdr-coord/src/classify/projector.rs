@@ -8,7 +8,7 @@
 //! `Topology::accept` emits [`PaneTransition`]s inside the commit; the
 //! actor forwards the whole [`AcceptOutcome`] once the snapshot is
 //! published. This task is the drain: each transition becomes an async
-//! task (the oracle's `transitionTasks.Start`) that re-reads the *live*
+//! task (the retired implementation's `transitionTasks.Start`) that re-reads the *live*
 //! topology through the `watch` receiver — every fence
 //! (`BlockedTransitionCurrent`, `AttentionTransitionCurrent`,
 //! `CompletionCurrent`, `TransitionCurrent`) sees the latest committed
@@ -361,7 +361,7 @@ async fn handle_transition(deps: &ProjectorDeps, transition: PaneTransition) {
     let mut blocked_event_id = String::new();
     let mut blocked_content_rev = 0i64;
     if let Some(agent) = &agent_state {
-        // The oracle reads `session` only when the transition is still
+        // The retired implementation reads `session` only when the transition is still
         // current — for `working` the fence short-circuits true.
         if status != "working"
             || deps
@@ -647,7 +647,7 @@ async fn enrich_blocked(deps: &ProjectorDeps, pane_id: &str, agent: &str) -> Cla
         )
         .await;
         let Ok(Ok(read)) = read else {
-            // Read error — the oracle's `setAgentAttention` fallback.
+            // Read error — the retired implementation's `setAgentAttention` fallback.
             return Classification {
                 kind: AttentionKind::Unknown,
                 prompt: "Agent needs inspection".to_owned(),
@@ -659,7 +659,7 @@ async fn enrich_blocked(deps: &ProjectorDeps, pane_id: &str, agent: &str) -> Cla
             record_fill_answers(pane_id, &mut classification, &deps.questions);
             return classification;
         }
-        // `blockedClassificationRetryDelay`, cancellable like the oracle's
+        // `blockedClassificationRetryDelay`, cancellable like the retired implementation's
         // `ctx.Done()` select arm.
         tokio::select! {
             () = deps.cancel.cancelled() => return classification,
@@ -673,7 +673,7 @@ async fn enrich_blocked(deps: &ProjectorDeps, pane_id: &str, agent: &str) -> Cla
 /// (recent-unwrapped, 80 lines, ansi) under the 3s bound, `Classify`,
 /// then `setAgentAttention`'s record/fill bookkeeping — all inside
 /// [`classify_semantics`]. A read error yields the `unknown` +
-/// "Agent needs inspection" fallback the oracle writes onto the row.
+/// "Agent needs inspection" fallback the retired implementation writes onto the row.
 fn enrich_hook(deps: &ProjectorDeps) -> crate::actor::EnrichHook {
     let client = deps.handle.client.clone();
     let questions = deps.questions.clone();

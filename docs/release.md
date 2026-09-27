@@ -77,14 +77,9 @@ git push origin v<x.y.z>
   builds `lerdr-relay`, starts it on `127.0.0.1:8377` with a generated
   32-byte token, runs `WireProbeTest`.
 
-## Known gaps (tracked for the relay crates)
+## Release implementation status
 
-- `lerdr-relay` has no `release-manifest`/`verify-release`/`seal-release`/
-  `prune-releases`/`activate-release` subcommands yet. Packaging falls back
-  to `scripts/release-manifest.py` (identical manifest schema) and the
-  install-time checks degrade to manifest-field + `version --json` stamps —
-  both probe for the subcommands and switch to them automatically when they
-  land. `install.sh` still requires the binary-side subcommands at install
-  time, so full plugin installs stay blocked until they exist.
-- `support-state.json` does not emit `release_directory` yet — the smoke
-  check asserts it once the field exists.
+`lerdr-relay` provides `release-manifest`, `verify-release`,
+`activate-release`, `seal-release`, and `prune-releases`. Packaging and
+install-time verification use the same manifest schema, and
+`support-state.json` includes `release_directory` for native smoke checks.

@@ -1,4 +1,4 @@
-//! `paneFingerprint` parity — `internal/app/server.go`.
+//! `paneFingerprint` — `internal/app/server.go`.
 //!
 //! ```text
 //! hex( sha256(utf8(content)) [0..8] )  →  16 lowercase hex chars

@@ -78,25 +78,25 @@ data class FeedUiState(
     /** Conversation entries, oldest → newest within the loaded window. */
     val entries: List<ConversationEntry> = emptyList(),
     val historyLoading: Boolean = false,
-    /** Oracle `error.message` — the error row text (null when healthy). */
+    /** Lerdr `error.message` — the error row text (null when healthy). */
     val historyError: String? = null,
-    /** Oracle `errorCode` — drives the Reload-vs-Retry/Continue affordance. */
+    /** Lerdr `errorCode` — drives the Reload-vs-Retry/Continue affordance. */
     val historyErrorCode: String = "",
-    /** Oracle `errorRetryable` — whether the error row offers recovery. */
+    /** Lerdr `errorRetryable` — whether the error row offers recovery. */
     val historyErrorRetryable: Boolean = false,
-    /** Oracle `available` — false when the relay cannot serve this conversation. */
+    /** Lerdr `available` — false when the relay cannot serve this conversation. */
     val historyPageAvailable: Boolean = true,
-    /** Oracle `reason` — the unavailable explanation for the empty state. */
+    /** Lerdr `reason` — the unavailable explanation for the empty state. */
     val historyUnavailableReason: String = "",
     val hasMoreHistory: Boolean = false,
-    /** Oracle `state` — the browse lifecycle of the loaded window. */
+    /** Lerdr `state` — the browse lifecycle of the loaded window. */
     val browseState: ConversationBrowseState = ConversationBrowseState.READY,
-    /** Oracle `progress` — snapshot preparation progress while preparing. */
+    /** Lerdr `progress` — snapshot preparation progress while preparing. */
     val browseProgress: ConversationBrowseProgress? = null,
-    /** Oracle `diagnostics` — reader/browser self-report merged across pages. */
+    /** Lerdr `diagnostics` — reader/browser self-report merged across pages. */
     val historyDiagnostics: ConversationDiagnostics = ConversationDiagnostics(),
     /**
-     * Oracle `preparationPolls >= HISTORY_MAX_PREPARATION_POLLS` — the
+     * Lerdr `preparationPolls >= HISTORY_MAX_PREPARATION_POLLS` — the
      * preparation poll loop is paused (Cancel) or stalled; the warning row
      * switches from "Preparing history…" + Cancel to "Preparation is
      * paused." + Continue.
@@ -117,9 +117,9 @@ data class FeedUiState(
     val composerDraft: String = "",
     /** Transient action failure — rendered as a snackbar/inline error. */
     val lastError: String? = null,
-    /** Transient success/info line (oracle `showToast`) — snackbar too. */
+    /** Transient success/info line (Lerdr `showToast`) — snackbar too. */
     val notice: String? = null,
-    /** Oracle `readOnly` — false for reader-role devices; mutes every mutating control. */
+    /** Lerdr `readOnly` — false for reader-role devices; mutes every mutating control. */
     val canControl: Boolean = false,
     /** `agent_response_copy` capability + supported agent profile. */
     val canCopyResponse: Boolean = false,
@@ -133,9 +133,9 @@ data class FeedUiState(
     val canAttach: Boolean = false,
     /** Attachment tray snapshot — empty batch renders nothing. */
     val attachments: AttachmentBatch = AttachmentBatch(),
-    /** Oracle `uploadStatus` — attachment progress/result line under the tray. */
+    /** Lerdr `uploadStatus` — attachment progress/result line under the tray. */
     val uploadStatus: String = "",
-    /** Oracle `uploadError` — renders [uploadStatus] in the error tone. */
+    /** Lerdr `uploadError` — renders [uploadStatus] in the error tone. */
     val uploadError: Boolean = false,
 )
 
@@ -155,19 +155,19 @@ class FeedViewModel(
 
     private val relayId = paneId.substringBefore("::")
 
-    /** Stale-run guard for picker coroutines — the oracle's controller swap. */
+    /** Stale-run guard for picker coroutines — Lerdr's controller swap. */
     private var attachmentGeneration = 0
 
     /** `attachmentCancelRequested` — a canceled upload reads as info, not error. */
     private var attachmentCancelRequested = false
 
-    /** In-flight history demand — the oracle's `demandRunning`/`activeAbort`. */
+    /** In-flight history demand — Lerdr's `demandRunning`/`activeAbort`. */
     private var historyJob: Job? = null
 
-    /** Oracle `manualPreparationPause` — Cancel stops polling without a wire call. */
+    /** Lerdr `manualPreparationPause` — Cancel stops polling without a wire call. */
     private var manualPreparationPause = false
 
-    /** Oracle `preparationProgressKey` — identical progress snapshots stall the loop. */
+    /** Lerdr `preparationProgressKey` — identical progress snapshots stall the loop. */
     private var preparationProgressKey = ""
 
     /** Phase-5 §2.3 — a `convo_sub` feed is open for this pane. */
@@ -179,23 +179,23 @@ class FeedViewModel(
         val error: String? = null,
         val errorCode: String = "",
         val errorRetryable: Boolean = false,
-        /** Page-level `available` — the oracle's `available`/`reason` empty state. */
+        /** Page-level `available` — Lerdr's `available`/`reason` empty state. */
         val pageAvailable: Boolean = true,
         val pageReason: String = "",
         val hasMore: Boolean = false,
         val nextCursor: String = "",
-        /** Oracle `state`/`progress`/`diagnostics` — the browse status surface. */
+        /** Lerdr `state`/`progress`/`diagnostics` — the browse status surface. */
         val browseState: ConversationBrowseState = ConversationBrowseState.READY,
         val browseProgress: ConversationBrowseProgress? = null,
         val diagnostics: ConversationDiagnostics = ConversationDiagnostics(),
-        /** Oracle `preparationPolls` — identical-progress polls; >= max is paused. */
+        /** Lerdr `preparationPolls` — identical-progress polls; >= max is paused. */
         val preparationPolls: Int = 0,
         val draft: String = "",
         val sending: Boolean = false,
         val lastError: String? = null,
         val notice: String? = null,
         /**
-         * Dirty question drafts by `paneId::interaction.id` — the oracle's
+         * Dirty question drafts by `paneId::interaction.id` — Lerdr's
          * `drafts`/`dirtyDrafts` module maps. Presence marks the draft dirty.
          */
         val questionDrafts: Map<String, QuestionDraft> = emptyMap(),
@@ -226,7 +226,7 @@ class FeedViewModel(
     )
 
     /**
-     * Which lane a history demand serves — the oracle's `initial`/`refresh`
+     * Which lane a history demand serves — Lerdr's `initial`/`refresh`
      * (fresh head, replaces the window) vs `older`/`full` (cursorful,
      * prepend-merges). `retry`/`continuePreparation` pick by cursor.
      */
@@ -296,7 +296,7 @@ class FeedViewModel(
             slashUnavailable = local.slashUnavailable,
             slashTruncated = local.slashTruncated,
             // `attachmentController(agent)` gate: exact target tuple + live
-            // transport + the oracle's `inputLocked` (blocked) analogue.
+            // transport + Lerdr's `inputLocked` (blocked) analogue.
             // The reader-role mute applies in the composer's controls lock —
             // `canAttach` itself stays the pure capability predicate the
             // upload tests exercise.
@@ -329,14 +329,14 @@ class FeedViewModel(
                     maybeLoadSlashCatalog(agent, connection)
                 }
         }
-        // The oracle's `openAgent`: opening an agent acknowledges the pane
+        // Lerdr's `openAgent`: opening an agent acknowledges the pane
         // (optimistic done→idle + `acknowledge_pane`) — readers skip it.
         viewModelScope.launch {
             if (!sessions.canControl(relayId)) return@launch
             try {
                 sessions.acknowledgePane(paneId)
             } catch (_: Exception) {
-                // Fire-and-forget like the oracle's void-call — the relay's
+                // Fire-and-forget like Lerdr's void-call — the relay's
                 // next agents snapshot owns the truth either way.
             }
         }
@@ -404,7 +404,7 @@ class FeedViewModel(
 
     /**
      * First page — newest entries — or a PREPARING/FAILED status surface.
-     * Also the oracle's `returnToLatest` ("Reload history"): a cursorless
+     * Also Lerdr's `returnToLatest` ("Reload history"): a cursorless
      * fresh browse that replaces the window, aborting any demand in flight.
      */
     fun loadHistory() {
@@ -429,7 +429,7 @@ class FeedViewModel(
 
     /**
      * Older page — prepends entries, cursor advances toward the past. The
-     * oracle's `demandOlder` refuses while an error or a pause is set; the
+     * Lerdr's `demandOlder` refuses while an error or a pause is set; the
      * recover affordances own those states.
      */
     fun loadOlderHistory() {
@@ -441,7 +441,7 @@ class FeedViewModel(
     }
 
     /**
-     * Oracle `pausePreparation` (the Cancel action) — purely client-side:
+     * Lerdr `pausePreparation` (the Cancel action) — purely client-side:
      * no wire call; the in-flight poll is aborted and `preparationPolls`
      * jumps to the cap so the row flips to "Preparation is paused.".
      */
@@ -456,7 +456,7 @@ class FeedViewModel(
     }
 
     /**
-     * Oracle `continuePreparation` (the Continue action) — re-issues
+     * Lerdr `continuePreparation` (the Continue action) — re-issues
      * `get_conversation_history` with the cursor the preparation was
      * polling; a fresh stall window starts (polls reset).
      */
@@ -469,10 +469,10 @@ class FeedViewModel(
     }
 
     /**
-     * Oracle `recoverHistory` — the error row's affordance: a
+     * Lerdr `recoverHistory` — the error row's affordance: a
      * `preparation_stalled` error continues the poll loop; every other
      * retryable error re-issues the failed request with `retry: true`
-     * (the oracle's `retry()`).
+     * (Lerdr's `retry()`).
      */
     fun recoverHistory() {
         if (local.value.errorCode == PREPARATION_STALLED_CODE) {
@@ -493,7 +493,7 @@ class FeedViewModel(
     // ── history demand loop ───────────────────────────────────────────
 
     /**
-     * The oracle's `runDemand`, reduced to our single-page contract: one
+     * Lerdr's `runDemand`, reduced to our single-page contract: one
      * `get_conversation_history` request per iteration, where `preparing`
      * pages are status (not content) and re-polled after
      * [HISTORY_PREPARATION_INTERVAL_MS] with the page's `next_cursor` until
@@ -551,7 +551,7 @@ class FeedViewModel(
     }
 
     /**
-     * The oracle's `acceptPage` preparing branch + `advancePreparation`:
+     * Lerdr's `acceptPage` preparing branch + `advancePreparation`:
      * preparation pages carry no entries — only the cursor/progress snapshot
      * updates. Polls reset on progress changes; [HISTORY_MAX_PREPARATION_POLLS]
      * identical snapshots pause with the retryable `preparation_stalled`
@@ -603,7 +603,7 @@ class FeedViewModel(
     }
 
     /**
-     * The oracle's `acceptPage` resolution branch: `failed`/error pages keep
+     * Lerdr's `acceptPage` resolution branch: `failed`/error pages keep
      * the failed cursor for the recover affordance; a cursorful unavailable
      * page becomes a retryable `history_unavailable` error; a cursorless
      * unavailable page is the authoritative empty state; a ready page applies
@@ -649,7 +649,7 @@ class FeedViewModel(
         if (!page.available) {
             if (!freshHead) {
                 // A cursorful unavailable page keeps the loaded window and
-                // surfaces a recoverable error instead (oracle acceptPage).
+                // surfaces a recoverable error instead (Lerdr acceptPage).
                 val resolvedCursor = page.nextCursor
                     .ifEmpty { requestedCursor }
                     .ifEmpty { local.value.nextCursor }
@@ -666,7 +666,7 @@ class FeedViewModel(
                     hasMore = resolvedCursor.isNotEmpty() || page.hasMore,
                 )
             } else {
-                // The oracle's authoritative unavailable — the cursorless
+                // Lerdr's authoritative unavailable — the cursorless
                 // result replaces the window and clears the browse lane.
                 local.value = local.value.copy(
                     loading = false,
@@ -713,7 +713,7 @@ class FeedViewModel(
     }
 
     /**
-     * The oracle's `conversationError` — a transport failure becomes a
+     * Lerdr's `conversationError` — a transport failure becomes a
      * retryable `history_failed` error; the request's cursor is retained so
      * [recoverHistory] can re-issue it.
      */
@@ -739,7 +739,7 @@ class FeedViewModel(
 
     /**
      * `filesSelected` — the SAF picker callback: cancels a live/staged
-     * batch (the oracle swaps controllers), seeds the new one, then
+     * batch (Lerdr swaps controllers), seeds the new one, then
      * launches the upload run.
      */
     fun selectAttachments(uris: List<String>) {
@@ -851,7 +851,7 @@ class FeedViewModel(
         }
     }
 
-    /** The `upload` + `append` half of the oracle's `filesSelected`. */
+    /** The `upload` + `append` half of Lerdr's `filesSelected`. */
     private suspend fun runUpload(generation: Int) {
         val count = uploads.itemsNow(paneId).count {
             it.state == AttachmentItemState.SELECTED
@@ -924,7 +924,7 @@ class FeedViewModel(
             error = rejected > 0,
         )
         // All-rejected batches keep their rows for inspection; clean
-        // batches clear like the oracle's `attachmentSnapshot = null`.
+        // batches clear like Lerdr's `attachmentSnapshot = null`.
         if (rejected == 0) uploads.clear(paneId)
     }
 
@@ -1001,7 +1001,7 @@ class FeedViewModel(
 
     /**
      * User edit — writes the dirty draft into the `paneId::interaction.id`
-     * slot the oracle's `save()` writes. Selected indices stay a `Set`;
+     * slot Lerdr's `save()` writes. Selected indices stay a `Set`;
      * [sessions.answerQuestion] sorts them on encode.
      */
     fun updateQuestionDraft(next: QuestionDraft) {
@@ -1013,7 +1013,7 @@ class FeedViewModel(
     }
 
     /**
-     * `answer_question` submit — oracle `QuestionForm.submit`: guards the
+     * `answer_question` submit — Lerdr `QuestionForm.submit`: guards the
      * draft, applies `data.interaction` on `advanced`, clears the card on a
      * final `confirmed`, and treats anything else as unexpected.
      */
@@ -1152,7 +1152,7 @@ class FeedViewModel(
      * rendered reply in `data.text` (controller + capable profile only —
      * it types into the agent's terminal, so readers never call it). When
      * the wire path is unavailable the caller's own entry text is the
-     * history-fallback the oracle reads instead.
+     * history-fallback Lerdr reads instead.
      */
     fun copyAgentResponse(entryText: String, onCopied: (String) -> Unit) {
         if (!sessions.canControl(relayId) ||
@@ -1203,7 +1203,7 @@ class FeedViewModel(
     // ── slash commands ────────────────────────────────────────────────
 
     /**
-     * Oracle `loadSlashCommands` — gated on the `slash_commands`
+     * Lerdr `loadSlashCommands` — gated on the `slash_commands`
      * capability AND the controller role (the fetch is a mutating-class
      * relay action; readers never open the menu anyway), cached by
      * `agent`+`cwd` identity, one flight at a time.
@@ -1288,7 +1288,7 @@ class FeedViewModel(
     )
 
     /**
-     * The oracle's dirty-restore — a stored draft wins when it still
+     * Lerdr's dirty-restore — a stored draft wins when it still
      * submits or when the incoming baseline would not.
      */
     private fun resolveQuestionDraft(
@@ -1315,7 +1315,7 @@ class FeedViewModel(
     }
 
     /**
-     * Oracle `handleQuestionError`. The oracle also applies
+     * Lerdr `handleQuestionError`. Lerdr also applies
      * `error.data.interaction` — Kotlin's `CommandException` drops `data`
      * on failure, so only the message reaches the snackbar.
      */
@@ -1381,7 +1381,7 @@ class FeedViewModel(
     }
 }
 
-/** Oracle `mergeOlderEntries` — older pages prepend, deduplicated by id. */
+/** Lerdr `mergeOlderEntries` — older pages prepend, deduplicated by id. */
 private fun mergeOlderEntries(
     existing: List<ConversationEntry>,
     older: List<ConversationEntry>,
@@ -1402,14 +1402,14 @@ private fun mergeAppendedEntries(
     return existing + appended.filter { it.id !in existingIds }
 }
 
-/** Oracle `RESPONSE_COPY_AGENT_IDS` — profiles the copy transaction drives. */
+/** Lerdr `RESPONSE_COPY_AGENT_IDS` — profiles the copy transaction drives. */
 private val RESPONSE_COPY_AGENT_IDS = setOf(
     "hermes", "hermesagent",
     "claude", "claudecode", "codex", "openaicodex", "kimi", "kimicode",
     "omp", "ohmypi", "pi", "picodingagent", "qoder", "qodercli",
 )
 
-/** Oracle `responseCopyProfileSupported` — normalized (lowercase, no spaces/dashes). */
+/** Lerdr `responseCopyProfileSupported` — normalized (lowercase, no spaces/dashes). */
 private fun responseCopyProfileSupported(agentName: String?): Boolean {
     val normalized = agentName.orEmpty().trim()
         .lowercase().replace(Regex("\\s+"), "").replace("-", "")

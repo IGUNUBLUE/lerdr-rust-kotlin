@@ -4,8 +4,8 @@ import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
 /**
- * Find-in-buffer semantics — the JVM mirror of the oracle's
- * `terminal-find.ts` (frontend/src/lib/terminal-find.ts): corpus join,
+ * Find-in-buffer semantics — the JVM mirror of Lerdr's
+ * the local implementation: corpus join,
  * literal case-insensitive matching, row-offset mapping, fragment splits,
  * wraparound navigation.
  */
@@ -50,7 +50,7 @@ class TerminalFindTest {
     }
 
     @Test
-    fun `search is case-insensitive like the oracle's giu flag`() {
+    fun `search is case-insensitive like Lerdr's giu flag`() {
         val result = findTerminalText("Foo fOO bar", "foo")
         assertThat(result.matches).hasSize(2)
     }
@@ -72,7 +72,7 @@ class TerminalFindTest {
 
     @Test
     fun `whitespace query still searches — trimming is the caller's job`() {
-        // The oracle trims at the call site (findQuery.trim()); the find
+        // Lerdr trims at the call site (findQuery.trim()); the find
         // function itself treats a space as a literal query.
         val result = findTerminalText("a b", " ")
         assertThat(result.matches).containsExactly(TerminalFindMatch(1, 2))
@@ -118,7 +118,7 @@ class TerminalFindTest {
         val offsets = terminalRowOffsets(rows)
         // "abc\ndef" — "c\nd" spans the join (only reachable via a query
         // containing a newline; the single-line field can't type one, but
-        // the mapping is the oracle's verbatim).
+        // the mapping is Lerdr's verbatim).
         val fragments = terminalMatchFragments(rows, offsets, TerminalFindMatch(2, 5))
         assertThat(fragments).containsExactly(
             TerminalFindFragment(row = 0, start = 2, end = 3),

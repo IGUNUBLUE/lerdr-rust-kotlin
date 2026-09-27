@@ -427,12 +427,10 @@ async fn subscribe_skips_reordered_when_ledger_knows_unsupported() {
 
 #[tokio::test]
 async fn bootstrap_reprobes_reordered_despite_prior_verdict() {
-    // Oracle ordering: `Bootstrap` runs `workspaceReorderedReset` —
-    // `InvalidateLiveCapabilities` — *before* consulting
-    // `ShouldAttemptWorkspaceReordered`, so a verdict left over from the
-    // previous connection never suppresses the re-probe: reconnects may
-    // face a different server build. (Standalone `subscribe_topology`
-    // callers still honor the verdict — see the skip test above.)
+    // Refresh ordering resets `workspace_reordered` before consulting its
+    // prior verdict, so reconnects can probe a different server build.
+    // Standalone `subscribe_topology` callers still honor the verdict — see
+    // the skip test above.
     let server = FakeHerdr::start(Action::Reply(pong())).await;
     server.push(Action::Stream(vec![support::subscription_started_line()]));
     server.push(Action::Reply(support::snapshot_result()));

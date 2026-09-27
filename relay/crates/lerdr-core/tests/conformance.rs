@@ -1,5 +1,5 @@
-//! Golden-vector conformance against `fixtures/` — the Go oracle is the
-//! contract; every vector must pass byte-exact.
+//! Golden-vector conformance against `fixtures/`: every local contract vector
+//! must pass byte-exact.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

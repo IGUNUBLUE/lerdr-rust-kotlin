@@ -1,26 +1,19 @@
-//! Release management — a port of the oracle's `internal/release/manifest.go`
-//! plus the `internal/update` helpers the CLI surface exposes
-//! (`Activate`, `PruneOldReleases`).
+//! Release management for the Lerdr schema-1 `release-manifest.json` and the
+//! CLI lifecycle operations (`Activate`, `PruneOldReleases`).
 //!
-//! The schema-1 `release-manifest.json` records a bundle's identity
-//! (version/revision/target), its transport capabilities, and a sha256 map
-//! of every regular file in the tree. [`verify`] re-hashes the tree and
-//! enforces canonical slash paths, the required-file list, and an
-//! executable relay binary; [`build`] stamps a staged tree; [`seal`] makes
-//! an installed tree read-only.
+//! The manifest records a bundle's identity (version/revision/target), its
+//! transport capabilities, and a sha256 map of every regular file in the
+//! tree. [`verify`] re-hashes the tree and enforces canonical slash paths, the
+//! required-file list, and an executable relay binary; [`build`] stamps a
+//! staged tree; [`seal`] makes an installed tree read-only.
 //!
-//! Deliberate deviations from the Go oracle — both match
-//! `scripts/release-manifest.py`, the mirror that owns the *Rust* bundle
-//! contract (`package-release.sh` stages `lerdr-relay` + `scripts/*.sh`, no
-//! PWA):
+//! The Rust bundle contract is shared with `scripts/release-manifest.py`
+//! (`package-release.sh` stages `lerdr-relay` + `scripts/*.sh`, no PWA):
 //!
-//! - `REQUIRED_FILES` names the Rust tarball's contents; the Go list names
-//!   its own bundle (`lerdr`, `web/index.html`, `LICENSE`, `relay/*.sh`).
-//! - `web_hash` is honest-when-present: a bundle without `web/` entries
-//!   verifies (the Go verifier hard-requires a web bundle). A manifest that
-//!   does claim `web_hash` must still match its `web/` files exactly.
-//! - `VerifyWebDescriptor` is not ported — Rust bundles never carry
-//!   `web/release.json`.
+//! - `REQUIRED_FILES` names the Rust tarball's contents.
+//! - `web_hash` is checked when present; a bundle without `web/` entries
+//!   verifies. A manifest that claims `web_hash` must match its `web/` files.
+//! - Rust bundles do not carry `web/release.json`.
 
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsString;
@@ -52,11 +45,11 @@ const REQUIRED_FILES: &[&str] = &[
 /// The executable whose mode gets the final `&0o111` check.
 const RELAY_BINARY: &str = "lerdr-relay";
 
-/// Verification/management failures — messages keep the oracle's wording
+/// Verification/management failures — messages keep the retired implementation's wording
 /// (`manifest_test.go` asserts on substrings like "hash mismatch").
 #[derive(Debug, thiserror::Error)]
 pub enum ReleaseError {
-    /// Bare I/O failure; callers wrap with context where the oracle does
+    /// Bare I/O failure; callers wrap with context where the retired implementation does
     /// (`verify %s: %w` style).
     #[error(transparent)]
     Io(#[from] io::Error),
@@ -126,7 +119,7 @@ pub fn current_target() -> String {
     format!("{os}/{arch}")
 }
 
-/// The compile-time identity stamp — the oracle's `main.version` /
+/// The compile-time identity stamp — the retired implementation's `main.version` /
 /// `main.revision` ldflags slots plus `release.CurrentTarget`. Injected into
 /// [`verify_identity`] so tests can stamp arbitrary builds.
 #[derive(Debug)]
@@ -329,7 +322,7 @@ pub fn build(
         Ok(())
     })?;
     // This release supports the encrypted WebSocket path only; like the
-    // oracle it deliberately does not claim the retired E2EE v1.
+    // retired implementation it deliberately does not claim the retired E2EE v1.
     let manifest = Manifest {
         schema: MANIFEST_SCHEMA,
         version: version.to_string(),
@@ -953,7 +946,7 @@ mod tests {
         std::os::unix::fs::symlink(root.path(), &link).unwrap();
         verify(&link, "linux/amd64").unwrap();
         // A stray file inside the target is invisible through the link —
-        // matching the oracle's blind spot on `current`.
+        // matching the retired implementation's blind spot on `current`.
         fs::write(root.path().join("stray"), "x").unwrap();
         verify(&link, "linux/amd64").unwrap();
         verify(root.path(), "linux/amd64").unwrap_err();
@@ -1200,7 +1193,7 @@ mod tests {
 
     #[test]
     fn hash_file_map_matches_oracle() {
-        // sha256("web/index.html\x00<hash>\n") — the oracle's hashFileMap
+        // sha256("web/index.html\x00<hash>\n") — the retired implementation's hashFileMap
         // folds sorted prefixed entries; empty prefix set → None.
         let mut files = BTreeMap::new();
         assert_eq!(hash_file_map(&files, "web/"), None);

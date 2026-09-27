@@ -1,6 +1,6 @@
 //! Wire and reader-level types for `get_conversation_history`.
 //!
-//! Two page shapes exist in the oracle and are preserved here:
+//! Two page shapes exist in the retired implementation and are preserved here:
 //!
 //! - [`Page`] mirrors Go `conversation.Page` — the reader-level result the
 //!   `conversation.page.*` fixtures pin (`before` = entry id, `total` a plain
@@ -167,7 +167,7 @@ pub struct BrowseError {
 ///
 /// Cursors are the native form: `next_cursor` is the first entry id of the
 /// page (the value to pass back as `cursor`/`before` for the next-older
-/// page). The oracle wraps the same value in a signed `hb1.` envelope; the
+/// page). The retired implementation wraps the same value in a signed `hb1.` envelope; the
 /// raw id is opaque to the client and round-trips through this reader.
 #[derive(Debug, Clone, Serialize)]
 pub struct BrowsePage {
@@ -233,8 +233,8 @@ pub struct OmoTodoTask {
 }
 
 /// Request scope — Go `BrowseScope`. Only `provider`, `cwd`,
-/// `foreground_cwd` and `session_id` affect reads; the rest are carried for
-/// API parity (cursor scoping in the oracle's signed-token browser).
+/// `foreground_cwd` and `session_id` affect reads; the rest remain for API
+/// shape compatibility with signed-token browsing.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BrowseScope {
     pub provider: String,
@@ -260,7 +260,7 @@ pub struct BrowseRequest {
     /// next page should end before. `None`/empty reads the latest page.
     pub cursor: Option<String>,
     pub limit: i64,
-    /// Forces re-resolution past the reader's location cache. The oracle uses
+    /// Forces re-resolution past the reader's location cache. The retired implementation uses
     /// it to retry failed background jobs; with a synchronous reader the only
     /// cached state worth bypassing is the tuple→location map.
     pub retry: bool,

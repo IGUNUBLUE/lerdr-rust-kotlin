@@ -1,6 +1,6 @@
 //! Question/approval actions — the `approval.go` state machine port.
 //!
-//! The oracle's coordinator keeps a per-pane ledger of pending approval and
+//! The retired implementation's coordinator keeps a per-pane ledger of pending approval and
 //! structured-question operations so `respond`, `answer_question`,
 //! `clarify_question`, and `navigate_question` answer exactly the
 //! interaction the client saw: stale answers, conflicting submissions, and
@@ -8,7 +8,7 @@
 //! replay or attach to the in-flight operation, and a successful dispatch
 //! resolves as `accepted` followed by a confirmation-watch result.
 //!
-//! This module carries the three oracle subsystems the port needs in one
+//! This module carries the three retired implementation subsystems the port needs in one
 //! place because nothing else in the crate may reference them yet:
 //!
 //! - the terminal parser (`internal/question/parser.go` + `attention.go`)
@@ -21,7 +21,7 @@
 //!   conflicts, replay, in-flight attach, per-command deadlines, pane
 //!   session checks, and the confirmation watcher.
 //!
-//! Where the oracle relies on coordinator state (blocked event ids,
+//! Where the retired implementation relies on coordinator state (blocked event ids,
 //! attention kind, pane generations) that this crate does not project yet,
 //! the port validates the pane directly: every handler re-reads the pane
 //! through Herdr, re-classifies it, and compares against the client-supplied
@@ -50,11 +50,11 @@ use tokio::sync::oneshot;
 use super::{dispatch_failure, record_activity, ActionContext, Outcome};
 
 /// `approvalDeadline` — the per-command effect budget for `respond`
-/// (the oracle's `9 * time.Second`; shared across the pane read, classify,
+/// (the retired implementation's `9 * time.Second`; shared across the pane read, classify,
 /// and send inside one request).
 const APPROVAL_DEADLINE: Duration = Duration::from_secs(9);
 /// `questionDeadline` — the per-command effect budget for the question
-/// actions (the oracle's `16 * time.Second`; multi-step key plans need the
+/// actions (the retired implementation's `16 * time.Second`; multi-step key plans need the
 /// larger window).
 const QUESTION_DEADLINE: Duration = Duration::from_secs(16);
 /// `approvalPollTimeout` — how long the confirmation watcher runs before
@@ -62,20 +62,20 @@ const QUESTION_DEADLINE: Duration = Duration::from_secs(16);
 const WATCH_TIMEOUT: Duration = Duration::from_secs(5);
 /// `approvalPollInterval` — the watcher's poll cadence.
 const WATCH_INTERVAL: Duration = Duration::from_millis(350);
-/// `questionKeyDelay` — the oracle's inter-key pause inside a question plan.
+/// `questionKeyDelay` — the retired implementation's inter-key pause inside a question plan.
 const KEY_DELAY: Duration = Duration::from_millis(150);
 /// `maxLedgerEntries` — the scheduler ledger bound.
 const MAX_LEDGER_ENTRIES: usize = 256;
 /// `ledgerRetention` — how long a finished ledger entry stays replayable.
 const LEDGER_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
-/// `pane.read` line budget for classify/parse (the oracle reads 80).
+/// `pane.read` line budget for classify/parse (the retired implementation reads 80).
 const PANE_READ_LINES: u32 = 80;
 /// `shiftTabSequence` — a lone `shift+tab` rides `pane.send_text` as the
 /// backtab escape, matching `Client.SendKeys`.
 const SHIFT_TAB_SEQUENCE: &str = "\x1b[Z";
 
 /// `ErrPaneReplaced` — the pane identity changed under an in-flight
-/// operation; the oracle's `paneSessionError` classification.
+/// operation; the retired implementation's `paneSessionError` classification.
 const ERR_PANE_REPLACED: &str = "pane session was replaced";
 
 /// The shared "unhandled action" receipt stays referenced from here —
@@ -93,17 +93,17 @@ use crate::classify::*;
 
 // ═══════════════════════════════════════════════════════════════════════
 // Shared state — the coordinator's per-pane ledger and the pane-session
-// surrogate for the oracle's `PaneGeneration`.
+// surrogate for the retired implementation's `PaneGeneration`.
 // ═══════════════════════════════════════════════════════════════════════
 
 /// `PaneToken` — the pane-lifetime identity the scheduler's generation
-/// carries in the oracle. This crate's projection does not publish
+/// carries in the retired implementation. This crate's projection does not publish
 /// generations yet, so the token is the tuple Herdr itself supplies:
 /// terminal + tab identity pin the terminal pane, and the agent-session
 /// `source`/`value` pair pins the conversation bound to it. A pane
 /// replacement, re-attach, or session rebind changes the token, so an
 /// in-flight command for the old pane can never write into the new one.
-/// Residual gap vs the oracle: a respawn that reuses every identity field
+/// Residual gap vs the retired implementation: a respawn that reuses every identity field
 /// (same terminal, tab, and agent session) is indistinguishable — the
 /// generation counter the projection will land closes that window.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -134,7 +134,7 @@ impl PaneToken {
 }
 
 /// The pane's token from a topology snapshot (`None` = pane absent — the
-/// oracle's zero-generation stand-in).
+/// retired implementation's zero-generation stand-in).
 fn pane_token(topology: &Topology, pane_id: &str) -> Option<PaneToken> {
     topology.pane_of(pane_id).map(PaneToken::of)
 }
@@ -192,7 +192,7 @@ impl StoredResult {
 }
 
 /// `ledgerEntry` — one admission slot keyed by pane+request identity.
-/// (`command_id`/`pane_id` from the oracle's entry are folded into the key
+/// (`command_id`/`pane_id` from the retired implementation's entry are folded into the key
 /// and the token check — `finish` verifies the slot by key+generation.)
 struct LedgerEntry {
     payload_hash: String,
@@ -228,7 +228,7 @@ enum Admission {
     Conflict,
 }
 
-/// `PendingApproval` — the admission-time approval identity the oracle
+/// `PendingApproval` — the admission-time approval identity the retired implementation
 /// keeps on `BlockedEventID`/`Options`/`ApprovalFingerprint` while a pane
 /// is blocked. The Rust projection does not carry those fields, so the
 /// first verified `respond` for a blocked pane records them here; later
@@ -244,7 +244,7 @@ struct PendingApproval {
 struct QuestionsInner {
     ledger: HashMap<String, LedgerEntry>,
     /// Recorded `other_text` answers per pane — `summary_key(question)` →
-    /// text (the oracle keeps `customAnswers` per pane, refusing a new key
+    /// text (the retired implementation keeps `customAnswers` per pane, refusing a new key
     /// once 32 entries exist).
     custom_answers: HashMap<String, Vec<(String, String)>>,
     /// Per-pane effect serialization — the scheduler's single
@@ -267,7 +267,7 @@ pub(crate) struct Questions {
 
 /// `Flight` — the in-flight operation a `Fresh` admission owns. `finish`
 /// stores the terminal result and releases attached waiters; dropping
-/// un-finished removes the slot (the oracle's cancelled-operation path)
+/// un-finished removes the slot (the retired implementation's cancelled-operation path)
 /// so a dead task can never wedge a ledger key.
 struct Flight {
     inner: Arc<Mutex<QuestionsInner>>,
@@ -278,7 +278,7 @@ struct Flight {
 
 impl Flight {
     /// `commitAndBroadcastResult` — store the result and wake waiters.
-    /// Returns `false` when the pane's token moved on (the oracle drops
+    /// Returns `false` when the pane's token moved on (the retired implementation drops
     /// the watcher update in that case).
     fn finish(mut self, result: StoredResult) -> bool {
         self.armed = false;
@@ -298,7 +298,7 @@ impl Flight {
     }
 
     /// Record the in-flight `accepted` result mid-operation and release
-    /// attached waiters with it — the oracle's `reply(op, result)` runs
+    /// attached waiters with it — the retired implementation's `reply(op, result)` runs
     /// when the effect completes, before the watcher commits the terminal
     /// result via `UpdateLedgerResult`.
     fn mark_accepted(&self, result: StoredResult) {
@@ -326,7 +326,7 @@ impl Drop for Flight {
 
 impl Questions {
     /// `ReplayLedger` — the read-only admission lookup. A token mismatch
-    /// deletes the entry like the oracle's generation check; an in-flight
+    /// deletes the entry like the retired implementation's generation check; an in-flight
     /// match attaches; a finished match replays.
     fn replay(&self, key: &str, hash: &str, token: &PaneToken) -> Lookup {
         let mut inner = self.inner.lock().expect("questions poisoned");
@@ -341,7 +341,7 @@ impl Questions {
         if entry.payload_hash != hash {
             return Lookup::Conflict;
         }
-        // `existing.result != nil` — the oracle replays whatever result
+        // `existing.result != nil` — the retired implementation replays whatever result
         // the ledger already holds (`accepted` before the watcher lands,
         // the terminal phase afterwards); only a still-running effect
         // attaches as a waiter.
@@ -354,7 +354,7 @@ impl Questions {
     }
 
     /// `schedule` — claim the ledger slot for a fresh operation, with the
-    /// oracle's re-check under the lock for the admission→effect race.
+    /// retired implementation's re-check under the lock for the admission→effect race.
     fn schedule(&self, key: &str, hash: &str, token: &PaneToken) -> Admission {
         let mut inner = self.inner.lock().expect("questions poisoned");
         self.prune_locked(&mut inner);
@@ -420,7 +420,7 @@ impl Questions {
 
     /// `recordCustomAnswer` — remember typed `other` text so review-screen
     /// summaries can swap the `custom answer` placeholder back. The text
-    /// is trimmed like the oracle's `strings.TrimSpace`.
+    /// is trimmed like the retired implementation's `strings.TrimSpace`.
     pub(crate) fn record_custom_answer(&self, pane_id: &str, question: &str, text: &str) {
         let key = summary_key(question);
         let text = text.trim();
@@ -496,7 +496,7 @@ impl Questions {
         }
     }
 
-    /// Attention-projection hook — the oracle's blocked-event record,
+    /// Attention-projection hook — the retired implementation's blocked-event record,
     /// kept for the session watcher that lands with the attention
     /// projection. The ledger itself is authoritative until then.
     #[allow(dead_code)]
@@ -523,7 +523,7 @@ impl Questions {
 // `watchQuestion`.
 // ═══════════════════════════════════════════════════════════════════════
 
-/// Remaining effect budget; `None` once the oracle's per-command deadline
+/// Remaining effect budget; `None` once the retired implementation's per-command deadline
 /// has passed (mapped to the deadline-exceeded failure instead of a
 /// zero-length RPC timeout).
 fn remaining(deadline: Instant) -> Option<Duration> {
@@ -660,7 +660,7 @@ async fn send_text(
 }
 
 /// `sendQuestionKeysForSession`/`executeQuestion` — every key of a plan
-/// step is its own `pane.send_keys` call with the oracle's 150ms pause
+/// step is its own `pane.send_keys` call with the retired implementation's 150ms pause
 /// between keys *and* between steps; `paneSessionError` runs before each
 /// write so a replaced pane stops mid-plan (`partiallyApplied` once any
 /// request bytes reached Herdr).
@@ -741,7 +741,7 @@ fn accepted_outcome(pane_id: &str, data: Option<serde_json::Value>) -> Outcome {
 }
 
 /// Emit `[command_result(accepted), action_receipt(awaiting_evidence),
-/// command_result(final)]` — the oracle's two-result command shape the
+/// command_result(final)]` — the retired implementation's two-result command shape the
 /// Kotlin client already understands.
 fn watched_frames(
     request_id: &str,
@@ -784,13 +784,13 @@ fn command_result_frame(request_id: &str, action: &str, outcome: &Outcome) -> Ou
 }
 
 /// An attach (or replay) resolution — emit the stored result frame only;
-/// the oracle's waiters get the `CommandResult`, not a fresh receipt pair.
+/// the retired implementation's waiters get the `CommandResult`, not a fresh receipt pair.
 fn attached_frames(request_id: &str, result: &StoredResult) -> Vec<Outbound> {
     vec![result.frame(request_id)]
 }
 
 /// `ErrClosed`-style resolution when a flight's sender disappears — the
-/// oracle resolves attached waiters `not_started`.
+/// retired implementation resolves attached waiters `not_started`.
 fn attach_failed_frames(request_id: &str, action: &str, action_id: &str) -> Vec<Outbound> {
     Outcome::not_started_refusal("closed", "command was not sent; retry is safe", None)
         .frames(request_id, action, action_id)
@@ -819,7 +819,7 @@ pub(crate) async fn respond(
     let token = pane_token(&ctx.topology, &pane_id).unwrap_or_default();
 
     if blocked {
-        // The oracle compares `agent.BlockedEventID` + the projected
+        // The retired implementation compares `agent.BlockedEventID` + the projected
         // options/fingerprint; here the verified pending record carries
         // the same identity until the watcher clears it.
         if let Some(pending) = ctx.questions.pending_approval(&pane_id, &token) {
@@ -907,7 +907,7 @@ pub(crate) async fn respond(
             return watched_frames(request_id, action, action_id, &accepted, &outcome);
         }
     }
-    // Generation moved under the watcher — the oracle drops the update.
+    // Generation moved under the watcher — the retired implementation drops the update.
     vec![
         command_result_frame(request_id, action, &accepted),
         Outbound::ActionReceipt(action_receipt_response(
@@ -1013,7 +1013,7 @@ fn approval_terminal(pane_id: &str, confirmed: bool) -> Outcome {
 
 /// `WatchApproval` — poll until the pane leaves the blocked+approval
 /// state (`confirmed`), the generation moves (drop the update), or the
-/// 5s window expires (`unconfirmed`). The oracle's tick order is kept:
+/// 5s window expires (`unconfirmed`). The retired implementation's tick order is kept:
 /// generation, then the pane's blocked/event identity, then attention.
 async fn watch_approval(
     ctx: &ActionContext,
@@ -1028,7 +1028,7 @@ async fn watch_approval(
         {
             let topology = ctx.handle.topology.borrow().clone();
             if pane_token(&topology, pane_id).is_some_and(|current| current != *token) {
-                // The pane's identity moved under the request — the oracle
+                // The pane's identity moved under the request — the retired implementation
                 // aborts the watcher and drops the update.
                 return None;
             }
@@ -1217,7 +1217,7 @@ async fn run_question(
             // `commitAndBroadcastResult` — the terminal frame only goes
             // out when the ledger still owns this generation.
             if flight.finish(StoredResult::new(action, &outcome)) {
-                // The oracle records the committed navigation/answer.
+                // The retired implementation records the committed navigation/answer.
                 let summary = match navigation.as_str() {
                     "previous" => Some("Opened previous question"),
                     "next" => Some("Opened next question"),
@@ -1247,7 +1247,7 @@ async fn run_question(
             ]
         }
         WatchVerdict::Abort => {
-            // Generation moved mid-watch — the oracle drops the update,
+            // Generation moved mid-watch — the retired implementation drops the update,
             // leaving the request at its accepted result.
             vec![
                 command_result_frame(request_id, action, &accepted),
@@ -1265,7 +1265,7 @@ async fn run_question(
 }
 
 /// `questionOperationLedgerKey` — pane+interaction+request scoped under
-/// the oracle's per-family prefixes, so a retry of the same request
+/// the retired implementation's per-family prefixes, so a retry of the same request
 /// attaches while distinct submissions can never alias each other.
 fn question_ledger_key(
     action: &str,
@@ -1347,7 +1347,7 @@ async fn question_effect(
 }
 
 /// `WatchVerdict` — the watcher either resolves a terminal result or
-/// aborts when the pane's token moved (the oracle drops the update).
+/// aborts when the pane's token moved (the retired implementation drops the update).
 enum WatchVerdict {
     Finished(Outcome),
     Abort,
@@ -1355,7 +1355,7 @@ enum WatchVerdict {
 
 /// `watchQuestion` — poll until the submitted interaction leaves the
 /// screen (finish the outcome), the pane's token moves (abort), or the
-/// window expires (`unconfirmed`). The oracle's tick order is kept:
+/// window expires (`unconfirmed`). The retired implementation's tick order is kept:
 /// generation, pane presence, read+parse, expects-question continue.
 async fn watch_question(
     ctx: &ActionContext,
@@ -1389,7 +1389,7 @@ async fn watch_question(
         let text = match read_pane_text(ctx, pane_id, Instant::now() + WATCH_INTERVAL).await {
             Ok(text) => text,
             Err(_) => {
-                // `ReadPane` error — the oracle skips the tick entirely.
+                // `ReadPane` error — the retired implementation skips the tick entirely.
                 if Instant::now() >= deadline {
                     return WatchVerdict::Finished(unconfirmed_question(pane_id));
                 }
@@ -1410,7 +1410,7 @@ async fn watch_question(
                 fill_custom_answers(current, &ctx.questions.custom_answers(pane_id));
             }
             if current.is_none() && expects_question {
-                // The agent is repainting between questions — the oracle
+                // The agent is repainting between questions — the retired implementation
                 // keeps polling only while the pane is still `blocked`
                 // with no resolved attention kind.
                 let still_waiting = {
@@ -1451,7 +1451,7 @@ async fn watch_question(
 }
 
 /// `watchQuestion`'s `ctx.Done` result — `{ok:false, phase:"unconfirmed"}`
-/// with the oracle's retry hint.
+/// with the retired implementation's retry hint.
 fn unconfirmed_question(pane_id: &str) -> Outcome {
     Outcome {
         ok: false,
@@ -1466,7 +1466,7 @@ fn unconfirmed_question(pane_id: &str) -> Outcome {
 
 /// `finishQuestionWatch` — the terminal result once the submitted
 /// interaction left the screen: the base result is a bare `confirmed`,
-/// with `navigated`/`advanced`/`failed` overlays matching the oracle's
+/// with `navigated`/`advanced`/`failed` overlays matching the retired implementation's
 /// switch exactly (clarify always confirms).
 fn finish_question_watch(
     pane_id: &str,
@@ -1524,9 +1524,8 @@ fn finish_question_watch(
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Tests — conformance against the Go oracle's 94-vector
-// `questions.interaction` fixture corpus plus the state-machine pieces
-// that do not need a live Herdr.
+// Tests — conformance against the frozen 94-vector `questions.interaction`
+// fixture corpus plus the state-machine pieces that do not need a live Herdr.
 // ═══════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
@@ -1534,16 +1533,14 @@ mod tests {
     use super::*;
     use serde_json::{json, Value};
 
-    /// The full `questions.interaction` suite generated from the oracle's
-    /// `internal/question` package (`interaction_export_test.go`).
+    /// The full frozen `questions.interaction` suite.
     fn vectors() -> Vec<Value> {
         lerdr_fixture::Suite::load("questions", "questions.interaction")
             .expect("questions.interaction fixture suite")
             .vectors
     }
 
-    /// `pane_lines` joins with `\n` exactly like the oracle exporter's
-    /// captured pane text.
+    /// `pane_lines` joins with `\n` exactly as recorded in fixture captures.
     fn pane_text(vector: &Value) -> String {
         vector["pane_lines"]
             .as_array()
@@ -1632,7 +1629,7 @@ mod tests {
 
     /// Vectors carrying `expected_interaction` must reproduce the parsed
     /// interaction byte-for-byte (the serialized `Interaction` IS the wire
-    /// shape); `null` expectations must yield no interaction. The oracle
+    /// shape); `null` expectations must yield no interaction. The retired implementation
     /// exports `classification.Interaction` — unsupported agents never reach
     /// `Parse`, so the comparison goes through `classify`, not `parse`.
     #[test]
@@ -1793,7 +1790,7 @@ mod tests {
             };
             assert_eq!(got, error, "patch {patch}");
         }
-        // Defaults: missing index → 0, missing total → 2 (the oracle's
+        // Defaults: missing index → 0, missing total → 2 (the retired implementation's
         // `intValue` fallbacks).
         let mut merged = serde_json::to_value(base()).unwrap_or_default();
         merged.as_object_mut().expect("object").remove("index");
@@ -2035,7 +2032,7 @@ mod tests {
             Lookup::Conflict
         ));
         // The effect commits `accepted`: waiters resolve with it and a
-        // fresh lookup replays it — the oracle replays whatever result the
+        // fresh lookup replays it — the retired implementation replays whatever result the
         // ledger holds.
         flight.mark_accepted(stored("answer_question", "accepted"));
         match questions.replay(key, "h1", &token) {

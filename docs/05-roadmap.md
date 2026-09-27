@@ -5,105 +5,87 @@ infrastructure.** The protocol seam lets app and relay progress
 independently; the phases below interleave them so validation is always
 against a real counterpart.
 
-## Phase 0 — Fixtures and contract harness
+## Phase 0 — Fixtures and contract harness — complete
 
 **Deliverables**
-- `fixtures/` generator in the Go repo exporting:
-  - E2EE handshake transcripts (hello/proof/keys/finish, both auth kinds)
-  - Sealed/opened frame pairs (JSON + binary codecs, both directions)
-  - `pane_delta` op sequences + expected applied buffers
-  - ANSI line corpus → styled-span expectations (from `terminal.ts` tests)
-  - `QuestionInteraction` parse fixtures (from `attention_test.go`)
-  - `get_conversation_history` pages for each agent kind
-- This repo's CI job that runs vectors in Rust and Kotlin harnesses.
+- The committed `fixtures/` corpus: E2EE handshake transcripts,
+  sealed/opened frame pairs, pane-delta sequences, ANSI spans, structured
+  questions, and conversation-history pages.
+- Rust and Kotlin fixture consumers that exercise those vectors.
 
 **Exit**: `lerdr-core`/`protocol` DTOs decode every fixture;
-`:core:e2ee` round-trips every crypto vector.
+`:core:e2ee` round-trips every crypto vector. The vectors are frozen; protocol
+changes require a deliberate revision in this repository, not regeneration
+from a retired implementation.
 
-## Phase 1 — Kotlin core (the big one) — **done**
+## Phase 1 — Kotlin core — complete
 
-Build the app half first — it derisks crypto + protocol + UX. (Historical:
-Phase 1 validated against the original Go relay, since retired — the
-shadow determinism harness is now the regression gate.)
+The app half established the current protocol and UX contract. Early work used
+the then-active predecessor during migration; the current regression gate is
+the fixture corpus and the Rust/Kotlin integration path.
 
 1. `:core:protocol` — DTOs, action catalog, receipts.
 2. `:core:e2ee` — handshake + session (live pairing test against a
-   running relay — `RustInteropTest`).
+   running Rust relay).
 3. `:core:transport` — OkHttp WS, backoff/keepalive, `push_config` intake.
-4. `:core:store` — agents/workspaces/connections StateFlows; identity-
-   preserving merge (port the v0.26.3 merge semantics).
+4. `:core:store` — agents/workspaces/connections StateFlows with documented
+   identity-preserving merge semantics.
 5. `:core:terminal` — ANSI parser + delta applier + fingerprint chain +
    ack gate client.
 6. `:core:data` — relay registry, Keystore credentials, drafts.
 
-**App MVP on top:**
+**Delivered scope**
 - Pairing (QR + clipboard + link), biometric lock.
 - Home mission control + attention rail.
 - Agent Feed mode (conversation pages, tool cards, question cards,
   composer with prompts/answers/uploads).
-- Notifications: foreground service + channels + deep links.
+- Foreground-service notifications + channels + deep links.
 
-**Exit**: daily-driver quality for monitoring + approvals + prompting.
-Terminal mode can ship a milestone later inside this phase — it's the
-largest single component; don't block the feed on it.
+**Exit**: daily-driver quality for monitoring, approvals, and prompting.
 
-## Phase 2 — Terminal parity + remaining surfaces
+## Phase 2 — Terminal and remaining surfaces — complete
 
 - Terminal mode: virtualized ANSI renderer, special-keys bar, IME/key
-  interception, size lease w/ `adjustResize`, find-in-buffer.
-- Details mode: workspace tree/file/git, tabs, worktrees.
-- Activity journal + detail; speech controls; update/app-deploy flows;
-  device management; push policy UI.
-- `client_shell` investigation: evaluate whether the app should consume
-  Herdr's client-shell surface projections (`client_shell.surface.set`,
-  `command.invoke`) instead of only pane text — richer semantics designed
-  for remote UI. Prototype-read only; no commitment.
-- WebRTC direct path (evaluate `webrtc` AAR size cost vs benefit — the
-  gateway path already works; likely worth it only for bandwidth-heavy
-  sessions).
+  interception, size lease with `adjustResize`, and find-in-buffer.
+- Details mode: workspace tree/file/git, tabs, and worktrees.
+- Activity journal, speech controls, update flows, device management, and
+  push-policy UI.
+- `client_shell` remains a capability-gated Herdr integration investigation;
+  it is not required for the shipped app.
+- WebRTC and gateway paths are out of scope for the Tailscale-only transport.
 
-**Exit**: zero features that only exist in the old web app. The Tauri
-shell is retired — Android is the only client going forward.
+**Exit**: the Android client covers the supported product surface. The retired
+web client is not a deployment target.
 
-## Phase 3 — Rust relay core
+## Phase 3 — Rust relay core — complete
 
-- `lerdr-core` + `lerdr-e2ee` + `lerdr-herdr` + `lerdr-watch` +
-  `lerdr-coord` + `lerdr-store` + `lerdr-push` + minimal `lerdr-relay`
-  binary serving `/ws` + `/healthz` + actions (no web assets).
-- Run **shadow** (`tools/shadow`): drive the relay with scripted
-  `herdr-e2ee-v2` client traffic against the fake Herdr and diff the
-  normalized outbound stream — deterministic trace = regression gate.
-- Keep scope: skip appdeploy/update/speech/appdirs niceties until the core
-  is proven; they are leaf packages.
+- The workspace contains `lerdr-core`, `lerdr-e2ee`, `lerdr-fixture`,
+  `lerdr-herdr`, `lerdr-coord`, `lerdr-relay`, and `lerdr-shadow`; together
+  they provide `/ws`, `/healthz`, actions, and no web assets.
+- `tools/shadow` drives scripted `herdr-e2ee-v2` traffic against fake Herdr
+  and compares repeated Rust runs. An identical normalized outbound trace is
+  the determinism regression gate.
 
-**Exit**: Rust relay serves the production Kotlin app with no
-behavioral divergence in the shadow-diff traces; **installs as the
-`lerdr.events` plugin** — `plugin install`/`link`/`build`, all actions,
-panes, the `event-hook` subcommand, and the `[[startup]]` hook work
-end-to-end (see doc 09).
+**Exit**: the Rust relay serves the production Kotlin app and installs as the
+`lerdr.events` plugin — `plugin install`/`link`/`build`, actions, panes, the
+`event-hook` subcommand, and the `[[startup]]` hook work end-to-end (see doc
+09).
 
-## Phase 4 — Rust completes
+## Phase 4 — Rust completes — complete
 
-- Remaining packages: conversation readers, question parser, slashcmd,
-  uploads, speech, update, appdeploy, portmap, audit, localize.
-- ~~`lerdr-gateway` binary in Rust; gatewaywire parity.~~ **Removed
-  upstream** — original CHANGELOG: "Tailscale is now the only
-  transport"; `lerdr-gateway`, the WebRTC gateway path, portmap/UPnP,
-  and the app-deploy stage were deleted there. Not ported;
-  wire names stay reserved for compatibility.
-- ~~WebRTC server side (`webrtc` crate) for `herdr-dc-v1`.~~ Removed
-  upstream with the gateway path (see above).
-- `[[startup]]` hook + `agent.view.set` canonical view + `[[link_handlers]]`
-  deep links wired into the plugin manifest (doc 09).
-- CI matrix: app↔relay interop tests; release pipeline producing
-  static musl binaries + the same tarballs/APK + `herdr-plugin.toml`
-  version sync (bump in the release PR, never at build time).
+- Conversation readers, question parsing, slash commands, uploads, speech,
+  updates, audit, and localization are part of the relay.
+- Gateway, WebRTC, port-mapping, and app-deploy paths are deliberately absent
+  from the Tailscale-only product. Their protocol-v3 names remain reserved for
+  compatibility; this is a Lerdr scope decision.
+- `[[startup]]`, `agent.view.set`, and `[[link_handlers]]` are wired into the
+  plugin manifest (doc 09).
+- CI builds release binaries and APKs with manifest/version synchronization.
 
-**Exit**: this repo is the implementation and the release source —
-tagged releases ship from here (see `docs/release.md`). Mono-repo
-stands: both halves share fixtures and the spec.
+**Exit**: this repository is the implementation and release source. Both
+halves share the same specifications and frozen fixtures.
 
-## Phase 5 — Protocol v2 (post-parity improvements, negotiated)
+## Phase 5 — Protocol v3 capability revision — complete
 
 **Landed end-to-end both sides** — spec ratified in `docs/13`, relay
 through `3b86093` + `7febd29`, app through `dc7ade1` + `8de761c`; all
@@ -127,20 +109,16 @@ capabilities negotiated live on `:8377` (`caps=22` advertised).
   captured the real compression win; a second inner codec is not worth
   its fixture/conformance surface.
 
-## Order-of-work rationale
+## Order-of-work rationale (historical)
 
-1. **App first** because the Kotlin client validates against a known-good
-   server and delivers user value immediately (native UX on the existing
-   relay).
-2. **Relay second** because by then the protocol is proven from the client
-   side and the golden vectors anchor the contract.
-3. **Gateway/webrtc last** — they're the least-differentiated bits and the
-   riskiest native dependency on Android.
+1. The Kotlin client established the Android experience and protocol consumer.
+2. The Rust relay then became the production service, anchored by the fixtures.
+3. Gateway and WebRTC were removed from the product scope; the Tailscale path
+   is the supported transport.
 
-## Effort honesty
+## Historical sizing note
 
-~57k LOC Go + ~15.5k LOC TS/Svelte is not a weekend rewrite. Rough
-decomposition: protocol+e2ee+transport cores ≈ 3–4k LOC Rust / 4–5k LOC
-Kotlin; app MVP ≈ 8–10k LOC Kotlin; terminal renderer ≈ 2k LOC; relay
-feature parity ≈ 12–15k LOC Rust for the non-core packages. The fixtures
-and shadow-diff harnesses are what make this safe rather than heroic.
+The predecessor was a substantial Go and TypeScript system. That history
+explains the phased migration, but does not define present-day scope. The
+fixture suite and Rust self-determinism harness keep the current implementation
+safe to change.

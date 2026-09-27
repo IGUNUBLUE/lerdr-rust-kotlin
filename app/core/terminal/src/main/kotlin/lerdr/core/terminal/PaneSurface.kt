@@ -18,7 +18,7 @@ import kotlinx.serialization.json.doubleOrNull
  * array) that `Segment` decoding erases, and JS field reads degrade
  * per-field (`typeof` checks) instead of failing whole-message decode.
  *
- * Frame metadata mirrors `TerminalFrame` (`types.ts`): `pane_content`
+ * Frame metadata mirrors `TerminalFrame`: `pane_content`
  * rebuilds it from scratch, `pane_delta` inherits unspecified fields from
  * the previous frame — except `resize_settling`, which is per-frame.
  */
@@ -26,7 +26,7 @@ class PaneSurface(
     val paneId: String,
     /**
      * Re-hash committed content against the claimed `content_fingerprint`
-     * ([FingerprintChain.verify]) — hardening beyond the oracle, which
+     * ([FingerprintChain.verify]) — hardening beyond Lerdr, which
      * stores the wire value without recomputing. A conforming relay never
      * trips it; a mismatch forces resync instead of silently diverging.
      */
@@ -60,7 +60,7 @@ class PaneSurface(
     val readPending: Boolean get() = gate.readPending
 
     /**
-     * `pane_delta` handler (`store.ts`): chain-check, metadata-only fast
+     * `pane_delta` handler: chain-check, metadata-only fast
      * path, strict boundary-table apply, commit + ack — or forced resync.
      * The stale frame stays displayed on failure; nothing is stored.
      */
@@ -109,7 +109,7 @@ class PaneSurface(
     }
 
     /**
-     * `pane_content` handler (`store.ts`): clears the in-flight read,
+     * `pane_content` handler: clears the in-flight read,
      * adopts a non-empty fingerprint, rebuilds the frame with no field
      * inheritance, acks `ack_required` frames, then re-issues the watch.
      */
@@ -134,7 +134,7 @@ class PaneSurface(
     }
 
     /**
-     * `pane_unchanged` handler (`store.ts`): adopt the echoed fingerprint,
+     * `pane_unchanged` handler: adopt the echoed fingerprint,
      * keep the stored frame, re-issue the watch.
      */
     fun applyUnchanged(message: JsonObject): Result {

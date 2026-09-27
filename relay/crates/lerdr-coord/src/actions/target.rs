@@ -1,5 +1,5 @@
 //! Exact pane-target admission — `validateExactPaneTarget`
-//! (server.go:345; the oracle calls it at :676 after the
+//! (server.go:345; the retired implementation calls it at :676 after the
 //! `server_session_id` fence and authorization, before the action switch).
 //!
 //! Every pane-directed inbound must echo the `target` tuple the client
@@ -75,7 +75,7 @@ pub(crate) fn validate_exact_pane_target(
     }
     // `state.Agent(paneID)` — the projected record carries the same
     // `server_session_id`/`generation`/`agent_session_id` the `agents`
-    // frame emitted, so the tuple is compared verbatim. The oracle reads
+    // frame emitted, so the tuple is compared verbatim. The retired implementation reads
     // `agent.SessionID` — `TrimSpace(agent_session.value)` populated by
     // the enrich pass (server.go:518-519) — which `agent_state` projects
     // as `agent_session_id`.
@@ -194,7 +194,7 @@ mod tests {
         let err = validate_exact_pane_target(&t, "send_text", "pane-1", None, true).unwrap();
         assert_eq!(field(&err), "target");
         // Pre-handshake callers get a pass (server.go:362) — unreachable
-        // for routed messages but kept for oracle parity.
+        // for routed messages but retained for the pre-handshake contract.
         assert!(validate_exact_pane_target(&t, "send_text", "pane-1", None, false).is_none());
     }
 

@@ -7,8 +7,8 @@ import lerdr.core.model.WorkspaceInfo
 import lerdr.core.model.WorkspaceWorktree
 
 /**
- * Store-facing workspace row — the oracle's `RelayWorkspace`
- * (`frontend/src/lib/types.ts`): wire `WorkspaceInfo` plus relay identity.
+ * Store-facing workspace row — Lerdr's `RelayWorkspace`
+ *: wire `WorkspaceInfo` plus relay identity.
  */
 data class RelayWorkspace(
     val relayId: String,
@@ -52,7 +52,7 @@ fun normalizeWorkspace(
 }
 
 /**
- * Workspace store — port of the oracle's `workspaces` writable. Ordering is
+ * Workspace store — implementation of Lerdr's `workspaces` writable. Ordering is
  * cross-relay concatenation: other relays' rows first, then this relay's
  * `workspaces` message order. Rows that merge equal keep their previous
  * instance, matching the agent store's identity-preservation contract.

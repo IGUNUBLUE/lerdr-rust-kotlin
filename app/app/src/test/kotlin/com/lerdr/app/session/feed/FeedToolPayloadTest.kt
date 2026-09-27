@@ -13,7 +13,7 @@ import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
 /**
- * `ConversationMessage.svelte`'s `formatToolPayload`/`clampPayload` ports —
+ * the corresponding screen's `formatToolPayload`/`clampPayload` ports —
  * JSON objects render as `key: value` lines; the preview clamp is line-based.
  */
 class FeedToolPayloadTest {

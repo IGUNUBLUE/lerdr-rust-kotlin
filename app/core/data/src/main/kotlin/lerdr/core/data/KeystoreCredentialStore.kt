@@ -26,10 +26,10 @@ import kotlinx.serialization.json.intOrNull
 
 /**
  * [CredentialStore] over a Keystore-sealed file — the production
- * counterpart of the oracle's plaintext `lerdr_device_auth_v1` blob.
+ * counterpart of Lerdr's plaintext `lerdr_device_auth_v1` blob.
  *
  * Disk format: `MAGIC(4) ‖ format_version(1) ‖ cipher.seal(json)` where
- * `json` is `{version:1, relays:{<relayId>: <record>}}` — the oracle's
+ * `json` is `{version:1, relays:{<relayId>: <record>}}` — Lerdr's
  * `PersistedDeviceAuthState` shape. Secrets exist only inside the sealed
  * region; nothing here logs or stores them unwrapped.
  *
@@ -63,7 +63,7 @@ class KeystoreCredentialStore(
             ensureLoadedLocked()
             val entry = _records.value[id]
             if (entry is RelayInvitation && entry.isExpired(now())) {
-                // Expired invitations self-evict on read (device-auth.ts:91-94).
+                // Expired invitations self-evict on read.
                 persistLocked(_records.value - id)
                 null
             } else {
@@ -197,7 +197,7 @@ class KeystoreCredentialStore(
         } ?: return emptyMap()
         if ((root["version"] as? JsonPrimitive)?.intOrNull != STATE_VERSION) return emptyMap()
         val relays = root["relays"] as? JsonObject ?: return emptyMap()
-        // Per-entry leniency (device-auth.ts:170-180): one malformed record
+        // Per-entry leniency: one malformed record
         // never forfeits the rest.
         return relays.entries.mapNotNull { (relayId, element) ->
             try {

@@ -48,7 +48,7 @@ pub(crate) enum CliError {
     Pipe(io::Error),
 }
 
-/// Resolve the `herdr` binary — `findHerdrBin` in the oracle's
+/// Resolve the `herdr` binary — `findHerdrBin` in the retired implementation's
 /// `internal/config`: explicit override → `HERDR_BIN` → `HERDR_BIN_PATH`
 /// (doc 09's alias) → `PATH` scan → known install locations → the literal
 /// name (spawn failure then reports unavailable).
@@ -172,7 +172,7 @@ pub(crate) async fn run_cli(
     if stderr_truncated {
         diagnostic.push_str(" (truncated)");
     }
-    // The oracle truncates the stderr diagnostic at 500 chars.
+    // The retired implementation truncates the stderr diagnostic at 500 chars.
     if diagnostic.len() > 500 {
         diagnostic.truncate(500);
         diagnostic.push_str("...");

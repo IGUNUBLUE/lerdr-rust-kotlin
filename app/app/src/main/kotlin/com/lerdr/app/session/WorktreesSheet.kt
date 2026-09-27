@@ -56,13 +56,11 @@ interface WorktreesEntryPoint {
 }
 
 /**
- * Worktree management for one workspace — the Compose port of the oracle's
- * `worktree-manager-dialog` in WorkspaceManager.svelte: list / create /
- * open / remove Git worktrees, on a modal bottom sheet.
+ * Worktree management for one workspace: list, create, open, and remove Git
+ * worktrees in a modal bottom sheet.
  *
- * Wiring: call from a session-screen affordance when `agent.workspaceId`
- * is non-empty — e.g. a trailing icon in `SessionTopBar` or a row in the
- * workspace section. Self-dismisses when the workspace leaves the store.
+ * Call from a session-screen affordance when `agent.workspaceId` is non-empty.
+ * The sheet dismisses when the workspace leaves the store.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -262,7 +260,7 @@ private fun ErrorRow(message: String, enabled: Boolean, onRetry: () -> Unit) {
 }
 
 /**
- * One `worktrees[]` row — `{branch || label}` over `path`, with the oracle's
+ * One `worktrees[]` row — `{branch || label}` over `path`, with Lerdr's
  * trailing state: open → "Open" chip, bare/prunable → "Unavailable", else an
  * Open button.
  */
@@ -327,7 +325,7 @@ private fun StateChip(label: String) {
     }
 }
 
-/** The oracle's `worktree-create-form` — branch required; base and label optional. */
+/** Lerdr's `worktree-create-form` — branch required; base and label optional. */
 @Composable
 private fun CreateWorktreeForm(
     uiState: WorktreesUiState,
@@ -395,7 +393,7 @@ private fun CreateWorktreeForm(
 }
 
 /**
- * The oracle's destructive-worktree dialog. `force` flips title/body/button
+ * Lerdr's destructive-worktree dialog. `force` flips title/body/button
  * to the discard-changes copy after a `dirty_worktree_requires_force` reply.
  */
 @Composable

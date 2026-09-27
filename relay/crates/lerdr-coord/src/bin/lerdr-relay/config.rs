@@ -1,7 +1,7 @@
 //! Relay configuration — `internal/config/config.go` ported for the serve
 //! path.
 //!
-//! Resolution order mirrors the oracle: command-line flags win, then
+//! Resolution order mirrors the retired implementation: command-line flags win, then
 //! `LERDR_<key>`, then the pre-rename `HERDR_<key>` spelling a service file
 //! or operator shell may still set (`relayEnv`). Host-injected variables
 //! (`HERDR_SOCKET_PATH`, `HERDR_PLUGIN_CONFIG_DIR`, `XDG_*`, `HOME`) are read
@@ -17,7 +17,7 @@ pub const DEFAULT_HOST: &str = "127.0.0.1";
 /// `relayEnvIntOr("RELAY_PORT", 8375)`.
 pub const DEFAULT_PORT: u16 = 8375;
 
-/// The pairing link's app base. The oracle joins the fragment onto the
+/// The pairing link's app base. The retired implementation joins the fragment onto the
 /// phone-app page origin (`<appOrigin>/#<fragment>`); this relay serves no
 /// web app, so the Android deep link takes that place.
 pub const DEEP_LINK_BASE: &str = "lerdr://pair";
@@ -84,7 +84,7 @@ pub enum ConfigError {
     #[error("invalid port {0}")]
     Port(i64),
     /// `invalid LERDR_RELAY_LOG_LEVEL %q: want debug, info, warn, or error` —
-    /// the oracle's message names the new spelling even when `HERDR_` was read.
+    /// the retired implementation's message names the new spelling even when `HERDR_` was read.
     #[error("invalid LERDR_RELAY_LOG_LEVEL {0:?}: want debug, info, warn, or error")]
     LogLevel(String),
     /// `invalid LERDR_RELAY_AGENT_VIEW %q: want on or off` — validated like
@@ -239,7 +239,7 @@ fn env(get: &dyn Fn(&str) -> Option<String>, key: &str) -> Option<String> {
     get(key).filter(|v| !v.is_empty())
 }
 
-/// `relayEnvIntOr` — a non-numeric value falls back silently, like the oracle.
+/// `relayEnvIntOr` — a non-numeric value falls back silently, like the retired implementation.
 fn relay_env_int(env: &dyn Fn(&str) -> Option<String>, key: &str) -> Option<i64> {
     relay_env(env, key).and_then(|v| v.parse::<i64>().ok())
 }
@@ -353,7 +353,7 @@ mod tests {
         let vars = env(&[("HOME", "/home/op")]);
         let dir_exists = |p: &Path| p == Path::new("/home/op/.config/herdr-mobile-relay");
         let cfg = resolve(&vars, &dir_exists, &Overrides::default()).unwrap();
-        // Dev machines that ran the Go relay keep one state directory.
+        // Existing installations retain their legacy state directory.
         assert_eq!(
             cfg.device_auth_dir,
             Path::new("/home/op/.config/herdr-mobile-relay/device-auth")

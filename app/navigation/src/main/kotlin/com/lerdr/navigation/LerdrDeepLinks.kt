@@ -12,7 +12,7 @@ import java.net.URLDecoder
  *
  * Recognized shapes:
  * - `lerdr://pair?<query>` and `lerdr://pair#<fragment>` — the Android form
- *   of the setup link (`<appOrigin>/#<query>` in the oracle; see
+ *   of the setup link (`<appOrigin>/#<query>` in Lerdr; see
  *   docs/specs/pairing-store.md §A.2).
  * - `lerdr://agent?pane_id=<id>` — notification deep link into the agent
  *   feed (`NotifyDeepLinks.agent`); `lerdr://agents` lands on Home.

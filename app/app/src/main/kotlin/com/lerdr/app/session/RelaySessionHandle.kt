@@ -26,8 +26,8 @@ interface RelaySessionHandle {
     val rttMs: StateFlow<Long>
 
     /**
-     * Decrypted server→client frames, raw JSON. Single-consumer — the
-     * repository is the only collector ([RelaySession.incoming] parity).
+     * Decrypted server→client raw JSON frames. The repository is the sole
+     * collector.
      */
     val incoming: Flow<JsonObject>
 
@@ -55,7 +55,7 @@ interface RelaySessionHandle {
     /** `revalidateConnections` — foreground/wake health probe. */
     fun revalidate()
 
-    /** `setHidden` — hidden sessions stop keepalives after the oracle's cap. */
+    /** `setHidden` — hidden sessions stop keepalives after Lerdr's cap. */
     fun setHidden(hidden: Boolean)
 
     /** Terminal teardown. */
@@ -106,7 +106,7 @@ fun interface RelaySessionFactory {
             ).also { it.start() }.let(::RelaySessionAdapter)
         }
 
-        /** One OkHttpClient for the app — the oracle shares a connection pool too. */
+        /** One OkHttpClient for the app — Lerdr shares a connection pool too. */
         private val sharedClient: OkHttpClient by lazy { OkHttpClient() }
     }
 }

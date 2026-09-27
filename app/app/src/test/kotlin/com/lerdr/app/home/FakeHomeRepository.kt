@@ -23,7 +23,7 @@ class FakeHomeRepository : HomeRepository {
                     agentLabel = "claude · lerdr",
                     kind = AttentionKind.APPROVAL,
                     metaLabel = "approval · 40s",
-                    prompt = "Run go test ./internal/… ?",
+                    prompt = "Run cargo test -p lerdr-coord?",
                     options = listOf("Allow", "Deny"),
                     controllable = true,
                     provider = "claude",

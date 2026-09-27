@@ -1,12 +1,12 @@
 # Pane Size Lease — `lease_pane_size` / `release_pane_size`
 
 Spec for multi-client pane-size arbitration. Closes `docs/10-spec-gaps.md`
-P0-4. All line numbers cite `~/Projects/lerdr` (original Go implementation — provenance only).
+P0-4. The rules below are normative for Lerdr and fixture-backed where
+applicable.
 
-Sources: `internal/panesize/manager.go` (lease manager — entire file cited),
-`internal/app/server.go` (action wiring, disconnect cleanup),
-`internal/app/pane_watch.go` (`applyPaneReadLease`, `resize_settling`),
-`frontend/src/components/TerminalView.svelte` + `store.ts` (client cadence).
+The details were historically extracted from the retired Go relay and client.
+Their paths are archival provenance only; current implementations use this
+specification and the frozen protocol contract.
 
 ---
 

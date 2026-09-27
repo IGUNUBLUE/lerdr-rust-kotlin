@@ -1,6 +1,6 @@
 //! Push-notification actions — the `internal/push` subsystem port.
 //!
-//! The oracle keeps per-device push subscriptions, a notification policy
+//! The retired implementation keeps per-device push subscriptions, a notification policy
 //! (which events reach which device), snooze state, a viewed-pane dedup
 //! ledger (`push_viewed_pane` suppresses notifications for panes the
 //! operator is already looking at), an HMAC-signed open-reference scheme,
@@ -21,12 +21,12 @@
 //! Every handler additionally emits the relay-local terminal
 //! `action_receipt` last (`confirmed` on success,
 //! `failed_before_dispatch` with the failing push code otherwise) —
-//! additive to the oracle's sequence, matching how `Outcome::frames`
+//! additive to the retired implementation's sequence, matching how `Outcome::frames`
 //! terminates command actions.
 //!
 //! ## Identity note
 //!
-//! The oracle keys device state by `identity.DeviceID` /
+//! The retired implementation keys device state by `identity.DeviceID` /
 //! `identity.Locale` from the authenticated session — `ActionContext`
 //! carries it as `device_id` and handlers use it directly
 //! (`pushM.Policy(identity.DeviceID, …)`, `sub.DeviceID = identity.DeviceID`,
@@ -34,12 +34,12 @@
 //! sends on push actions is *claimed* identity — it stays a
 //! per-subscription attribute (stored on the subscription, honored as a
 //! filter inside `push_unsubscribe`) and never keys device state.
-//! Locale stands in as `"en"` — the oracle normalizes to its supported
+//! Locale stands in as `"en"` — the retired implementation normalizes to its supported
 //! set anyway.
 //!
 //! ## Persistence note
 //!
-//! The oracle persists `subscriptions.json`, `policies.json`,
+//! The retired implementation persists `subscriptions.json`, `policies.json`,
 //! `queue.json`, `action_ref.key`, and VAPID keys under the runtime
 //! push directory. [`Push::new`] mirrors the handler-facing files plus
 //! the durable queue (`0700` dir, `0600` files, `json.MarshalIndent` +
@@ -50,13 +50,13 @@
 //! drives the queue bookkeeping here through the
 //! `due_entries`/`finish_entry`/`recover_pruned`/`flush_queue` seams.
 //!
-//! Queue durability mirrors the oracle's split: handler-path mutations
+//! Queue durability mirrors the retired implementation's split: handler-path mutations
 //! (`enqueueLocked`/`cancelKey`/`forgetDelivered`/`replaceSubscriptions`/
 //! `removeSubscriptions`/`removeDevice`) persist immediately with
 //! rollback-on-write-failure; drain-pass mutations
 //! (`finishInMemory`/`rescheduleInMemory`, the prune recover/restore
 //! halves) mark `state.queue_dirty` and land once per pass through
-//! `flush_queue` — the oracle's `dirty` + `flush()` inside `finish`.
+//! `flush_queue` — the retired implementation's `dirty` + `flush()` inside `finish`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io;
@@ -413,8 +413,8 @@ fn parse_rfc3339(text: &str) -> Option<Timestamp> {
 }
 
 // ---------------------------------------------------------------------------
-// Oracle types — `PushEventKey`, `DevicePolicy`, `Subscription`, the
-// signed `ReferenceClaims`, and the Web Push `Payload` shape.
+// Push types — `PushEventKey`, `DevicePolicy`, `Subscription`, the signed
+// `ReferenceClaims`, and the Web Push `Payload` shape.
 // ---------------------------------------------------------------------------
 
 /// `push.PushEventKey` — field order is load-bearing: Go marshals
@@ -494,7 +494,7 @@ fn valid_push_identifier(value: &str, required: bool) -> bool {
 }
 
 /// `validPushTargetIdentifier` — opaque target ids carry no length cap
-/// (the oracle binds only its own identifiers).
+/// (the retired implementation binds only its own identifiers).
 fn valid_push_target_identifier(value: &str) -> bool {
     value.is_empty() || value.trim() == value
 }
@@ -615,8 +615,8 @@ struct PolicyWire {
 }
 
 /// `boundPushPolicy` — bind the wire patch onto the device's current
-/// policy. The error codes are the oracle's internal distinctions —
-/// the oracle's response frame collapses them to `push_invalid_policy`;
+/// policy. The error codes are the retired implementation's internal distinctions —
+/// the retired implementation's response frame collapses them to `push_invalid_policy`;
 /// this port surfaces the specific code (task requirement).
 fn bound_push_policy(
     raw: Option<&RawJson>,
@@ -656,7 +656,7 @@ fn bound_push_policy(
 
 /// `pushPolicyResponse` — the `push_policy`/`push_policy_result`
 /// payload. `snooze_until` rides along only when nonzero (RFC3339
-/// seconds precision), matching the oracle's `omitempty`-by-hand.
+/// seconds precision), matching the retired implementation's `omitempty`-by-hand.
 fn policy_response(policy: &DevicePolicy) -> serde_json::Value {
     let categories: serde_json::Map<String, serde_json::Value> = policy
         .categories
@@ -686,7 +686,7 @@ fn policy_response(policy: &DevicePolicy) -> serde_json::Value {
 }
 
 /// `push.Subscription` — the wire parse shape; the handler overwrites
-/// every trust-bearing field after unmarshal like the oracle.
+/// every trust-bearing field after unmarshal like the retired implementation.
 /// `pub(crate)` fields are the delivery worker's read surface (endpoint
 /// + keys drive `sendOne`; `device_id`/`endpoint` key the terminal set).
 ///
@@ -745,7 +745,7 @@ pub(crate) struct SubscriptionKeys {
 }
 
 /// `pythonFile`/`pythonSubscription` — the on-disk subscriptions
-/// envelope the oracle reads and writes (`subscriptions.json`).
+/// envelope the retired implementation reads and writes (`subscriptions.json`).
 #[derive(Deserialize)]
 struct SubscriptionsFile {
     #[serde(default)]
@@ -883,7 +883,7 @@ pub(crate) struct QueueEntry {
 
 /// `deliveredRecord` — an accepted delivery kept for retraction; the
 /// `queue.json` `delivered` row (`key`/`subscription`/`tag`/
-/// `accepted_at` all emit — no `omitempty` in the oracle).
+/// `accepted_at` all emit — no `omitempty` in the retired implementation).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct DeliveredRecord {
     #[serde(default, deserialize_with = "de_default")]
@@ -1005,7 +1005,7 @@ impl ReferenceSigner {
     }
 
     /// `loadOrCreateReferenceSigner` — 32 raw bytes, `0600`, atomic
-    /// create; a short/long key fails the manager like the oracle.
+    /// create; a short/long key fails the manager like the retired implementation.
     fn load_or_create(path: &Path) -> io::Result<Self> {
         match std::fs::read(path) {
             Ok(key) => {
@@ -1040,7 +1040,7 @@ impl ReferenceSigner {
     }
 
     /// `signer.Verify` — format, signature, decode, key validity,
-    /// expiry — in the oracle's order.
+    /// expiry — in the retired implementation's order.
     fn verify(&self, token: &str, now: Timestamp) -> Result<ReferenceClaims, RefError> {
         let mut parts = token.split('.');
         let (Some(payload_b64), Some(sig_b64), None) = (parts.next(), parts.next(), parts.next())
@@ -1112,7 +1112,7 @@ struct NotificationAction<'a> {
 }
 
 /// `push.Payload` — Go field order; `actions`/`action_refs` always
-/// emit (`[]`/`{}` today — the oracle's action buttons are unused).
+/// emit (`[]`/`{}` today — the retired implementation's action buttons are unused).
 #[derive(Serialize)]
 struct Payload<'a> {
     v: u32,
@@ -1217,7 +1217,7 @@ fn localized_payload_text(
 }
 
 // ---------------------------------------------------------------------------
-// Push — the shared subsystem handle (oracle's `push.Manager` +
+// Push — the shared subsystem handle (retired implementation's `push.Manager` +
 // `PolicyEngine` + the server's `pushTestLast` ledger).
 // ---------------------------------------------------------------------------
 
@@ -1237,12 +1237,12 @@ struct State {
     /// persisted to `queue.json` (`BTreeMap` keeps Go's sorted-key
     /// `MarshalIndent` deterministic). `queue_dirty` is the pass's
     /// `dirty` flag: drain-time mutations mark it and `flush_queue`
-    /// writes once per pass, like the oracle's `finish`.
+    /// writes once per pass, like the retired implementation's `finish`.
     entries: BTreeMap<String, QueueEntry>,
     delivered: BTreeMap<String, DeliveredRecord>,
     queue_dirty: bool,
     /// The manager's `active`/`retracting` key sets — in-memory like
-    /// the oracle (`NewManager` rebuilds `active` from the loaded
+    /// the retired implementation (`NewManager` rebuilds `active` from the loaded
     /// queue's `activeKeys`).
     active: HashSet<PushEventKey>,
     retracting: HashSet<PushEventKey>,
@@ -1270,7 +1270,7 @@ impl State {
     }
 }
 
-/// Shared push state — one per relay (the oracle's push registry:
+/// Shared push state — one per relay (the retired implementation's push registry:
 /// policy, subscriptions, snooze, viewed-pane ledger, reference
 /// signer, delivery queue bookkeeping). `wake` is `m.wake` — the
 /// buffered (single-permit) signal that kicks the delivery worker.
@@ -1300,11 +1300,11 @@ impl Push {
     /// the dir (`0700`), loads `subscriptions.json` + `queue.json` +
     /// `policies.json`, loads or creates `action_ref.key`. Recovered
     /// queue keys seed `active` and gate delivery behind `reconcile`
-    /// like the oracle (`m.reconciled = len(recovered) == 0`) — an
+    /// like the retired implementation (`m.reconciled = len(recovered) == 0`) — an
     /// entry due in the past is eligible the moment reconciliation
     /// opens the gate. The VAPID key pair is loaded or generated by
     /// `super::push_delivery::spawn_push_worker` at worker start (the
-    /// oracle's `loadOrGenerateVAPIDKeys`).
+    /// retired implementation's `loadOrGenerateVAPIDKeys`).
     pub(crate) fn new(dir: &Path) -> io::Result<Self> {
         std::fs::create_dir_all(dir)?;
         set_dir_permissions(dir)?;
@@ -1351,7 +1351,7 @@ impl Push {
 
     /// `Manager.Policy` — stored policy or the default, with an
     /// expired timed snooze cleared on the returned copy (the stored
-    /// preference survives, matching the oracle).
+    /// preference survives, matching the retired implementation).
     fn policy(&self, device_id: &str, locale: &str) -> DevicePolicy {
         let state = self.lock();
         let mut policy = state
@@ -1468,7 +1468,7 @@ impl Push {
             if let Err(code) =
                 replace_subscriptions_locked(&mut state, &sub.device_id, &replacements, &sub)
             {
-                // The oracle re-writes the pre-change registry on a
+                // The retired implementation re-writes the pre-change registry on a
                 // queue persist failure (`_ = m.persist(m.subscriptions)`).
                 let _ = persist_subscriptions(&state.dir, &state.subscriptions);
                 return Err(code);
@@ -1522,7 +1522,7 @@ impl Push {
         if !removed_endpoints.is_empty() {
             // `m.queue.removeSubscriptions` — the registry is already
             // committed; a queue persist failure propagates like the
-            // oracle (no registry restore).
+            // retired implementation (no registry restore).
             remove_subscriptions_locked(&mut state, device_id, &removed_endpoints)?;
         }
         Ok(())
@@ -1625,7 +1625,7 @@ impl Push {
         }
         drop(state);
         // `m.signal()` — kick the delivery worker only when something
-        // actually queued (the oracle gates the wake on Queued > 0).
+        // actually queued (the retired implementation gates the wake on Queued > 0).
         if result.queued > 0 {
             self.wake.notify_one();
         }
@@ -1663,7 +1663,7 @@ impl Push {
         state.active.remove(key);
         if records.is_empty() {
             // `forgetDelivered` — the persist is unconditional like
-            // the oracle's; no rollback there either.
+            // the retired implementation's; no rollback there either.
             state.delivered.retain(|_, r| r.key != *key);
             persist_queue_locked(&mut state)?;
             return Ok(());
@@ -1716,7 +1716,7 @@ impl Push {
     }
 
     /// `Manager.RecoveredKeys` — the queue's `activeKeys` (entries ∪
-    /// delivered keys, `notificationTag`-sorted like the oracle); the
+    /// delivered keys, `notificationTag`-sorted like the retired implementation); the
     /// notification producer's reconcile call walks it.
     #[allow(dead_code)]
     pub(crate) fn recovered_keys(&self) -> Vec<PushEventKey> {
@@ -1744,7 +1744,7 @@ impl Push {
         }
         let stale: Vec<PushEventKey> = {
             let mut state = self.lock();
-            // The oracle re-closes the gate while retractions queue.
+            // The retired implementation re-closes the gate while retractions queue.
             state.reconciled = false;
             state
                 .active
@@ -1879,7 +1879,7 @@ impl Push {
 
     // -----------------------------------------------------------------------
     // Delivery-worker seams — the `Manager.RunOnce`/`durableQueue.processDue`
-    // surface `push_delivery` drives. Snapshot-then-apply mirrors the oracle:
+    // surface `push_delivery` drives. Snapshot-then-apply mirrors the retired implementation:
     // `dueEntries` copies under `mu`, sends run unlocked, and every mutation
     // re-checks the snapshot (`sameQueueEntry`) so a raced `resolve`/
     // `subscribe`/`unsubscribe` never gets clobbered.
@@ -1899,7 +1899,7 @@ impl Push {
     }
 
     /// `durableQueue.dueEntries` — every entry with `due_at <= now`,
-    /// sorted `(due_at, id)` like the oracle's `sort.Slice`.
+    /// sorted `(due_at, id)` like the retired implementation's `sort.Slice`.
     pub(crate) fn due_entries(&self, now: Timestamp) -> Vec<QueueEntry> {
         let state = self.lock();
         let mut entries: Vec<QueueEntry> = state
@@ -2001,13 +2001,13 @@ impl Push {
     /// entries + the just-failed events onto the fallback and drop
     /// their delivered records. Persist failure restores the pruned
     /// entries with backoff (`restorePrunedWhileProcessing`) and
-    /// reports the error, exactly like `finish` in the oracle.
+    /// reports the error, exactly like `finish` in the retired implementation.
     pub(crate) fn recover_pruned(
         &self,
         results: &[DeliveryResult],
         now: Timestamp,
     ) -> Result<(), &'static str> {
-        // Group pruned results by device (BTreeMap = the oracle's
+        // Group pruned results by device (BTreeMap = the retired implementation's
         // sorted deviceID iteration).
         let mut pruned: BTreeMap<String, (BTreeSet<String>, Vec<&DeliveryResult>)> =
             BTreeMap::new();
@@ -2028,7 +2028,7 @@ impl Push {
         let mut state = self.lock();
         // `recoveries` — fallback selection happens before the
         // registry write, against the pre-prune subscription list
-        // (the oracle scans `m.subscriptions` back-to-front under mu).
+        // (the retired implementation scans `m.subscriptions` back-to-front under mu).
         let mut recoveries = Vec::with_capacity(pruned.len());
         let mut requeued = false;
         for (device_id, (endpoints, device_results)) in &pruned {
@@ -2074,7 +2074,7 @@ impl Push {
                 .collect();
             for mut entry in migrated {
                 state.entries.remove(&entry.id);
-                // `dirty = true` on the delete like the oracle —
+                // `dirty = true` on the delete like the retired implementation —
                 // `finish`'s `flush()` persists the recovery.
                 state.queue_dirty = true;
                 if let Some(fallback) = fallback {
@@ -2129,7 +2129,7 @@ impl Push {
     /// records; terminal test/update keys forget delivered state;
     /// keys with nothing left queued (and no delivered ledger for real
     /// categories) leave `active`. The `forgetDelivered` halves persist
-    /// once before the in-memory set mutations — the oracle's per-key
+    /// once before the in-memory set mutations — the retired implementation's per-key
     /// ordering (a failed write leaves `retracting`/`active` intact).
     pub(crate) fn sweep_keys(&self, results: &[DeliveryResult]) -> Result<(), &'static str> {
         let mut state = self.lock();
@@ -2274,7 +2274,7 @@ pub(crate) enum Disposition {
 }
 
 /// `push.DeliveryResult` — one processed queue entry. `event` +
-/// `subscription` are the oracle's `json:"-"` fields: only `Pruned`
+/// `subscription` are the retired implementation's `json:"-"` fields: only `Pruned`
 /// results need them (`recover_pruned` re-queues against a fallback).
 #[derive(Debug, Clone)]
 pub(crate) struct DeliveryResult {
@@ -2282,8 +2282,8 @@ pub(crate) struct DeliveryResult {
     pub(crate) endpoint: String,
     pub(crate) disposition: Disposition,
     pub(crate) attempts: u32,
-    /// `json:"next_attempt"` — kept for parity/reporting; the worker
-    /// tests assert the backoff schedule off it.
+    /// `json:"next_attempt"` — kept for diagnostic reporting; worker tests
+    /// assert the backoff schedule from it.
     #[allow(dead_code)]
     pub(crate) next_attempt: Option<Timestamp>,
     pub(crate) event: PushEvent,
@@ -2370,7 +2370,7 @@ fn restore_pruned_locked(state: &mut State, results: &[DeliveryResult], now: Tim
 }
 
 /// `queue.enqueue` — device binding + replace-by-delivery-id, then the
-/// oracle's immediate `persistLocked` with rollback on write failure.
+/// retired implementation's immediate `persistLocked` with rollback on write failure.
 fn enqueue_locked(
     state: &mut State,
     event: PushEvent,
@@ -2408,7 +2408,7 @@ fn enqueue_locked(
 /// `queue.replaceSubscriptionsWhileProcessing` — migrate pending
 /// entries to the replacement subscription; prune matching delivered
 /// records (same-endpoint records refresh instead); persist with the
-/// oracle's both-maps rollback on write failure.
+/// retired implementation's both-maps rollback on write failure.
 fn replace_subscriptions_locked(
     state: &mut State,
     device_id: &str,
@@ -2589,7 +2589,7 @@ fn load_policies(path: &Path) -> io::Result<LoadedPolicies> {
     let mut file: PoliciesFileRead =
         serde_json::from_slice(&data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     // `update_once` migration: policies persisted before the flag
-    // existed get `true` (the oracle checks the raw bytes for the key).
+    // existed get `true` (the retired implementation checks the raw bytes for the key).
     if let Ok(raw) = serde_json::from_slice::<serde_json::Value>(&data) {
         let raw_policies = raw.get("policies").and_then(|p| p.as_object());
         for (device_id, policy) in file.policies.iter_mut() {
@@ -2818,7 +2818,7 @@ fn receipt(request_id: &str, action_id: &str, code: Option<&'static str>) -> Out
 }
 
 /// `d.fail`-style `command_result` + the push frame spliced between it
-/// and the terminal receipt (oracle order: command_result, push frame).
+/// and the terminal receipt (retired implementation order: command_result, push frame).
 fn outcome_then(
     outcome: Outcome,
     extra: Outbound,
@@ -2831,7 +2831,7 @@ fn outcome_then(
     frames
 }
 
-/// The oracle's failed `command_result` for push command actions —
+/// The retired implementation's failed `command_result` for push command actions —
 /// `phase:"failed"` + `failed_before_dispatch` receipt carrying the
 /// push code rather than generic `invalid_request`.
 fn failed_outcome(error: &str, code: &'static str) -> Outcome {
@@ -2902,7 +2902,7 @@ pub(crate) async fn policy_set(
 
 /// `push_subscribe` — registers the device's subscription; emits
 /// `push_subscribed`. Trust-bearing fields are overwritten with the
-/// caller's identity like the oracle (`device_id`, `client_id`,
+/// caller's identity like the retired implementation (`device_id`, `client_id`,
 /// `notify_finished`, `locale`, `platform:"other"`, `user_agent:""`).
 pub(crate) async fn subscribe(
     ctx: ActionContext,
@@ -2920,7 +2920,7 @@ pub(crate) async fn subscribe(
             sub.device_id = device;
             sub.locale = "en".to_owned();
             // The authenticated connection does not carry a trusted
-            // browser platform — default to no actions (oracle).
+            // browser platform — default to no actions (retired implementation).
             sub.platform = PLATFORM_OTHER.to_owned();
             sub.user_agent = String::new();
             match ctx.push.subscribe(sub, &message.replace_endpoints) {
@@ -3009,7 +3009,7 @@ pub(crate) async fn snooze(
             policy.snooze_until =
                 Some(parse_rfc3339(&message.snooze_until).ok_or("push_invalid_snooze")?);
         }
-        // The oracle collapses every SetPolicy failure here to
+        // The retired implementation collapses every SetPolicy failure here to
         // `push_invalid_snooze`.
         ctx.push
             .set_policy(policy.clone())
@@ -3053,7 +3053,7 @@ pub(crate) async fn viewed_pane(
 
 /// `push_open_ref` — verifies the signed event reference, the device
 /// binding, and that the claimed target is still current. Every
-/// rejection is the oracle's generic `"Notification target is no
+/// rejection is the retired implementation's generic `"Notification target is no
 /// longer available"` `command_result`; the receipt keeps the specific
 /// code.
 pub(crate) async fn open_ref(
@@ -3831,7 +3831,7 @@ mod tests {
         );
         // The signer key persisted: tokens still verify…
         // (they'd fail `active` after restart, like recovered-but-
-        // unreconciled oracle state — sign/verify itself round-trips).
+        // unreconciled retired implementation state — sign/verify itself round-trips).
         let signer_claims = ReferenceClaims {
             key: question_key("dev-1"),
             expires_at: Timestamp::now().add_ns(60 * NS_PER_SEC),

@@ -27,10 +27,10 @@ hex = "0.4"
 # Phase-5 §2.2 `frame_zstd` — negotiated pane-frame compression.
 zstd = "0.14"
 # Web Push delivery worker: HTTPS POST to push services — rustls-only,
-# redirects off at the call site (oracle CheckRedirect -> ErrUseLastResponse).
+# redirects disabled at the call site.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots"] }
 
-# lerdr-shadow: WS client + trace differ for the Phase-3 parity harness.
+# lerdr-shadow: WS client + trace differ for the self-determinism harness.
 tokio-tungstenite = "0.29" # same tungstenite generation axum's ws uses
 futures-util = "0.3"
 similar = "2"              # unified diff rendering (insta already pins it)

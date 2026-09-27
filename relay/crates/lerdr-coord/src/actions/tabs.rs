@@ -2,11 +2,11 @@
 //! `handleTabRename`/`handleTabReorder`/`handleAcknowledge` port.
 //!
 //! `agent_rename` renames the pane's **tab**, not the agent record — the
-//! oracle routes it to `tab rename` (`tab.rename{tab_id,label}`) after
+//! retired implementation routes it to `tab rename` (`tab.rename{tab_id,label}`) after
 //! resolving `pane_id → tab_id` through its agent table. `tab_reorder`
 //! resolves the same way into `tab.move{tab_id,insert_index}`.
 //!
-//! `acknowledge_pane` never touches Herdr: the oracle clears the pane's
+//! `acknowledge_pane` never touches Herdr: the retired implementation clears the pane's
 //! triage attention in local state and rebroadcasts `agent_update` when the
 //! displayed status changed. The Rust topology does not project attention
 //! state (doc 10), so the honest port is an in-memory ledger keyed by the

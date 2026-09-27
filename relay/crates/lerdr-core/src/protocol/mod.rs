@@ -1,11 +1,10 @@
-//! `protocol` — the frozen wire contract (`protocol v3` / `herdr-e2ee-v2`),
-//! ported from `internal/protocol/protocol.go`.
+//! `protocol` — the frozen wire contract (`protocol v3` / `herdr-e2ee-v2`).
 //!
 //! - [`Inbound`] / [`Inbound::decode`]: client -> server envelopes, including
 //!   the `type:"command"` unwrap and dropped-field semantics.
-//! - [`Outbound`]: typed server -> client messages, byte-exact with Go's
-//!   `json.Marshal` output (map-built envelopes serialize sorted-key order;
-//!   struct-built payloads keep Go field order).
+//! - [`Outbound`]: typed server -> client messages with canonical JSON output
+//!   (map-built envelopes serialize sorted-key order; struct-built payloads
+//!   preserve declared field order).
 //! - [`classify_action`], [`requires_protocol`], [`compatible`],
 //!   [`RequestScope`]: the dispatch metadata catalog.
 

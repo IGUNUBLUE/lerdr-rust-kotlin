@@ -32,8 +32,8 @@ import okio.ByteString
 
 /**
  * A single `herdr-e2ee-v2` WebSocket session: one-shot connect → E2EE
- * handshake → framed JSON session. Mirrors the oracle's encrypted transport
- * (`frontend/src/lib/transports/encrypted.ts` + `websocket.ts`):
+ * handshake → framed JSON session. Mirrors Lerdr's encrypted transport
+ *:
  *
  * ```
  * connect(): open socket → check subprotocol → client hello (plaintext)
@@ -59,7 +59,7 @@ class RelayConnection(
 ) {
     /** `TransportStatus` for one socket. */
     sealed interface State {
-        /** Dialing or mid-handshake — the oracle's `connecting`. */
+        /** Dialing or mid-handshake — Lerdr's `connecting`. */
         data object Connecting : State
 
         /** Server finish accepted; the framed session is live. */
@@ -132,7 +132,7 @@ class RelayConnection(
      *
      * @return the authenticated server finish (identity + issued credential
      *   secret for invitation handshakes) — persist it before declaring the
-     *   connection usable, like the oracle's `onAuthenticated`.
+     *   connection usable, like Lerdr's `onAuthenticated`.
      * @throws TransportException.HandshakeTimeout after 10 s
      * @throws TransportException.EncryptionRequired when the subprotocol was not negotiated
      * @throws TransportException.ConnectionClosed on socket close/failure mid-handshake
@@ -174,7 +174,7 @@ class RelayConnection(
         val response = awaitOpen()
         // A relay that ignores the encrypted subprotocol would otherwise get a
         // plaintext hello — refuse the socket before anything is sent
-        // (websocket.ts: `socket.protocol !== E2EE_SUBPROTOCOL`).
+        //.
         if (response.header("Sec-WebSocket-Protocol") != Protocol.ENCRYPTED_WEBSOCKET_SUBPROTOCOL) {
             socketRef?.cancel()
             terminate(DisconnectReason("Relay did not negotiate encrypted transport"))
@@ -195,7 +195,7 @@ class RelayConnection(
     fun send(payload: JsonObject): Boolean = sendRaw(payload.toString())
 
     /**
-     * Oracle `sendRaw`/`transport.send`: false unless the session is ready,
+     * Lerdr `sendRaw`/`transport.send`: false unless the session is ready,
      * the encrypt step and the socket write both succeed. Sealing is
      * serialized so frame sequences stay strictly ordered.
      */

@@ -1,5 +1,4 @@
-//! Server-side pane delta codec — a byte-exact port of
-//! `internal/panedelta/delta.go`.
+//! Server-side pane delta codec for the frozen protocol contract.
 //!
 //! Lines come from Go's `strings.SplitAfter(s, "\n")`, which keeps the `\n`
 //! inside each element and — crucially — leaves a trailing `""` element when

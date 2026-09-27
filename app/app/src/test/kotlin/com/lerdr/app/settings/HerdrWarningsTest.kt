@@ -5,8 +5,7 @@ import lerdr.core.model.HerdrFeatureStatus
 import org.junit.Test
 
 /**
- * `herdrWarnings` — the oracle's `SettingsView.svelte` feature-warning
- * line, ported field-for-field.
+ * `herdrWarnings` — Lerdr's feature-warning line, projected field-for-field.
  */
 class HerdrWarningsTest {
 

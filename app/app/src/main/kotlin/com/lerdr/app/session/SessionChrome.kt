@@ -205,7 +205,7 @@ fun SessionTopBar(
 
 /**
  * Editable session title — controllers tap the name (or pencil) to swap in
- * an inline field wired to `agent_rename` (the oracle's `renameTab`).
+ * an inline field wired to `agent_rename` (Lerdr's `renameTab`).
  * Readers and the no-agent case render plain text. The breadcrumb stays
  * put either way.
  */
@@ -417,7 +417,7 @@ fun SessionTitleEditor(
  *
  * "Manage worktrees" resolves the pane's agent for its relay + workspace
  * ids and hides while they are absent (e.g. inventory loading).
- * "Manage session" opens [ManageSheet] — the oracle's `ManageDialog` port
+ * "Manage session" opens [ManageSheet] — Lerdr's `ManageDialog` behavior
  * (`agent_rename` / `agent_restart` / `agent_clear` / `agent_stop` /
  * `copy_agent_response` + pane metadata). The sheet hides mutations for
  * readers itself, so the entry renders for every role.

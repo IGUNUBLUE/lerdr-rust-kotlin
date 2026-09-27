@@ -59,7 +59,7 @@ struct HermesToolRow {
     content_hex: String,
 }
 
-/// `hermesReader` — stateless (the oracle carries no query cache for Hermes).
+/// `hermesReader` — stateless (the retired implementation carries no query cache for Hermes).
 pub(crate) struct HermesReader;
 
 impl HermesReader {
@@ -214,7 +214,7 @@ impl HermesReader {
     }
 
     /// `query` — the deduping `visible`/`displayed` CTE is verbatim from the
-    /// oracle: `logical_id` collapses compaction copies, `generation=1` picks
+    /// retired implementation: `logical_id` collapses compaction copies, `generation=1` picks
     /// the active/newest row per group, and the cursor resolves a raw `id` to
     /// its group's `logical_id`.
     fn query(

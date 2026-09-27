@@ -21,8 +21,8 @@ import org.junit.runner.RunWith
 import org.junit.runners.Parameterized
 
 /**
- * Replays `pane.sendbuffer` — the Go `sendBuffer` op scripts exported from
- * `internal/transport/sendbuffer_export_test.go`. Each vector runs pushes,
+ * Replays `pane.sendbuffer` — the prior relay implementation op scripts exported from
+ * relay contract. Each vector runs pushes,
  * drains, and pops and asserts the op results, eviction reasons, pending
  * types, and byte accounting byte-for-byte.
  */
@@ -179,7 +179,7 @@ class ClientSendBufferTest {
     }
 
     @Test
-    fun replaceableSetMatchesOracle() {
+    fun replaceableSetMatchesProtocolPolicy() {
         assertThat(ClientSendBuffer.REPLACEABLE_TYPES).containsExactly(
             "agents", "inventory_status", "update_status", "app_deploy_status",
             "herdr_status", "pane_content", "pane_unchanged", "pane_resync",

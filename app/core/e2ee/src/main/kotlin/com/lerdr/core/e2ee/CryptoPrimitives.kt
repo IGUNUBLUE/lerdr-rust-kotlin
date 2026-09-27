@@ -45,7 +45,7 @@ internal object HkdfSha256 {
 }
 
 /**
- * AES-256-GCM with the Go `cipher.AEAD` wire shape: `Seal` output is
+ * AES-256-GCM with the prior relay implementation wire shape: `Seal` output is
  * `ciphertext || 16-byte tag`, and `Open` consumes that same buffer.
  */
 internal object AesGcm {

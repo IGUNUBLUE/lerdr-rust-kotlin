@@ -73,10 +73,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Files mode — workspace tree, file preview, git status + diff
- * (docs/04 §Files; oracle `WorkspaceInspector` parity). On a phone the
- * oracle's sidebar+preview split becomes list→detail: the preview pane
- * swaps into the content area while a selection is live.
+ * Files mode shows a workspace tree, file preview, Git status, and diffs.
+ * On a phone, selecting a file replaces the list with its preview.
  */
 @Composable
 fun FilesScreen(
@@ -750,7 +748,7 @@ private fun decodeDataUrlBitmap(dataUrl: String): ImageBitmap? {
     }.getOrNull()
 }
 
-/** Unified diff — per-line tone colors, oracle `diffLineTone` parity. */
+/** Unified diff with per-line tone colors. */
 @Composable
 private fun DiffPreview(preview: WorkspaceGitDiff) {
     val lines = remember(preview.diff) { preview.diff.split('\n') }
@@ -854,7 +852,7 @@ private fun MessageRow(
     }
 }
 
-/** Human size — bytes → B/KB/MB (oracle shows ceil-KB; this stays honest). */
+/** Human size — bytes → B/KB/MB (Lerdr shows ceil-KB; this stays honest). */
 internal fun formatFileSize(bytes: Long): String = when {
     bytes < 1024 -> "$bytes B"
     bytes < 1024 * 1024 -> "${(bytes + 1023) / 1024} KB"

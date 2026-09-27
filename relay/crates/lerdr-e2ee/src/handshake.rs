@@ -1,7 +1,7 @@
 //! `herdr-e2ee-v2` handshake: auth binding, transcript proofs, ECDH, HKDF
 //! key derivation, and the hello/finish message codecs.
 //!
-//! Byte layout (oracle: `e2ee.go`):
+//! Frozen protocol byte layout:
 //!
 //! ```text
 //! binding       = "herdr-e2ee-v2 auth\x00" ‖ kind ‖ \x00 ‖ auth_id ‖ \x00

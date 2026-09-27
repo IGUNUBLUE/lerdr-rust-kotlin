@@ -24,7 +24,7 @@ class LerdrApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        // The oracle verifies before it connects at open: when the app
+        // Lerdr verifies before it connects at open: when the app
         // lock is armed, no relay socket opens until one verification
         // succeeds. With the setting off the gate opens immediately.
         appScope.launch {
@@ -32,7 +32,7 @@ class LerdrApp : Application() {
             sessions.start()
         }
         // push_viewed_pane's `unlocked` input — lock transitions clear the
-        // viewed pane, unlocks republish it (the oracle's App-level effect).
+        // viewed pane, unlocks republish it (Lerdr's App-level effect).
         appScope.launch {
             lockState.locked.collect { sessions.setLocked(it) }
         }

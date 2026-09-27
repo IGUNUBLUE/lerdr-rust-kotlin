@@ -176,9 +176,9 @@ grep -q '"protocol": 3' "$WORK_DIR/support.json" || {
     sed -n '1,120p' "$WORK_DIR/support.json" >&2
     exit 1
 }
-# The Rust relay's support-state does not emit release_directory yet (the Go
-# oracle uses it to prove the release dir resolved canonically). Assert it the
-# moment the field exists; warn until then.
+# This relay support state does not emit release_directory yet. Assert the
+# canonical release directory when the field becomes available; warn until
+# then.
 if grep -q '"release_directory"' "$WORK_DIR/support.json"; then
     grep -qF "\"release_directory\": \"$RELEASE_DIR\"" "$WORK_DIR/support.json" || {
         echo "installed relay support output does not report the canonical release directory" >&2

@@ -4,7 +4,7 @@ import androidx.compose.runtime.Immutable
 import java.util.regex.Pattern
 
 /**
- * One read-aloud language — the oracle's `SPEECH_LANGUAGES` entries. A
+ * One read-aloud language — Lerdr's `SPEECH_LANGUAGES` entries. A
  * relay synthesizes these on the computer; the audio is streamed back and
  * played as ordinary media.
  */
@@ -13,7 +13,7 @@ data class SpeechLanguage(val code: String, val label: String)
 
 /**
  * `SPEECH_LANGUAGES` — the five languages the relay can read aloud, in the
- * order the settings dropdown lists them (`frontend/src/lib/speech.ts`).
+ * order the settings dropdown lists them.
  */
 val SPEECH_LANGUAGES: List<SpeechLanguage> = listOf(
     SpeechLanguage("en", "English"),
@@ -32,9 +32,8 @@ fun speechLanguageLabel(code: String): String =
     SPEECH_LANGUAGES.firstOrNull { it.code == code }?.label ?: code
 
 /**
- * Text preparation for relay speech — ports of the oracle's
- * `speakableText` (`frontend/src/lib/markdown.ts`) and `speechChunks`
- * (`frontend/src/lib/speech.ts`).
+ * Text preparation for relay speech: [speakableText] produces readable prose
+ * and [speechChunks] bounds each relay request.
  *
  * `speakableText` reduces markdown to prose worth hearing: a speech engine
  * reads formatting characters out loud — backticks became "backtick" on a
@@ -48,7 +47,7 @@ fun speechLanguageLabel(code: String): String =
  */
 object SpeechChunker {
 
-    /** The 1500-char default the oracle exposes for long-form callers. */
+    /** The 1500-char default Lerdr exposes for long-form callers. */
     const val DEFAULT_CHUNK_LIMIT = 1500
 
     /** `speakViaRelay`'s 240-char fragment budget per `speak_text`. */
@@ -56,7 +55,7 @@ object SpeechChunker {
 
     /** `text.split(/(?<=[.!?:;\n])\s+|(?<=[。！？；：])/u)` — after western
      * punctuation followed by whitespace, or right after CJK punctuation.
-     * `UNICODE_CHARACTER_CLASS` gives `\s` the oracle's `/u` coverage. */
+     * `UNICODE_CHARACTER_CLASS` gives `\s` Lerdr's `/u` coverage. */
     private val SENTENCE_SPLIT = Pattern.compile(
         """(?<=[.!?:;\n])\s+|(?<=[。！？；：])""",
         Pattern.UNICODE_CHARACTER_CLASS,
@@ -66,7 +65,7 @@ object SpeechChunker {
      * `speechChunks(text, limit)` — greedy sentence packing into `limit`-char
      * fragments joined on a single space; an over-long piece cuts at the last
      * space inside the limit, else hard-cuts at the limit. Lengths count
-     * UTF-16 units exactly like the oracle's `String.length`.
+     * UTF-16 units exactly like Lerdr's `String.length`.
      */
     fun speechChunks(text: String, limit: Int = DEFAULT_CHUNK_LIMIT): List<String> {
         val chunks = mutableListOf<String>()

@@ -2,16 +2,15 @@
 
 ## High severity
 
-### Crypto byte-parity drift
+### Crypto byte-contract drift
 The handshake has sharp edges: uncompressed 65-byte P-256 points,
 `RawURLEncoding` (not standard b64), the exact `\x00`-joined binding
 strings, direction labels in AAD, BE64 sequences, HKDF info strings.
 A single byte of drift = silent auth failure or worse, cross-compat bugs.
 
-**Mitigation**: golden vectors generated from the Go implementation before
-any porting; both new implementations must pass 100% of vectors including
-negative cases (bad proof, wrong sequence, replay). Interop test: real
-Kotlin↔Go pairing before any UI work.
+**Mitigation**: the committed golden vectors define the expected bytes. Rust
+and Kotlin must pass every applicable vector, including negative cases (bad
+proof, wrong sequence, replay), plus Rust↔Kotlin interop.
 
 ### Ack-gate / delta-chain divergence
 Pane deltas are a stateful protocol: base fingerprints, `ack_required`,
@@ -19,18 +18,18 @@ the ~4 s pending timeout, resync semantics. A subtly-wrong client wedges
 the watch or thrashes resyncs (we already fixed this once — server-side
 pending timeout, v0.26.1).
 
-**Mitigation**: port `applyPaneDelta` semantics literally; fixture-test
-op sequences; add a client-side watchdog mirroring the server's (watch
-stalls → re-watch); keep the crash-banner equivalent (a native
-uncaught-exception overlay in debug builds, logcat-friendly in release).
+**Mitigation**: implement the documented boundary-table semantics in
+`docs/specs/pane-delta.md`; fixture-test operation sequences; add a
+client-side watchdog (watch stalls → re-watch); keep the native debug crash
+surface logcat-friendly.
 
 ### Scope reality check
-~57k LOC Go, ~15.5k LOC frontend, ~70 actions, 7 agent-kind conversation
-readers. A "rewrite it all" framing will stall.
+The relay, Android app, and catalog are substantial systems. Treating the
+current repository as an unbounded rewrite would stall delivery.
 
-**Mitigation**: the phased roadmap — app MVP ships with feed + actions
-only; relay ships core-first behind shadow testing; per-package porting
-order keeps every landing reviewable.
+**Mitigation**: keep changes within the numbered specifications, make each
+landing independently reviewable, and use fixtures plus self-determinism
+coverage for regression detection.
 
 ## Medium severity
 
@@ -46,14 +45,11 @@ wrappers with stable-signature fallbacks; Roborazzi screenshot baseline
 catches API reshuffles at upgrade; track the 1.5 stable milestone and
 re-pin the moment it lands.
 
-### WebRTC on Android is heavy
-Google's `webrtc` AAR adds ~30–40 MB of native libs. The direct path is a
-latency/bandwidth optimization, not a correctness path — the gateway
-covers reachability.
+### Unsupported transport expansion
+WebRTC, gateways, and public tunneling are outside the Tailscale-only product.
 
-**Mitigation**: ship phase 1–2 without it (WS only); evaluate the lighter
-builds or deferred delivery via Play Dynamic Delivery; the protocol treats
-WebRTC as optional capability already (`hybrid` descriptor is advisory).
+**Mitigation**: do not add an alternate path unless the transport ADR and wire
+specification are deliberately revised first.
 
 ### Foreground-service notifications vs OEM battery killers
 Xiaomi/OPPO/vivo aggressively kill persistent services; a killed socket =
@@ -67,25 +63,25 @@ interface as the opt-in fallback for hostile OEMs.
 
 ### Conversation-reader drift
 The JSONL readers track upstream agent formats (Claude Code, Codex…)
-which change without notice; porting them to Rust doubles the chase.
+which change without notice.
 
 **Mitigation**: readers stay behind `get_conversation_history` — the app
-never sees raw formats. Rust readers port *from fixtures* per agent kind;
-when a format drifts, fix once in the relay, both clients benefit.
+never sees raw formats. Update the relay reader and its fixtures together when
+a supported format changes.
 
 ## Low severity / watchlist
 
-- **Pane lease thrash** on keyboard open/close — coalesce lease requests
-  per frame like the web app does (v0.26.3 rAF pattern → `snapshotFlow`
-  debounce in Compose).
+- **Pane lease thrash** on keyboard open/close — coalesce lease requests per
+  frame using Compose `snapshotFlow` debounce.
 - **Unicode width** — grapheme clusters + East Asian wide chars in ANSI
-  rows: port the segmentation tests, use `BreakIterator` not `length`.
+  rows: exercise segmentation fixtures; use `BreakIterator` rather than
+  `length`.
 - **4 MiB send-buffer ceiling** — giant full frames evict the client;
   monitor pane sizes, prefer deltas, document the limit before raising it.
 - **Spec drift** — `docs/` and `fixtures/` are the contract; behavior
-  changes land only through spec updates + vector regeneration, or the
-  spec lies. Mitigation: the shadow-diff harness doubles as a
-  determinism/regression alarm on the outbound stream.
+  changes land only through specification updates and deliberate fixture
+  revisions. The Rust self-determinism harness is a regression alarm on the
+  outbound stream.
 - **Keystore loss on backup/restore** — credentials wrapped by Keystore
   keys may not survive device replacement; pairing recovery UX (re-pair
   QR) must be easy.
@@ -94,5 +90,5 @@ when a format drifts, fix once in the relay, both clients benefit.
 
 - **Android-only client** — no PWA; the Rust relay ships no `web/`
   bundle. iOS/desktop are out of product scope.
-- **No wire-format changes in flight** — deferred to the Phase-5
-  protocol revision.
+- **No wire-format changes in flight** — any future change requires a
+  deliberate protocol revision with specification and fixture updates.

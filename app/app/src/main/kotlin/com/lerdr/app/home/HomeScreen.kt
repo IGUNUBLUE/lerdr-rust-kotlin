@@ -253,7 +253,7 @@ fun HomeContent(
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { innerPadding ->
-        // The oracle's pull-to-refresh (AgentList.svelte): the gesture arms
+        // Lerdr's pull-to-refresh: the gesture arms
         // only at scroll top — PullToRefreshBox's nested scroll gives that
         // for free — releases past threshold fire `requestInventoryRefresh`
         // plus the trigger haptic. `refreshing` is the ~900 ms hold window.
@@ -664,7 +664,7 @@ private fun GroupHeader(
 private enum class ApprovalTone { APPROVE, TRUST, DENY }
 
 /**
- * The oracle's `approvalButtonTone` — the last option or a deny-ish label is
+ * Lerdr's `approvalButtonTone` — the last option or a deny-ish label is
  * destructive; "always/trust/configure" choices get the trust tint.
  */
 private fun approvalTone(option: String, index: Int, total: Int): ApprovalTone {
@@ -677,14 +677,14 @@ private fun approvalTone(option: String, index: Int, total: Int): ApprovalTone {
 private val DENY_WORDS = Regex("\\b(no|deny|reject|cancel|exit)\\b")
 private val TRUST_WORDS = Regex("\\b(always|trust|don't ask|dont ask|configure|edit|amend)\\b")
 
-/** The oracle truncates option labels past 48 chars. */
+/** Lerdr truncates option labels past 48 chars. */
 private fun optionLabel(option: String): String =
     if (option.length > 48) option.take(45) + "…" else option
 
 /**
  * A needs-you card — a blocked agent with its answer affordances inline.
  * The card is a polite live region so a newly-blocked agent announces
- * itself; [responding] swaps buttons for the oracle's "Waiting for agent…"
+ * itself; [responding] swaps buttons for Lerdr's "Waiting for agent…"
  * status; [AttentionCardUi.controllable] hides mutating buttons for
  * readers while keeping card navigation.
  */
@@ -912,7 +912,7 @@ private fun SwipeBackground(direction: SwipeToDismissBoxValue) {
 }
 
 /**
- * The oracle's ManageDialog stop confirmation — "Stop this agent? Its pane
+ * Lerdr's ManageDialog stop confirmation — "Stop this agent? Its pane
  * closes on the computer." with a danger confirm.
  */
 @Composable
@@ -1098,7 +1098,7 @@ private val previewHomeUiState = HomeUiState(
             agentLabel = "claude · lerdr",
             kind = AttentionKind.APPROVAL,
             metaLabel = "approval · 40s",
-            prompt = "Run go test ./internal/… ?",
+            prompt = "Run cargo test -p lerdr-coord?",
             options = listOf("Allow", "Deny"),
             controllable = true,
             provider = "claude",

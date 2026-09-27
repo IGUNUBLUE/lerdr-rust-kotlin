@@ -315,7 +315,7 @@ class WorktreesViewModelTest {
     // ── create / open ─────────────────────────────────────────────────
 
     @Test
-    fun `create sends the oracle's fields then refreshes`() = runTest {
+    fun `create sends Lerdr's fields then refreshes`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectReady()
         val vm = h.viewModel()
@@ -344,7 +344,7 @@ class WorktreesViewModelTest {
         assertThat(state.busy).isFalse()
         assertThat(state.status).isEqualTo("Created worktree fix/issue-14.")
         assertThat(state.statusError).isFalse()
-        // Drafts clear and the oracle's requestAgents() fans out.
+        // Drafts clear and Lerdr's requestAgents() fans out.
         assertThat(state.branchDraft).isEmpty()
         assertThat(h.sentOf("refresh_agents")).isNotEmpty()
         // The listing reloads after a mutation.

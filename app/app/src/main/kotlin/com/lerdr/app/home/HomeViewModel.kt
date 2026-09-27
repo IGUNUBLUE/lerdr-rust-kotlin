@@ -21,9 +21,9 @@ import lerdr.core.model.CommandResultMessage
  * scopes. Dependencies are supplied through a `viewModel { }` initializer
  * (see [HomeScreen]).
  *
- * Mutations delegate to [SessionRepository] — the wire actions are the
- * oracle's `respond`, `answer_question`, and `agent_stop`; failures surface
- * on [messages] like the oracle's `showToast`.
+ * Mutations delegate to [SessionRepository] for the `respond`,
+ * `answer_question`, and `agent_stop` wire actions; failures surface on
+ * [messages] as snackbar text.
  */
 class HomeViewModel(
     repository: HomeRepository,
@@ -37,12 +37,12 @@ class HomeViewModel(
             initialValue = HomeUiState(),
         )
 
-    /** One-shot snackbar text — oracle `showToast` parity. */
+    /** One-shot snackbar text. */
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val messages: SharedFlow<String> = _messages.asSharedFlow()
 
     /**
-     * The oracle's `pullRefreshing` — a fixed visual window that holds the
+     * Lerdr's `pullRefreshing` — a fixed visual window that holds the
      * pull indicator up briefly after a trigger and refuses re-arming
      * while open (`touchStart` requires `!pullRefreshing`).
      */
@@ -50,7 +50,7 @@ class HomeViewModel(
     val inventoryRefreshing: StateFlow<Boolean> = _inventoryRefreshing.asStateFlow()
 
     /**
-     * Pull-to-refresh on the agent list — the oracle's
+     * Pull-to-refresh on the agent list — Lerdr's
      * `relayStore.requestInventoryRefresh()`: `refresh_agents` to every
      * connected relay plus a redial of disconnected registry endpoints.
      * A second trigger inside the window is a no-op.
@@ -124,7 +124,7 @@ class HomeViewModel(
     }
 
     companion object {
-        /** Oracle `setTimeout(…, 900)` — the pull indicator's hold window. */
+        /** Lerdr `setTimeout(…, 900)` — the pull indicator's hold window. */
         const val INVENTORY_REFRESH_WINDOW_MS = 900L
     }
 }

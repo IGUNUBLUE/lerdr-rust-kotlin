@@ -13,10 +13,10 @@ import kotlinx.coroutines.flow.map
 import kotlinx.serialization.json.Json
 
 /**
- * Per-pane composer drafts — the oracle's `prompt-drafts.ts` persistence
+ * Per-pane composer drafts — Lerdr's the local implementation persistence
  * tier on DataStore preferences instead of localStorage.
  *
- * Policy parity with the oracle:
+ * Policy parity with Lerdr:
  * - TTL [MAX_AGE_MS] = 48 h — expired drafts decode as absent and are
  *   evicted by [prune] (or on read via [current]).
  * - [MAX_BYTES] = 64 KiB UTF-8 per draft — oversize text clears the stored
@@ -26,7 +26,7 @@ import kotlinx.serialization.json.Json
  * - Empty text clears; saves are atomic per edit; IO failures map to
  *   [DraftSaveResult.UNAVAILABLE] (`'unavailable'` parity).
  *
- * The oracle's 300 ms debounce + in-memory tier lives in the ViewModel
+ * Lerdr's 300 ms debounce + in-memory tier lives in the ViewModel
  * layer here (`snapshotFlow { }.debounce().collect { save(...) }`) — this
  * store keeps writes synchronous and exact.
  */
@@ -45,7 +45,7 @@ class DraftStore(
         .map { prefs -> decode(prefs[draftKey(identity)], identity) }
         .distinctUntilChanged()
 
-    /** One-shot read; an expired record is physically evicted like the oracle's `loadPromptDraft`. */
+    /** One-shot read; an expired record is physically evicted like Lerdr's `loadPromptDraft`. */
     suspend fun current(identity: String): ComposerDraft? {
         val key = draftKey(identity)
         val raw = dataStore.data.first()[key] ?: return null
@@ -136,7 +136,7 @@ class DraftStore(
     }
 
     companion object {
-        /** Oracle key prefix (`prompt-drafts.ts:3`). */
+        /** Lerdr key prefix. */
         const val DRAFT_PREFIX = "lerdr_prompt_draft_v1:"
         const val DRAFT_VERSION = 1
         const val MAX_AGE_MS = 48L * 60 * 60 * 1_000

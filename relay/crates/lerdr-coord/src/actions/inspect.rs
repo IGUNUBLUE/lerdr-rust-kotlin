@@ -3,7 +3,7 @@
 //! port.
 //!
 //! All four are local-OS (filesystem walk, bounded `git` exec) — no Herdr
-//! dispatch — and answer with a bare `command_result`. The oracle keys the
+//! dispatch — and answer with a bare `command_result`. The retired implementation keys the
 //! workspace off the pane's current `cwd` and re-checks that it did not
 //! change mid-inspection; the topology snapshot at admission is compared
 //! with the live watch afterwards for the same guard.
@@ -140,7 +140,7 @@ pub(crate) async fn inspect(
             .await
             .map(|v| serde_json::to_value(v).unwrap_or_default()),
     };
-    // The oracle's generation+cwd guard: the live topology (not the
+    // The retired implementation's generation+cwd guard: the live topology (not the
     // admission snapshot) must still show this pane at the same cwd.
     let still_same = ctx
         .handle
@@ -461,7 +461,7 @@ fn git_environment() -> Vec<(String, String)> {
 }
 
 /// `runGit` — slot-semaphore, 8s timeout, bounded stdout/stderr.
-/// Returns (stdout, exit_code); `-1` exit codes are the oracle's own
+/// Returns (stdout, exit_code); `-1` exit codes are the retired implementation's own
 /// timeout/bounds failures.
 async fn run_git(root: &Path, limit: usize, args: &[&str]) -> Result<(String, i32), String> {
     let permit = tokio::time::timeout(GIT_TIMEOUT, GIT_SLOTS.acquire())

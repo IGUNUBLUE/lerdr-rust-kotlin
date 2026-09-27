@@ -8,9 +8,11 @@ are welcome, with a few ground rules that keep the codebase coherent.
 - Read `AGENTS.md` — it's written for coding agents, but it is the
   shortest accurate description of how this repo is organized and
   verified.
-- The spec lives in `docs/`. The frozen wire contract lives in
-  `fixtures/`. Behavior is defined by those two — not by any external
-  implementation.
+- `docs/` specifies product behavior and `fixtures/` anchors the frozen
+  wire contract. Use this repository's code and tests to resolve
+  implementation questions; do not consult or compare against the earlier
+  Go mobile-relay repository. Herdr's API remains an external integration
+  boundary, not a second source of truth for Lerdr's product behavior.
 - Check open issues/PRs before starting significant work.
 
 ## AI-assisted contributions
@@ -69,5 +71,5 @@ cargo test -p lerdr-protocol --test vectors
   revision.
 - New features that need new wire actions are Phase-5 candidates —
   open an issue to discuss the spec before implementing.
-- Historical references to prior implementations in comments are
-  provenance, not authority.
+- Historical source references document provenance only. They do not
+  authorize an external comparison or change the local spec and vectors.

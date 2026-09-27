@@ -2,47 +2,25 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Phone — Kotlin app (Compose, M3 Expressive)                │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────────┐  │
-│  │ feed UI  │  │terminal  │  │workspace │  │ settings /  │  │
-│  │ (semantic│  │ renderer │  │ git UI   │  │ pairing UI  │  │
-│  │  layer)  │  │          │  │          │  │             │  │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └──────┬──────┘  │
-│       └──────────────┴────────────┴───────────────┘          │
-│              :core:store (Flow state, single source)         │
-│       ┌──────────────┴──────────────┐                        │
-│  :core:protocol            :core:e2ee                        │
-│  (kotlinx.serialization)   (JCE/Conscrypt)                   │
-│       └──────────────┬──────────────┘                        │
-│              :core:transport (OkHttp WS / WebRTC)            │
-└──────────────────────┬──────────────────────────────────────┘
-                       │ herdr-e2ee-v2 (AES-256-GCM frames)
-        ┌──────────────┼───────────────┐
-        │   Tailscale  │  gateway/rust │ Cloudflare
-        ▼              ▼               ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Computer — Rust relay (single static binary)               │
-│  ┌────────────────────────────────────────────────────────┐ │
-│  │ axum HTTP: /ws + /healthz — no web assets (Android-    │ │
-│  │ only product; this is the sole relay implementation)   │ │
-│  ├────────────────────────────────────────────────────────┤ │
-│  │ session actor per client: send buffer, coalescing,     │ │
-│  │ eviction, E2EE session (p256 + aes-gcm + hkdf)         │ │
-│  ├────────────────────────────────────────────────────────┤ │
-│  │ coordinator: per-pane scheduler, leases, receipts      │ │
-│  ├───────────────┬────────────────────────────────────────┤ │
-│  │ pane watch    │ herdr client (Unix socket + CLI shim)  │ │
-│  │ fingerprint + │ events stream → inventory/projections  │ │
-│  │ delta engine  │                                        │ │
-│  ├───────────────┴────────────────────────────────────────┤ │
-│  │ conversation readers (JSONL), question parser,         │ │
-│  │ push (web-push), uploads, speech, device store         │ │
-│  └────────────────────────────────────────────────────────┘ │
-│                          │ Unix socket / herdr CLI          │
-└──────────────────────────┼──────────────────────────────────┘
+│ Phone — Kotlin/Compose Android app                           │
+│ feed · terminal · workspace · settings/pairing               │
+│ :core protocol/e2ee/transport/store                          │
+└──────────────────────────┬──────────────────────────────────┘
+                           │ WebSocket over Tailscale
+                           │ herdr-e2ee-v2 / protocol v3
+┌──────────────────────────▼──────────────────────────────────┐
+│ Computer — Rust relay                                        │
+│ axum: /ws, /healthz, /readyz · session actors · send buffer │
+│ coordinator: topology, watches, leases, receipts             │
+│ conversation, questions, push, uploads, speech, devices     │
+└──────────────────────────┬──────────────────────────────────┘
+                           │ Unix socket / Herdr CLI fallback
                            ▼
-                    Herdr (unchanged)
+                         Herdr
 ```
+
+The supported network path is Tailscale to a loopback-bound relay. Gateway,
+Cloudflare tunnel, and WebRTC paths are not part of the deployed architecture.
 
 ## Rust workspace (`relay/`)
 
@@ -51,143 +29,102 @@ relay/
 ├── Cargo.toml                 # workspace
 ├── crates/
 │   ├── lerdr-core/            # protocol types, action catalog, framing
-│   ├── lerdr-e2ee/            # handshake + AEAD sessions + frame codecs
-│   ├── lerdr-herdr/           # Unix socket API, event stream, CLI fallback
-│   │                          #   singleflight + dial semaphore +
-│   │                          #   DispatchError taxonomy (see doc 08)
-│   │                          #   SchemaRegistry (`herdr api schema --json`)
-│   │                          #   events supervisor w/ events_lost
-│   │                          #   reconcile + wait primitives
-│   ├── lerdr-watch/           # pane fingerprints, delta engine, probe loop
-│   ├── lerdr-coord/           # per-pane scheduler, receipts, ledger
-│   ├── lerdr-store/           # device credentials, config, stable state
-│   ├── lerdr-push/            # web-push (VAPID), policy, queue
-│   ├── lerdr-conversation/    # JSONL readers → Entry pages
-│   ├── lerdr-question/        # pane→structured question parser
-│   ├── lerdr-gateway/         # gateway relay (lerdr-gateway binary)
-│   └── lerdr-relay/           # binary: axum server wiring everything
-└── tests/
-    ├── vectors/               # golden fixtures generated from Go impl
-    └── interop/               # Rust↔Go handshake + frame roundtrips
+│   ├── lerdr-e2ee/            # handshake, AEAD sessions, frame codecs
+│   ├── lerdr-fixture/         # frozen fixture loader
+│   ├── lerdr-herdr/           # Unix socket API, events, capabilities
+│   ├── lerdr-coord/           # topology, actions, store-backed services
+│   ├── lerdr-relay/           # WebSocket sessions and relay runtime
+│   └── lerdr-shadow/          # scripted self-determinism harness
+└── tests/                     # vectors and integration coverage
 ```
 
 **Service topology**: actor model — channels own the boundaries, tasks
 own the state. TopologyActor projects the Herdr event stream onto a
-`watch::Sender`; per-pane watch tasks feed ordered frame channels;
-per-client SessionActors own E2EE state + bounded send queues (lag →
-evict, mirroring the Go sendbuffer contract). Full diagram and rules in
-[08 — Herdr boundary](08-herdr-boundary.md).
+`watch::Sender`; per-pane watch tasks feed ordered frame channels; per-client
+SessionActors own E2EE state + bounded send queues (lag → evict). Full
+diagram and rules in [08 — Herdr boundary](08-herdr-boundary.md).
 
 ### Crate choices
 
 | Need | Crate | Why |
 |---|---|---|
 | Async runtime | `tokio` | ecosystem gravity |
-| HTTP/WS server | `axum` + `tokio-tungstenite` | mature, and we need raw frame control for the dual codec |
-| Serialization | `serde` + `serde_json` | wire parity is JSON today; `serde_bytes` for binary codec |
-| Crypto | `p256`, `aes-gcm`, `hkdf`, `hmac`, `sha2` | pure-Rust, audited, exact parity with Go stdlib usage |
+| HTTP/WS server | `axum` + `tokio-tungstenite` | mature, with raw frame control for the frozen protocol |
+| Serialization | `serde` + `serde_json` | JSON wire contract; `serde_bytes` for binary payloads |
+| Crypto | `p256`, `aes-gcm`, `hkdf`, `hmac`, `sha2` | pure-Rust, audited primitives matching the frozen vectors |
 | Unix socket | `tokio::net::UnixStream` | Herdr socket API |
 | Persistence | JSON files first (`serde_json` + atomic rename) then `rusqlite` if needed | current store is file-based; don't add a DB without need |
 | Logging | `tracing` + `tracing-journald` | journald acceptance test exists |
-| Web push | `web-push` crate or port minimal VAPID+AES128GCM via `p256`+`aes-gcm`+`hkdf`+`http` | the dependency surface is small; evaluate freshness |
-| CLI parity | `clap` | same flags/subcommands as cmd/lerdr |
-| WebRTC (phase 2) | `webrtc` (webrtc-rs) | only for the server side of `herdr-dc-v1` |
+| Web push | `web-push` crate or minimal VAPID+AES128GCM built from `p256`+`aes-gcm`+`hkdf`+`http` | evaluate dependency freshness against the required surface |
+| CLI | `clap` | explicit Lerdr command interface |
+| WebRTC | not in the current transport plan | Tailscale-only deployment |
 
 ## Kotlin app (`app/`)
 
-Aligned to the nowinandroid modularization guide (single feature
-modules — the api/impl split was dropped for Navigation 3):
+The current Gradle settings declare:
 
 ```
 app/
-├── settings.gradle.kts
-├── gradle/libs.versions.toml    # pinned: compose-bom-alpha
 ├── core/
-│   ├── model/                   # shared DTOs — mirrors protocol.go
-│   ├── data/                    # repositories; expose Flows, never
-│   │                            #   snapshots; WS deltas reconcile in
-│   ├── network/                 # OkHttp WS, E2EE session, backoff,
-│   │                            #   keepalive, gateway path
-│   ├── crypto/                  # handshake (ECDH P-256, AES-GCM, HKDF),
-│   │                            #   Keystore-wrapped credential storage
-│   ├── terminal/                # ANSI→AnnotatedString, delta applier,
-│   │                            #   frame store, fingerprint chain
-│   ├── conversation/            # paging source for Entry feeds
-│   ├── designsystem/            # M3E theme + expressive wrappers
-│   ├── ui/                      # shared components (agent row, tool card)
-│   ├── datastore/               # prefs, credentials, per-agent drafts
-│   ├── notifications/           # channels, push-open deep links
-│   ├── service/                 # foreground connection service
-│   └── testing/                 # fakes for all repos + fixture loaders
-├── feature/
-│   ├── agents/                  # home mission control
-│   ├── session/                 # feed + terminal + details modes
-│   ├── workspaces/              # tree, files, git status/diffs
-│   ├── activity/                # journal + detail
-│   ├── pairing/                 # QR, clipboard, invitations, devices
-│   └── settings/                # relays, push, speech, updates
-├── navigation/                  # Nav3 entries + top-level destinations
-├── app/                         # Application, MainActivity, nav host, DI
-└── app-benchmarks/              # Macrobenchmark + Baseline Profile
+│   ├── model/          # shared wire and UI models
+│   ├── protocol/       # protocol-v3 DTOs and codecs
+│   ├── e2ee/           # handshake and encrypted session
+│   ├── terminal/       # ANSI and pane-delta rendering state
+│   ├── testing/        # fakes and fixture loading
+│   ├── transport/      # WebSocket connection and E2EE transport
+│   ├── store/          # local state and synchronization
+│   ├── conversation/   # conversation data
+│   ├── designsystem/   # Compose design system
+│   └── data/           # repositories
+├── navigation/         # app navigation
+└── app/                # Android application
 ```
 
-### Library choices
+### Current dependencies
 
-| Need | Choice | Why |
-|---|---|---|
-| UI | Compose, `material3` 1.5.x-alpha (expressive) via `compose-bom-alpha` | the design target |
-| Serialization | `kotlinx.serialization` | shared DTO definitions, protobuf-ready later |
-| WebSocket | `OkHttp` `WebSocket` | binary frames, ping control, battle-tested |
-| Crypto | JCE/Conscrypt (`Cipher` AES/GCM, `KeyAgreement` ECDH P-256) + hand-rolled HKDF (~20 lines) | no new dependency for crypto that must match byte-for-byte; Keystore for at-rest credential protection |
-| Storage | `DataStore` (prefs) + Keystore-backed secret store + `Room` only if history caching needs it | current app uses localStorage equivalents |
-| DI | `Hilt` (or hand-rolled if we keep it small) | conventional |
-| QR scan | ML Kit Barcode Scanning | parity with tauri barcode-scanner |
-| Biometric | `androidx.biometric:biometric` | parity |
-| Markdown | compose-markdown (multiplatform-markdown-renderer) | conversation text |
-| Images | `Coil` | workspace file previews, attachments |
-| Voice input | Android `SpeechRecognizer`; TTS stays relay-side (`speak_text`) | parity |
-| WebRTC | `stream-webrtc-android` or Google's `webrtc` AAR — **phase 2 decision**, it adds ~30-40 MB | direct-path upgrade can ship later; WS path is complete |
-| Notifications | foreground service + local `NotificationManager` — see below |
+| Need | Choice |
+|---|---|
+| UI | Compose + Material 3 |
+| Serialization | `kotlinx.serialization` |
+| WebSocket | OkHttp |
+| E2EE | JCE primitives plus the in-repo handshake implementation |
+| Local state | DataStore-backed store modules |
+| DI | Hilt |
+| QR scan | CameraX + ML Kit Barcode Scanning |
+| Biometric | `androidx.biometric` |
+| Compression | `zstd-jni` for negotiated `frame_zstd` payloads |
+| Testing | JUnit, Truth, Turbine, MockWebServer, Robolectric, Roborazzi |
 
 ## Push notifications on a native app — decision
 
-The relay pushes via Web Push (VAPID). A native app has three paths:
+The Android app uses a foreground service holding the E2EE socket to raise
+local notifications over Tailscale/LAN. This is self-hosted and needs no
+third-party notification provider; its cost is a persistent-service
+notification and OEM battery-management UX.
 
-1. **Foreground service holding the E2EE socket** → local notifications.
-   Works over Tailscale/LAN, zero third-party, true to self-hosting. Cost:
-   a persistent-service notification + OEM battery killers (Xiaomi/OPPO
-   need `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` UX).
-2. **FCM**: relay posts to FCM HTTP v1 — needs a Firebase project and a
-   service-account key on every self-hosted relay. Bad fit for the
-   install model.
-3. **UnifiedPush** distributor (ntfy etc.): optional third-party again.
+**Decision: foreground service is the primary channel.** An FCM or
+UnifiedPush adapter remains a future opt-in product decision, not a required
+or currently shipped client path.
 
-**Decision: option 1 as the primary channel** (the socket is already
-always-on for realtime), with a documented FCM adapter interface in
-`:core:push` for a future opt-in flavor. The existing web-push infra
-keeps serving PWA clients unchanged.
-
-## The seam strategy — why this is low-risk
+## The seam strategy
 
 ```
 Rust relay ⇄ Kotlin app   (the shipped combination — protocol v3 over
                            herdr-e2ee-v2, E2EE end to end)
-Rust relay ⇄ test client  (shadow harness self-mode — determinism and
-                           regression gate for the outbound stream)
+Rust relay ⇄ test client  (self-mode determinism and regression coverage
+                           for the outbound stream)
 ```
 
 Each side validates independently against the frozen contract: the app
-against golden vectors and scripted relay sessions, the relay against
-the same vectors plus a protocol-level test client (`tools/shadow`).
-No flag day on either side — a peer that speaks `protocol v3` is
-correct by definition.
+against golden vectors and scripted relay sessions, the relay against the same
+vectors plus the protocol-level test client in `tools/shadow`. A peer that
+speaks `protocol v3` and passes the applicable vectors is conformant.
 
-## What deliberately does NOT move
+## Deliberate boundaries
 
-- **Herdr** — the relay is a client of it; unchanged.
+- **Herdr** — the relay is its client; Herdr remains an external integration.
 - **The protocol** — v3 + `herdr-e2ee-v2` stay the contract. Improvements
   land as negotiated capabilities, never silently.
-- **The Go codebase** — stays as reference implementation and test-vector
-  generator until cutover criteria in [05 — Roadmap](05-roadmap.md) pass.
-  Its PWA-serving side stays useful for any non-Android device during the
-  transition, but no new web UI work is planned.
+- **Web client and Go relay** — retired. Lerdr ships the Rust relay and the
+  Kotlin Android app only; historical provenance is recorded in
+  [00 — Inventory](00-inventory.md).

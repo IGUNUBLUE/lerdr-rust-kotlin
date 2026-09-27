@@ -3,12 +3,12 @@
 //! ```text
 //! lerdr-shadow run  --url ws://127.0.0.1:8375/ws --token <32-byte key>
 //!                   --scenario tools/shadow/scenarios/core.json
-//!                   --trace run/rust.jsonl --side rust
+//!                   --trace run/rust-a.jsonl --side rust-a
 //!                   [--auth-id bootstrap] [--auth-version 1] [--locale en]
 //!                   [--handshake-timeout-ms 10000] [--drain-ms 600]
 //!                   [--herdr-socket PATH]   — enables `fake_call` steps
 //!
-//! lerdr-shadow diff --a run/go.jsonl --b run/rust.jsonl
+//! lerdr-shadow diff --a run/rust-a.jsonl --b run/rust-b.jsonl
 //!                   [--config scenario.json] [--out report.txt]
 //! ```
 //!

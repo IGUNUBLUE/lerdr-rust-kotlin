@@ -19,17 +19,14 @@ import lerdr.core.store.AgentInventoryState
 import lerdr.core.store.WorkspaceStore
 import lerdr.core.transport.CommandException
 
-/**
- * Which destructive action is mid-confirm — the oracle's
- * `confirming` ('clear' | 'stop') in ManageDialog.svelte.
- */
+/** Which destructive action is awaiting confirmation. */
 enum class ManageConfirm {
     CLEAR,
     STOP,
 }
 
 /**
- * Everything [ManageSheetContent] renders — the Compose port of the oracle's
+ * Everything [ManageSheetContent] renders — the Compose implementation of Lerdr's
  * `ManageDialog`: the editable name (`agent_rename`), the action menu
  * (`agent_restart` / `agent_clear` / `agent_stop` / `copy_agent_response`),
  * and a metadata block (pane id, cwd, workspace, agent identity, relay).
@@ -49,7 +46,7 @@ data class ManageUiState(
     val workspaceLabel: String = "",
     /** `sessionName(agent)` — the agent-side session title when reported. */
     val sessionName: String = "",
-    /** The oracle's `readOnly` gate — mutations render only for controllers. */
+    /** Lerdr's `readOnly` gate — mutations render only for controllers. */
     val canControl: Boolean = false,
     /** Name-field draft — prefilled from [title] while untouched. */
     val nameDraft: String = "",
@@ -58,7 +55,7 @@ data class ManageUiState(
     val busy: Boolean = false,
     /** `confirming` — the confirm panel replaces the action list. */
     val confirming: ManageConfirm? = null,
-    /** Inline status line — the oracle's toast text (errors tinted). */
+    /** Inline status line — Lerdr's toast text (errors tinted). */
     val status: String? = null,
     val statusError: Boolean = false,
     /**
@@ -71,7 +68,7 @@ data class ManageUiState(
 )
 
 /**
- * Oracle `sessionName` — `session_name` wins; a legacy `session` value that
+ * Lerdr `sessionName` — `session_name` wins; a legacy `session` value that
  * looks like a path or a UUID is not a name at all.
  */
 internal fun sessionNameOf(agent: Agent): String {
@@ -86,7 +83,7 @@ internal fun sessionNameOf(agent: Agent): String {
 private val LEGACY_UUID =
     Regex("^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
 
-/** Oracle `displayName` — `project || name || tab_label || agent || 'agent'`. */
+/** Lerdr `displayName` — `project || name || tab_label || agent || 'agent'`. */
 private fun displayNameOf(agent: Agent): String =
     agent.project?.takeIf { it.isNotEmpty() }
         ?: agent.name?.takeIf { it.isNotEmpty() }
@@ -95,19 +92,19 @@ private fun displayNameOf(agent: Agent): String =
         ?: "agent"
 
 /**
- * Manage-sheet mutation point — every action mirrors the oracle's
+ * Manage-sheet mutation point — every action mirrors Lerdr's
  * ManageDialog handler:
  *
- * - `saveRename` → `agent_rename{name}` (the oracle's `renameTab`);
+ * - `saveRename` → `agent_rename{name}` (Lerdr's `renameTab`);
  * - `restart` → `agent_restart`;
  * - `confirmAction` → `agent_clear` (45 s relay window) / `agent_stop`,
- *   the confirmation panel replacing the menu exactly like the oracle's
+ *   the confirmation panel replacing the menu exactly like Lerdr's
  *   `beginConfirm` (destructive focus lands on Cancel, never on Enter);
  * - `copyResponse` → `copy_agent_response`, `data.text` landing in
  *   [ManageUiState.clipboardText] for the sheet to hand to the clipboard.
  *
- * All mutations gate on `canControl` (the oracle's `readOnly`) plus the
- * `INVENTORY_REQUIRED_COMMANDS` check the oracle runs inside `sendCommand`.
+ * All mutations gate on `canControl` (Lerdr's `readOnly`) plus the
+ * `INVENTORY_REQUIRED_COMMANDS` check Lerdr runs inside `sendCommand`.
  */
 class ManageViewModel(
     private val paneId: String,
@@ -184,7 +181,7 @@ class ManageViewModel(
     }
 
     /**
-     * The oracle's `INVENTORY_REQUIRED_COMMANDS` gate — `sendCommand` refuses
+     * Lerdr's `INVENTORY_REQUIRED_COMMANDS` gate — `sendCommand` refuses
      * these types client-side while Herdr's inventory is not `ready`.
      */
     private fun requireInventoryReady() {
@@ -201,7 +198,7 @@ class ManageViewModel(
         local.update { it.copy(nameDraft = value.take(MAX_NAME_RUNES)) }
     }
 
-    /** `renameTab` — `agent_rename{name}`; the oracle closes the dialog on success. */
+    /** `renameTab` — `agent_rename{name}`; Lerdr closes the dialog on success. */
     fun saveRename() {
         if (local.value.busy || !uiState.value.canControl) return
         val name = uiState.value.nameDraft.trim()
@@ -278,7 +275,7 @@ class ManageViewModel(
     /**
      * `clearAgent`/`stopAgent` — `agent_clear` keeps the relay's 45 s window
      * and may return `data.warning` (surfaced as the status line); success
-     * dismisses the sheet like the oracle closing its dialog.
+     * dismisses the sheet like Lerdr closing its dialog.
      */
     fun confirmAction() {
         val action = local.value.confirming ?: return
@@ -334,7 +331,7 @@ class ManageViewModel(
     /**
      * `copy_agent_response` — the relay answers with `data.text`, the rendered
      * reply. An empty payload means the agent has nothing to copy yet (the
-     * oracle's transcript fallback is out of scope for the sheet).
+     * Lerdr's transcript fallback is out of scope for the sheet).
      */
     fun copyResponse() {
         if (local.value.busy || !uiState.value.canControl) return
@@ -383,7 +380,7 @@ class ManageViewModel(
     }
 
     companion object {
-        /** Oracle `maxlength` for the tab/session name field. */
+        /** Lerdr `maxlength` for the tab/session name field. */
         const val MAX_NAME_RUNES = 128
     }
 }

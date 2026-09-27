@@ -24,7 +24,7 @@ fn relay_env(key: &str) -> Option<(String, String)> {
 }
 
 /// Load `relay.env` from the plugin config dir without overriding existing
-/// vars — `loadEnvironment` in the oracle.
+/// vars — `loadEnvironment` in the retired implementation.
 fn load_environment() {
     let mut filename = relay_env("RELAY_ENV").map(|(_, v)| PathBuf::from(v));
     if filename.is_none() {
@@ -101,7 +101,7 @@ pub fn setup_fragment(token: &str, label: &str, relay: Option<&str>) -> String {
 }
 
 /// `application/x-www-form-urlencoded` component encoding — same alphabet the
-/// oracle's `url.Values.Encode` emits (space → `+` is *not* what we want for
+/// retired implementation's `url.Values.Encode` emits (space → `+` is *not* what we want for
 /// setup links; Go encodes space as `+` in query values. Match it exactly.)
 fn urlencoding(value: &str) -> String {
     let mut out = String::with_capacity(value.len());

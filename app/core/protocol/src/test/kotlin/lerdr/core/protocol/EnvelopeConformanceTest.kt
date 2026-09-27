@@ -16,12 +16,11 @@ import org.junit.Test
  * Conformance over `fixtures/protocol/protocol.envelope.json`.
  *
  * - c2s vectors: decode `json`, re-serialize, compare field-for-field
- *   against `decoded_json` (the Go flat-struct canonical view — unknown
- *   wire fields dropped, command envelopes normalized).
+ *   against `decoded_json`, the fixture's canonical view: unknown wire
+ *   fields are dropped and command envelopes are normalized.
  * - s2c vectors: decode `json`, re-serialize, compare field-for-field
- *   against `json` itself (Go emits these via maps/structs; canonical
- *   comparison is order-insensitive JsonObject equality, which is what
- *   "field-for-field" means on this wire).
+ *   against `json` itself. Canonical comparison is order-insensitive
+ *   [JsonObject] equality, which is what "field-for-field" means on this wire.
  */
 class EnvelopeConformanceTest {
 

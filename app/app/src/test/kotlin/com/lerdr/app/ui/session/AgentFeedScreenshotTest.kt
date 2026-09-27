@@ -267,7 +267,7 @@ class AgentFeedScreenshotTest {
         composeRule.onNodeWithText("Find in conversation").performClick()
         // The find field requests focus on open — target it via focus.
         composeRule.onNode(isFocused()).performTextInput("diff")
-        // The oracle debounces the filter 250 ms — step past it, then let
+        // Lerdr debounces the filter 250 ms — step past it, then let
         // the auto-reveal scroll settle.
         composeRule.mainClock.advanceTimeBy(300)
         composeRule.waitForIdle()

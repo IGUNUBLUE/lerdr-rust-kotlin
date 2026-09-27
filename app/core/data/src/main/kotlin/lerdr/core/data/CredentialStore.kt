@@ -4,10 +4,10 @@ import kotlinx.coroutines.flow.StateFlow
 
 /**
  * One authentication record per relay — the Kotlin counterpart of the
- * oracle's `BrowserDeviceCredentialStore` (`device-auth.ts:81-189`), backed
+ * Lerdr's `BrowserDeviceCredentialStore`, backed
  * by a Keystore-sealed file instead of plaintext web storage.
  *
- * Lifecycle parity with the oracle:
+ * Lifecycle parity with Lerdr:
  *
  * - [saveInvitation] stores a pending pairing (device invitation or the
  *   bootstrap relay key as `id="bootstrap"`).

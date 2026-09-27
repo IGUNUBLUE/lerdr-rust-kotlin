@@ -9,7 +9,7 @@
 //! visible to the next `agents` projection and to mid-read fences without
 //! a new snapshot.
 //!
-//! What the oracle keys on `*AgentState` (event id, kind, prompt, command,
+//! What the retired implementation keys on `*AgentState` (event id, kind, prompt, command,
 //! options, fingerprint, interaction, layout, interaction id) lives on
 //! [`AttentionCell::blocked`]; the rest of the cell mirrors the `State`
 //! maps (`revision`/`contentRev`/`attentionRev`/`completionRev`,
@@ -44,14 +44,14 @@ pub(crate) fn is_done_status(status: &str) -> bool {
 
 /// `isClaudeLike` (server.go:2179-2182) — the alternate-screen agents
 /// whose transcripts the history merge handles (`claude`/`qoder`,
-/// case-insensitive substring — the oracle's own match).
+/// case-insensitive substring — the retired implementation's own match).
 pub(crate) fn is_claude_like(agent: &str) -> bool {
     let lower = agent.to_lowercase();
     lower.contains("claude") || lower.contains("qoder")
 }
 
 /// The semantic halves `clearBlockedDetails`/`copyBlockedDetails` move as
-/// a unit (state.go:716-736). `kind: None` is the oracle's `""` — no
+/// a unit (state.go:716-736). `kind: None` is the retired implementation's `""` — no
 /// committed classification — distinct from `AttentionKind::Unknown`
 /// ("unknown"), which a blocked pane carries between minting and the
 /// projector's first commit.
@@ -332,7 +332,7 @@ pub(crate) fn preserves_chat_completion(
 }
 
 /// `newBlockedEventIDLocked` (state.go:710-714) — 96 bits of randomness
-/// as unpadded base64url. The oracle's `blocked-{nanos}-{seq}` counter
+/// as unpadded base64url. The retired implementation's `blocked-{nanos}-{seq}` counter
 /// fallback only runs when `rand.Read` fails; `ThreadRng::fill` is
 /// infallible, so the fallback is unreachable here.
 pub(crate) fn mint_blocked_event_id() -> String {
@@ -367,7 +367,7 @@ pub(crate) struct PaneTransition {
     pub observed_at: i64,
 }
 
-/// The ledger — `BTreeMap` for the same reason the oracle sorts
+/// The ledger — `BTreeMap` for the same reason the retired implementation sorts
 /// `snapshotLocked`: deterministic iteration when debugging/tests dump it.
 #[derive(Debug, Default)]
 pub(crate) struct AttentionLedger {
@@ -454,7 +454,7 @@ impl AttentionLedger {
 /// `attention_kind`/`prompt`/`command`/`options`/`interaction`/
 /// `question_layout`/`no_echo`/`no_echo_prompt`.
 ///
-/// `classify_semantics` runs on the content the oracle classifies (the
+/// `classify_semantics` runs on the content the retired implementation classifies (the
 /// raw read — `classifyPaneResponse`, server.go:2771-2817);
 /// `no_echo_semantics` runs on the final rendered bytes after the
 /// history merge (`noecho.Match` on `preparePaneResponse`'s tail,
@@ -548,7 +548,7 @@ pub(crate) struct PreparedPane {
 
 /// `preparePaneResponse` (server.go:2757-2817) on a successful read.
 /// `classified` is the capped raw read; the merge condition is the
-/// oracle's exactly — claude-like agents merge their transcript history
+/// retired implementation's exactly — claude-like agents merge their transcript history
 /// only when no structured interaction is showing and the read isn't a
 /// lease-shaped viewport. `no_echo` runs on the final rendered bytes.
 #[allow(clippy::too_many_arguments)]
@@ -595,7 +595,7 @@ pub(crate) fn kind_str(kind: AttentionKind) -> &'static str {
 /// always `Value` (never `null`): every Go parser that can emit an empty
 /// slice builds it non-nil (`make`/`all[:len-1]` — the `var options`
 /// review paths bail before producing an interaction), so an empty Vec
-/// marshals `[]` exactly like the oracle.
+/// marshals `[]` exactly like the retired implementation.
 pub(crate) fn wire_interaction(interaction: &Interaction) -> QuestionInteraction {
     QuestionInteraction {
         id: interaction.id.clone(),

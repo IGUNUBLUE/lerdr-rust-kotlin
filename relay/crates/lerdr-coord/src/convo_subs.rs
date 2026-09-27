@@ -110,8 +110,8 @@ impl ConvoSubSet {
     }
 
     /// `subscribe_conversation` — spawn the feed. Re-subscribing a pane
-    /// replaces the live feed (`WatchSet::start` parity — clients
-    /// re-issue subscribe to retarget rather than unsubscribing first).
+    /// replaces the live feed; clients re-issue subscribe to retarget rather
+    /// than unsubscribing first.
     pub(crate) fn start(&mut self, spec: ConvoSubSpec, deps: ConvoSubDeps) {
         if let Some(previous) = self.entries.remove(&spec.pane_id) {
             previous.abort();
@@ -148,7 +148,7 @@ impl ConvoSubSet {
 /// `target.pane_id`) names the pane and must be live; otherwise
 /// `target.agent_session_id` resolves through the topology's session
 /// index. `None` when the address resolves to no live pane — the router
-/// answers the oracle-family "Agent is unavailable" failure.
+/// answers the retired implementation-family "Agent is unavailable" failure.
 pub(crate) fn subscribe_pane(topology: &Topology, message: &Inbound) -> Option<String> {
     let pane_id = pane_of(message);
     if !pane_id.is_empty() {

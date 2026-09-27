@@ -72,11 +72,11 @@ interface LaunchEntryPoint {
 }
 
 /**
- * "New agent" sheet — the oracle's `LaunchView` (`agent_start`): relay and
+ * "New agent" sheet — Lerdr's `LaunchView` (`agent_start`): relay and
  * profile pickers, the directory-browser cwd field, a suggested name, an
  * optional first prompt, and the workspace target when the relay has
  * workspaces. Submit is gated by `canControl` — the read-only warning text
- * is the oracle's verbatim.
+ * is Lerdr's verbatim.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -155,7 +155,7 @@ fun NewAgentSheetContent(
                 onSelect = onWorkspaceSelect,
             )
             if (uiState.workspaceTargetLabel.isNotEmpty()) {
-                // The oracle's hint — "New tab in workspace <b>X</b>. …"
+                // Lerdr's hint — "New tab in workspace <b>X</b>. …"
                 Text(
                     buildAnnotatedString {
                         append("New tab in workspace ")
@@ -236,7 +236,7 @@ fun NewAgentSheetContent(
 }
 
 /**
- * "New workspace" sheet — the oracle's WorkspaceManager create dialog
+ * "New workspace" sheet — Lerdr's WorkspaceManager create dialog
  * (`workspace_create`): relay picker, directory browser, label.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -336,9 +336,9 @@ fun NewWorkspaceSheetContent(
 }
 
 /**
- * The `list_directories` browser as a dialog — oracle parity: current
- * folder header, a "Parent folder" row, directory rows, plus the loading /
- * error / capability-missing / empty states.
+ * The `list_directories` browser dialog shows the current folder, a parent
+ * row, directory rows, and loading, error, capability-missing, or empty
+ * states.
  */
 @Composable
 fun DirectoryBrowserDialog(
@@ -484,7 +484,7 @@ private fun DirectoryRow(
     }
 }
 
-/** Small form-section caption — the oracle's `<label>`/`.field-label`. */
+/** Small form-section caption — Lerdr's `<label>`/`.field-label`. */
 @Composable
 private fun LaunchFieldLabel(text: String) {
     Text(
@@ -494,7 +494,7 @@ private fun LaunchFieldLabel(text: String) {
     )
 }
 
-/** The oracle's `p.hint` — quiet supporting text under a field. */
+/** Lerdr's `p.hint` — quiet supporting text under a field. */
 @Composable
 private fun LaunchHint(text: String) {
     Text(
@@ -504,7 +504,7 @@ private fun LaunchHint(text: String) {
     )
 }
 
-/** Warning lines under the relay picker — oracle `p.warning` parity. */
+/** Warning lines under the relay picker. */
 @Composable
 private fun LaunchWarnings(uiState: LaunchUiState) {
     val warningColor = MaterialTheme.colorScheme.error
@@ -525,7 +525,7 @@ private fun LaunchWarnings(uiState: LaunchUiState) {
     }
 }
 
-/** The oracle's `p.form-status` — post-submit status line. */
+/** Lerdr's `p.form-status` — post-submit status line. */
 @Composable
 private fun LaunchStatus(uiState: LaunchUiState) {
     uiState.status?.let {
@@ -679,9 +679,8 @@ private fun WorkspacePicker(
 }
 
 /**
- * The cwd field — oracle parity is a button, not free text: the selected
- * folder is always the last listing's `current`, so tapping opens the
- * browser dialog rather than an editor.
+ * The cwd field is a button rather than free text: the selected folder is
+ * always the last listing's `current`, so tapping opens the browser dialog.
  */
 @Composable
 private fun DirectoryField(

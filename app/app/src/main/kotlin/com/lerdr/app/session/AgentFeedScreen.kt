@@ -151,7 +151,7 @@ fun AgentFeedScreen(
         )
     }
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    // SAF picker — `*/*` so client-side validation reports the oracle's
+    // SAF picker — `*/*` so client-side validation reports Lerdr's
     // per-file issue text instead of silently hiding unsupported types.
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments(),
@@ -205,13 +205,13 @@ fun AgentFeedContent(
     onCopyResponse: (String, (String) -> Unit) -> Unit,
     onClearError: () -> Unit,
     onLoadOlder: () -> Unit,
-    /** Oracle `reloadHistory`/`returnToLatest` — cursorless fresh browse. */
+    /** Lerdr `reloadHistory`/`returnToLatest` — cursorless fresh browse. */
     onReloadHistory: () -> Unit,
-    /** Oracle `recoverHistory` — the error row's Continue/Retry affordance. */
+    /** Lerdr `recoverHistory` — the error row's Continue/Retry affordance. */
     onRecoverHistory: () -> Unit,
-    /** Oracle `pausePreparation` — stops the client-side poll loop. */
+    /** Lerdr `pausePreparation` — stops the client-side poll loop. */
     onCancelPreparation: () -> Unit,
-    /** Oracle `continuePreparation` — resumes polling the stored cursor. */
+    /** Lerdr `continuePreparation` — resumes polling the stored cursor. */
     onContinuePreparation: () -> Unit,
     onPickAttachments: () -> Unit,
     onRemoveAttachment: (String) -> Unit,
@@ -229,7 +229,7 @@ fun AgentFeedContent(
     var findQuery by rememberSaveable { mutableStateOf("") }
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var activeFindIndex by rememberSaveable { mutableIntStateOf(-1) }
-    // The oracle debounces the transcript filter 250 ms.
+    // Lerdr debounces the transcript filter 250 ms.
     LaunchedEffect(findQuery) {
         delay(250)
         searchQuery = findQuery
@@ -241,10 +241,10 @@ fun AgentFeedContent(
     val visibleEntries = remember(uiState.entries, matchedIndexes) {
         matchedIndexes.map { uiState.entries[it] }
     }
-    // One match = one entry row; the find bar counts rows like the oracle's
+    // One match = one entry row; the find bar counts rows like Lerdr's
     // `n of m` over `visibleEntries`.
     val matchCount = if (searching) matchedIndexes.size else 0
-    // ── history status surface — the oracle's `conversation-warning` block ──
+    // ── history status surface — Lerdr's `conversation-warning` block ──
     // `sourceChangedNotice` — cursor-invalidating failures reload cursorless.
     val historySourceChanged = isHistorySourceChanged(
         uiState.historyError,
@@ -255,7 +255,7 @@ fun AgentFeedContent(
         !uiState.preparationPaused &&
         uiState.browseState != ConversationBrowseState.PREPARING
     // `loading && !entries.length` / `!available && !entries.length` — the
-    // oracle's empty-state branches are exclusive (loading first) and
+    // Lerdr's empty-state branches are exclusive (loading first) and
     // suppress the whole warning block.
     val historyLoadingEmpty = uiState.historyLoading && uiState.entries.isEmpty()
     val historyUnavailableEmpty = !historyLoadingEmpty &&
@@ -282,7 +282,7 @@ fun AgentFeedContent(
         activeFindIndex = -1
     }
 
-    // Oracle: a fresh result set auto-reveals the first match.
+    // Lerdr: a fresh result set auto-reveals the first match.
     LaunchedEffect(searchQuery, matchCount) {
         if (matchCount > 0) {
             revealFindMatch(0)
@@ -291,7 +291,7 @@ fun AgentFeedContent(
         }
     }
 
-    // ── slash commands — oracle `slashMenuOpen` + keyboard navigation ──
+    // ── slash commands — Lerdr `slashMenuOpen` + keyboard navigation ──
     var dismissedSlashQuery by rememberSaveable { mutableStateOf<String?>(null) }
     var activeSlashIndex by rememberSaveable { mutableIntStateOf(0) }
     val slashQuery = slashQueryFor(uiState.composerDraft)
@@ -305,7 +305,7 @@ fun AgentFeedContent(
         slashMatches.take(MAX_VISIBLE_SLASH_COMMANDS)
     }
     val slashIndex = effectiveSlashIndex(activeSlashIndex, filteredSlash.size)
-    // Oracle `slashMenuOpen` — pure draft-text drive; a blocked agent still
+    // Lerdr `slashMenuOpen` — pure draft-text drive; a blocked agent still
     // accepts commands (chat-while-blocked is the clarify path).
     val slashMenuOpen = uiState.canControl && slashQuery != null &&
         dismissedSlashQuery != uiState.composerDraft
@@ -324,7 +324,7 @@ fun AgentFeedContent(
         onDraftChange(next)
     }
 
-    // ── transient status → snackbar (oracle `showToast`) ──
+    // ── transient status → snackbar (Lerdr `showToast`) ──
     LaunchedEffect(uiState.lastError) {
         uiState.lastError?.let {
             snackbarHostState.showSnackbar(it)
@@ -569,7 +569,7 @@ fun AgentFeedContent(
                         .padding(bottom = spacing.small),
                 )
             }
-            // The oracle renders its `conversation-warning` rows above the
+            // Lerdr renders its `conversation-warning` rows above the
             // scrollable transcript — fixed placement, same template order.
             if (!historyLoadingEmpty && !historyUnavailableEmpty) {
                 FeedHistoryWarnings(
@@ -737,7 +737,7 @@ private fun ConversationEntryRow(
                     FeedMarkdown(entry.text, highlight = highlight)
                 }
                 entry.tools.forEachIndexed { index, tool ->
-                    // `${tool.id || tool.name}:${index}` — the oracle's key.
+                    // `${tool.id || tool.name}:${index}` — Lerdr's key.
                     key(tool.id.ifEmpty { tool.name } + ":$index") {
                         FeedToolCard(tool)
                     }
@@ -910,7 +910,7 @@ private fun Composer(
                     modifier = Modifier
                         .weight(1f)
                         .onPreviewKeyEvent { event ->
-                            // Oracle keydown — menu keys only while it is open.
+                            // Lerdr keydown — menu keys only while it is open.
                             if (!slashMenuOpen || event.type != KeyEventType.KeyDown) {
                                 return@onPreviewKeyEvent false
                             }

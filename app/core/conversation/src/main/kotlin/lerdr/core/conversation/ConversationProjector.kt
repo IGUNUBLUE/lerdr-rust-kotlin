@@ -17,10 +17,10 @@ class ConversationProjectionException(message: String) :
  * Transport → domain seam for `get_conversation_history` pages.
  *
  * The relay answers the action with `command_result.data` carrying a
- * serialized `conversation.BrowsePage` (`internal/conversation/browser.go`).
+ * serialized `conversation.BrowsePage` (relay contract).
  * [project] normalizes that payload into [ConversationPage] with the same
- * rules the released web client applies in `normalizeConversationPage`
- * (`frontend/src/lib/store.ts`) — the behavioral oracle for this module:
+ * rules Lerdr's documented behavior applies in `normalizeConversationPage`
+ * — the behavioral Lerdr for this module:
  *
  * - required page fields (`available`, `has_more`, `entries`, `state`,
  *   `mode`) must be present and well-typed, page caps enforced
@@ -182,7 +182,7 @@ object ConversationProjector {
         val diagnostics = element as? JsonObject
             ?: invalid("'diagnostics' must be an object")
         val incomplete = optionalBool(diagnostics["continuation_incomplete"], "continuation_incomplete")
-        // "" is falsy in the oracle — normalize to absent before the checks.
+        // "" is falsy in Lerdr — normalize to absent before the checks.
         val continuationReason =
             optionalString(diagnostics["continuation_reason"], MAX_CONTINUATION_REASON_CHARS)
                 ?.takeIf { it.isNotEmpty() }
@@ -255,13 +255,13 @@ object ConversationProjector {
         )
     }
 
-    // ── field primitives (store.ts browse* helpers) ─────────────────────
+    // ── field primitives ─────────────────────
 
     /** `browseRecord`-style object-or-invalid for required fields. */
     private fun invalid(what: String): Nothing =
         throw ConversationProjectionException("relay returned invalid conversation history ($what)")
 
-    /** `typeof === 'boolean'`: rejects string "true"/"false" like the oracle. */
+    /** `typeof === 'boolean'`: rejects string "true"/"false" like Lerdr. */
     private fun strictBool(element: JsonElement?): Boolean? =
         (element as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull
 

@@ -1,6 +1,6 @@
 //! Worktree actions — `workspace.go`'s `HandleWorktree*` port.
 //!
-//! Method mapping (oracle CLI → socket): `worktree list` →
+//! Method mapping (retired implementation CLI → socket): `worktree list` →
 //! `worktree.list`, `worktree create` → `worktree.create`,
 //! `worktree open` → `worktree.open`, `worktree remove` →
 //! `worktree.remove`. All go through `topology_failure` so refusal codes
@@ -9,8 +9,8 @@
 //! `dispatched_unknown`.
 //!
 //! `command_result.data` carries the socket result verbatim minus its
-//! `type` tag — the oracle's `WorktreeListResult`/`WorktreeMutationResult`
-//! have no `type` member, so stripping it reproduces the oracle's shape.
+//! `type` tag — the retired implementation's `WorktreeListResult`/`WorktreeMutationResult`
+//! have no `type` member, so stripping it reproduces the retired implementation's shape.
 
 use lerdr_core::protocol::Inbound;
 use serde::Serialize;
@@ -275,7 +275,7 @@ fn validate_worktree_values(values: [&str; 4]) -> Result<(), Box<Outcome>> {
     Ok(())
 }
 
-/// Drop the result envelope's `type` tag — the oracle's result structs
+/// Drop the result envelope's `type` tag — the retired implementation's result structs
 /// never carried one.
 fn strip_type(mut value: serde_json::Value) -> serde_json::Value {
     if let Some(object) = value.as_object_mut() {

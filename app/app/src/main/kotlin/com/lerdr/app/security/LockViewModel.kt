@@ -4,7 +4,7 @@ import androidx.lifecycle.ViewModel
 import kotlinx.coroutines.flow.StateFlow
 
 /**
- * App-lock state for the UI (docs/04 §App "biometric lock"; oracle
+ * App-lock state for the UI (docs/04 §App "biometric lock"; Lerdr
  * docs/security.md "device verification"). A UX gate: it covers the UI
  * until the device verifies the user once per process — stored
  * credentials stay under the Keystore seal in `:core:data`, untouched

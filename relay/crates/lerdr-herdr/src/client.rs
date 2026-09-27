@@ -58,7 +58,7 @@ pub struct ClientConfig {
     pub id_prefix: String,
     /// Explicit `herdr` binary for CLI introspection (`api schema`,
     /// `--version`). `None` resolves `HERDR_BIN`/`HERDR_BIN_PATH`, `PATH`,
-    /// then the known install locations — `findHerdrBin` in the oracle.
+    /// then the known install locations — `findHerdrBin` in the retired implementation.
     pub herdr_bin: Option<PathBuf>,
     /// Where the API schema comes from at capability refresh. Default
     /// [`SchemaSource::Cli`]; tests inject [`SchemaSource::Static`] or
@@ -1203,7 +1203,7 @@ impl Client {
     /// request clean there). Called through [`Client::bootstrap_with`]
     /// the live verdicts have just been invalidated
     /// (`reconnect_required`), so `workspace.reordered`'s consult reads
-    /// `unknown` and the variant is re-probed — the oracle's
+    /// `unknown` and the variant is re-probed — the retired implementation's
     /// reset→attempt ordering verbatim. `pane.output_changed` is *not* a
     /// live verdict — its published schema adjudication stays consulted
     /// across reconnects.

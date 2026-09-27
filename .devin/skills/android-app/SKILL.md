@@ -42,7 +42,7 @@ New modules: register in `settings.gradle.kts` + `README.md` module map. UI chan
 
 ## References
 
-- `docs/04-app-design.md` — screens + parity checklist.
+- `docs/04-app-design.md` — screens + feature-coverage checklist.
 - `docs/08-herdr-boundary.md` — module layout rationale.
 - `docs/11-stack-practices.md` — M3E alpha state, Compose perf rules, testing matrix.
 - Installed skills: `navigation-3`, `testing-setup` (official android/skills).

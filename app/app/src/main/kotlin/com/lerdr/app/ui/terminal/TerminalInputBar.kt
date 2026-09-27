@@ -45,7 +45,7 @@ import com.lerdr.core.designsystem.theme.LerdrTheme
  * shield marker — and Send rides `send_secret`, never `send_text`. The
  * secret draft deliberately uses plain `remember` (not `rememberSaveable`)
  * and resets on mode exit: a hidden-prompt answer must never reach this
- * phone's saved state (the oracle's `secretValue` — "never saved on this
+ * phone's saved state (Lerdr's `secretValue` — "never saved on this
  * phone and never written to activity").
  *
  * Plain M3 throughout — `core:designsystem` has no text-field or chip
@@ -66,7 +66,7 @@ fun TerminalInputBar(
     val spacing = LerdrTheme.spacing
     var draft by rememberSaveable { mutableStateOf("") }
     // Keyed on the mode so a stale answer can't survive the prompt that
-    // authored it — the oracle clears `secretValue` when secretMode ends.
+    // authored it — Lerdr clears `secretValue` when secretMode ends.
     var secretDraft by remember(secretMode) { mutableStateOf("") }
 
     fun submit() {
@@ -123,7 +123,7 @@ fun TerminalInputBar(
                 },
                 supportingText = if (secretMode) {
                     {
-                        // The oracle's `.secret-prompt` hint — verbatim.
+                        // Lerdr's `.secret-prompt` hint — verbatim.
                         Text(
                             "Typed straight into the terminal: never saved " +
                                 "on this phone and never written to activity.",

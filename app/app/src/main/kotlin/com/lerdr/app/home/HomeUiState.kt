@@ -16,7 +16,7 @@ enum class AttentionKind { APPROVAL, QUESTION, CHAT }
 
 /**
  * A card on the "needs you" rail — one blocked agent. Inline answers mirror
- * the oracle's AgentList actions: approvals send `respond`, single-question
+ * Lerdr's AgentList actions: approvals send `respond`, single-question
  * `single_select` interactions send `answer_question`; anything bigger
  * (multi-select, multi-question, free-text Other) navigates to the session's
  * full form via the "Choose answer/options" button.
@@ -34,13 +34,13 @@ data class AttentionCardUi(
     /** The question/command preview. */
     val prompt: String,
     /**
-     * Approval choices — the oracle's `approvalOptions` (non-empty labels,
+     * Approval choices — Lerdr's `approvalOptions` (non-empty labels,
      * ≥ 2 required) with their real indices; `respond(index, choice)` uses
      * the position. Empty for other kinds.
      */
     val options: List<String> = emptyList(),
     /**
-     * The oracle's `questionInteraction` — a validated `single_select` /
+     * Lerdr's `questionInteraction` — a validated `single_select` /
      * `multi_select` payload, or null when the question is not answerable
      * through the structured API.
      */
@@ -69,7 +69,7 @@ data class AttentionCardUi(
         }?.options.orEmpty()
 
     /**
-     * "Choose answer (N)" / "Choose options (N)" — the oracle's label for a
+     * "Choose answer (N)" / "Choose options (N)" — Lerdr's label for a
      * question that needs the session's full form (multi-select,
      * multi-question, or a free-text Other). Null when the question is
      * quick-answerable or absent.
@@ -125,7 +125,7 @@ data class AgentGroupUi(
     /** The computer name — "workstation". */
     val relayLabel: String,
     /**
-     * Workspace label from the `workspaces` snapshot, else the oracle's
+     * Workspace label from the `workspaces` snapshot, else Lerdr's
      * `groupLabel` fallback: sole project → sole cwd basename → first tab
      * label → "Workspace".
      */

@@ -48,12 +48,12 @@ import kotlinx.coroutines.launch
 
 /**
  * Lightweight markdown for assistant feed entries — a deliberate subset of
- * the oracle's `safeMarkdownHtml` (frontend/src/lib/markdown.ts): headings,
+ * Lerdr's `safeMarkdownHtml`: headings,
  * paragraphs, fenced code, bullet/ordered lists, blockquotes, rules, plus
  * inline `**bold**`, `*em*`/`_em_`, `~~strike~~`, `` `code` `` and
  * `[label](url)`/bare-URL links.
  *
- * Tables are NOT rendered (the oracle emits `<table>` markup); a table's
+ * Tables are NOT rendered (Lerdr emits `<table>` markup); a table's
  * source lines fall through to plain paragraphs so nothing is lost.
  *
  * Parsing is cached module-wide on the raw text ([feedMarkdownBlocks]) so a
@@ -67,7 +67,7 @@ internal sealed interface FeedBlock {
     /** `#{1,4}` heading — [level] 1-based like the source marker count. */
     data class Heading(val level: Int, val text: String) : FeedBlock
 
-    /** Soft-wrapped prose; embedded `\n` keeps the oracle's `<br>` joins. */
+    /** Soft-wrapped prose; embedded `\n` keeps Lerdr's `<br>` joins. */
     data class Paragraph(val text: String) : FeedBlock
 
     /** ```` ```lang ```` fenced block — [language] may be empty. */
@@ -99,7 +99,7 @@ private val RULE = Regex("^\\s*(?:---+|___+|\\*\\*\\*+)\\s*$")
 private val LINK = Regex("^\\[([^\\]\\n]+)]\\((https?://[^\\s)]+)\\)")
 private val BARE_URL = Regex("^https?://[^\\s<>\"']+")
 
-/** The oracle's line loop, reduced to a block list. */
+/** Lerdr's line loop, reduced to a block list. */
 internal fun parseFeedMarkdown(markdown: String): List<FeedBlock> {
     val lines = markdown.replace(Regex("\r\n?"), "\n").split('\n')
     val blocks = ArrayList<FeedBlock>()
@@ -221,7 +221,7 @@ internal fun parseFeedMarkdown(markdown: String): List<FeedBlock> {
 
 /**
  * Parse cache keyed on the raw text — conversation ids are opaque, so the
- * text itself is the key like the oracle's per-message `$derived`. Bounded
+ * text itself is the key like Lerdr's per-message `$derived`. Bounded
  * so a long history session cannot grow it without limit.
  */
 private const val MARKDOWN_CACHE_LIMIT = 128
@@ -239,7 +239,7 @@ internal fun feedMarkdownBlocks(markdown: String): List<FeedBlock> =
 
 /**
  * `fencedCodeText` — every fenced block's content joined by a blank line;
- * the oracle's "Copy code" affordance reads exactly this. Null when the
+ * Lerdr's "Copy code" affordance reads exactly this. Null when the
  * text carries no fenced code.
  */
 internal fun fencedCodeText(markdown: String): String? {
@@ -250,7 +250,7 @@ internal fun fencedCodeText(markdown: String): String? {
     return code.takeIf { it.isNotEmpty() }?.joinToString("\n\n")
 }
 
-/** The oracle's `trimUrlPunctuation` — trailing `.,;:!?)]` stay outside the link. */
+/** Lerdr's `trimUrlPunctuation` — trailing `.,;:!?)]` stay outside the link. */
 private fun trimUrlPunctuation(value: String): Pair<String, String> {
     var url = value
     var suffix = ""
@@ -265,7 +265,7 @@ private fun trimUrlPunctuation(value: String): Pair<String, String> {
     return url to suffix
 }
 
-/** Case-insensitive literal scan — the `<mark>` pass in the oracle. */
+/** Case-insensitive literal scan — the `<mark>` pass in Lerdr. */
 private fun appendHighlighted(
     builder: AnnotatedString.Builder,
     text: String,
@@ -303,7 +303,7 @@ internal class InlineStyles(
 
 /**
  * Inline renderer — emits styled spans into [this]. Link spans carry a real
- * [LinkAnnotation.Url] so taps open the browser like the oracle's `<a>`.
+ * [LinkAnnotation.Url] so taps open the browser like Lerdr's `<a>`.
  */
 private fun AnnotatedString.Builder.appendInline(
     text: String,

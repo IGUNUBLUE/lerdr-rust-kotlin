@@ -1,6 +1,6 @@
 package lerdr.core.protocol
 
-/** Frozen wire contract constants (`internal/protocol/protocol.go`). */
+/** Frozen wire contract constants (relay contract). */
 object Protocol {
     const val VERSION = 3
     const val ENCRYPTED_WEBSOCKET_SUBPROTOCOL = "herdr-e2ee-v2"

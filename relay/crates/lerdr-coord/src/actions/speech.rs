@@ -9,9 +9,9 @@
 //! `changeSpeechVoice`, `speechVoicePayload`, and the `speechRequests`
 //! in-flight map).
 //!
-//! Wire contract summary (all byte-shapes the oracle emits):
+//! Wire contract summary (all byte-shapes the retired implementation emits):
 //! - `speak_text` answers `command_result` — `data:{"format":"wav",
-//!   "audio":"<base64>"}` on success; the three oracle failure texts are
+//!   "audio":"<base64>"}` on success; the three retired implementation failure texts are
 //!   reproduced verbatim. Synthesis is tracked per client +
 //!   `speech_request_id`; a same-key request cancels its predecessor and a
 //!   prior `cancel_speech` pre-cancels the next request (tombstones, capped
@@ -22,17 +22,17 @@
 //! - `speech_voices_list` answers `command_result` carrying
 //!   `speechVoicePayload`'s `data` object.
 //! - `speech_voice_install`/`speech_voice_remove` answer
-//!   `[speech_voices broadcast, command_result]` on success (the oracle's
+//!   `[speech_voices broadcast, command_result]` on success (the retired implementation's
 //!   broadcast-before-result order; the router's hub delivers the
 //!   broadcast to this client — `lerdr-coord` has no cross-session fanout
 //!   seam on `ActionContext`) and `command_result` carrying the refreshed
 //!   payload on failure.
 //!
 //! The engine itself lives behind [`SpeechEngine`] so tests inject a fake
-//! and hosts without any engine binary get the oracle's no-engine path.
+//! and hosts without any engine binary get the retired implementation's no-engine path.
 //! `SystemEngine` ports `engines()`/`selectEngine` (piper preferred, then
 //! `say` on macOS, `espeak-ng`, `espeak`, `flite`), the 15s synthesis
-//! bound, the 400-rune text cap, the ~900KB WAV budget (via the oracle's
+//! bound, the 400-rune text cap, the ~900KB WAV budget (via the retired implementation's
 //! halve-until-fits decimation), and the SHA256-pinned voice catalog
 //! (downloaded with `curl`, the runtime with `tar`).
 
@@ -69,10 +69,10 @@ const MAX_TEXT_RUNES: usize = 400;
 /// `speech.maxWAVBytes` — the transport frame budget for inline audio.
 const MAX_WAV_BYTES: usize = 900 << 10;
 
-/// The oracle's 15s `context.WithTimeout` around `Synthesize`.
+/// The retired implementation's 15s `context.WithTimeout` around `Synthesize`.
 const SYNTH_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// `InstallTimeout` — the oracle's 5-minute bound on engine + voice
+/// `InstallTimeout` — the retired implementation's 5-minute bound on engine + voice
 /// downloads. Downloads are cancelled with the client's context there;
 /// here the deadline alone bounds them (`ActionContext` exposes no
 /// client-lifetime token — see the module's limitation notes).
@@ -86,7 +86,7 @@ const RUNTIME_START_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_IN_FLIGHT: usize = 128;
 
 /// How often a spawned engine child is polled for exit/cancel/deadline
-/// (the oracle selects on `ctx.Done()`; the blocking thread polls).
+/// (the retired implementation selects on `ctx.Done()`; the blocking thread polls).
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 /// `speechVoiceCatalog` — the pinned Hugging Face voice set (name is the
@@ -255,7 +255,7 @@ fn language_label(language: &str) -> &str {
     }
 }
 
-/// `speechCatalog`'s entry lookup (the oracle stores the same table in a
+/// `speechCatalog`'s entry lookup (the retired implementation stores the same table in a
 /// map; unknown languages are rejected before it's consulted).
 fn voice_entry(language: &str) -> Option<&'static VoiceEntry> {
     VOICE_CATALOG
@@ -272,7 +272,7 @@ fn offered(language: &str) -> bool {
 // ── shared speech state (server.go's speechRequests/speechLanguages) ────
 
 /// One `speechRequest` map entry: `seq` disambiguates same-key
-/// replacements at removal time, `cancelled` is the oracle's flag, and
+/// replacements at removal time, `cancelled` is the retired implementation's flag, and
 /// `cancel` kills the engine process while the request is in flight.
 struct InFlight {
     seq: u64,
@@ -281,7 +281,7 @@ struct InFlight {
 }
 
 /// `server.speechRequests` + `server.speechLanguages` under one lock
-/// (`speechMu`). `next_seq` is the replacement-stamp the oracle gets from
+/// (`speechMu`). `next_seq` is the replacement-stamp the retired implementation gets from
 /// pointer identity on the map value.
 #[derive(Default)]
 struct SpeechState {
@@ -305,7 +305,7 @@ struct SpeechInner {
 }
 
 /// The speech subsystem one relay session hands to every action context.
-/// `Clone` copies share `inner` — the oracle's server-level
+/// `Clone` copies share `inner` — the retired implementation's server-level
 /// `speechRequests` map and cached `speechLanguages` — so a `cancel_speech`
 /// from any session reaches the in-flight synthesis it names, and voice
 /// installs serialize process-wide via the engine.
@@ -409,7 +409,7 @@ impl Speech {
             .await
     }
 
-    /// The oracle's `defer` — cancel + remove — except removal is
+    /// The retired implementation's `defer` — cancel + remove — except removal is
     /// stamped so a newer same-key registration survives.
     fn finish(&self, registration: &Registration) {
         registration.token.cancel();
@@ -458,7 +458,7 @@ impl Speech {
     }
 
     /// `s.Install` — bounded by `InstallTimeout`; the cancel token is
-    /// fresh because the oracle binds this to the client's lifetime,
+    /// fresh because the retired implementation binds this to the client's lifetime,
     /// which `ActionContext` doesn't expose.
     async fn install(&self, language: &str) -> Result<(), String> {
         self.inner
@@ -510,7 +510,7 @@ pub(crate) struct VoiceStatus {
 /// The `internal/speech` engine surface the action layer uses. Detection
 /// is synchronous (filesystem probes and short `* --help`/`say -v ?`
 /// execs); synthesis and installs are futures so a cancellation token can
-/// interrupt them — the oracle's `ctx` split into `cancel` + `deadline`.
+/// interrupt them — the retired implementation's `ctx` split into `cancel` + `deadline`.
 pub(crate) trait SpeechEngine: Send + Sync {
     /// `speech.Status` — `engineInstalled`, `managementSupported`, the
     /// speakable `languages`, and one `VoiceStatus` per offered language.
@@ -1115,7 +1115,7 @@ impl SystemEngine {
         }
         std::fs::rename(work.path().join("piper"), &current)
             .map_err(|err| format!("install the speech engine: {err}"))?;
-        // `forgetRuntimeProbe` — the oracle passes `current` (the dir);
+        // `forgetRuntimeProbe` — the retired implementation passes `current` (the dir);
         // probes are keyed by the binary path inside it, so the intent is
         // invalidating the swapped-in binary. The stat stamp would catch
         // the swap either way.
@@ -1215,7 +1215,7 @@ impl SpeechEngine for SystemEngine {
 
 /// `poll_child` — wait on a spawned engine while honoring the
 /// cancellation token and deadline; both kill the child, matching the
-/// oracle's `cmd.Wait` under `ctx.Done()`.
+/// retired implementation's `cmd.Wait` under `ctx.Done()`.
 enum PollStop {
     Cancelled,
     Deadline,
@@ -1418,7 +1418,7 @@ fn parse_say_voices(listing: &str) -> HashMap<String, String> {
 
 /// `download` — skip when the pinned digest already sits at `dest`,
 /// otherwise `curl` to a sibling `.part-` file, verify, rename. Mirrors
-/// the oracle's `http.Get` + temp + `os.Rename`.
+/// the retired implementation's `http.Get` + temp + `os.Rename`.
 fn download(
     cancel: &CancellationToken,
     deadline: Instant,
@@ -1496,7 +1496,7 @@ fn file_digest(path: &Path) -> String {
     hex::encode(hasher.finalize())
 }
 
-/// `extract` — `tar -xzf` into `dest` with the oracle's member-name and
+/// `extract` — `tar -xzf` into `dest` with the retired implementation's member-name and
 /// symlink-target checks (`archivePath`/`safeLinkTarget`).
 fn extract_tar_gz(archive: &Path, dest: &Path) -> Result<(), String> {
     let base = archive
@@ -1542,7 +1542,7 @@ fn extract_tar_gz(archive: &Path, dest: &Path) -> Result<(), String> {
 }
 
 /// `archivePath` — `filepath.Clean` the slash-separated member name, then
-/// reject what the oracle rejects: empty/`.`/absolute names and any path
+/// reject what the retired implementation rejects: empty/`.`/absolute names and any path
 /// still leading with `..` after cleaning (`a/../b` cleans to `b` and is
 /// fine).
 fn unsafe_member_name(name: &str) -> bool {
@@ -1594,7 +1594,7 @@ fn check_symlinks(root: &Path, dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// `os.MkdirTemp` + the oracle's deferred `RemoveAll`, as a guard.
+/// `os.MkdirTemp` + the retired implementation's deferred `RemoveAll`, as a guard.
 struct TempDir(PathBuf);
 
 impl TempDir {
@@ -1769,7 +1769,7 @@ fn speech_voices_frame(catalog: &Catalog) -> Outbound {
 }
 
 /// `sendCommandResult(…, false, "failed", error, "", data)` — the
-/// oracle's speech failure shape: `command_result` phase `failed`, and
+/// retired implementation's speech failure shape: `command_result` phase `failed`, and
 /// the dispatch receipt at `failed_before_dispatch`/`invalid_request`
 /// (the codebase's uniform refusal classification, `Outcome::failed`
 /// plus a data slot).
@@ -1787,7 +1787,7 @@ fn speech_failed(error: &str, data: Option<serde_json::Value>) -> Outcome {
 
 // ── handlers ────────────────────────────────────────────────────────────
 
-/// `speak_text` — the oracle's `speakText`: engine and language gates
+/// `speak_text` — the retired implementation's `speakText`: engine and language gates
 /// first, then register the request and synthesize with the 15s bound.
 /// Answers `command_result` (+ terminal receipt); the audio is inline
 /// base64 WAV under `data`.
@@ -1840,9 +1840,9 @@ pub(crate) async fn speak_text(
     }
 }
 
-/// `cancel_speech` — the oracle's `cancelSpeech`: scope the request key
+/// `cancel_speech` — the retired implementation's `cancelSpeech`: scope the request key
 /// by client, flag+cancel in-flight work, or drop a tombstone so the next
-/// same-key `speak_text` starts cancelled. The oracle emits no frame; the
+/// same-key `speak_text` starts cancelled. The retired implementation emits no frame; the
 /// relay answers `confirmed` like its `unwatch_pane` sibling.
 pub(crate) async fn cancel_speech(
     ctx: ActionContext,
@@ -1998,7 +1998,7 @@ fn cli_fail(message: String) -> SpeechCliError {
 }
 
 /// `speech.Run(ctx, args, stdout, stderr)` — the `speech-voices`
-/// subcommand's full dispatch. The oracle's `ctx` is `Background()` from
+/// subcommand's full dispatch. The retired implementation's `ctx` is `Background()` from
 /// `cmd/lerdr`, so these downloads are unbounded (`INSTALL_TIMEOUT` only
 /// bounds the phone-driven path).
 pub fn speech_voices_cli(
@@ -2024,7 +2024,7 @@ pub(crate) fn speech_voices_run(
         ));
     };
     let requested = parse_languages_flag(rest, stderr)?;
-    // `--languages ""` reads the same as absent — the oracle's `*requested
+    // `--languages ""` reads the same as absent — the retired implementation's `*requested
     // == ""` checks, in order: remove-gate first, then the default.
     let requested = if requested.is_empty() && operation == "remove" {
         return Err(cli_usage("remove needs --languages".to_owned()));
@@ -2274,7 +2274,7 @@ mod tests {
     enum Synth {
         Bytes(Vec<u8>),
         Fail(String),
-        /// Block until the request's token cancels (the oracle's
+        /// Block until the request's token cancels (the retired implementation's
         /// `<-ctx.Done()` fake).
         UntilCancel,
     }
@@ -3016,7 +3016,7 @@ mod tests {
 
     #[test]
     fn no_engine_system_catalog_is_empty() {
-        // A host without piper/espeak/flite binaries reports the oracle's
+        // A host without piper/espeak/flite binaries reports the retired implementation's
         // empty-languages catalog (drives "No speech engine is installed").
         // The cache is pinned so the host's real voice dir can't leak in.
         let dir = tempfile::tempdir().unwrap();
@@ -3040,7 +3040,7 @@ mod tests {
         args.iter().map(|arg| arg.to_string()).collect()
     }
 
-    /// The oracle's `TestRun` usage cases, plus the remove gate and the
+    /// The retired implementation's `TestRun` usage cases, plus the remove gate and the
     /// flag package's own errors — all exit-2 (`ErrUsage`).
     #[test]
     fn speech_cli_usage_errors() {
@@ -3125,7 +3125,7 @@ mod tests {
         assert!(!lines.contains(&"fr"));
     }
 
-    /// `remove` over an empty cache still prints the oracle's line;
+    /// `remove` over an empty cache still prints the retired implementation's line;
     /// `-h` prints the flag usage block on stderr.
     #[test]
     fn speech_cli_remove_and_help() {

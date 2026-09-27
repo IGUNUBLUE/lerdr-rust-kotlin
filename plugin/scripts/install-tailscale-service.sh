@@ -121,8 +121,8 @@ install_launchd() {
     mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
 
     RELEASE_ROOT="$(relay_release_root)"
-    # Rust-era bundles ship their runtime scripts under scripts/; Go-era
-    # bundles used relay/. Resolve whichever the active release carries.
+    # Current bundles ship runtime scripts under scripts/; legacy bundles used
+    # relay/. Resolve whichever layout the active release carries.
     SERVICE_WRAPPER="$RELEASE_ROOT/current/scripts/tailscale-service.sh"
     if [ ! -x "$SERVICE_WRAPPER" ]; then
         SERVICE_WRAPPER="$RELEASE_ROOT/current/relay/tailscale-service.sh"

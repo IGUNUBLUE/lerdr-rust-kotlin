@@ -17,8 +17,8 @@
 //! - [`router`]: the `ActionRouter` seam and `StubRouter`.
 //! - [`server`]: `Relay` — axum wiring, subprotocol gate, lifecycle.
 //!
-//! Wire contract: `protocol v3` / `herdr-e2ee-v2`, frozen — golden vectors
-//! under `fixtures/` are the oracle.
+//! Wire contract: `protocol v3` / `herdr-e2ee-v2`, frozen by the vectors
+//! under `fixtures/`.
 
 pub mod auth;
 pub mod frame;

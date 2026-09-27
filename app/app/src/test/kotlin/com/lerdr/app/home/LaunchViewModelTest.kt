@@ -38,7 +38,7 @@ private fun launchJson(raw: String): JsonObject =
     LerdrJson.parseToJsonElement(raw) as JsonObject
 
 /**
- * Launch-sheet logic: the oracle's `validAgentName`/`launchNamePart`/
+ * Launch-sheet logic: Lerdr's `validAgentName`/`launchNamePart`/
  * `suggestedLaunchName` name rules, the `list_directories` browser flow,
  * and `workspace_create` submission including the reader gate.
  */
@@ -74,7 +74,7 @@ class LaunchViewModelTest {
     fun `launchNamePart normalizes diacritics and separators`() {
         assertThat(launchNamePart("Api Server", "x")).isEqualTo("api-server")
         assertThat(launchNamePart("études", "x")).isEqualTo("etudes")
-        // Oracle parity: only edges are trimmed — interior separator runs
+        // Lerdr parity: only edges are trimmed — interior separator runs
         // (`__`) survive unchanged.
         assertThat(launchNamePart("--weird__name--", "x")).isEqualTo("weird__name")
         assertThat(launchNamePart("", "fallback")).isEqualTo("fallback")

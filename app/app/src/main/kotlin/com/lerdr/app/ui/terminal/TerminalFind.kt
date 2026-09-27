@@ -3,14 +3,14 @@ package com.lerdr.app.ui.terminal
 import java.util.regex.Pattern
 
 /**
- * Find-in-buffer — pure port of the oracle's `terminal-find.ts`
- * (frontend/src/lib/terminal-find.ts). The corpus joins every rendered row
- * with `'\n'`; matches are literal-text hits over that corpus and map back
- * to per-row character spans for highlighting.
+ * Find-in-buffer — a pure implementation of Lerdr's terminal-search rules.
+ * The corpus joins every rendered row with `'\n'`; matches are literal-text
+ * hits over that corpus and map back to per-row character spans for
+ * highlighting.
  *
  * Nothing here touches Compose — [TerminalScreen] wires the state and
  * [TerminalSurface] draws the fragments. `Pattern.CASE_INSENSITIVE |
- * UNICODE_CASE` is the JVM equivalent of the oracle's `giu` regex flags
+ * UNICODE_CASE` is the JVM equivalent of Lerdr's `giu` regex flags
  * (plain IGNORE_CASE is ASCII-only; `iu` is Unicode-aware).
  */
 
@@ -33,7 +33,7 @@ data class TerminalFindFragment(val row: Int, val start: Int, val end: Int)
  * A highlight span on one rendered row — [start, end) are character offsets
  * into the row text (the same offsets the row's `AnnotatedString` uses).
  * [active] marks the fragment of the current match (`mark.active` in the
- * oracle) so the renderer can paint it stronger.
+ * Lerdr) so the renderer can paint it stronger.
  */
 data class TerminalFindRange(val start: Int, val end: Int, val active: Boolean)
 
@@ -44,9 +44,9 @@ fun terminalSearchText(rows: List<TerminalFindRow>): String =
     rows.joinToString("\n") { it.text }
 
 /**
- * `findTerminalText` — literal, case-insensitive search. The oracle escapes
+ * `findTerminalText` — literal, case-insensitive search. Lerdr escapes
  * the query into a `giu` regex; `Pattern.quote` is the same literal match.
- * Callers pass the trimmed query (the oracle searches `findQuery.trim()`);
+ * Callers pass the trimmed query (Lerdr searches `findQuery.trim()`);
  * an empty query or a non-positive limit short-circuits to no matches.
  */
 fun findTerminalText(
@@ -83,7 +83,7 @@ fun terminalRowOffsets(rows: List<TerminalFindRow>): IntArray {
 
 /**
  * `terminalRowForOffset` — binary search for the row containing a corpus
- * offset. Boundary semantics mirror the oracle exactly: the `'\n'` slot
+ * offset. Boundary semantics mirror Lerdr exactly: the `'\n'` slot
  * after a row's text belongs to that row (`offset == end` returns middle),
  * and offsets past the last row's text still resolve to the last row.
  */
@@ -131,7 +131,7 @@ fun terminalMatchFragments(
 }
 
 /**
- * The `byRow` map the oracle builds in `applyTerminalFindHighlights` —
+ * The `byRow` map Lerdr builds in `applyTerminalFindHighlights` —
  * every match's fragments grouped by row, each range tagged [active] when
  * its match is the current one. Rows with no matches are absent.
  */
@@ -153,7 +153,7 @@ fun terminalFindRanges(
 }
 
 /**
- * The oracle's index normalizer (`((i % n) + n) % n`) — wraps both
+ * Lerdr's index normalizer (`((i % n) + n) % n`) — wraps both
  * directions. Returns -1 when there is nothing to select.
  */
 fun wrapFindIndex(index: Int, count: Int): Int =

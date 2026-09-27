@@ -4,7 +4,7 @@
 //! many request bytes reached the socket so callers can distinguish
 //! `NotStarted` (zero bytes — safe to retry) from `DispatchedUnknown` (any
 //! bytes — may have applied). This mirrors the Go client's `written > 0`
-//! check, which is the oracle semantics.
+//! check, which is the retired implementation semantics.
 
 use std::io;
 use std::time::Duration;

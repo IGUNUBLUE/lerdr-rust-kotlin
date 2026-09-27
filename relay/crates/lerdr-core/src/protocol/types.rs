@@ -1,6 +1,5 @@
 //! Shared protocol vocabulary: versions, roles, receipt phases, the action
-//! catalog, and the bounded `ApiError` — ported from
-//! `internal/protocol/protocol.go`.
+//! catalog, and the bounded `ApiError`.
 
 use std::collections::BTreeMap;
 
@@ -27,7 +26,7 @@ pub const SPEECH_VOICE_MANAGEMENT_CAPABILITY: &str = "speech_voice_management";
 
 /// `protocol.Capabilities` — the capability list advertised in `push_config`.
 ///
-/// `"pane_realtime_delta"` is the oracle's conditional tail entry —
+/// `"pane_realtime_delta"` is the retired implementation's conditional tail entry —
 /// advertised while Herdr's `pane.read` probe is not refuted
 /// (`effective_capabilities` applies the gate; the client arms
 /// `watch_pane` on it). `"focus"` was the first Phase-5 §0 addition;
@@ -378,7 +377,7 @@ const fn mutate_action_unversioned(
     }
 }
 
-/// `protocol.actionCatalog` — the oracle's 70 actions plus the Phase-5
+/// `protocol.actionCatalog` — the retired implementation's 70 actions plus the Phase-5
 /// additions: `client_caps`/`caps_update` negotiation, the `focus_*`
 /// family (docs/13 §§0-1.1), the §1 pane-content families
 /// (`pane_search`, `pane_selection_read`, `pane_link_resolve`,

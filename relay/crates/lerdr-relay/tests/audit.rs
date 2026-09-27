@@ -170,7 +170,7 @@ async fn non_audited_action_writes_no_rows() {
     );
 }
 
-/// A denied audited write still logs its attempt — the oracle records
+/// A denied audited write still logs its attempt — the retired implementation records
 /// after `authorizeDeviceAction`, so only authorized sends audit.
 #[tokio::test]
 async fn unauthorized_write_is_denied_before_audit() {
@@ -224,7 +224,7 @@ async fn unknown_action_never_reaches_audit() {
     assert!(rows(dir.path()).is_empty());
 }
 
-/// Sanity: `is_audited`/`action_of` behave as the oracle's
+/// Sanity: `is_audited`/`action_of` behave as the retired implementation's
 /// `isAuditedWrite`/`auditAction` at the seam.
 #[test]
 fn audit_predicates_match_the_catalog() {

@@ -9,11 +9,9 @@ import kotlinx.serialization.json.longOrNull
 import lerdr.core.transport.CommandException
 
 /**
- * Workspace-inspection payload models — the Kotlin mirror of the oracle's
- * `WorkspaceTree`/`WorkspaceFile`/`WorkspaceGitStatus`/`WorkspaceGitDiff`
- * (`frontend/src/lib/types.ts`) as the relay emits them inside
- * `command_result.data` (see `inspect.rs`: serde field names are
- * snake_case, `Option`/`skip_serializing_if` fields are absent when empty).
+ * Workspace-inspection payload models emitted in `command_result.data`.
+ * The relay uses snake_case field names; optional fields are absent when
+ * empty.
  */
 
 enum class WorkspaceEntryKind {
@@ -83,7 +81,7 @@ data class WorkspaceGitDiff(
     val diff: String,
 )
 
-// ── parsing (oracle validation parity — invalid payloads throw CommandException) ──
+// ── parsing (invalid payloads throw CommandException) ──────────────────
 
 internal fun parseWorkspaceTree(data: JsonElement?): WorkspaceTree {
     val obj = data as? JsonObject
@@ -98,7 +96,7 @@ internal fun parseWorkspaceTree(data: JsonElement?): WorkspaceTree {
             val entry = element as? JsonObject ?: return@mapNotNull null
             val path = entry.stringField("path") ?: return@mapNotNull null
             val name = entry.stringField("name") ?: path.substringAfterLast('/')
-            // The oracle renders anything not "directory" as a file row.
+            // Lerdr renders anything not "directory" as a file row.
             val kind = if (entry.stringField("kind") == "directory") {
                 WorkspaceEntryKind.DIRECTORY
             } else {
@@ -176,8 +174,7 @@ data class DirectoryEntry(
 )
 
 /**
- * `list_directories` result — the launch-form directory browser
- * (`frontend/src/lib/types.ts`: `{current:{path,label}, parent, directories}`).
+ * `list_directories` result — the launch-form directory-browser payload.
  */
 data class DirectoryListing(
     val currentPath: String,

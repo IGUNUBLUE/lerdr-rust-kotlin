@@ -4,8 +4,8 @@ import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
 /**
- * `speechChunks` / `speakableText` parity tests — the oracle's
- * `frontend/src/lib/speech.ts` and `frontend/src/lib/markdown.ts` behavior,
+ * `speechChunks` / `speakableText` parity tests — Lerdr's
+ * the protocol contract and the protocol contract behavior,
  * including its edge cases (word-boundary cuts, CJK sentence splits,
  * empty-sentence joins).
  */
@@ -40,7 +40,7 @@ class SpeechChunkerTest {
     @Test
     fun `cjk punctuation splits without whitespace`() {
         // Chinese sentences end without a space, so their punctuation splits.
-        // Oracle quirk kept faithfully: the split leaves an empty tail piece,
+        // Lerdr quirk kept faithfully: the split leaves an empty tail piece,
         // which joins the last sentence on a space — a trailing " " survives.
         assertThat(SpeechChunker.speechChunks("你好。再见！谢谢。"))
             .containsExactly("你好。 再见！ 谢谢。 ")
@@ -63,7 +63,7 @@ class SpeechChunkerTest {
 
     @Test
     fun `a space at index zero is not a usable cut point`() {
-        // lastIndexOf(' ', 5) == 0 → the oracle takes the hard `limit` cut
+        // lastIndexOf(' ', 5) == 0 → Lerdr takes the hard `limit` cut
         // (the leading space stays on the remainder).
         assertThat(SpeechChunker.speechChunks(" abcdefghijkl", limit = 5))
             .containsExactly(" abcd", "efghi", "jkl")
@@ -115,8 +115,8 @@ class SpeechChunkerTest {
     }
 
     @Test
-    fun `default limit matches the oracle 1500`() {
-        // 1200 chars fits one fragment at the oracle's 1500 default.
+    fun `default limit matches Lerdr 1500`() {
+        // 1200 chars fits one fragment at Lerdr's 1500 default.
         val sentence = "Word. ".repeat(200)
         assertThat(SpeechChunker.speechChunks(sentence)).hasSize(1)
     }
@@ -164,7 +164,7 @@ class SpeechChunkerTest {
 
     @Test
     fun `four-digit list markers stay literal`() {
-        // `\d{1,3}` bound in the oracle — 1234. is not a list marker.
+        // `\d{1,3}` bound in Lerdr — 1234. is not a list marker.
         assertThat(SpeechChunker.speakableText("1234. not a marker"))
             .isEqualTo("1234. not a marker")
     }

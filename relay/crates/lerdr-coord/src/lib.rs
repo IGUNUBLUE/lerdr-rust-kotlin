@@ -29,9 +29,9 @@
 //!   `ActionReceipt.phase` — `NotStarted` → `failed_before_dispatch`,
 //!   `DispatchedUnknown` → `dispatched_unknown`, `Refused` → `confirmed`
 //!   carrying the refusal error.
-//! - **Ack gate** (`pane_watch.go` parity): one unacked pane frame per
-//!   (client, pane); `pane_applied` clears it; 4s timeout resets the gate so
-//!   the next invalidation re-sends a full `ack_required` frame.
+//! - **Ack gate**: one unacked pane frame per (client, pane);
+//!   `pane_applied` clears it; a 4s timeout resets the gate so the next
+//!   invalidation re-sends a full `ack_required` frame.
 //! - **Fingerprint**: `content_fingerprint` = `hex(sha256(content)[0..8])`
 //!   over content bytes only (doc 10, round-3 finding).
 

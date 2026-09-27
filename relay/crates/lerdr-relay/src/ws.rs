@@ -1,7 +1,6 @@
 //! `FrameIo` over an axum [`WebSocket`].
 //!
-//! Parity with Go's `webSocketConn` (`internal/transport/conn.go`): the
-//! encrypted socket carries **text frames only** (`requireText`) — a binary
+//! The encrypted WebSocket protocol carries **text frames only** — a binary
 //! frame is a protocol violation and kills the connection. The session codec
 //! is therefore always [`Codec::Json`]; the binary codec rides the future
 //! DataChannel transport, not WS.

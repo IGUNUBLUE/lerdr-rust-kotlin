@@ -20,7 +20,7 @@ import org.junit.Test
  * Conformance over `fixtures/pane/pane.delta.json`:
  *
  * - [PaneDelta.build] must emit `expected_segments` field-for-field.
- * - [PaneDelta.apply] (Go `Apply` semantics) on `expected_segments` must
+ * - [PaneDelta.apply] (prior relay implementation semantics) on `expected_segments` must
  *   produce `expected_applied`.
  * - [PaneDelta.efficient] must match the `efficient` flag.
  * - [PaneDelta.applyStrict] (the released client's apply) must produce

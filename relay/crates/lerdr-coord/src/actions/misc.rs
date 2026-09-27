@@ -1,7 +1,7 @@
 //! Miscellaneous local actions — updates, slash commands, inventory,
 //! copy, app-origin registration.
 //!
-//! - `check_update`/`install_update`: the oracle's `update.Manager` port —
+//! - `check_update`/`install_update`: the retired implementation's `update.Manager` port —
 //!   the persisted `update-state.json` machine, the GitHub release probe
 //!   (API → redirect/atom fallback) through `curl`, and the transient-unit
 //!   worker schedule. The `update_status` broadcasts Go fans out to every
@@ -9,13 +9,13 @@
 //! - `list_slash_commands`: provider builtins plus the INI `[skills]`/
 //!   `[commands]` escape hatch (`discoverGenericSkills`). Per-agent native
 //!   filesystem discovery (`.claude/commands`, provider settings, trust
-//!   rules) is not ported — the catalog is smaller than the oracle's but
+//!   rules) is not ported — the catalog is smaller than the retired implementation's but
 //!   never invented.
 //! - `inventory_status`: the typed `inventory_status` frame the client
 //!   already decodes, derived from the topology projection (a committed
 //!   snapshot is the Go `inventoryReady` analogue).
 //! - `copy_agent_response`: validation order preserved; the clipboard
-//!   backend does not exist here, so the answer is the oracle's
+//!   backend does not exist here, so the answer is the retired implementation's
 //!   clipboard-unavailable failure — never a fabricated payload.
 //! - `register_app_origin`: `storePhoneAppOrigin` — validate, persist
 //!   `<runtime_dir>/phone-app-origin`, emit nothing either way.
@@ -270,7 +270,7 @@ const WORKER_ENV_KEYS: [&str; 3] = [
 ];
 
 /// `update.Manager` — env-derived configuration plus the persisted state
-/// machine. One process-wide instance behind a mutex, like the oracle's
+/// machine. One process-wide instance behind a mutex, like the retired implementation's
 /// `s.updateM`.
 struct UpdateManager {
     release_root: PathBuf,
@@ -380,7 +380,7 @@ impl UpdateManager {
             Err(err) => {
                 // `m.state` keeps the pre-fetch "checking" view — the
                 // reloaded state was only consulted for the transient
-                // check, exactly as the oracle.
+                // check, exactly as the retired implementation.
                 self.state.state = "failed".to_owned();
                 self.state.can_install = false;
                 self.state.eligible = false;
@@ -740,7 +740,7 @@ impl UpdateManager {
         }
         // `supportedWorker` — without the `update-worker` subcommand a
         // scheduled update could never run; with it this leg is
-        // `(true, "plugin", "")` as the oracle.
+        // `(true, "plugin", "")` as the retired implementation.
         if !UPDATE_WORKER_SUPPORTED {
             return (
                 false,
@@ -1421,7 +1421,7 @@ pub(crate) async fn check_update(
     // `s.hub.Broadcast` — peer sessions see the check begin too.
     ctx.notices.send(checking.clone(), ctx.client_id.clone());
     let mut frames = vec![checking];
-    // The network fetch runs unlocked, like the oracle's mutex release —
+    // The network fetch runs unlocked, like the retired implementation's mutex release —
     // concurrent state()/schedule() calls observe the `checking` state.
     let (early, fetcher) = {
         let mut manager = update_manager().lock().await;
@@ -1576,7 +1576,7 @@ pub(crate) async fn inventory_status(
     frames
 }
 
-/// `copy_agent_response` — the oracle's validation order, then the
+/// `copy_agent_response` — the retired implementation's validation order, then the
 /// clipboard-unavailable failure this relay always produces (no host
 /// clipboard backend exists here; Go answers the same on such hosts).
 pub(crate) async fn copy_agent_response(
@@ -1601,7 +1601,7 @@ pub(crate) async fn copy_agent_response(
 }
 
 /// The pane/status half of `copyAgentResponse` — pane presence and
-/// `working` status. The oracle's attention-kind branch (`blocked` +
+/// `working` status. The retired implementation's attention-kind branch (`blocked` +
 /// question/approval) has no field in the Herdr snapshot, so a blocked
 /// pane falls through to the clipboard check — the same path Go takes
 /// when `AttentionKind` does not match.
@@ -1624,7 +1624,7 @@ pub(crate) async fn register_app_origin(
     message: &Inbound,
 ) -> Vec<Outbound> {
     if let Err(error) = store_phone_app_origin(&message.origin) {
-        // The oracle logs the failure and moves on — no result frame.
+        // The retired implementation logs the failure and moves on — no result frame.
         tracing::warn!(%error, "phone app origin was not stored");
     }
     Vec::new()
@@ -1812,7 +1812,7 @@ fn claude_builtins() -> Vec<SlashCommand> {
     ]
 }
 
-/// `codexBuiltinsBase` (the only versioned set the oracle ships today).
+/// `codexBuiltinsBase` (the only versioned set the retired implementation ships today).
 fn codex_builtins() -> Vec<SlashCommand> {
     vec![
         cmd(
@@ -2363,7 +2363,7 @@ fn profile_id_for_agent_name(agent: &str) -> &'static str {
 /// `CatalogForProfileWithSuppression` — builtins plus the INI escape
 /// hatch. Per-agent native discovery (project/personal command and skill
 /// trees, provider settings files, trust rules, `agentVersion`-gated
-/// builtin sets) is the one piece of the oracle's `Discover` not ported
+/// builtin sets) is the one piece of the retired implementation's `Discover` not ported
 /// here, so the `cwd`/`home`/`agentVersion`/`agentDir` inputs it would
 /// consume are not threaded through.
 fn catalog_for_profile(
@@ -2378,7 +2378,7 @@ fn catalog_for_profile(
         provider = provider_builtins(profile_id_for_agent_name(reported_agent));
     }
     let (commands, truncated) = match provider {
-        // codex/opencode discover nothing beyond builtins in the oracle.
+        // codex/opencode discover nothing beyond builtins in the retired implementation.
         Some(builtins) if suppress_native => (builtins, false),
         Some(builtins) if !command_format.is_empty() => {
             // pi/omp/kimi honor the INI format as an escape hatch; hermes
@@ -3066,7 +3066,7 @@ mod tests {
             assert!(builtins.iter().all(|c| c.command.starts_with('/')));
             assert!(builtins.iter().all(|c| c.source == "builtin"));
         }
-        // Counts match the oracle's builtin tables.
+        // Counts match the retired implementation's builtin tables.
         assert_eq!(claude_builtins().len(), 51);
         assert_eq!(codex_builtins().len(), 50);
         assert_eq!(qoder_builtins().len(), 9);
@@ -3235,7 +3235,7 @@ mod tests {
         assert_eq!(catalog.commands.len(), 23);
         assert!(catalog.commands.iter().any(|c| c.command == "/skill:mine"));
         // claude ignores the configured format (native discovery only in
-        // the oracle) — builtins stay.
+        // the retired implementation) — builtins stay.
         let catalog = catalog_for_profile("claude", "claude", &dirs, "skill:{name}", false);
         assert_eq!(catalog.commands.len(), 51);
         // suppress_native strips customs everywhere.

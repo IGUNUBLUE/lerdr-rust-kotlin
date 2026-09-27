@@ -8,9 +8,9 @@ import kotlinx.serialization.json.Json
  * - `ignoreUnknownKeys`: Go's `encoding/json` ignores undeclared fields;
  *   the flat `Inbound` struct deliberately drops wire fields it has no
  *   declaration for (e.g. `content_fingerprint` on `pane_applied`).
- * - `encodeDefaults=false`: Go `omitempty` — zero values are not emitted.
+ * - `encodeDefaults=false`: prior relay implementation — zero values are not emitted.
  *   Fields that must always serialize carry `@EncodeDefault(ALWAYS)`.
- * - `explicitNulls=false`: Go `omitempty` on nullable fields — absent and
+ * - `explicitNulls=false`: prior relay implementation on nullable fields — absent and
  *   null both encode as absent. Fields where Go emits an explicit `null`
  *   (map `any` slots) use `WireField`, which preserves the distinction
  *   independently of this setting.

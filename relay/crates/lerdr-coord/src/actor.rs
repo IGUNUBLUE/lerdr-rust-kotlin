@@ -138,7 +138,7 @@ impl TopologyHandle {
     }
 
     /// `try_send` half of [`refresh`](Self::refresh) — `d.wake()` is a
-    /// synchronous poke in the oracle (the poller's channel); spawn-free
+    /// synchronous poke in the retired implementation (the poller's channel); spawn-free
     /// callers (the ack path inside `HandleReadPane`) use this.
     pub fn try_refresh(&self) {
         // Full inbox = a refresh is already queued; dropping is correct.
@@ -310,7 +310,7 @@ impl TopologyActor {
                     events_active,
                     poll_failures,
                 )));
-                // `RunCapabilityRefresh(30s)` — the oracle's periodic
+                // `RunCapabilityRefresh(30s)` — the retired implementation's periodic
                 // re-probe; catches server changes that never drop the
                 // socket. First tick deferred so it can't race bootstrap.
                 let mut capability_tick = tokio::time::interval_at(
@@ -359,7 +359,7 @@ impl TopologyActor {
                                 }
                                 SupervisorSignal::Invalidated { event, .. } => {
                                     // Pane lifecycle events mutate the
-                                    // oracle's `SessionCache` (events.go:
+                                    // retired implementation's `SessionCache` (events.go:
                                     // `Apply` — pane.{created,updated,
                                     // moved,closed,exited,agent_detected}),
                                     // so they are topology triggers too:
@@ -447,7 +447,7 @@ impl TopologyActor {
                                     // `d.wake()` (dispatch.go:1040) — the
                                     // poller poke behind reads, acks, and
                                     // command side effects. Polls adopt
-                                    // live status; the oracle resets its
+                                    // live status; the retired implementation resets its
                                     // timer on a wake, and so does this.
                                     poll_failures = record_poll(
                                         poll_once(&client, &enrich, &mut state, &topology_tx, &transitions, &mut published).await,
@@ -527,7 +527,7 @@ impl TopologyActor {
 }
 
 /// `idlePollInterval` (poller.go:17) — while the event stream is healthy
-/// the reconcile poll runs on this fixed cadence. The oracle's configured
+/// the reconcile poll runs on this fixed cadence. The retired implementation's configured
 /// interval only applies while the stream is down, and even then
 /// `normalizePollInterval` clamps it to ≤ 15s — the relay configures no
 /// shorter value, so 15s is the base either way.
@@ -543,7 +543,7 @@ const MAX_POLL_RETRY_FAILURES: u32 = 64;
 /// once per consecutive failed poll, capped at the outage interval.
 /// `currentInterval` collapses to the 15s base in both stream states
 /// (see [`IDLE_POLL_INTERVAL`]), so `events_active` is carried only to
-/// keep the shape of the oracle's computation visible.
+/// keep the shape of the retired implementation's computation visible.
 fn poll_interval(_events_active: bool, failures: u32) -> Duration {
     let mut interval = IDLE_POLL_INTERVAL;
     for _ in 0..failures {
@@ -616,9 +616,9 @@ fn publish(
 
 /// The `onTransition` fan-out — push the commit's outcome to the
 /// projector once the publish landed (the sink's fences then see at
-/// least this revision, like the oracle's post-commit task start). No
+/// least this revision, like the retired implementation's post-commit task start). No
 /// sink = no projector attached; the outcome is dropped, matching the
-/// oracle's nil `SetOnTransition`.
+/// retired implementation's nil `SetOnTransition`.
 async fn forward_outcome(transitions: &TransitionSink, outcome: AcceptOutcome) {
     let sink = transitions
         .lock()
@@ -632,7 +632,7 @@ async fn forward_outcome(transitions: &TransitionSink, outcome: AcceptOutcome) {
 
 /// `p.enrich(ctx, agents)` (poller.go:169-170, 340-341) — classify every
 /// blocked incoming agent's live content ahead of the commit, sequential
-/// like the oracle's per-agent loop. The hook owns the read timeout and
+/// like the retired implementation's per-agent loop. The hook owns the read timeout and
 /// the error fallback; an absent hook commits unenriched (nil
 /// `SetEnrich`).
 async fn collect_enrichments(
@@ -742,7 +742,7 @@ async fn push_facts(
 }
 
 /// `CapabilityReport` → the `herdrStatusPayload` wire shape — every field
-/// the oracle fills from `ServerStatus`. `features` is always
+/// the retired implementation fills from `ServerStatus`. `features` is always
 /// `MaybeNull::Value`: Kotlin decodes the map non-nullable.
 fn report_status(report: &CapabilityReport) -> HerdrStatus {
     HerdrStatus {
@@ -803,7 +803,7 @@ fn clone_topology(state: &Topology) -> Topology {
     }
 }
 
-/// The `pane.*` names the oracle's `SessionCache.Apply` mutates
+/// The `pane.*` names the retired implementation's `SessionCache.Apply` mutates
 /// (events.go:620-848): pane lifecycle changes that commit topology.
 /// `pane.output_changed`, `pane.scroll_changed`, `pane.output_matched`,
 /// `pane.focused`, and `pane.agent_status_changed` are *not* in that set —

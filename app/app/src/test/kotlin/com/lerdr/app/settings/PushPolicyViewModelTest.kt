@@ -236,7 +236,7 @@ class PushPolicyViewModelTest {
         assertThat(policy.deviceId).isEqualTo("dev-1")
         assertThat(policy.categories["attention"]).isTrue()
         assertThat(policy.categories["question"]).isFalse()
-        // Absent keys fall back to the oracle's defaults (brief/update on).
+        // Absent keys fall back to Lerdr's defaults (brief/update on).
         assertThat(policy.categories["brief"]).isTrue()
         assertThat(policy.categories["update"]).isTrue()
         assertThat(policy.categories["finished"]).isTrue()

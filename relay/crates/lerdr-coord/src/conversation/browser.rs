@@ -1,6 +1,6 @@
 //! `ConversationBrowser` — the wire-facing `read_page` adapter over `Reader`.
 //!
-//! The oracle's `Browser` is asynchronous: signed `hb1.` cursors, byte-range
+//! The retired implementation's `Browser` is asynchronous: signed `hb1.` cursors, byte-range
 //! offsets, background prepare jobs, and snapshot indexes. This port is
 //! synchronous, so the cursor contract narrows to the entry-id `before`
 //! semantics the `conversation.page.*` fixtures pin: `next_cursor` is the
@@ -25,7 +25,7 @@ use super::util::{clamp_text, normalized_agent};
 /// `DefaultBrowserOptions().ResponseBytes` — 2 MiB wire-page budget.
 const RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 
-/// The oracle's `Browser`: one shared `Reader` behind a synchronous facade.
+/// The retired implementation's `Browser`: one shared `Reader` behind a synchronous facade.
 pub struct ConversationBrowser {
     reader: Arc<Reader>,
 }

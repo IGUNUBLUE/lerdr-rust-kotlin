@@ -16,12 +16,15 @@ Android app** speaking `protocol v3` over `herdr-e2ee-v2`, backed by a
 
 ## Why lerdr exists
 
-I was inspired by [0cv/herdr-mobile-relay](https://github.com/0cv/herdr-mobile-relay)
-— the idea of reaching your coding agents from your phone. My first take
-kept the same stack (a Go relay) plus a Tauri-based mobile app. When I got
-access to Cognition's SWE-2 and wanted to put the model through a real
-test, I picked a stack I don't work in — Rust + Kotlin — and let the
-agents rebuild the product. That's how lerdr started.
+Lerdr began with the idea of reaching coding agents from a phone, inspired
+by [0cv/herdr-mobile-relay](https://github.com/0cv/herdr-mobile-relay).
+My first take used a Go relay and a Tauri-based mobile app. With access to
+Cognition's SWE-2, I used Rust and Kotlin — a stack new to me — to build
+this independent relay and native Android experience with coding agents.
+The product now centers on a semantic feed, interactive terminal, and
+workspace controls; its own specifications and frozen fixtures define its
+behavior. It is not a fork, and development does not depend on consulting
+the earlier project's source.
 
 The name: the iguana is an animal I've always found curious.
 
@@ -102,8 +105,10 @@ templates; security reports through
 
 ## Acknowledgements
 
-Thanks to [0cv/herdr-mobile-relay](https://github.com/0cv/herdr-mobile-relay)
-for the original idea — this project exists because that one did.
+Thanks to the creators of
+[0cv/herdr-mobile-relay](https://github.com/0cv/herdr-mobile-relay)
+for the original inspiration, and to
+[Herdr](https://github.com/0cv/herdr) for the host integration.
 
 ## License
 

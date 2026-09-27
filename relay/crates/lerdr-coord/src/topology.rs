@@ -9,15 +9,14 @@
 //!
 //! Baseline semantics (doc 02, Phase-1 slice): **events are invalidation
 //! signals, never payloads** — a topology event triggers a fresh
-//! `session.snapshot` rather than a partial apply. The Go oracle's
-//! `SessionCache.Apply` event→state table can replace this later without
-//! changing the published shape; snapshot-refresh is correct (if chattier)
-//! for every topology event kind.
+//! `session.snapshot` rather than a partial apply. A future event→state table
+//! can replace this without changing the published shape; snapshot-refresh is
+//! correct (if chattier) for every topology event kind.
 //!
 //! The semantic half — committed classifications, blocked event ids, the
 //! unseen/ack/done bookkeeping, and the revision counters the fences read —
 //! lives in the shared [`AttentionLedger`](crate::classify::AttentionLedger)
-//! (`coordinator.State`'s per-pane maps). `accept` is the oracle's
+//! (`coordinator.State`'s per-pane maps). `accept` is the retired implementation's
 //! `commitInventoryLocked`: session replacement, blocked-cycle mint/clear,
 //! transition records, and completion bookkeeping all run inside the same
 //! accept, and every published clone shares the ledger so projector commits
@@ -38,7 +37,7 @@ use crate::classify::{
 
 /// `commitInventoryLocked`'s per-pane observation times plus the
 /// `LastActiveAt` half `AcknowledgePane` needs (state.go:504-523). The
-/// change key is the oracle's same-fields tuple: `Status`, `Name`, `Cwd`,
+/// change key is the retired implementation's same-fields tuple: `Status`, `Name`, `Cwd`,
 /// `Agent`, `ActivitySeq`, `PaneRevision`, `ScrollMaxOffset`,
 /// `ForegroundCwd` — `updated_at` holds while every one is unchanged.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -52,7 +51,7 @@ pub(crate) struct AgentTimes {
     seen: bool,
 }
 
-/// The oracle's `UpdatedAt` same-fields tuple (state.go:512-514).
+/// The retired implementation's `UpdatedAt` same-fields tuple (state.go:512-514).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ChangeKey {
     status: String,
@@ -67,7 +66,7 @@ struct ChangeKey {
 
 impl ChangeKey {
     /// `scroll_max_offset` comes from the matching `PaneInfo.scroll`
-    /// (`AgentInfo` does not carry scroll metrics — the oracle's
+    /// (`AgentInfo` does not carry scroll metrics — the retired implementation's
     /// `ScrollMaxOffset` reads `pane.Scroll.MaxOffsetFromBottom`).
     fn of(agent: &AgentInfo, scroll_max_offset: u64) -> Self {
         Self {
@@ -124,7 +123,7 @@ pub struct Topology {
     /// `s.inventoryReady` (state.go:79) — `true` after any commit
     /// (`commitInventoryLocked` covers poll AND event paths), `false`
     /// after [`mark_inventory_failure`](Self::mark_inventory_failure).
-    /// The event stream dropping does NOT touch it — the oracle's
+    /// The event stream dropping does NOT touch it — the retired implementation's
     /// reconnect path only shortens the poll cadence.
     pub(crate) inventory_ready: bool,
     /// `s.inventoryErrorCode`/`s.inventoryMessage` — `command_failed` +
@@ -132,7 +131,7 @@ pub struct Topology {
     pub(crate) inventory_error_code: String,
     pub(crate) inventory_message: String,
     /// Herdr capability/probe evidence projected into `herdr_status` —
-    /// the oracle's `herdrStatusPayload`, filled field-for-field from the
+    /// the retired implementation's `herdrStatusPayload`, filled field-for-field from the
     /// `lerdr_herdr` capability report (`ServerStatus`). Populated by the
     /// actor on every (re)bootstrap and refresh tick; `features` stays an
     /// empty object until the first report lands. Survives `accept()`
@@ -230,13 +229,13 @@ pub(crate) struct AcceptOutcome {
     pub removed: Vec<String>,
 }
 
-/// Which oracle commit path an accept follows (state.go:371-428).
+/// Which retired implementation commit path an accept follows (state.go:371-428).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CommitKind {
     /// `commitTopologyLocked` — an event-path snapshot (the `Synced`
     /// bootstrap and `pane.*`/`tab.*`/`workspace.*` invalidations). The
     /// sampled `agent_status` must NOT overwrite the committed status
-    /// stream for an existing, non-replaced pane: the oracle copies
+    /// stream for an existing, non-replaced pane: the retired implementation copies
     /// `existing.Status` over the incoming row and re-copies its blocked
     /// details (`copyBlockedDetails`) when that status is `blocked`, and
     /// the shared commit's `applyBlockedCycleLocked` clears whatever the
@@ -284,11 +283,11 @@ fn pane_identity_moved(existing: [&String; 3], incoming: [&String; 3]) -> bool {
 impl Topology {
     /// `commitInventoryLocked` (state.go:430-590) — reconcile one full
     /// snapshot. Events are invalidations in this relay, so this is the
-    /// only commit path (the oracle's event-committed rows and
+    /// only commit path (the retired implementation's event-committed rows and
     /// `pendingEvents` have no counterpart; `baseRev` ordering is moot —
     /// every commit is a whole snapshot).
     ///
-    /// Per pane, in the oracle's order: session-replacement detection and
+    /// Per pane, in the retired implementation's order: session-replacement detection and
     /// generation bump, `updated_at`/`last_active_at` bookkeeping, the
     /// blocked-cycle sync (`applyBlockedCycleLocked`), content/attention
     /// revision bumps, `registerTransition`, fresh-pane done/ack seeding,
@@ -312,14 +311,14 @@ impl Topology {
     /// an empty kind); on a sustained blocked cycle it drives
     /// `attentionChanged`/`attentionRev` and the kind-drift refire.
     ///
-    /// `kind` picks the oracle's commit surface: [`CommitKind::Poll`]
+    /// `kind` picks the retired implementation's commit surface: [`CommitKind::Poll`]
     /// adopts the sampled statuses wholesale; [`CommitKind::Event`]
     /// preserves the committed `agent_status` (and therefore the
     /// committed blocked details) for every existing, non-replaced pane
     /// — `commitTopologyLocked` rewrites the incoming rows before the
     /// shared commit sees them, so the same machinery below diffs,
     /// transitions, and projects the preserved row exactly like the
-    /// oracle's `cp`.
+    /// retired implementation's `cp`.
     pub(crate) fn accept_enriched(
         &mut self,
         mut snapshot: SessionSnapshot,
@@ -344,7 +343,7 @@ impl Topology {
             // non-replaced pane keeps its committed status — the sampled
             // `agent_status` is not the authoritative stream on the event
             // path. The committed row that lands below is then identical
-            // in every status/attention field the oracle preserves:
+            // in every status/attention field the retired implementation preserves:
             // `sync_cycle` against the preserved status keeps the
             // committed blocked details (`cp.Status == "blocked"` keeps
             // `copyBlockedDetails`'s copy) or clears them on a
@@ -372,7 +371,7 @@ impl Topology {
         // title half runs on every incoming row before the commit, so the
         // resolver's file I/O never executes under the ledger lock. The
         // committed row's `SessionName` lives on the cell; `agent_state`
-        // projects it and rewrites `session` like the oracle's
+        // projects it and rewrites `session` like the retired implementation's
         // `agent.Session = title`.
         let titles = self.session_titles(&snapshot.agents);
         let mut ledger = self.attention.lock().expect("attention ledger poisoned");
@@ -442,16 +441,16 @@ impl Topology {
 
             // `applyBlockedCycleLocked` + `attentionChanged` —
             // mint/clear the blocked cycle against the committed halves,
-            // then apply the enrich classification like the oracle's
+            // then apply the enrich classification like the retired implementation's
             // enriched `cp` (kind/options drift while blocked is the
             // `attentionChanged`/`attentionRev` signal — it also feeds
-            // `contentRev` on the oracle's line 528-531).
+            // `contentRev` on the retired implementation's line 528-531).
             let mut attention_changed = cell.sync_cycle(&status, &mut mint_blocked_event_id);
             // `commitTopologyLocked` never lets the enrich reach a
             // preserved pane: `copyBlockedDetails` overwrites it on a
             // blocked committed row and `clearBlockedDetails` wipes it on
             // any other — applying it here would refire an
-            // `attentionChanged` the oracle never publishes. Only fresh
+            // `attentionChanged` the retired implementation never publishes. Only fresh
             // or replaced rows adopt the classification on the event
             // path (their committed row *is* the incoming one).
             let adopts_enrich = kind == CommitKind::Poll || existing.is_none();
@@ -488,7 +487,7 @@ impl Topology {
             cell.prev_status.clone_from(&status);
 
             // `registerTransition` — before the fresh-pane done/ack
-            // seeding, matching the oracle's order.
+            // seeding, matching the retired implementation's order.
             if let Some(transition) = cell.register_transition(
                 pane_id,
                 incoming.agent.as_deref().unwrap_or_default(),
@@ -956,20 +955,20 @@ impl Topology {
     ///   (`projectAgentResource`, server.go:3407) and `generation` carries
     ///   this pane's epoch — both belong to the exact-target tuple clients
     ///   echo back.
-    /// - `agent_session_id` is the oracle's `SessionID`:
+    /// - `agent_session_id` is the retired implementation's `SessionID`:
     ///   `TrimSpace(agent_session.value)` (`resolveAgentSessionName`,
     ///   server.go:518-524) — the Go client flattens `agent_session` into
     ///   `Pane.Session` without consulting `kind` (client.go:382).
     ///   `session_name` is the committed row's resolved title
     ///   (`resolveAgentSessionName`'s `agent.SessionName`); a resolved
     ///   title also replaces `session` verbatim (server.go:534), matching
-    ///   the oracle's wire rewrite.
+    ///   the retired implementation's wire rewrite.
     ///   `conversation_history_available` =
     ///   `SessionID != "" && conversation.Supported(agent)`.
     /// - `status` is `DisplayedStatus` — an acked done reads `idle`, an
     ///   unacknowledged idle completion reads `done`.
     /// - `tab_label`/`tab_number`/`tab_order` resolve through
-    ///   `snapshot.tabs` (the oracle's `projectAgentResources`); `project`
+    ///   `snapshot.tabs` (the retired implementation's `projectAgentResources`); `project`
     ///   is `filepath.Base(cwd)`; `host` is the relay hostname short form;
     ///   `raw_pane_id` echoes the pane id.
     /// - `updated_at`/`last_active_at`/`last_seen_at` come from
@@ -1053,7 +1052,7 @@ impl Topology {
 
     /// The `tab_*` projection halves — `tab_label`/`tab_number` come from
     /// `snapshot.tabs` (`tab.Number`, falling back to the slice position
-    /// plus one like the oracle's `projectAgentResources`); `tab_order` is
+    /// plus one like the retired implementation's `projectAgentResources`); `tab_order` is
     /// the per-workspace ordinal over the snapshot's tab order.
     fn tab_context(&self, info: &AgentInfo) -> (String, i64, i64) {
         let mut tab_order = 0i64;
@@ -1078,7 +1077,7 @@ impl Topology {
     }
 
     /// `WorkspaceInfo` → `protocol.Workspace`. `cwd` stays empty — Herdr's
-    /// `WorkspaceInfo` surface does not carry it (doc 10; the oracle's
+    /// `WorkspaceInfo` surface does not carry it (doc 10; the retired implementation's
     /// `commitWorkspacesLocked` reads `Workspace.Cwd`, which the Rust
     /// socket types don't decode).
     fn workspace(info: &WorkspaceInfo) -> Workspace {
@@ -1163,7 +1162,7 @@ impl Topology {
     }
 }
 
-/// `filepath.Base(cwd)` — the `Project` derivation the oracle applies in
+/// `filepath.Base(cwd)` — the `Project` derivation the retired implementation applies in
 /// `agentsFromTopology` (`project := filepath.Base(cwd)` when non-empty).
 pub(crate) fn project_of(cwd: &str) -> String {
     if cwd.is_empty() {
@@ -1176,7 +1175,7 @@ pub(crate) fn project_of(cwd: &str) -> String {
 }
 
 /// `s.hostname` — `os.Hostname()` truncated at the first dot
-/// (`strings.Split(host, ".")[0]`), matching the oracle's `host` field on
+/// (`strings.Split(host, ".")[0]`), matching the retired implementation's `host` field on
 /// agents/blocked frames and the activity `host` attribution.
 pub(crate) fn hostname_short() -> String {
     let host = gethostname::gethostname().to_string_lossy().into_owned();
@@ -1246,7 +1245,7 @@ mod tests {
         t.bump_generation("wE:p1");
         assert_eq!(t.generation_of("wE:p1"), 1);
         // Generations are coordinator bookkeeping — a snapshot replace
-        // must not reset them (state.go:304 + the oracle's map lifecycle).
+        // must not reset them (state.go:304 + the retired implementation's map lifecycle).
         t.accept(SessionSnapshot::default());
         assert_eq!(t.generation_of("wE:p1"), 1);
         t.bump_generation("wE:p1");
@@ -1309,7 +1308,7 @@ mod tests {
                         source: "sess".into(),
                         agent: "devin".into(),
                         kind: lerdr_herdr::AgentSessionRefKind::Id,
-                        // The oracle emits `TrimSpace(value)`.
+                        // The retired implementation emits `TrimSpace(value)`.
                         value: " sess-2 ".into(),
                     }),
                     ..AgentInfo::default()
@@ -1335,7 +1334,7 @@ mod tests {
         assert_eq!(agents[1].generation, 1);
         assert_eq!(agents[1].agent_session_id, "sess-2");
         // Wire `session` is `agent_session.value` verbatim
-        // (client.go:382); `session_name` is the oracle's resolved title —
+        // (client.go:382); `session_name` is the retired implementation's resolved title —
         // with no title resolver here it stays empty.
         assert_eq!(agents[1].session, " sess-2 ");
         assert_eq!(agents[1].session_name, "");
@@ -1613,7 +1612,7 @@ mod tests {
         assert_eq!(cell.blocked.kind, None);
 
         // The poll path then adopts the live status — the classification
-        // lands in the same commit like the oracle's enriched `cp`.
+        // lands in the same commit like the retired implementation's enriched `cp`.
         let outcome = t.accept_enriched(
             SessionSnapshot {
                 agents: vec![agent("wE:p1", lerdr_herdr::AgentStatus::Blocked)],
@@ -1636,7 +1635,7 @@ mod tests {
     /// keeps its committed details against an event-path sample —
     /// `copyBlockedDetails` — while non-status topology fields still
     /// adopt. The enrich classification on the incoming row is discarded
-    /// (the oracle's `cp` gets the committed details copied over it), so
+    /// (the retired implementation's `cp` gets the committed details copied over it), so
     /// a content drift only reclassifies on the next poll.
     #[test]
     fn event_commit_preserves_blocked_details() {

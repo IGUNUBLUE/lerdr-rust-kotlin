@@ -15,7 +15,7 @@ import javax.inject.Singleton
  * the framework types: the gate composable hands in the host activity and
  * the answer comes back as a plain Boolean.
  *
- * Fallback policy (the lock is a UX gate, not encryption — oracle
+ * Fallback policy (the lock is a UX gate, not encryption — Lerdr
  * docs/security.md "device verification"; spec-gap P2 owns the stolen-
  * phone story):
  * - The prompt always allows `BIOMETRIC_STRONG or DEVICE_CREDENTIAL`, so

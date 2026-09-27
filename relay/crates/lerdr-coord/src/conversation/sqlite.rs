@@ -1,7 +1,7 @@
-//! `sqlite3` CLI execution — shared by the OpenCode and Hermes readers, which
-//! (like the Go oracle) run `sqlite3 -readonly -batch -json` rather than
-//! linking a SQLite library. Output is bounded; a 3 s timeout kills a wedged
-//! query. `stderr` is discarded — the oracle captures it only for diagnostics.
+//! `sqlite3` CLI execution — shared by the OpenCode and Hermes readers.
+//! Queries run as `sqlite3 -readonly -batch -json` rather than linking a
+//! SQLite library. Output is bounded; a 3 s timeout kills a wedged query, and
+//! `stderr` is discarded except in diagnostics.
 
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use super::roots::EnvLookup;
 
-/// Failure codes matching the oracle's query errors.
+/// Failure codes matching the retired implementation's query errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SqliteError {
     /// spawn failure, non-zero exit, or timeout — `query_failed`

@@ -1,7 +1,7 @@
 package lerdr.core.conversation
 
 /**
- * OMO's structured plan — `OMOTodoState` (`internal/conversation/omo.go`),
+ * OMO's structured plan — `OMOTodoState` (relay contract),
  * carried as `omo_plan` on pages served for omo sessions. Sourced from the
  * newest valid `senpi.todo-state` custom record in the transcript.
  */

@@ -215,7 +215,7 @@ impl OpenCodeReader {
         )
     }
 
-    /// `query` — the CTE select is the oracle's verbatim; `before` resolves to
+    /// `query` — the CTE select is the retired implementation's verbatim; `before` resolves to
     /// the `(time_created, id)` cursor tuple and selects strictly older rows.
     fn query(
         &self,
@@ -418,7 +418,7 @@ fn parse_rows(rows: &[OpenCodeRow]) -> (Vec<Entry>, bool) {
                 entry.text.push_str(&text);
             }
             "tool" => {
-                // `part.State.Input` is json.RawMessage in the oracle — the
+                // `part.State.Input` is json.RawMessage in the retired implementation — the
                 // raw member text is passed through, not re-marshalled (which
                 // would sort object keys).
                 let input = super::util::json_member_raw(&row.part_data, "state")

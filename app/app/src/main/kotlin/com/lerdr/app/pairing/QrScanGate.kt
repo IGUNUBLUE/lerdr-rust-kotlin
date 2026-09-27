@@ -10,7 +10,7 @@ import lerdr.core.data.SetupLinkResult
  *
  * Pure JVM on purpose — the camera analyzer feeds it raw strings and the
  * unit tests exercise it without a device. Validity is judged by
- * [SetupLink.parse], the same strict oracle parser the paste path uses,
+ * [SetupLink.parse], the same strict Lerdr parser the paste path uses,
  * so a foreign QR (random URL, Wi-Fi card, …) is ignored and scanning
  * continues instead of kicking off a bogus pairing attempt.
  */
@@ -22,7 +22,7 @@ internal class QrScanGate {
 
     /**
      * Returns [raw] the first time it parses to a usable setup payload —
-     * a `lerdr://pair#…` deep link or the oracle's `http(s)://…#…` link.
+     * a `lerdr://pair#…` deep link or Lerdr's `http(s)://…#…` link.
      * Null for blank input, foreign QRs, invalid setup links, and every
      * call after the first accept.
      */

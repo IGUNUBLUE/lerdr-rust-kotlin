@@ -1,13 +1,13 @@
 //! Agent launch profiles — the `internal/profiles` `Resolver` port.
 //!
-//! Discovery order (unchanged from the oracle):
+//! Discovery order (unchanged from the retired implementation):
 //!
 //! 1. `<config_home>/herdr/agent-profiles.ini` — `[profiles]` custom labels,
 //!    `[config] replace_profiles`, `[aliases]` agent-name→profile mapping.
 //! 2. `defaultCandidates` filtered by executable presence on `PATH`
 //!    (`binaryPath` → `exec.LookPath` semantics).
 //! 3. `integration.list` targets whose state is `current`/`outdated` — the
-//!    socket equivalent of the oracle's `integration status` text parse.
+//!    socket equivalent of the retired implementation's `integration status` text parse.
 //!
 //! The one structural difference is async: Go's `discoverIntegrations`
 //! blocks on a 5 s `integration status` subprocess; the socket port fetches
@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use super::COMMAND_DEADLINE;
 
-/// `cached` TTL — the oracle re-discovers every five minutes.
+/// `cached` TTL — the retired implementation re-discovers every five minutes.
 const CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 
 /// `defaultCandidates` — order matters (the phone presents them this way).
@@ -131,7 +131,7 @@ impl Resolver {
 
     /// `Profiles()` — cached discovery. `client` feeds the integration pass;
     /// a failed/absent socket degrades to PATH-only candidates exactly like
-    /// the oracle's `discoverIntegrations` error swallow.
+    /// the retired implementation's `discoverIntegrations` error swallow.
     pub(crate) async fn profiles(&self, client: &lerdr_herdr::Client) -> Vec<Profile> {
         {
             let cached = self.inner.cached.lock().expect("profiles cache poisoned");
@@ -337,7 +337,7 @@ fn executable(path: &Path) -> bool {
 }
 
 /// `discoverIntegrations` — the socket's `integration.list` supplies the
-/// same target list the oracle parses out of `integration status` text:
+/// same target list the retired implementation parses out of `integration status` text:
 /// `current`/`outdated` entries only.
 async fn integration_targets(client: &lerdr_herdr::Client) -> Vec<String> {
     #[derive(serde::Deserialize)]
@@ -379,7 +379,7 @@ struct IniProfiles {
 
 /// `loadINI` — `[config] replace_profiles`, `[profiles] id = label`,
 /// `[aliases] name = profile_id`. Section/key names lowercase; a malformed
-/// file contributes nothing (the oracle's parse error → empty INI).
+/// file contributes nothing (the retired implementation's parse error → empty INI).
 fn load_ini(path: &Path) -> IniProfiles {
     let mut out = IniProfiles {
         configured: Vec::new(),

@@ -5,7 +5,7 @@
 //! ```
 //!
 //! See `lerdr_shadow::fake` for the covered methods and the state-file
-//! schema (the oracle fake-herdr's `Scenario` plus a `"socket"` block).
+//! schema (the historical `Scenario` layout plus a `"socket"` block).
 
 use std::path::PathBuf;
 use std::process::ExitCode;

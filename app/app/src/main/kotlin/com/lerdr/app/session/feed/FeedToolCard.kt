@@ -43,20 +43,20 @@ import kotlinx.serialization.json.JsonPrimitive
 import lerdr.core.conversation.ConversationTool
 
 /**
- * Tool-call card — the interactive port of the oracle's
- * `ConversationMessage.svelte` `<details>` blocks. Collapsed: icon tile +
+ * Tool-call card — the interactive implementation of Lerdr's
+ * the corresponding screen `<details>` blocks. Collapsed: icon tile +
  * tool name + status. Expanded: `Input`/`Output` payload sections with the
- * oracle's `formatToolPayload`/`clampPayload` rules. Failures get the
+ * Lerdr's `formatToolPayload`/`clampPayload` rules. Failures get the
  * danger container + error icon, never a checkmark.
  */
 
-/** Oracle `PAYLOAD_PREVIEW_LINES` — expanded payloads clamp past this. */
+/** Lerdr `PAYLOAD_PREVIEW_LINES` — expanded payloads clamp past this. */
 internal const val TOOL_PAYLOAD_PREVIEW_LINES = 8
 
 private val prettyJson = Json { prettyPrint = true }
 
 /**
- * Oracle `formatToolPayload` (frontend/src/lib/conversation.ts): a JSON
+ * Lerdr `formatToolPayload`: a JSON
  * object renders as `key: value` lines — primitives inline, structured
  * values pretty-printed on the following line(s). Non-JSON and empty
  * objects pass through verbatim.
@@ -83,7 +83,7 @@ internal fun formatToolPayload(raw: String): String {
     }
 }
 
-/** Oracle `clampPayload` — line-based preview, returns (visible, hidden). */
+/** Lerdr `clampPayload` — line-based preview, returns (visible, hidden). */
 internal fun clampPayload(
     raw: String,
     previewLines: Int = TOOL_PAYLOAD_PREVIEW_LINES,
@@ -229,7 +229,7 @@ internal fun FeedToolCard(
     }
 }
 
-/** `key: value` payload with the oracle's 8-line clamp + Show-all toggle. */
+/** `key: value` payload with Lerdr's 8-line clamp + Show-all toggle. */
 @Composable
 private fun ToolPayloadSection(label: String, raw: String) {
     val spacing = LerdrTheme.spacing

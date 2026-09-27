@@ -4,7 +4,7 @@ package lerdr.core.conversation
  * Domain model for the semantic feed — "what the agent is doing" — as the
  * relay reports it through `get_conversation_history` pages.
  *
- * Shapes mirror the Go oracle `internal/conversation/reader.go`:
+ * Shapes mirror the Go Lerdr relay contract:
  * `Entry{ID, Timestamp, Role, Text, Tools, Truncated}` and
  * `ToolActivity{ID, Name, Input, Output, Error, Truncated}`. The relay owns
  * record filtering (sidechains, meta rows, reasoning blocks, system reminders
@@ -28,7 +28,7 @@ enum class ConversationRole(val wire: String) {
 }
 
 /**
- * One tool call attached to an [ConversationEntry] — Go `ToolActivity`.
+ * One tool call attached to an [ConversationEntry] — prior relay implementation.
  *
  * The relay associates results back to calls across records (claude/codex/
  * pi-style `tool_use`/`tool_result` pairs, opencode part state, hermes
@@ -54,7 +54,7 @@ data class ConversationTool(
 )
 
 /**
- * One visible conversation row — Go `conversation.Entry`.
+ * One visible conversation row — prior relay implementation.
  *
  * @param id opaque, stable per source record: `sha256(raw jsonl line)[:24]`
  *   for JSONL readers (`-N` suffix disambiguates byte-identical lines), the

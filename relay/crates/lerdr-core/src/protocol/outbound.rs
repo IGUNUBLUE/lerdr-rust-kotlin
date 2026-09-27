@@ -929,9 +929,10 @@ pub struct PaneProbe {
 
 /// `pane_resync` — stale-ack nudge; the client re-reads.
 ///
-/// Phase-5 §2.2 lists this frame in the `frame_zstd` schema — the optional
-/// `encoding`/`payload` members decode here for parity — but the message
-/// carries no payload field to compress, so this relay never emits them.
+/// Phase-5 §2.2 lists this frame in the `frame_zstd` schema; the optional
+/// `encoding`/`payload` members decode for schema compatibility, but the
+/// message carries no payload field to compress, so this relay never emits
+/// them.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PaneResync {
     /// Phase-5 §2.2 — tolerated on decode; never emitted (no payload).

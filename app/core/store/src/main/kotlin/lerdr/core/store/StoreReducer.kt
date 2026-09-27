@@ -20,8 +20,8 @@ import lerdr.core.model.orNull
 
 /**
  * `ServerMessage` → store dispatch — the seam `:core:transport` feeds once a
- * frame is decoded. Mirrors the oracle's `handleMessage`
- * (`frontend/src/lib/store.ts`) for every message type that mutates agent,
+ * frame is decoded. Mirrors Lerdr's `handleMessage`
+ * for every message type that mutates agent,
  * workspace, or connection state.
  *
  * Returns `true` when the message type was consumed by a store. Types owned
@@ -33,7 +33,7 @@ class StoreReducer(
     private val agentStore: AgentStore,
     private val workspaceStore: WorkspaceStore,
     private val connectionStore: ConnectionStore,
-    /** Relay config label lookup — the oracle reads `relayConfigs` per message. */
+    /** Relay config label lookup — Lerdr reads `relayConfigs` per message. */
     private val relayLabel: (String) -> String = { "relay" },
 ) {
     fun handle(relayId: String, message: ServerMessage): Boolean {
@@ -41,14 +41,14 @@ class StoreReducer(
         connectionStore.noteMessage(relayId)
         return when (message) {
         is PushConfigMessage -> {
-            // Requires a live connection entry — same as the oracle's
+            // Requires a live connection entry — same as Lerdr's
             // `if (!connection) return`.
             if (connectionStore.connectionNow(relayId) == null) return true
             // Pane revisions are monotonic only per relay process; a fresh
             // handshake can follow a restart, so strip the stale baseline.
             agentStore.resetPaneRevisions(relayId)
             connectionStore.applyPushConfig(relayId, message)
-            // Read the capability after the update — the oracle mutates the
+            // Read the capability after the update — Lerdr mutates the
             // connection in place before renormalizing agent attention.
             agentStore.renormalizeAttention(relayId, attentionCapable(relayId))
             true

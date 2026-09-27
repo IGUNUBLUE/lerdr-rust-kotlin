@@ -193,7 +193,7 @@ class DevicesViewModelTest {
         assertThat(state.canAdminister).isTrue()
         assertThat(state.currentDeviceId).isEqualTo("dev-1")
         assertThat(state.relayLabel).isEqualTo("workstation")
-        // Oracle order: current first, then last-seen desc.
+        // Lerdr order: current first, then last-seen desc.
         assertThat(state.devices.map { it.deviceId })
             .containsExactly("dev-1", "dev-3", "dev-2").inOrder()
         val current = state.devices.first()
@@ -210,7 +210,7 @@ class DevicesViewModelTest {
     }
 
     @Test
-    fun `rows missing required fields are dropped like the oracle's flatMap`() = runTest {
+    fun `rows missing required fields are dropped like Lerdr's flatMap`() = runTest {
         val h = Harness(this, tmp.root)
         h.registry.upsert(h.endpoint)
         h.await { h.registry.relays.value.isNotEmpty() }
@@ -484,7 +484,7 @@ class DevicesViewModelTest {
     }
 
     @Test
-    fun `invalid invitation payload surfaces the oracle's error`() = runTest {
+    fun `invalid invitation payload surfaces Lerdr's error`() = runTest {
         val h = Harness(this, tmp.root)
         h.registry.upsert(h.endpoint)
         h.await { h.registry.relays.value.isNotEmpty() }

@@ -13,7 +13,7 @@ import org.junit.Test
 
 /**
  * [PaneSurface] protocol behavior — the pane frame handlers ported from
- * `store.ts`, driven over raw wire `JsonObject`s. Covers the resync paths
+ * the local implementation, driven over raw wire `JsonObject`s. Covers the resync paths
  * the 21-vector suite cannot reach (chain breaks, missing fingerprints,
  * hash corruption, metadata-only deltas) plus snapshot semantics.
  */
@@ -156,9 +156,9 @@ class PaneSurfaceTest {
     }
 
     @Test
-    fun oracleModeTrustsWireFingerprint() {
-        // verifyContentHash=false reproduces the released client exactly:
-        // the claimed fingerprint is stored without recomputing.
+    fun unverifiedModeTrustsWireFingerprint() {
+        // The optional unverified mode stores the claimed fingerprint without
+        // recomputing it.
         val surface = surface(verifyHash = false)
         surface.applyContent(contentMessage("a\nb\n"))
         val result = surface.applyDelta(
@@ -366,7 +366,7 @@ class PaneSurfaceTest {
     fun emptyStringFingerprintOnDeltaIsStored() {
         // typeof "" === 'string' — the delta path accepts and stores it;
         // the empty fingerprint then suppresses watch_pane. Run under
-        // oracle semantics: a "" claim fails content verification.
+        // Lerdr semantics: a "" claim fails content verification.
         val surface = surface(verifyHash = false)
         surface.applyContent(contentMessage("a\nb\n"))
         val result = surface.applyDelta(

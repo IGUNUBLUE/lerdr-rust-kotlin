@@ -5,8 +5,8 @@ import java.net.URISyntaxException
 import java.net.URLDecoder
 
 /**
- * Result of [SetupLink.parse] — the oracle's `SetupLinkImport` enum
- * (`setup-link.ts:3`) split so the UI can toast the right message.
+ * Result of [SetupLink.parse] — Lerdr's `SetupLinkImport` enum
+ * split so the UI can toast the right message.
  */
 sealed interface SetupLinkResult {
     /** Blank input — nothing to import. */
@@ -18,7 +18,7 @@ sealed interface SetupLinkResult {
     /**
      * A link, but no usable setup payload: missing/out-of-range `setup`,
      * retired `gateway` params, bad `relay` origin, or a malformed
-     * `invite` set. Maps to the oracle's `'no-invite'`.
+     * `invite` set. Maps to Lerdr's `'no-invite'`.
      */
     data object NoSetup : SetupLinkResult
 
@@ -26,13 +26,13 @@ sealed interface SetupLinkResult {
 }
 
 /**
- * Parses `lerdr://pair#…` deep links and the oracle's `http(s)://…#…` QR
- * links into a strict [InvitePayload] (`config.ts` `quickSetupConfig` /
+ * Parses `lerdr://pair#…` deep links and Lerdr's `http(s)://…#…` QR
+ * links into a strict [InvitePayload] (the local implementation `quickSetupConfig` /
  * `quickSetupInvitation`, `safeSocketOrigin`).
  *
  * Strictness notes:
  * - `invite=` present means the invitation fields must ALL validate — the
- *   oracle silently degrades a malformed invitation to a bootstrap import;
+ *   Lerdr silently degrades a malformed invitation to a bootstrap import;
  *   that would store a 43-char secret as a relay key, so here it is
  *   rejected instead.
  * - `gateway`/`gateways` links are rejected outright (retired transport).

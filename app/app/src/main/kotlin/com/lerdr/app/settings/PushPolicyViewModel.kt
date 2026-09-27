@@ -35,7 +35,7 @@ import lerdr.core.store.RelayStatus
 import lerdr.core.transport.CommandException
 
 /**
- * The relay's per-device push policy in editable form — the oracle's
+ * The relay's per-device push policy in editable form — Lerdr's
  * `DevicePushPolicy` / the relay's `pushPolicyResponse`. [snoozeUntil] keeps
  * the wire's RFC3339 string verbatim so it round-trips without clock skew.
  */
@@ -62,7 +62,7 @@ data class PushPolicyUi(
         const val DEFAULT_SETTLE_MS = 2_000L
         const val DEFAULT_COOLDOWN_MS = 30_000L
 
-        /** Oracle `DEFAULT_PUSH_CATEGORIES` — finished starts opted out. */
+        /** Lerdr `DEFAULT_PUSH_CATEGORIES` — finished starts opted out. */
         val DEFAULT_CATEGORIES: Map<String, Boolean> = mapOf(
             CATEGORY_ATTENTION to true,
             CATEGORY_QUESTION to true,
@@ -74,7 +74,7 @@ data class PushPolicyUi(
     }
 }
 
-/** Oracle `PushTestState` — what the "Send test" row reports. */
+/** Lerdr `PushTestState` — what the "Send test" row reports. */
 @Immutable
 sealed interface PushTestUi {
     data object Idle : PushTestUi
@@ -102,18 +102,18 @@ data class PushPolicyUiState(
     /** The `push_policy_get` request failed — the card offers Retry. */
     val loadFailed: Boolean = false,
     val policy: PushPolicyUi? = null,
-    /** One in-flight `push_policy_set` — edits serialize like the oracle. */
+    /** One in-flight `push_policy_set` — edits serialize like Lerdr. */
     val saving: Boolean = false,
     val policyError: String? = null,
     val test: PushTestUi = PushTestUi.Idle,
 )
 
 /**
- * Per-relay push-notification policy — the port of the oracle's
- * `NotificationSettings.svelte` + `push.ts` semantics:
+ * Per-relay push-notification policy — the implementation of Lerdr's
+ * the corresponding screen + the local implementation semantics:
  *
- * - on connect the oracle fires `push_policy_get` when the relay advertises
- *   the `push_policy` capability (`store.ts`); [bind] mirrors that — the
+ * - on connect Lerdr fires `push_policy_get` when the relay advertises
+ *   the `push_policy` capability; [bind] mirrors that — the
  *   rising edge of `connected && capable` fetches once per connection;
  * - edits apply optimistically through one serialized `push_policy_set`
  *   (`{categories, settle_ms, cooldown_ms, snoozed, update_once,
@@ -121,12 +121,12 @@ data class PushPolicyUiState(
  *   relay binds both from the authenticated identity). A rejected set
  *   restores the pre-edit policy and surfaces the `push_policy_result`
  *   code;
- * - snooze rides the same `push_policy_set` path (the oracle never calls
+ * - snooze rides the same `push_policy_set` path (Lerdr never calls
  *   `push_snooze` from this UI): off → `snoozed:false`; a duration →
  *   `snoozed:true` + `snooze_until = now + duration` RFC3339; indefinite →
  *   `snoozed:true` with no `snooze_until`;
  * - "Send test" sends `push_test_device`; the `push_test_result` stage maps
- *   like the oracle (`service_accepted`/`queued`/`retrying` are accepted,
+ *   like Lerdr (`service_accepted`/`queued`/`retrying` are accepted,
  *   everything else is a rejected code).
  *
  * The card's composable calls [bind] from `LaunchedEffect`; nothing else
@@ -153,7 +153,7 @@ class PushPolicyViewModel(
 
     private val local = MutableStateFlow(Local())
 
-    /** Pre-edit snapshot — the oracle restores `previous` on a rejected set. */
+    /** Pre-edit snapshot — Lerdr restores `previous` on a rejected set. */
     private var pendingRevert: PushPolicyUi? = null
 
     val uiState: StateFlow<PushPolicyUiState> = combine(
@@ -233,10 +233,10 @@ class PushPolicyViewModel(
 
     fun setUpdateOnce(enabled: Boolean) = applyEdit { it.copy(updateOnce = enabled) }
 
-    /** Oracle `clearSnooze` — `snoozed:false`, `snooze_until` dropped. */
+    /** Lerdr `clearSnooze` — `snoozed:false`, `snooze_until` dropped. */
     fun clearSnooze() = applyEdit { it.copy(snoozed = false, snoozeUntil = null) }
 
-    /** Oracle `withTimedSnooze` — `snooze_until = now + duration` (RFC3339). */
+    /** Lerdr `withTimedSnooze` — `snooze_until = now + duration` (RFC3339). */
     fun snoozeFor(durationMs: Long) = applyEdit {
         if (durationMs <= 0) {
             it.copy(snoozed = false, snoozeUntil = null)
@@ -250,13 +250,13 @@ class PushPolicyViewModel(
         }
     }
 
-    /** Oracle `withGlobalSnooze` — `snoozed:true`, no `snooze_until`. */
+    /** Lerdr `withGlobalSnooze` — `snoozed:true`, no `snooze_until`. */
     fun snoozeIndefinitely() = applyEdit { it.copy(snoozed = true, snoozeUntil = null) }
 
     /**
-     * Oracle `sendTargetedPushTest` — fire `push_test_device`, then let the
+     * Lerdr `sendTargetedPushTest` — fire `push_test_device`, then let the
      * `push_test_result` frame on [SessionRepository.frames] land the
-     * outcome. A refused send is the oracle's `rejectPushTest('disconnected')`.
+     * outcome. A refused send is Lerdr's `rejectPushTest('disconnected')`.
      */
     fun sendTest() {
         val relayId = boundRelay.value
@@ -289,7 +289,7 @@ class PushPolicyViewModel(
 
     // ── plumbing ──────────────────────────────────────────────────────
 
-    /** The oracle's rising edge: `push_policy_get` once per live connection. */
+    /** Lerdr's rising edge: `push_policy_get` once per live connection. */
     private suspend fun collectPolicyTrigger(relayId: String) = coroutineScope {
         sessions.connection(relayId)
             .map { connection ->
@@ -298,7 +298,7 @@ class PushPolicyViewModel(
             }
             .distinctUntilChanged()
             .collect { ready ->
-                // The next connect edge refetches — the oracle re-sends the
+                // The next connect edge refetches — Lerdr re-sends the
                 // get on every `push_config`.
                 local.update { it.copy(loadFailed = false) }
                 if (ready) launch { requestPolicy(relayId) }
@@ -315,7 +315,7 @@ class PushPolicyViewModel(
         }
     }
 
-    /** Optimistic edit + serialized send — the oracle's `applyPolicy`. */
+    /** Optimistic edit + serialized send — Lerdr's `applyPolicy`. */
     private fun applyEdit(edit: (PushPolicyUi) -> PushPolicyUi) {
         val relayId = boundRelay.value
         val snapshot = local.value
@@ -372,7 +372,7 @@ class PushPolicyViewModel(
             when (val message = frame.message) {
                 is PushPolicyMessage -> adoptPolicy(message.policy)
                 is PushPolicyResultMessage -> {
-                    // Oracle: `(push_policy|push_policy_result) && ok !== false`
+                    // Lerdr: `(push_policy|push_policy_result) && ok !== false`
                     // updates the store; a failed result only reports.
                     if (message.ok == false) {
                         failSave(message.code)
@@ -410,7 +410,7 @@ class PushPolicyViewModel(
         snoozeUntil?.let { put("snooze_until", it) }
     }
 
-    /** Oracle `store.ts` `push_test_result` stage mapping. */
+    /** Lerdr the local implementation `push_test_result` stage mapping. */
     private fun mapTestStage(stage: String?): PushTestUi =
         when (stage.orEmpty()) {
             "service_accepted" -> PushTestUi.Accepted("accepted")
@@ -420,7 +420,7 @@ class PushPolicyViewModel(
             )
         }
 
-    /** Oracle `normalizePushPolicy` — `device_id` is required, rest defaults. */
+    /** Lerdr `normalizePushPolicy` — `device_id` is required, rest defaults. */
     private fun normalizePolicy(view: PushPolicyView?): PushPolicyUi? {
         if (view == null) return null
         val deviceId = view.deviceId?.trim().orEmpty()

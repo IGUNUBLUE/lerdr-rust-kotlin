@@ -251,7 +251,7 @@ class ConnectionStoreTest {
         assertThat(store.acceptsInventorySnapshots("r1")).isTrue()
         store.applyInventoryStatus("r1", InventoryStatusMessage(state = "ready"))
         assertThat(store.acceptsInventorySnapshots("r1")).isTrue()
-        // No connection at all passes — matches the oracle's `connection &&`.
+        // No connection at all passes — matches Lerdr's `connection &&`.
         assertThat(store.acceptsInventorySnapshots("ghost")).isTrue()
     }
 

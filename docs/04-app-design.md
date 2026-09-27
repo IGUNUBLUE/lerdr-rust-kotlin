@@ -1,4 +1,4 @@
-# 04 — App design: a new experience, not a port
+# 04 — App design: a native Lerdr experience
 
 ![Concept mockup: Home, Feed, Terminal](mockup.png)
 
@@ -160,15 +160,16 @@ gone.
 - Predictive back; shared-axis transitions list→detail; attention cards
   animate in with `animateItem` + spring.
 
-## Feature parity checklist (non-negotiable)
+## Feature reachability checklist
 
-Every catalog action must have UI reach: agents CRUD/reorder, workspaces +
-tabs + worktrees CRUD, send text/keys/secret/prompt/respond, questions
+Every current catalog action must have an intentional UI reach or an explicit
+capability-gated omission: agents CRUD/reorder, workspaces + tabs + worktrees
+CRUD, send text/keys/secret/prompt/respond, questions
 (answer/navigate/clarify), uploads batch, conversation history + search,
 workspace tree/file/git, activity journal + copy response, push subscribe/
 policy/snooze/test/viewed, device list/rename/revoke/invite/reset,
-speech voices + speak/cancel, update check/install, app-deploy,
-slash commands, QR pairing, pane lease, webrtc signaling (phase 2).
+speech voices + speak/cancel, update check/install, slash commands, QR
+pairing, pane lease, and the current Tailscale transport.
 
 ## Accessibility & quality bars
 

@@ -77,7 +77,7 @@ class AttentionReducerTest {
 
     @Test
     fun `chat attention kind is not notification-worthy`() {
-        // blocked+chat maps to READY in agentStatusGroup — oracle semantics.
+        // blocked+chat maps to READY in agentStatusGroup — Lerdr semantics.
         val before = listOf(working("p1"))
         val after = listOf(agent("p1", "blocked", BlockedMessage.ATTENTION_CHAT))
         assertThat(AttentionReducer.reduce(before, after)).isEmpty()

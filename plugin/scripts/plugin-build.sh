@@ -401,8 +401,8 @@ rollback_plugin_migration() {
     if [ "$recover_broken_service" = true ] &&
        [ "$service_cutover_started" = true ]; then
         # A rolled-back current is an earlier bundle: it may carry the
-        # Rust-era scripts/ layout, the Go-era relay/ layout, or the
-        # pre-rename wrapper names, and only understand HERDR_RELAY_ENV.
+        # current scripts/ layout, the legacy relay/ layout, or pre-rename
+        # wrapper names, and only understand HERDR_RELAY_ENV.
         rollback_wrapper=
         for candidate in \
             "$INSTALL_ROOT/current/scripts/tailscale-service.sh" \
@@ -547,11 +547,10 @@ if [ -z "$INSTALL_TOKEN" ]; then
         fi
     done
 fi
-# The canonical repository answered to 0cv/herdr-mobile-relay before the rename;
-# either spelling identifies this project's own releases. A private fork is the
-# only case that needs an authenticated API check.
+# This repository alone publishes the canonical Lerdr releases. A configured
+# repository override is treated as a fork and checked independently.
 case "$RELEASE_REPOSITORY" in
-    IGUNUBLUE/lerdr|0cv/herdr-mobile-relay|"") noncanonical_repository=false ;;
+    IGUNUBLUE/lerdr|"") noncanonical_repository=false ;;
     *) noncanonical_repository=true ;;
 esac
 if [ -z "$INSTALL_TOKEN" ] && [ "$noncanonical_repository" = true ]; then
@@ -574,8 +573,8 @@ if [ -n "$INSTALL_TOKEN" ]; then
 else
     sh "$INSTALLER" "$VERSION"
 fi
-# The freshly activated release always carries the Rust binary; current may
-# still resolve to a Go-era bundle when the install step left it untouched.
+# The freshly activated release carries lerdr-relay; current may still resolve
+# to a legacy bundle when the install step leaves it untouched.
 CURRENT_BIN=
 for candidate in lerdr-relay lerdr herdr-mobile-relay; do
     if [ -x "$INSTALL_ROOT/current/$candidate" ]; then

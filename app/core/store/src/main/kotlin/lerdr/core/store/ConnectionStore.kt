@@ -21,7 +21,7 @@ import lerdr.core.model.UpdateState
 import lerdr.core.model.UpdateStatusMessage
 import lerdr.core.model.orNull
 
-/** `TransportStatus` — lifecycle of one transport attempt (`transports/types.ts`). */
+/** `TransportStatus` — lifecycle of one transport attempt. */
 enum class TransportStatus { CONNECTING, CONNECTED, CLOSED }
 
 /** `TransportKind` — which physical path carries traffic. */
@@ -46,11 +46,11 @@ data class TransportStatusDetail(
     }
 }
 
-/** `RelayStatus` — the oracle's three-state wire status (`types.ts`). */
+/** `RelayStatus` — Lerdr's three-state wire status. */
 enum class RelayStatus { CONNECTING, CONNECTED, DISCONNECTED }
 
 /**
- * View-level connection phase — the app's five-state rollup. The oracle
+ * View-level connection phase — the app's five-state rollup. Lerdr
  * keeps `status` plus pairing flags and derives "degraded" at render
  * (`connected && inventory.state !== 'ready'`); [RelayConnection.phase]
  * folds that derivation into one enum.
@@ -167,7 +167,7 @@ data class RelayConnection(
 }
 
 /**
- * Connection store — port of the oracle's `connections` map plus the
+ * Connection store — implementation of Lerdr's `connections` map plus the
  * transport-status transitions in `applyTransportStatus`. Reconnect
  * scheduling, keepalives and dials stay in `:core:transport`; this store is
  * the state the UI renders.
@@ -182,7 +182,7 @@ class ConnectionStore(
     /**
      * Per-relay freshness bound — last frame/handshake heard. Kept out of the
      * emitted [RelayConnection] so per-message updates don't churn
-     * subscribers; the oracle mutates `connection.lastMessageAt` in place.
+     * subscribers; Lerdr mutates `connection.lastMessageAt` in place.
      */
     private val lastMessageAt = mutableMapOf<String, Long>()
 
@@ -222,7 +222,7 @@ class ConnectionStore(
     /**
      * Snapshot gating (`agents`/`workspaces`): a connection whose inventory
      * never reached `ready` drops inventory frames unless marked `stale`.
-     * No connection at all passes — the oracle checks `connection &&`.
+     * No connection at all passes — Lerdr checks `connection &&`.
      */
     fun acceptsInventorySnapshots(relayId: String): Boolean =
         synchronized(lock) {

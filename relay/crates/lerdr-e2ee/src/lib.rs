@@ -1,8 +1,7 @@
 //! `herdr-e2ee-v2` — the Lerdr wire E2EE stack (`docs/03-protocol.md` §1).
 //!
-//! Byte-parity oracle: `internal/transport/e2ee.go` in `IGUNUBLUE/lerdr`
-//! (Go reference) and the golden vectors under `fixtures/crypto/`. The wire
-//! format is frozen; every byte-level deviation is a bug.
+//! The frozen `fixtures/crypto/` vectors and protocol specification define the
+//! local byte contract; every byte-level deviation is a bug.
 //!
 //! Layers:
 //! - [`handshake`]: client/server hello codecs, `\x00`-joined binding,
