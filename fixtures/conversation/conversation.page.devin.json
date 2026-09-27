@@ -3,7 +3,7 @@
   "suite": "conversation.page.devin",
   "source": {
     "repo": "IGUNUBLUE/lerdr-rust-kotlin",
-    "commit": "9d5ea4d",
+    "commit": "9d5ea4d6bb61dd1ca753765edd294734d12bd2d9",
     "package": "relay/crates/lerdr-coord/src/conversation",
     "generator": "manual — Devin CLI writes ATIF documents at ~/.local/share/devin/cli/transcripts/<session>.json"
   },
