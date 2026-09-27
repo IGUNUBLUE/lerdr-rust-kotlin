@@ -192,6 +192,19 @@ fn materialize(vector: &Value) -> Result<Materialized, String> {
         "XDG_DATA_HOME".to_string(),
         xdg.path().to_string_lossy().into_owned(),
     );
+    // Vector-level env injection (`"{home}"` substitutes the materialized
+    // HOME) — devin's data dirs are XDG-based, so the fixture points
+    // `HERDR_DEVIN_DATA_DIRS` at the temp tree holding its transcript file.
+    if let Some(vector_env) = vector.get("env").and_then(Value::as_object) {
+        for (name, template) in vector_env {
+            if let Some(template) = template.as_str() {
+                env.insert(
+                    name.clone(),
+                    template.replace("{home}", &home_path.to_string_lossy()),
+                );
+            }
+        }
+    }
 
     let mut data_dir = None;
     let mut database = None;
@@ -534,6 +547,11 @@ fn conversation_page_opencode() {
 #[test]
 fn conversation_page_hermes() {
     run_suite("conversation.page.hermes");
+}
+
+#[test]
+fn conversation_page_devin() {
+    run_suite("conversation.page.devin");
 }
 
 #[test]

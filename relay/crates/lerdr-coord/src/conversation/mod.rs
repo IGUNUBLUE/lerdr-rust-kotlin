@@ -33,6 +33,7 @@
 
 pub(crate) mod browser;
 pub(crate) mod claude;
+pub(crate) mod devin;
 pub(crate) mod hermes;
 pub(crate) mod omo;
 pub(crate) mod opencode;

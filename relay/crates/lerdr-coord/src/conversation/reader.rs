@@ -86,6 +86,8 @@ pub fn supported(agent: &str) -> bool {
             | "ohmyopencode"
             | "hermes"
             | "hermesagent"
+            | "devin"
+            | "devincli"
     )
 }
 
@@ -169,7 +171,7 @@ impl Reader {
         }
     }
 
-    fn home_str(&self) -> String {
+    pub(crate) fn home_str(&self) -> String {
         self.home.to_string_lossy().into_owned()
     }
 
@@ -224,6 +226,9 @@ impl Reader {
         }
         if matches!(normalized_agent(agent).as_str(), "omo" | "ohmyopencode") {
             return self.omo_read(&project.cwd, session_id, before, limit);
+        }
+        if matches!(normalized_agent(agent).as_str(), "devin" | "devincli") {
+            return self.devin_read_for(&project.cwd, session_id, before, limit);
         }
         if !supported(agent) {
             return Ok(Page::unavailable(
@@ -392,6 +397,9 @@ impl Reader {
                 resolve_path_or_session(&roots::omp_roots(&home, self.env()), session_id, "_")
             }
             "hermes" | "hermesagent" => self.hermes_locate(&project.cwd, session_id),
+            "devin" | "devincli" => {
+                super::devin::devin_locate(&roots::devin_data_roots(&home, self.env()), session_id)
+            }
             _ => Location::default(),
         }
     }

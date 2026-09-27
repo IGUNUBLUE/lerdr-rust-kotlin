@@ -285,6 +285,32 @@ pub(crate) fn opencode_dbs(home: &str, env: &EnvLookup) -> Vec<String> {
         .collect()
 }
 
+/// `agentroots.DevinData` — `<XDG_DATA_HOME>/devin/cli` holds
+/// `transcripts/<session>.json` (ATIF documents); the default resolves to
+/// `~/.local/share/devin/cli`.
+pub(crate) fn devin_data_roots(home: &str, env: &EnvLookup) -> Vec<String> {
+    let mut xdg_data = env("XDG_DATA_HOME").unwrap_or_default().trim().to_string();
+    if xdg_data.is_empty() {
+        xdg_data = Path::new(home)
+            .join(".local")
+            .join("share")
+            .to_string_lossy()
+            .into_owned();
+    }
+    resolve(
+        home,
+        "HERDR_DEVIN_DATA_DIRS",
+        "",
+        &Path::new(&xdg_data)
+            .join("devin")
+            .join("cli")
+            .to_string_lossy(),
+        "",
+        &[],
+        env,
+    )
+}
+
 /// `agentroots.HermesData`.
 pub(crate) fn hermes_data_roots(home: &str, env: &EnvLookup) -> Vec<String> {
     resolve(
