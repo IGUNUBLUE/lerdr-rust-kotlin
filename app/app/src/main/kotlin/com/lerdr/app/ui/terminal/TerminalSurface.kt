@@ -157,18 +157,31 @@ fun TerminalSurface(
     // cells over a frozen buffer, so they are suppressed until unfreeze.
     val renderFindRanges = if (state.frozenRows == null) findRanges else emptyMap()
 
-    // Row layouts — built once per committed frame, not per draw.
-    val rowLayouts = remember(renderRows, textMeasurer, baseStyle, textColor) {
+    // Row layouts — measured per row *content*, not per frame. A live
+    // stream commits whole row lists on every burst (spinners repaint a
+    // line at a time), so the measure cache keeps unchanged rows' layouts
+    // and only the touched rows pay `TextMeasurer.measure`.
+    val rowLayoutCache = remember(textMeasurer, baseStyle, textColor) {
         val style = baseStyle.copy(color = textColor)
-        renderRows.map { row ->
-            textMeasurer.measure(
-                text = row.toAnnotatedString(textColor),
-                style = style,
-                overflow = TextOverflow.Clip,
-                softWrap = false,
-                maxLines = 1,
-            )
+        object : LinkedHashMap<TerminalRowUi, TextLayoutResult>(ROW_LAYOUT_CACHE_MAX, 0.75f, true) {
+            override fun removeEldestEntry(
+                eldest: MutableMap.MutableEntry<TerminalRowUi, TextLayoutResult>?,
+            ): Boolean = size > ROW_LAYOUT_CACHE_MAX
+
+            fun measure(row: TerminalRowUi): TextLayoutResult =
+                getOrPut(row) {
+                    textMeasurer.measure(
+                        text = row.toAnnotatedString(textColor),
+                        style = style,
+                        overflow = TextOverflow.Clip,
+                        softWrap = false,
+                        maxLines = 1,
+                    )
+                }
         }
+    }
+    val rowLayouts = remember(renderRows, rowLayoutCache) {
+        renderRows.map(rowLayoutCache::measure)
     }
 
     // Find overlays — only rows carrying a match re-measure, with the
@@ -941,6 +954,10 @@ private const val CURSOR_BLINK_MS = 530L
 /** Pinch-zoom bounds — enough range to matter without degenerate cells. */
 private const val MIN_FONT_SCALE = 0.6f
 private const val MAX_FONT_SCALE = 2.5f
+
+/** Bound on cached row layouts — a scrollback walk touches at most the
+ * visible window plus history tiles, so a few pages of rows suffice. */
+private const val ROW_LAYOUT_CACHE_MAX = 512
 
 private const val MAX_MENU_LINKS = 3
 private const val MENU_LABEL_MAX = 44

@@ -1,7 +1,6 @@
 package com.lerdr.app.speech
 
 import androidx.compose.runtime.Immutable
-import java.util.regex.Pattern
 
 /**
  * One read-aloud language — Lerdr's `SPEECH_LANGUAGES` entries. A
@@ -55,11 +54,10 @@ object SpeechChunker {
 
     /** `text.split(/(?<=[.!?:;\n])\s+|(?<=[。！？；：])/u)` — after western
      * punctuation followed by whitespace, or right after CJK punctuation.
-     * `UNICODE_CHARACTER_CLASS` gives `\s` Lerdr's `/u` coverage. */
-    private val SENTENCE_SPLIT = Pattern.compile(
-        """(?<=[.!?:;\n])\s+|(?<=[。！？；：])""",
-        Pattern.UNICODE_CHARACTER_CLASS,
-    ).toRegex()
+     * Android's ICU-backed `Pattern` rejects `UNICODE_CHARACTER_CLASS` —
+     * its `\s` is already Unicode-aware, so the plain literal keeps the
+     * `/u` behavior there and ASCII `\s` on the JVM. */
+    private val SENTENCE_SPLIT = Regex("""(?<=[.!?:;\n])\s+|(?<=[。！？；：])""")
 
     /**
      * `speechChunks(text, limit)` — greedy sentence packing into `limit`-char
