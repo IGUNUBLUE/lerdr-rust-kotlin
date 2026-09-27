@@ -84,7 +84,6 @@ fun FilesScreen(
     onOpenFeed: () -> Unit,
     onOpenTerminal: () -> Unit,
     onBack: () -> Unit,
-    onSelectTab: (String) -> Unit = {},
 ) {
     val appContext = LocalContext.current.applicationContext
     val viewModel: FilesViewModel = viewModel(key = "files:$paneId") {
@@ -97,7 +96,6 @@ fun FilesScreen(
         onOpenFeed = onOpenFeed,
         onOpenTerminal = onOpenTerminal,
         onBack = onBack,
-        onSelectTab = onSelectTab,
         tabsPaneId = paneId,
         onSelectSection = viewModel::selectSection,
         onOpenDir = viewModel::openDir,
@@ -116,7 +114,6 @@ fun FilesContent(
     onOpenFeed: () -> Unit,
     onOpenTerminal: () -> Unit,
     onBack: () -> Unit,
-    onSelectTab: (String) -> Unit = {},
     tabsPaneId: String? = null,
     onSelectSection: (FilesSection) -> Unit,
     onOpenDir: (String) -> Unit,
@@ -153,7 +150,6 @@ fun FilesContent(
                 provider = uiState.provider,
                 active = uiState.connected,
                 tabsPaneId = tabsPaneId,
-                onSelectTab = { onSelectTab(it.paneId) },
                 actions = listOf(
                     SessionBarAction(
                         label = "Refresh",

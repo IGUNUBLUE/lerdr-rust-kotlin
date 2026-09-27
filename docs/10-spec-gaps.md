@@ -333,10 +333,11 @@ none block Phase 1 continuation.
   case-fold literal search, 1000-match cap, cross-row fragments, wrap
   navigation, center-row reveal; highlight overlay is a separate pass
   that never touches the fingerprint/delta row reuse.
-- **App: worktrees + workspace tabs** — sheet (list/create/open/remove
-  with force escalation on `dirty_worktree_requires_force`) entered from
-  the session bar; workspace tab strip with pointer-driven reorder
-  (`insert_index` pre-move semantics) under the mode switch.
+- **App: worktrees** — sheet (list/create/open/remove with force
+  escalation on `dirty_worktree_requires_force`) entered from the
+  session bar ⋯ menu. The workspace tab strip under the mode switch was
+  removed — it pushed the back stack once per pane switch and crowded
+  the bar; pane switching happens from the Agents list.
 - **Conversation history lands** — `internal/conversation` port:
   provider roots (claude/codex/qoder/pi/omp/omo/opencode/hermes),
   bounded tail/JSONL/sqlite reads behind strict containment
@@ -769,12 +770,13 @@ actually implements landed here.
   relays + re-dial `disconnected` endpoints — the oracle's
   `requestInventoryRefresh`).
 - **Workspace-row reorder** — the app has no `WorkspaceManager`
-  surface, so move up/down actions landed in the tab strip's overflow
-  menu. `workspaceTrees()` ports `relayWorkspaceTrees` (linked
-  worktrees nest under the `repo_key` primary); the block-form
-  payload moves a whole linked group, legacy `insert_index` fallback
-  kept, optimistic `pendingWorkspaceOrder` invalidated on snapshot
-  confirm or membership drift.
+  surface; move up/down actions lived in the tab strip's overflow menu
+  and went away with it, so reorder currently has no UI. The removed
+  implementation kept `workspaceTrees()` (ports `relayWorkspaceTrees`,
+  linked worktrees nesting under the `repo_key` primary), the
+  block-form payload moving a whole linked group, the legacy
+  `insert_index` fallback, and optimistic `pendingWorkspaceOrder`
+  invalidated on snapshot confirm or membership drift.
 - **Dropped as non-oracle**: voice input (no SpeechRecognition/mic
   invoke in the oracle — `speech/` is relay→phone playback), OSC-52
   clipboard (xterm.js never processes it), hardware-keyboard map
