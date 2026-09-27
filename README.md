@@ -74,8 +74,12 @@ in place (Settings → App update).
 ### 3 · Pair
 
 Scan the setup QR from the app's pairing screen — or paste the
-`lerdr://pair` link — and the phone shows `1 computer · live`. Reprint
-the QR anytime with the **Lerdr: Show Phone Setup QR** plugin action.
+`lerdr://pair` link — and the phone shows `1 computer · live`. The QR
+encodes a one-shot pairing link (relay token + tailnet address), armed
+fresh each time it is printed and good for one phone within ~10 minutes.
+Reprint it anytime with the **Lerdr: Show Phone Setup QR** plugin action —
+the full generation chain is documented in
+[plugin/README.md](plugin/README.md#how-the-setup-qr-is-produced).
 
 ## Build from source
 

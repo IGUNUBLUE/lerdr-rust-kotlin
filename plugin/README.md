@@ -23,6 +23,29 @@ manifest's `version` to tag `v<version>` on the release repository, downloads
 SHA-256, extracts, and lets the binary self-verify
 (`verify-release`/`seal-release`/`activate-release`/`prune-releases`).
 
+## How the setup QR is produced
+
+The chain, end to end:
+
+1. `tailscale-serve.sh start` (Setup menu → Tailscale Serve, or the
+   `tailscale-setup` action) publishes the relay on this machine's tailnet
+   HTTPS name, then calls `setup-link.sh <fqdn>`.
+2. `setup-link.sh` loads `relay.env` and asks the binary for the pairing
+   fragment: `lerdr-relay setup-fragment <token> <host-label> <wss-url>`.
+   The fragment carries the bootstrap payload for `https://<tailnet>/#<fragment>`.
+3. The same binary renders the code: `lerdr-relay qr --columns <n> <url>`
+   draws a terminal QR sized to the pane (skipped when the pane is too
+   narrow — the plain link is always printed too, as an OSC 8 hyperlink).
+4. `arm_setup_link` sends `SIGUSR1` to the pid in `relay.pid` — printing a
+   QR is asking for one more pairing, so the running relay arms a fresh
+   **one-shot invitation** (one phone, ~10 minutes) before the link is shown.
+
+Reprinting (`tailscale-serve.sh link`, the **Lerdr: Show Phone Setup QR**
+action, or `kill -USR1 <relay-pid>`) repeats steps 2–4. The QR embeds the
+relay token — that is why the scripts warn against sharing screenshots of
+it. The invitation/credential handshake itself is wire-level and lives in
+`docs/03-protocol.md`.
+
 ## Local development (link)
 
 ```sh
