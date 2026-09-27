@@ -128,7 +128,6 @@ fun AgentFeedScreen(
     onOpenTerminal: () -> Unit,
     onOpenFiles: () -> Unit,
     onBack: () -> Unit,
-    onSelectTab: (String) -> Unit = {},
 ) {
     val appContext = LocalContext.current.applicationContext
     val viewModel: FeedViewModel = viewModel(key = "feed:$paneId") {
@@ -156,7 +155,6 @@ fun AgentFeedScreen(
         onOpenTerminal = onOpenTerminal,
         onOpenFiles = onOpenFiles,
         onBack = onBack,
-        onSelectTab = onSelectTab,
         tabsPaneId = paneId,
         onDraftChange = viewModel::onDraftChange,
         onSendPrompt = viewModel::sendPrompt,
@@ -186,7 +184,6 @@ fun AgentFeedContent(
     onOpenTerminal: () -> Unit,
     onOpenFiles: () -> Unit,
     onBack: () -> Unit,
-    onSelectTab: (String) -> Unit = {},
     tabsPaneId: String? = null,
     onDraftChange: (String) -> Unit,
     onSendPrompt: () -> Unit,
@@ -453,7 +450,6 @@ fun AgentFeedContent(
                     ),
                 ),
                 tabsPaneId = tabsPaneId,
-                onSelectTab = { onSelectTab(it.paneId) },
             )
         },
         bottomBar = {

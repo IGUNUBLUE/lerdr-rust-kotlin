@@ -147,13 +147,10 @@ fun SessionTopBar(
     active: Boolean = false,
     actions: List<SessionBarAction> = emptyList(),
     /**
-     * When set, the workspace tab strip renders under the mode switch, the
-     * title becomes renameable for controllers, and the ⋯ menu gains the
-     * worktrees + manage entries. The strip self-hides when the pane's
-     * workspace has a single tab.
+     * When set, the title becomes renameable for controllers and the ⋯
+     * menu gains the worktrees + manage entries.
      */
     tabsPaneId: String? = null,
-    onSelectTab: (lerdr.core.store.Agent) -> Unit = {},
     /** Chip variant — derived from [statusLabel] by default. */
     statusVariant: SessionStatusVariant = statusVariantOf(statusLabel),
 ) {
@@ -203,9 +200,6 @@ fun SessionTopBar(
                 .fillMaxWidth()
                 .padding(horizontal = spacing.medium, vertical = spacing.small),
         )
-        if (tabsPaneId != null) {
-            WorkspaceTabsStrip(paneId = tabsPaneId, onSelectTab = onSelectTab)
-        }
     }
 }
 
