@@ -45,9 +45,41 @@ The name: the iguana is an animal I've always found curious.
   (`tools/shadow/`): two fresh relays against one fake Herdr must emit
   byte-identical normalized streams.
 
-## Run it
+## Quick start
 
-### Relay — on the machine running Herdr
+Requires [Herdr](https://github.com/0cv/herdr) ≥ 0.7.5 on macOS or Linux,
+Tailscale, and an Android phone.
+
+### 1 · Install the plugin — on the machine running Herdr
+
+```sh
+herdr plugin install IGUNUBLUE/lerdr-rust-kotlin/plugin
+```
+
+Herdr clones the repo, runs the `[[build]]` hook, and registers the
+`lerdr.events` plugin. The hook downloads the checksum-verified
+`lerdr-relay` bundle from the matching GitHub release — no Rust toolchain
+required — then opens the **Lerdr: Setup** pane. Choose **Tailscale Serve**
+there to publish the relay on this machine's tailnet HTTPS name and print
+the private setup QR.
+
+### 2 · Install the app — on your phone
+
+Download `lerdr_<version>_universal.apk` from the
+[latest release](https://github.com/IGUNUBLUE/lerdr-rust-kotlin/releases/latest)
+and open it — Android asks once to allow installs from the source app.
+From v0.0.12 the app checks GitHub releases on its own and can update
+in place (Settings → App update).
+
+### 3 · Pair
+
+Scan the setup QR from the app's pairing screen — or paste the
+`lerdr://pair` link — and the phone shows `1 computer · live`. Reprint
+the QR anytime with the **Lerdr: Show Phone Setup QR** plugin action.
+
+## Build from source
+
+### Relay
 
 ```sh
 cd relay && cargo build --release -p lerdr-relay
