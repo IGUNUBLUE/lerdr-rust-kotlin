@@ -62,11 +62,13 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -104,19 +106,27 @@ import com.lerdr.app.ui.terminal.wrapFindIndex
 import com.lerdr.core.designsystem.components.LerdrLoadingIndicator
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import dagger.hilt.android.EntryPointAccessors
-import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import lerdr.core.conversation.ConversationBrowseState
 import lerdr.core.conversation.ConversationEntry
 import lerdr.core.conversation.ConversationRole
 
-/** Oracle `trackScroll`: unpins once the settled gap passes 48 px. */
+/** Gap past which the pin drops — a deliberate scroll-away, not sub-pixel noise. */
 private val PIN_BOTTOM_GAP = 48.dp
 
-/** Oracle's `>= lastScrollTop - 2` — sub-pixel settle noise keeps the pin. */
+/** Sub-pixel settle noise within a pinned position keeps the pin. */
 private const val PIN_SCROLL_SLOP_PX = 2
+
+/** The tail row's end is inside the viewport (slop for rounding). */
+private fun tailAtBottom(listState: LazyListState): Boolean {
+    val info = listState.layoutInfo
+    val lastItem = info.visibleItemsInfo.lastOrNull() ?: return false
+    if (lastItem.index != info.totalItemsCount - 1) return false
+    return lastItem.offset + lastItem.size <= info.viewportEndOffset + PIN_SCROLL_SLOP_PX
+}
 
 /**
  * Feed mode — semantic timeline (docs/04 §Feed). [AgentFeedScreen] owns the
@@ -337,29 +347,22 @@ fun AgentFeedContent(
     // "Load older" prepend keeps its anchor via the stable item keys, and
     // manual scroll-back must not yank the viewport down on new output.
     //
-    // Oracle `ConversationHistory.trackScroll` parity: the pin is a sticky
-    // boolean that starts set (opening lands on the newest turn) and is only
-    // re-evaluated when a scroll settles. Deriving it from layoutInfo breaks
-    // under load — an appended item is not yet visible when the effect runs,
-    // so the pin drops on the first growth and never recovers.
+    // The pin is a sticky boolean re-evaluated on every scroll-position
+    // change, so an upward drag drops it mid-gesture and a queued snap
+    // can't yank the viewport afterwards. `drop(1)` skips the stream's
+    // initial sample — it is not a scroll, and evaluating it clears the
+    // pin before the first snap ever runs.
     var pinnedToBottom by remember { mutableStateOf(true) }
     val bottomGapThreshold = with(LocalDensity.current) { PIN_BOTTOM_GAP.roundToPx() }
     LaunchedEffect(listState) {
         var lastScrollIndex = -1
         var lastScrollOffset = -1
         var lastTotalItems = -1
-        var wasScrolling = false
-        snapshotFlow { listState.isScrollInProgress }
-            .collect { inProgress ->
-                if (inProgress) {
-                    wasScrolling = true
-                    return@collect
-                }
-                // Only a real scroll settle re-evaluates the pin — the
-                // stream's initial `false` would otherwise clear it before
-                // the first tail snap ever runs.
-                if (!wasScrolling) return@collect
-                wasScrolling = false
+        snapshotFlow {
+            listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+        }
+            .drop(1)
+            .collect {
                 val info = listState.layoutInfo
                 val lastItem = info.visibleItemsInfo.lastOrNull()
                 val bottomGap = if (lastItem != null &&
@@ -369,10 +372,10 @@ fun AgentFeedContent(
                 } else {
                     Int.MAX_VALUE
                 }
-                // Oracle `layoutDidNotScrollUp`: only an already-pinned
-                // viewport keeps its pin when content grows under it or the
-                // pin snap itself fired — a mid-list scroll still resolves
-                // through the gap check below.
+                // Only an already-pinned viewport keeps its pin when
+                // content grows under it or the pin snap itself fired —
+                // a mid-list scroll still resolves through the gap
+                // check below.
                 val didNotScrollUp = pinnedToBottom &&
                     info.totalItemsCount >= lastTotalItems &&
                     lastScrollIndex >= 0 &&
@@ -386,33 +389,53 @@ fun AgentFeedContent(
                 pinnedToBottom = didNotScrollUp || bottomGap < bottomGapThreshold
             }
     }
-    // The tail key changes on a new last entry and on any in-place growth —
-    // streaming text or tool output; prepends leave it untouched so no
-    // scroll fires. A plain `text.length` key misses tool-output growth.
-    val tailKey = visibleEntries.lastOrNull()?.hashCode()
-    LaunchedEffect(tailKey, uiState.working, uiState.blocked != null) {
-        if (tailKey == null || !pinnedToBottom) return@LaunchedEffect
-        val lastIndex = headerOffset +
-            visibleEntries.size +
-            (if (uiState.blocked != null) 1 else 0) +
-            (if (uiState.working) 1 else 0) - 1
-        // Bottom-align, like the oracle's `scrollTop = scrollHeight` — a
-        // plain snap top-aligns the item, and once a streaming entry grows
-        // taller than the viewport the newest text lands below the fold.
-        // Int.MAX_VALUE clamps at the content end. NonCancellable: during a
-        // push burst each new emission restarts this effect and a cancellable
-        // snap dies before its scroll registers — the feed stalls mid-list
-        // until the burst ends. Queued snaps serialize on the scroll mutex
-        // and the last one wins, so the feed converges on the real tail.
-        withContext(NonCancellable) {
-            // Re-check at execution time — a snap queued on the scroll
-            // mutex must not fire after the user started dragging away.
-            if (pinnedToBottom && !listState.isScrollInProgress) {
-                listState.scrollToItem(
-                    lastIndex.coerceAtLeast(0),
-                    scrollOffset = Int.MAX_VALUE,
-                )
+    // The snapper: fires on content or viewport changes — item count,
+    // the tail item's measured size while visible, the sum of visible
+    // item sizes, the viewport edge, the trailing working/blocker rows —
+    // never on raw scroll position. `scrollToItem` lands on a partially
+    // measured list whose estimated item heights resolve a layout pass
+    // later; each resolution re-emits a changed size and re-asserts the
+    // pin, so the feed converges on the real tail instead of landing
+    // once and drifting back up.
+    var tailReady by remember { mutableStateOf(false) }
+    val working by rememberUpdatedState(uiState.working)
+    val blocked by rememberUpdatedState(uiState.blocked != null)
+    LaunchedEffect(listState) {
+        snapshotFlow {
+            val info = listState.layoutInfo
+            val tail = info.visibleItemsInfo.lastOrNull()
+                ?.takeIf { it.index == info.totalItemsCount - 1 }
+            listOf(
+                info.totalItemsCount,
+                tail?.size,
+                info.visibleItemsInfo.sumOf { it.size },
+                info.viewportEndOffset,
+                working,
+                blocked,
+            )
+        }.collect {
+            if (!pinnedToBottom || listState.layoutInfo.totalItemsCount == 0) {
+                tailReady = true
+                return@collect
             }
+            if (!listState.isScrollInProgress && !tailAtBottom(listState)) {
+                try {
+                    // Int.MAX_VALUE clamps at the content end — bottom-
+                    // aligns; a plain snap top-aligns the item and once
+                    // a streaming entry grows taller than the viewport
+                    // the newest text lands below the fold.
+                    listState.scrollToItem(
+                        (listState.layoutInfo.totalItemsCount - 1)
+                            .coerceAtLeast(0),
+                        scrollOffset = Int.MAX_VALUE,
+                    )
+                } catch (preempted: CancellationException) {
+                    // A user-priority scroll preempted the snap — the pin
+                    // tracker resolves the follow state on the next
+                    // frames.
+                }
+            }
+            tailReady = true
         }
     }
     Scaffold(
@@ -568,7 +591,13 @@ fun AgentFeedContent(
             }
             LazyColumn(
                 state = listState,
-                modifier = Modifier.weight(1f).fillMaxWidth(),
+                // Stay invisible until the first tail snap lands — a
+                // re-entered feed otherwise paints one frame at the head
+                // before converging on the end.
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .alpha(if (tailReady) 1f else 0f),
                 contentPadding = PaddingValues(
                     top = spacing.small,
                     bottom = spacing.small,
