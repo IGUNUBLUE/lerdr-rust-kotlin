@@ -8,3 +8,13 @@ local.properties
 
 # Kotlin build session data
 app/.kotlin/
+
+# Secrets and machine-local config
+*.env
+.env
+.env.*
+*.pem
+*.key
+*.jks
+*.keystore
+!fixtures/**

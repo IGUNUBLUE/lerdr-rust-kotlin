@@ -1220,7 +1220,7 @@ mod tests {
                 focused: true,
                 agent_status: lerdr_herdr::AgentStatus::Working,
                 agent: Some("devin".into()),
-                cwd: Some("/home/l".into()),
+                cwd: Some("/home/user".into()),
                 ..AgentInfo::default()
             }],
             ..SessionSnapshot::default()
@@ -1231,8 +1231,8 @@ mod tests {
         assert_eq!(agents[0].raw_pane_id, "wE:p1");
         assert_eq!(agents[0].status, "working");
         assert_eq!(agents[0].agent, "devin");
-        assert_eq!(agents[0].cwd, "/home/l");
-        assert_eq!(agents[0].project, "l");
+        assert_eq!(agents[0].cwd, "/home/user");
+        assert_eq!(agents[0].project, "user");
         assert!(agents[0].focused);
         // The initial snapshot stamps updated_at = 0 (state.go:507).
         assert_eq!(agents[0].updated_at, 0);
