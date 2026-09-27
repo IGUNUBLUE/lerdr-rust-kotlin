@@ -3,6 +3,7 @@ package com.lerdr.app.ui.session
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.isFocused
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -525,6 +526,65 @@ class AgentFeedScreenshotTest {
         // Semantics bounds clip at the list's edge, so they can't prove
         // the tail is on screen — assert on the measured layout instead:
         // the final item must be bottom-aligned inside the viewport.
+        composeRule.runOnIdle {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.last()
+            assertThat(last.index).isEqualTo(info.totalItemsCount - 1)
+            assertThat(last.offset + last.size).isAtMost(info.viewportEndOffset)
+        }
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    /**
+     * Re-entry path: the screen composes with an empty history while the
+     * relay round-trip loads, then the accumulated entries arrive in one
+     * shot. The feed must still land bottom-aligned on the newest entry.
+     */
+    @Test
+    fun feed_lateArrivingEntriesPinToTail() {
+        val tall = ConversationEntry(
+            id = "eTall",
+            timestamp = "2026-01-01T10:01:00Z",
+            role = ConversationRole.ASSISTANT,
+            text = (1..40).joinToString("\n\n") { "Streaming paragraph $it of the reply." } +
+                "\n\nTAIL-OF-ENTRY",
+        )
+        val listState = LazyListState()
+        val uiState = mutableStateOf(baseState().copy(entries = emptyList()))
+        composeRule.setContent {
+            LerdrTheme {
+                AgentFeedContent(
+                    uiState = uiState.value,
+                    onOpenTerminal = {},
+                    onOpenFiles = {},
+                    onBack = {},
+                    onDraftChange = {},
+                    onSendPrompt = {},
+                    onRespond = { _, _ -> },
+                    onQuestionDraftChange = {},
+                    onSubmitQuestion = {},
+                    onNavigateQuestion = {},
+                    onClarifyQuestion = {},
+                    onCopyResponse = { entryText, onCopied -> onCopied(entryText) },
+                    onClearError = {},
+                    onLoadOlder = {},
+                    onReloadHistory = {},
+                    onRecoverHistory = {},
+                    onCancelPreparation = {},
+                    onContinuePreparation = {},
+                    onPickAttachments = {},
+                    onRemoveAttachment = {},
+                    onClearAttachments = {},
+                    onRestartAttachments = {},
+                    listState = listState,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+        composeRule.runOnIdle {
+            uiState.value = baseState().copy(entries = entries + tall)
+        }
+        composeRule.waitForIdle()
         composeRule.runOnIdle {
             val info = listState.layoutInfo
             val last = info.visibleItemsInfo.last()

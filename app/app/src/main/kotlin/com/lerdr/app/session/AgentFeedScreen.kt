@@ -104,8 +104,10 @@ import com.lerdr.app.ui.terminal.wrapFindIndex
 import com.lerdr.core.designsystem.components.LerdrLoadingIndicator
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import dagger.hilt.android.EntryPointAccessors
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import lerdr.core.conversation.ConversationBrowseState
 import lerdr.core.conversation.ConversationEntry
 import lerdr.core.conversation.ConversationRole
@@ -400,8 +402,21 @@ fun AgentFeedContent(
         // Bottom-align, like the oracle's `scrollTop = scrollHeight` — a
         // plain snap top-aligns the item, and once a streaming entry grows
         // taller than the viewport the newest text lands below the fold.
-        // Int.MAX_VALUE clamps at the content end.
-        listState.scrollToItem(lastIndex.coerceAtLeast(0), scrollOffset = Int.MAX_VALUE)
+        // Int.MAX_VALUE clamps at the content end. NonCancellable: during a
+        // push burst each new emission restarts this effect and a cancellable
+        // snap dies before its scroll registers — the feed stalls mid-list
+        // until the burst ends. Queued snaps serialize on the scroll mutex
+        // and the last one wins, so the feed converges on the real tail.
+        withContext(NonCancellable) {
+            // Re-check at execution time — a snap queued on the scroll
+            // mutex must not fire after the user started dragging away.
+            if (pinnedToBottom && !listState.isScrollInProgress) {
+                listState.scrollToItem(
+                    lastIndex.coerceAtLeast(0),
+                    scrollOffset = Int.MAX_VALUE,
+                )
+            }
+        }
     }
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
