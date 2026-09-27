@@ -6,7 +6,7 @@ import kotlinx.serialization.Serializable
 
 /**
  * `coordinator.AgentState` — one agent row in an `agents` snapshot.
- * Field order and omitempty mirror the Go struct (`state.go:18-58`).
+ * Field order and omitempty mirror the Go struct (relay contract).
  */
 @Serializable
 data class AgentState(

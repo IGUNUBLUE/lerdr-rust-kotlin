@@ -172,9 +172,9 @@ safe_remove_bin_link() {
         return 0
     fi
     # A regular shim must be byte-identical to the active verified release.
-    # Its filename and executable bit alone are not ownership proof. Any side
-    # of either rename counts: Go-era and pre-rename installs left binaries
-    # behind under lerdr and herdr-mobile-relay.
+    # Its filename and executable bit alone are not ownership proof. Both
+    # legacy and pre-rename names can remain under lerdr and
+    # herdr-mobile-relay.
     local active_binary
     for active_binary in \
         "$RELEASE_ROOT/current/lerdr-relay" \

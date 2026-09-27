@@ -1,6 +1,6 @@
 //! Local-only actions — `list_directories` (`fsutil.ListDirectories`) and
 //! `qr_code` (`setuphelper.PackedQR`). Neither touches Herdr; both answer
-//! with a bare `command_result` like the oracle's `sendCommandResult`.
+//! with a bare `command_result` like the retired implementation's `sendCommandResult`.
 
 use std::path::{Path, PathBuf};
 

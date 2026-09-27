@@ -2,13 +2,13 @@ package lerdr.core.terminal
 
 /**
  * Client side of the pane-watch ack gate — the sender protocol the released
- * client runs after applying pane frames (`store.ts` `pane_*` handlers,
+ * client runs after applying pane frames (the local implementation `pane_*` handlers,
  * `acknowledgePaneFrame`, `readPane`, `startPaneWatch`). Pure state machine:
  * it never touches the socket. The session layer encodes the returned
  * [Intent]s and owns the `pane_realtime_delta` capability check and the
  * target identity payload.
  *
- * Oracle contract:
+ * Lerdr contract:
  * - every `pane_delta` that commits is acked while watching — deltas carry
  *   no `ack_required` flag, they are implicitly gated;
  * - `pane_content` is acked only when `ack_required` is true and the

@@ -1,14 +1,11 @@
 # Send Buffer — per-client outbound queue, coalescing, eviction, resync
 
 Spec for the relay's per-client outbound queue and what a slow client observes.
-Closes `docs/10-spec-gaps.md` P0-2. All line numbers cite `~/Projects/lerdr`
-(original Go implementation — provenance only).
+Closes `docs/10-spec-gaps.md` P0-2.
 
-Sources: `internal/transport/sendbuffer.go` (queue),
-`internal/transport/ws.go` (hub send paths, eviction, metrics),
-`internal/app/server.go` (bootstrap snapshot), `internal/app/pane_watch.go`
-(pane ack gate — a *separate* mechanism), `frontend/src/lib/store.ts`
-(reconnect behavior).
+The queue details were historically extracted from the retired relay and
+client. Their source paths below are archival provenance only; this document
+defines the current Lerdr contract.
 
 ---
 
@@ -24,8 +21,8 @@ Sources: `internal/transport/sendbuffer.go` (queue),
 | `orderedIngressCapacity` | 128 (inbound command queue; separate mechanism) | `ws.go:25` |
 | `handlerCapacity` | 32 (inbound handler slots) | `ws.go:24` |
 
-Accounting is over **serialized plaintext JSON bytes** (before E2EE sealing):
-`b.bytes += len(item.data)` (`sendbuffer.go:82`).
+Accounting is over serialized plaintext JSON bytes (before E2EE sealing):
+`b.bytes += len(item.data)`.
 
 ## 2. Queue semantics (`sendbuffer.go`)
 
@@ -166,23 +163,18 @@ The connection is the session. On any close:
 Coalescing in-flight during a reconnect is moot — the buffer is destroyed with
 the client (`removeClient` → `buf.Close`, `ws.go:673`).
 
-## 7. Server-side delivery details worth mirroring
+## 7. Server-side delivery details
 
-- **E2EE seal happens at pop time**, not at push time (`ws.go:355-363`) — the
-  queue stores plaintext JSON; a message queued before an E2EE session swap
-  would seal under the *new* keys. (Reconnects always create a fresh buffer, so
-  this is only an invariant to note, not a behavior to emulate blindly.)
-- **Broadcast snapshot under a registration barrier**: `Broadcast` /
-  `BroadcastPrepared` encode once and fan out to a snapshot of clients taken
-  under `register` + `mu` locks (`ws.go:399-441`), guaranteeing a client sees a
-  state change either in its handshake snapshot or as a live delta — never
-  both, never neither (`ws.go:420-423` comment). The Rust relay needs an
+- **E2EE sealing happens at pop time**, not at enqueue time — sequence
+  allocation tracks wire order rather than producer order.
+- **Broadcast snapshot under a registration barrier**: a connection receives
+  its bootstrap snapshot before later broadcasts can arrive; preserve an
   equivalent ordering guarantee between `sendConnectionSnapshot` and broadcast.
-- `SendByID` / `Send` on an unknown client id is a silent no-op (`ws.go:389-397`).
-- **Ingress overflow is answered, not silent**: when `orderedIngressCapacity`
-  (128) is exceeded the client gets `command_result{ok:false,
-  phase:"not_started", error:"Relay is busy; command was not sent"}` —
-  keep this distinction from outbound eviction (see `ws.go` ingress path).
+- `SendByID` / `Send` on an unknown client id is a silent no-op.
+- **Ingress overflow is answered, not silent**: when
+  `orderedIngressCapacity` (128) is exceeded the client gets
+  `command_result{ok:false, phase:"not_started", error:"Relay is busy; command
+  was not sent"}` — keep this distinct from outbound eviction.
 
 ## 8. Client requirements (normative)
 
@@ -201,14 +193,13 @@ the client (`removeClient` → `buf.Close`, `ws.go:673`).
 ## 9. OPEN QUESTIONS
 
 1. **Slow-client close visibility**: WS eviction surfaces as bare 1000 (no
-   reason). Gateway stalls surface `going_away/"slow"`. Decide whether the
-   Rust relay should send an explicit close reason/code (e.g. a private 4xxx)
-   so the Kotlin client can surface "dropped for being slow" vs "server gone".
+   reason). Decide whether the relay should send an explicit close reason/code
+   (for example, a private 4xxx) so the Kotlin client can surface "dropped for
+   being slow" vs "server gone".
 2. **`pane_delta` under a full buffer**: a burst of deltas to a stalled client
    fills 64 slots quickly (each delta is tiny but non-coalescing); eviction is
-   correct behavior, but note there is no "collapse watch to a resync nudge"
-   fallback — the client is simply dropped. Deliberate? (Go's answer: yes —
-   slow consumers are disconnected rather than degraded.)
+   the current behavior. There is no "collapse watch to a resync nudge"
+   fallback — the client is disconnected rather than degraded.
 3. **`wsMaxReadBytes` (21 MiB) vs 4 MiB outbound**: inbound messages may be
    ~5× larger than anything outbound — asymmetric by design (uploads). Confirm
    the Kotlin side keeps its own inbound limit consistent with

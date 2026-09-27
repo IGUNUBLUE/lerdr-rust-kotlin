@@ -7,8 +7,8 @@ import lerdr.core.model.Interaction
 import lerdr.core.model.orNull
 
 /**
- * Store-facing agent row — the Kotlin counterpart of the oracle's `Agent`
- * (`frontend/src/lib/types.ts`), which is the wire `AgentState` plus
+ * Store-facing agent row — the Kotlin counterpart of Lerdr's `Agent`
+ *, which is the wire `AgentState` plus
  * client-assigned fields.
  *
  * Nullability mirrors the TS optionals: fields that can be absent on the
@@ -53,7 +53,7 @@ data class Agent(
     val approvalFingerprint: String? = null,
     val interaction: Interaction? = null,
     val questionLayout: Boolean = false,
-    // Target fields (`normalizeAgentTargetFields` in the oracle): rewritten on
+    // Target fields (`normalizeAgentTargetFields` in Lerdr): rewritten on
     // every merge — deltas that don't carry them clear them.
     val serverSessionId: String? = null,
     val terminalId: String? = null,
@@ -76,12 +76,12 @@ data class Agent(
 )
 
 /**
- * Presence-aware partial agent — the Kotlin `Partial<Agent>` the oracle
+ * Presence-aware partial agent — the Kotlin `Partial<Agent>` Lerdr
  * builds by spreading a raw message. `null` everywhere means "the wire
  * message did not carry this key".
  *
  * Converters live on the wire DTOs: snapshot rows ([AgentState.asPatch])
- * treat Go `omitempty` zero values as absent, while delta messages
+ * treat prior relay implementation zero values as absent, while delta messages
  * ([AgentUpdateMessage.asPatch], [BlockedMessage.asPatch]) already model
  * presence with nullable fields.
  */
@@ -124,7 +124,7 @@ data class AgentPatch(
     val stateLabels: Map<String, String>? = null,
 ) {
     /**
-     * The oracle's `{ ...before, ...message }` spread: fields this patch
+     * Lerdr's `{ ...before, ...message }` spread: fields this patch
      * leaves absent fall back to [previous]'s values. Used for `agent_update`
      * frames that report a blocked status without an `attention_kind` key.
      */
@@ -169,7 +169,7 @@ data class AgentPatch(
     )
 }
 
-/** Snapshot row → patch. Go `omitempty` fields decode to zero values, which are mapped back to absent. */
+/** Snapshot row → patch. prior relay implementation fields decode to zero values, which are mapped back to absent. */
 fun AgentState.asPatch(): AgentPatch = AgentPatch(
     paneId = paneId,
     rawPaneId = rawPaneId,
@@ -233,7 +233,7 @@ fun AgentUpdateMessage.asPatch(): AgentPatch = AgentPatch(
 )
 
 /**
- * `blocked` frame → patch. The oracle forces `status: 'blocked'` onto the
+ * `blocked` frame → patch. Lerdr forces `status: 'blocked'` onto the
  * message before normalizing, so the wire's own status field never wins.
  */
 fun BlockedMessage.asPatch(): AgentPatch = AgentPatch(

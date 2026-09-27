@@ -2,7 +2,7 @@
 //!
 //! Every handler answers a `command_result` + `action_receipt` pair through
 //! [`Outcome::frames`]. Method/params match the Herdr socket schema the
-//! oracle's CLI commands map onto.
+//! retired implementation's CLI commands map onto.
 
 use lerdr_core::protocol::Inbound;
 use lerdr_herdr::Client;
@@ -62,7 +62,7 @@ pub(crate) async fn send_text(
 ) -> Vec<lerdr_core::protocol::Outbound> {
     // `expandPromptAttachmentReferences` — `Attachment: <ref>` lines resolve
     // through the upload index before dispatch; unresolvable refs fail with
-    // the oracle's exact message.
+    // the retired implementation's exact message.
     let mut text = message.text.clone();
     if let Err(error) =
         uploads::expand_attachment_references(&ctx, message.target.as_ref(), &mut text).await
@@ -206,7 +206,7 @@ pub(crate) async fn send_input(
         let label = message
             .raw_str("activity_label")
             .unwrap_or("Terminal input sent");
-        // The oracle records this family under the `input` kind.
+        // The retired implementation records this family under the `input` kind.
         record_activity_extract(
             &ctx,
             "input",
@@ -314,7 +314,7 @@ pub(crate) async fn submit_prompt(
 }
 
 /// `handlePrompt`'s effect — shared by the routed `submit_prompt` and the
-/// `agent_start` initial prompt (the oracle calls `handlePrompt` inline for
+/// `agent_start` initial prompt (the retired implementation calls `handlePrompt` inline for
 /// the latter, with the `"-initial"` request-id suffix).
 pub(crate) async fn prompt_inner(
     ctx: &ActionContext,
@@ -418,7 +418,7 @@ pub(crate) async fn agent_stop(
         Ok(_) => {
             // `d.state.BumpGeneration` (dispatch.go:543) — the close ended
             // the pane's session; stale exact targets must stop
-            // validating. Then the oracle drops the remembered profile and
+            // validating. Then the retired implementation drops the remembered profile and
             // publishes the post-close topology (`profiles.Forget` +
             // `MarkTopologyChanged` + `wake`).
             ctx.handle.bump_generation(pane_id.to_owned()).await;

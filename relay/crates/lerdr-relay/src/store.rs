@@ -71,7 +71,7 @@ fn valid_text(value: &str, max_bytes: usize) -> bool {
 
 /// `validateMetadata` — the shared device/invitation metadata check; the
 /// trimmed name and locale come back for storage. Error order is the
-/// oracle's: name, then role, then locale.
+/// retired implementation's: name, then role, then locale.
 fn validate_metadata(
     name: &str,
     role: &str,

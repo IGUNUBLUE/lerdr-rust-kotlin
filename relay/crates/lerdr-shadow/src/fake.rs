@@ -1,10 +1,10 @@
 //! `lerdr-fake-herdr` — a static Herdr socket-API endpoint.
 //!
 //! Speaks the newline-delimited `{id, method, params}` → `{id, result}` /
-//! `{id, error:{code,message}}` protocol both relays consume. The state file
-//! is the oracle fake-herdr's `Scenario` JSON plus a `"socket"` extension
-//! block it ignores, so one file seeds the CLI fake (`HERDR_BIN` for the Go
-//! relay) and this socket fake (`HERDR_SOCKET_PATH` for both relays).
+//! `{id, error:{code,message}}` protocol the relay consumes. The state file
+//! preserves the historical `Scenario` field layout with a local `"socket"`
+//! extension, so one file supplies the socket fake for both self-determinism
+//! runs.
 //!
 //! Covered surface (everything the relays' startup + poller + actions hit):
 //!
@@ -25,8 +25,8 @@
 //! | `control.set`             | `{"type":"ok"}` — sets `content[pane_id]`   |
 //! | `control.set_pane`        | `{"type":"ok"}` — merges `fields` into the  |
 //! |                           | live `panes`/`agents` records (no tab/      |
-//! |                           | workspace rollup — those only move on       |
-//! |                           | `tab.*`/`workspace.*` events in the oracle) |
+//! |                           | workspace rollup — those move only on       |
+//! |                           | `tab.*`/`workspace.*` events)               |
 //! | `control.emit`            | `{"type":"ok","delivered":N}` — broadcasts  |
 //! |                           | `{"event":name,"data":…}` to subscribers    |
 //! | anything else             | `unknown_method` error                      |
@@ -47,18 +47,17 @@
 //!   scenario: the socket fake is shared across both runs of a diff.
 //! - `control.set_pane {pane_id, fields}` — merges `fields` into the live
 //!   `panes`/`agents` records for the pane. Tab/workspace records stay
-//!   untouched: the oracle's event cache only mutates those on
-//!   `tab.*`/`workspace.*` events, so a snapshot-side rollup would diverge
-//!   the two relays. The relays only observe the mutation on the next
+//!   untouched: the fake models topology changes only through
+//!   `tab.*`/`workspace.*` events. The relay observes the mutation on the next
 //!   `session.snapshot`/`agent.list`/`pane.list`, so pair it with a
 //!   `control.emit` of a topology event (`pane_updated`,
 //!   `pane_agent_detected`) to drive lifecycle transitions.
 //! - `control.emit {name, data}` — pushes one NDJSON event frame,
-//!   `{"event":"<name>","data":<data>}` (the exact envelope both relays'
-//!   event clients decode — Go `herdr.Event`, Rust `lerdr_herdr::Event`),
-//!   to every held `events.subscribe` connection. Names are written
-//!   verbatim; subscribers canonicalize snake_case → dotted themselves.
-//!   Emission to zero subscribers is an error — that's a scenario bug.
+//!   `{"event":"<name>","data":<data>}` (the exact envelope both relay runs'
+//!   event clients decode) to every held `events.subscribe` connection. Names
+//!   are written verbatim; subscribers canonicalize snake_case → dotted
+//!   themselves. Emission to zero subscribers is an error — that's a scenario
+//!   bug.
 //!
 //! The broadcast does not filter by each connection's `subscriptions`
 //! list — scenarios emit only names the relays subscribe to.
@@ -78,17 +77,16 @@ use crate::{Result, ShadowError};
 const DEFAULT_VERSION: &str = "0.9.1";
 const DEFAULT_PROTOCOL: u32 = 22;
 
-/// The shared state file — oracle `Scenario` fields plus `socket`.
+/// The shared state file — historical `Scenario` fields plus `socket`.
 #[derive(Debug, Deserialize)]
 pub struct StateFile {
     /// Herdr server version reported by `pong`/`session.snapshot`.
     #[serde(default = "default_version")]
     pub version: String,
-    /// Herdr protocol number — must be > 0 or the Go pong decoder rejects it.
+    /// Herdr protocol number — must be positive for the relay decoder.
     #[serde(default = "default_protocol")]
     pub protocol: u32,
-    /// `Pane`-shaped records (Go CLI tags; superset fields fine — both sides
-    /// ignore what they don't model).
+    /// `Pane`-shaped records; superset fields are ignored when unmodeled.
     #[serde(default)]
     pub panes: Vec<Value>,
     /// `WorkspaceInfo`-shaped records — verbatim into `workspace.list` and
@@ -295,8 +293,8 @@ fn dispatch(state: &StateFile, live: &Live, method: &str, params: &Map<String, V
         "control.set_pane" => control_set_pane(live, params),
         "control.emit" => control_emit(live, params),
         "worktree.list" => worktree_list(state, params),
-        // Capability probes (the Go client interprets these codes as
-        // "method supported, arguments refused" — keep them stable).
+        // Capability probes: these refusals mean the method exists but its
+        // arguments were rejected.
         "workspace.move_block" => Err((
             "workspace_move_block_failed".to_owned(),
             "workspace_ids is required".to_owned(),
@@ -335,11 +333,10 @@ fn control_set(live: &Live, params: &Map<String, Value>) -> Dispatch {
 /// `control.set_pane {pane_id, fields}` — merge `fields` into the live
 /// `panes[]` and `agents[]` records keyed on `pane_id`, so the next
 /// `session.snapshot`/`pane.list`/`agent.list`/`pane.read` serves the
-/// mutation. Tab/workspace records stay untouched: the oracle's event
-/// cache only mutates those on `tab.*`/`workspace.*` events (there is no
-/// status rollup event), so a snapshot-side rollup would diverge the two
-/// relays. Pair with a `control.emit` `pane_updated` /
-/// `pane_agent_detected` to make the change observable as an event.
+/// mutation. Tab/workspace records stay untouched: the fake changes those
+/// only through `tab.*`/`workspace.*` events. Pair with a `control.emit`
+/// `pane_updated` / `pane_agent_detected` to make the change observable as an
+/// event.
 fn control_set_pane(live: &Live, params: &Map<String, Value>) -> Dispatch {
     let pane_id = params.get("pane_id").and_then(Value::as_str).unwrap_or("");
     if pane_id.is_empty() {
@@ -773,9 +770,8 @@ mod tests {
             dispatch(&s, &l, "agent.list", &Map::new()).unwrap()["agents"][0]["agent_status"],
             "blocked"
         );
-        // No tab/workspace rollup — the oracle's event cache only mutates
-        // those records on `tab.*`/`workspace.*` events, so a snapshot-side
-        // rollup would diverge the two relays.
+        // No tab/workspace rollup — the fake changes those records only on
+        // `tab.*`/`workspace.*` events.
         assert!(
             snap["snapshot"]["tabs"][0].get("agent_status").is_none(),
             "tab record stays untouched"

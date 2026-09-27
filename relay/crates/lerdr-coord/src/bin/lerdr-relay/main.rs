@@ -2,7 +2,7 @@
 //! auth store, pairing bootstrap + SIGUSR1 re-arm, graceful shutdown on
 //! SIGINT/SIGTERM.
 //!
-//! `lerdr-relay` with no subcommand is `serve`, matching the oracle's
+//! `lerdr-relay` with no subcommand is `serve`, matching the retired implementation's
 //! `command := "serve"` default. The helper subcommands (`event-hook`,
 //! `startup-hook`, `setup-fragment`, `normalize-origin`, `qr`, `support`,
 //! `version`) are the surface `plugin/scripts/*` invokes.
@@ -364,7 +364,7 @@ fn main() -> ExitCode {
     }
 }
 
-/// Sync subcommands — no tokio runtime, matching the oracle's dispatch.
+/// Sync subcommands — no tokio runtime, matching the retired implementation's dispatch.
 fn run_hook(command: Commands) -> ExitCode {
     let result: Result<(), BoxError> = match command {
         Commands::Version { json } => {
@@ -477,7 +477,7 @@ fn run_hook(command: Commands) -> ExitCode {
             let mut stdout = std::io::stdout().lock();
             let mut stderr = std::io::stderr().lock();
             lerdr_coord::speech_voices_cli(&args, &mut stdout, &mut stderr).map_err(|error| {
-                // `speech.ErrUsage` → exit 2 like the oracle's run().
+                // `speech.ErrUsage` → exit 2 like the retired implementation's run().
                 if error.is_usage() {
                     UsageError(error.to_string()).into()
                 } else {
@@ -514,7 +514,7 @@ fn run_hook(command: Commands) -> ExitCode {
     }
 }
 
-/// `verify-release` — `release.Verify` then the oracle's
+/// `verify-release` — `release.Verify` then the retired implementation's
 /// `verifyReleaseIdentity`: the expected-* flags are candidate checks on
 /// top of the binary's own stamp (which is always authoritative).
 fn verify_release(
@@ -551,7 +551,7 @@ fn verify_release(
     Ok(())
 }
 
-/// Usage-class failure — exit 2, matching the oracle's `flag.ContinueOnError`
+/// Usage-class failure — exit 2, matching the retired implementation's `flag.ContinueOnError`
 /// contract for bad flag combinations (clap already exits 2 on shape errors).
 #[derive(Debug)]
 struct UsageError(String);
@@ -800,7 +800,7 @@ async fn run(args: ServeArgs) -> Result<(), BoxError> {
     // `audit.Open(cfg.CacheDir)` — one process-wide append-only log shared
     // by the session layer (attempt + admin rows) and the router's spawned
     // handlers (result rows). A failed open degrades to the no-op logger
-    // like the oracle's `s.auditLog == nil`.
+    // like the retired implementation's `s.auditLog == nil`.
     let audit = Arc::new(
         audit::AuditLog::open(&cfg.runtime_dir).unwrap_or_else(|error| {
             warn!(%error, "remote write audit unavailable");
@@ -871,7 +871,7 @@ async fn run(args: ServeArgs) -> Result<(), BoxError> {
             }))),
             // `ResetWithBootstrap` — a configured relay key re-arms the
             // bootstrap invitation after `reset_devices` wipes the store, so
-            // the printed setup link keeps pairing (the oracle feeds
+            // the printed setup link keeps pairing (the retired implementation feeds
             // `[]byte(cfg.Token)`; the type requires exactly 32 bytes).
             reset_bootstrap: cfg.token.as_deref().and_then(|token| {
                 token
@@ -904,7 +904,7 @@ async fn run(args: ServeArgs) -> Result<(), BoxError> {
         });
     let _ = relay_cell.set(relay.clone());
     // `d.broadcast` — journal events (`activity` rows, `activity_history`
-    // clears) fan out to every connected client, matching the oracle's
+    // clears) fan out to every connected client, matching the retired implementation's
     // live activity pushes.
     router_factory.spawn_activity_broadcast(
         {
@@ -924,7 +924,7 @@ async fn run(args: ServeArgs) -> Result<(), BoxError> {
         relay.shutdown(),
     );
     // Web Push delivery — VAPID key load-or-generate failures are fatal
-    // at startup (corrupt/mismatched key files), matching the oracle's
+    // at startup (corrupt/mismatched key files), matching the retired implementation's
     // `push.NewManager` error path. Dormant when no subscriptions exist.
     router_factory
         .spawn_push_worker(relay.shutdown())
@@ -943,7 +943,7 @@ async fn run(args: ServeArgs) -> Result<(), BoxError> {
     spawn_support_writer(&cfg, relay.shutdown());
 
     let listener = TcpListener::bind((cfg.host.as_str(), cfg.port)).await?;
-    // The oracle logs `instance` with the listen line.
+    // The retired implementation logs `instance` with the listen line.
     info!(addr = %listener.local_addr()?, instance = %cfg.instance_id, "lerdr-relay listening");
     relay.serve(listener).await?;
     info!("lerdr-relay stopped");
@@ -1053,7 +1053,7 @@ fn write_support_state(runtime_dir: &std::path::Path) {
         "recent_errors": [],
     });
     // `release_directory,omitempty` — omitted when the executable path is
-    // unknowable, matching the oracle's support snapshot.
+    // unknowable, matching the retired implementation's support snapshot.
     if !release_directory.is_empty() {
         state["release_directory"] = serde_json::Value::String(release_directory);
     }
@@ -1096,8 +1096,8 @@ fn chrono_free_timestamp() -> String {
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
 }
 
-/// `RUST_LOG` wins; `LERDR_RELAY_LOG_LEVEL` maps onto a global level for
-/// oracle parity; the default keeps the relay at info.
+/// `RUST_LOG` wins; `LERDR_RELAY_LOG_LEVEL` preserves a legacy environment
+/// spelling; the default keeps the relay at info.
 fn init_tracing(log_level: Option<&str>) {
     let filter = std::env::var("RUST_LOG")
         .ok()

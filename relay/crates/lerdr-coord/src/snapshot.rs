@@ -1,6 +1,6 @@
-//! Post-handshake snapshot composition (`sendConnectionSnapshot` parity).
+//! Post-handshake snapshot composition.
 //!
-//! Order matters — the oracle sends `push_config` first, then the
+//! Order matters — the relay sends `push_config` first, then the
 //! inventory/state frames, so clients see capabilities before content.
 
 use std::collections::BTreeMap;
@@ -17,14 +17,14 @@ use crate::topology::Topology;
 /// The frames pushed to a client right after the E2EE handshake commits.
 ///
 /// Baseline (Phase-1): `push_config` + `workspaces` + `agents` +
-/// `herdr_status` + `inventory_status`. The oracle additionally sends
+/// `herdr_status` + `inventory_status`. The retired implementation additionally sends
 /// `activity_history`, `push_policy`, `speech_voices`, `update_status` —
 /// those subsystems land in later slices; their absence is honest state,
 /// not an error (each frame is independently optional on the client).
 /// `inventory_status` is NOT optional in practice: Kotlin gates
 /// `agents`/`workspaces` on `acceptsInventorySnapshots`, which needs an
 /// explicit `ready` (the `push_config.inventory` fallback also covers it,
-/// but the standalone frame is the oracle's contract).
+/// but the standalone frame is the retired implementation's contract).
 pub fn compose_snapshot(topology: &Topology) -> Vec<Outbound> {
     let status = herdr_status(topology);
     vec![
@@ -37,7 +37,7 @@ pub fn compose_snapshot(topology: &Topology) -> Vec<Outbound> {
             herdr_status: status.clone(),
             // `speech_languages` rides the handshake only — voice
             // changes mid-session flip the caps via `caps_update`, the
-            // field refreshes on the next connect (same as the oracle).
+            // field refreshes on the next connect (same as the retired implementation).
             speech_languages: (!topology.local_speech.languages.is_empty())
                 .then(|| topology.local_speech.languages.clone()),
             // Resolved launch profiles for the Start Agent picker —
@@ -98,7 +98,7 @@ pub fn effective_capabilities(topology: &Topology) -> Vec<String> {
         ("pane_search", family_refuted(f::PANE_SEARCH_METHODS)),
         ("pane_links", family_refuted(f::PANE_LINK_METHODS)),
         ("layout", family_refuted(f::LAYOUT_METHODS)),
-        // The oracle's conditional tail — `pane_realtime_delta` rides on
+        // The retired implementation's conditional tail — `pane_realtime_delta` rides on
         // `pane.read` support (server.go:1409); the client gates its
         // `watch_pane` arming on this advertisement.
         ("pane_realtime_delta", family_refuted(&[f::PANE_READ])),
@@ -134,7 +134,7 @@ pub fn effective_capabilities(topology: &Topology) -> Vec<String> {
 /// server.go:2657-2667) — all six keys emit unconditionally; `stale` is
 /// derived (`state != "ready" && lastSuccessAt != 0`), never stored. The
 /// `stale` *transport* flag is a different axis — a reconnecting event
-/// stream does not make the committed inventory unready in the oracle
+/// stream does not make the committed inventory unready in the retired implementation
 /// (polls keep running), so it feeds `herdr_status.health_check`, not
 /// this frame. Attempt/success timestamps marshal as Unix *seconds*
 /// (`lastAttemptAt.Unix()`), not the millis the ledger keeps.
@@ -158,7 +158,7 @@ pub fn inventory_status(topology: &Topology) -> InventoryStatusMessage {
 }
 
 /// `herdr_status` payload from the projection — the actor-maintained
-/// capability evidence (`Topology::herdr_status`, the oracle's
+/// capability evidence (`Topology::herdr_status`, the retired implementation's
 /// `ServerStatus` → `herdrStatusPayload`), with `server_version`/
 /// `protocol` overridden by the snapshot envelope: `accept()` refreshes
 /// those on reconnect before the next capability report lands, and they
@@ -179,10 +179,10 @@ pub(crate) fn herdr_status(topology: &Topology) -> HerdrStatus {
 
 /// The `stateViewMu` triple (server.go:3420-3424) plus the `herdr_status`
 /// payload — what the last broadcast carried, diffed against on the next
-/// publish. Relay-global like the oracle's: one publish decision per
+/// publish. Relay-global like the retired implementation's: one publish decision per
 /// commit fans the same frame set out to every client.
 ///
-/// Two oracle behaviors fold into the comparison:
+/// Two retired implementation behaviors fold into the comparison:
 ///
 /// - `agentSnapshotsEqual` zeroes `StateRevision` before marshaling, so
 ///   `pane_revision` churn alone never republishes — mirrored by zeroing
@@ -199,7 +199,7 @@ pub(crate) struct PublishedView {
     /// `inventoryStatusChanged`'s key set — `state`, `error_code`,
     /// `message`, `stale` — timestamps are metadata, not a wire trigger.
     inventory: (Option<String>, Option<String>, Option<String>, Option<bool>),
-    /// `herdr_status` payload bytes — the oracle emits that frame only
+    /// `herdr_status` payload bytes — the retired implementation emits that frame only
     /// through the capability-change callback; payload-diff dedup is the
     /// equivalent gate here.
     herdr_status: Vec<u8>,
@@ -211,10 +211,10 @@ pub(crate) struct PublishedView {
 /// `publishCurrentInventory` (server.go:3435-3514): diff the committed
 /// projection against the published view, emit only what changed, then
 /// update the view — `[inventory_status?] + [agents?] + [workspaces?]`
-/// in the oracle's batch order, with `herdr_status` appended when its
+/// in the retired implementation's batch order, with `herdr_status` appended when its
 /// payload moved (the capability callback is a separate broadcast there).
 /// `readyRecovery` — a `ready` state following a non-`ready` publish —
-/// forces the `agents`+`workspaces` legs like the oracle's.
+/// forces the `agents`+`workspaces` legs like the retired implementation's.
 pub(crate) fn broadcast_diff(topology: &Topology, view: &mut PublishedView) -> Vec<Outbound> {
     let status = inventory_status(topology);
     let inventory_key = (
@@ -278,7 +278,7 @@ pub(crate) fn broadcast_diff(topology: &Topology, view: &mut PublishedView) -> V
         }));
     }
 
-    // The oracle's `commit` closure: the inventory view always refreshes;
+    // The retired implementation's `commit` closure: the inventory view always refreshes;
     // the row views advance with their (possibly forced) publishes.
     view.inventory = inventory_key;
     if send_agents {
@@ -294,10 +294,9 @@ pub(crate) fn broadcast_diff(topology: &Topology, view: &mut PublishedView) -> V
     frames
 }
 
-/// Broadcast frames for one topology revision — the dedup'd batch the
-/// actor stamped on this view (`publishCurrentInventory` parity). All
-/// entries are replaceable, so a burst of revisions coalesces in the
-/// client's send buffer.
+/// Broadcast frames for one topology revision — the deduped batch the actor
+/// stamped on this view. All entries are replaceable, so a burst of revisions
+/// coalesces in the client's send buffer.
 pub fn topology_broadcast(topology: &Arc<Topology>) -> Vec<Outbound> {
     topology.broadcast_frames.clone()
 }
@@ -437,7 +436,7 @@ mod tests {
         let mut view = PublishedView::default();
         topology.accept(snapshot_with(AgentStatus::Idle, true));
         let _ = broadcast_diff(&topology, &mut view);
-        // Event-stream reconnect: inventory stays `ready` (the oracle's
+        // Event-stream reconnect: inventory stays `ready` (the retired implementation's
         // transport drop does not touch `inventoryReady`). `health_check`
         // is the server-advertised capability field — transport staleness
         // is not evidence, so the payload does not move and nothing
@@ -467,7 +466,7 @@ mod tests {
         assert!(!topology.mark_inventory_failure());
         assert!(broadcast_diff(&topology, &mut view).is_empty());
 
-        // The next successful commit is a `ready` recovery — the oracle
+        // The next successful commit is a `ready` recovery — the retired implementation
         // forces the agents+workspaces legs alongside the status flip.
         topology.accept(snapshot_with(AgentStatus::Idle, true));
         assert_eq!(
@@ -547,7 +546,7 @@ mod tests {
         assert_eq!(capabilities.len(), CAPABILITIES.len() - 1);
     }
 
-    /// The oracle's conditional tail — `pane_realtime_delta` advertises
+    /// The retired implementation's conditional tail — `pane_realtime_delta` advertises
     /// while `pane.read` is not refuted and drops when the probe reports
     /// `unsupported` (server.go:1409 gates on `FeaturePaneRead`).
     #[test]

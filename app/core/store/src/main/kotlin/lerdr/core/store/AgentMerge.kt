@@ -3,7 +3,7 @@ package lerdr.core.store
 import lerdr.core.model.BlockedMessage
 
 /**
- * Port of the oracle merge semantics — `frontend/src/lib/agents.ts` at
+ * Port of Lerdr merge semantics — the protocol contract at
  * v0.26.3. Every function here mirrors a TS original; where the TS code
  * contains dead branches (the `!hasAttentionKind` retain paths in
  * `mergeAgentDetails` — `normalizeAgentAttention` always stamps an
@@ -393,7 +393,7 @@ fun compareAgentUpdatedAt(a: Agent, b: Agent): Int {
     return if (seqOrder > 0) 1 else if (seqOrder < 0) -1 else 0
 }
 
-/** `sortedAgents` — the home-view ordering the oracle applies at render. */
+/** `sortedAgents` — the home-view ordering Lerdr applies at render. */
 fun sortedAgents(agents: List<Agent>): List<Agent> = agents.sortedWith { a, b ->
     compareAgentUpdatedAt(a, b)
         .takeIf { it != 0 }

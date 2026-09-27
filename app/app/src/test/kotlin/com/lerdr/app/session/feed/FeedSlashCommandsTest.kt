@@ -5,7 +5,7 @@ import kotlinx.serialization.json.Json
 import org.junit.Test
 
 /**
- * The oracle's `loadSlashCommands` payload mapping + `TerminalView.svelte`
+ * Lerdr's `loadSlashCommands` payload mapping + the corresponding screen
  * filter/keyboard semantics, exercised as pure functions.
  */
 class FeedSlashCommandsTest {
@@ -38,7 +38,7 @@ class FeedSlashCommandsTest {
             ),
         )
         val run = catalog.commands.first { it.command == "/run" }
-        // Empty description falls back to the command itself (oracle `||`).
+        // Empty description falls back to the command itself (Lerdr `||`).
         assertThat(run.description).isEqualTo("/run")
         assertThat(run.argumentHint).isEqualTo("<cmd>")
         assertThat(run.source).isEqualTo("project")

@@ -1,9 +1,9 @@
 //! Action handlers — the `coordinator`/`server.go` dispatch-table port.
 //!
-//! Every routed action produces an [`Outcome`]: the oracle's
+//! Every routed action produces an [`Outcome`]: the retired implementation's
 //! `command_result` body (`ok`/`phase`/`error`/`pane_id`/`data` — the phase
 //! vocabulary `completed`/`failed`/`not_started`/`dispatched_unknown` is the
-//! oracle's, not the receipt taxonomy's) plus the terminal `action_receipt`
+//! retired implementation's, not the receipt taxonomy's) plus the terminal `action_receipt`
 //! the relay protocol layer adds on top (doc 08 rule 4). `Outcome::frames`
 //! emits the result message first and the receipt last.
 //!
@@ -99,7 +99,7 @@ pub(crate) struct ActionContext {
     /// bookkeeping only (leases, speech cancellation, broadcast
     /// exclusion); never a device identity.
     pub client_id: String,
-    /// `client.Identity().DeviceID` — the authenticated device the oracle
+    /// `client.Identity().DeviceID` — the authenticated device the retired implementation
     /// keys push policy/subscriptions/viewed-pane by. Untrusted wire
     /// `client_id` claims never substitute for it.
     pub device_id: String,
@@ -209,7 +209,7 @@ pub(crate) fn audit_attribution(topology: &Topology, pane_id: &str) -> audit::At
 }
 
 /// `recordActivity` — commit one journal row with the pane attribution the
-/// oracle reads out of `d.state.Agent(paneID)`: the detected agent name,
+/// retired implementation reads out of `d.state.Agent(paneID)`: the detected agent name,
 /// `Project` (`filepath.Base(cwd)` — the same derivation the topology
 /// projection uses), the relay's short hostname, and the agent session id.
 pub(crate) fn record_activity(
@@ -310,7 +310,7 @@ pub(crate) fn acknowledge_pane_state(
     let topology = handle.topology.borrow();
     let Some((before, after, state_rev)) = topology.acknowledge(pane_id) else {
         // `d.fail` — `recordActivity(action, "failed", …)`; a gone pane has
-        // no attribution row to attach (the oracle's `d.state.Agent` is nil).
+        // no attribution row to attach (the retired implementation's `d.state.Agent` is nil).
         activities.record(activity::NewEntry::action(
             "acknowledge_pane",
             "failed",
@@ -349,7 +349,7 @@ pub(crate) fn acknowledge_pane_state(
     true
 }
 
-/// The oracle's `CommandResult` plus the terminal receipt it implies.
+/// The retired implementation's `CommandResult` plus the terminal receipt it implies.
 ///
 /// `phase` is the `command_result` phase string the Go server emits
 /// (`completed`, `failed`, `not_started`, `dispatched_unknown`,
@@ -380,7 +380,7 @@ impl Outcome {
     }
 
     /// `completed_with_warning` — the operation applied; a follow-up step
-    /// did not (the oracle uses it for `agent_clear`'s stranded pane and
+    /// did not (the retired implementation uses it for `agent_clear`'s stranded pane and
     /// `agent_start`'s unconfirmed initial prompt).
     pub(crate) fn completed_with_warning(pane_id: &str, data: serde_json::Value) -> Self {
         Self {
@@ -462,7 +462,7 @@ impl Outcome {
 }
 
 /// `commandResultMessage` — `error` and `pane_id` are always present (the
-/// oracle serializes both unconditionally, `""` when empty); `data` only
+/// retired implementation serializes both unconditionally, `""` when empty); `data` only
 /// when the command produced a payload.
 fn command_result_frame(request_id: &str, action: &str, outcome: &Outcome) -> Outbound {
     Outbound::CommandResult(CommandResultMessage {
@@ -703,7 +703,7 @@ pub(crate) fn refusal_args(err: &HerdrError) -> BTreeMap<String, serde_json::Val
 }
 
 /// `herdr.CreateResult` — flat-or-nested create response extraction with the
-/// oracle's fallback order (`CreateResult.UnmarshalJSON`):
+/// retired implementation's fallback order (`CreateResult.UnmarshalJSON`):
 ///
 /// - `pane_id`: `pane_id` → `root_pane.pane_id` → `agent.pane_id`
 /// - `tab_id`: `tab_id` → `root_pane.tab_id` → `tab.tab_id`

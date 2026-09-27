@@ -17,15 +17,15 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 
 /**
- * The ordered list of relays this device knows — the oracle's
- * `lerdr_relays` localStorage array (`config.ts:163-192`) on DataStore
+ * The ordered list of relays this device knows — Lerdr's
+ * `lerdr_relays` localStorage array on DataStore
  * preferences.
  *
  * NON-SECRET fields only: a [RelayEndpoint] carries no relay key or
  * credential — those live in [CredentialStore] behind Keystore wrapping.
  * List order is the display/connection order the user arranges.
  *
- * A stored entry that fails to decode or validate is dropped (the oracle's
+ * A stored entry that fails to decode or validate is dropped (Lerdr's
  * `loadRelayConfigs` filter+normalize); one bad row never bricks the list.
  */
 class RelayRegistry(
@@ -109,7 +109,7 @@ class RelayRegistry(
         json.encodeToString(ListSerializer(RelayEndpoint.serializer()), relays)
 
     companion object {
-        /** Same storage key name as the oracle's localStorage entry. */
+        /** Same storage key name as Lerdr's localStorage entry. */
         val RELAYS_KEY = stringPreferencesKey("lerdr_relays")
     }
 }

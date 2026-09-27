@@ -7,7 +7,7 @@ import lerdr.core.model.Other
 import org.junit.Test
 
 /**
- * Pure-function ports of the oracle's `frontend/src/lib/questions.ts` —
+ * Pure-function ports of Lerdr's the protocol contract —
  * draft creation, submit gating, option/other updates, restore rules.
  */
 class FeedQuestionDraftTest {

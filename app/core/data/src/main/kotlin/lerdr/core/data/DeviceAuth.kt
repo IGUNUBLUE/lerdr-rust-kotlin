@@ -6,7 +6,7 @@ import kotlinx.serialization.Serializable
 import lerdr.core.transport.DeviceAuthentication
 
 /**
- * `DeviceRole` — the two stored roles (`store.go:33-36`). `bootstrap`
+ * `DeviceRole` — the two stored roles (relay contract). `bootstrap`
  * exists on the wire but is never a stored role.
  */
 enum class DeviceRole(val wireName: String) {
@@ -19,14 +19,13 @@ enum class DeviceRole(val wireName: String) {
 }
 
 /**
- * The one authentication record held per relay — the Kotlin shape of the
- * oracle's `RelayInvitation | RelayDeviceCredential` union
- * (`frontend/src/lib/device-auth.ts:8-27`). Secrets are the 32-byte pairing
- * secret encoded as 43-char base64url-no-pad — the same encoding the Go
- * store and the wire handshake use (`pairing-store.md §A.1`).
+ * The one authentication record held per relay — Lerdr's
+ * `RelayInvitation | RelayDeviceCredential` union. Secrets are the 32-byte
+ * pairing secret encoded as 43-char base64url-no-pad, the encoding used by
+ * the wire handshake (`pairing-store.md §A.1`).
  *
  * Every field is validated at construction; a malformed record can never
- * exist inside the store (oracle `validIdentifier`/`validSecret` parity).
+ * exist inside the store (Lerdr `validIdentifier`/`validSecret` parity).
  */
 @Serializable
 sealed interface RelayDeviceAuth {
@@ -50,7 +49,7 @@ sealed interface RelayDeviceAuth {
  * `RelayInvitation` — a pairing offer this device holds until redemption.
  *
  * [expiresAtEpochMs] is null only for the bootstrap invitation: the relay
- * re-arms it server-side (`rearmBootstrap`, `resolver.go:34-49`), so the
+ * re-arms it server-side (`rearmBootstrap`, relay contract), so the
  * relay key never expires client-side.
  */
 @Serializable
@@ -89,7 +88,7 @@ data class RelayInvitation(
 
 /**
  * `RelayDeviceCredential` — the enrolled device identity a relay issued on
- * invitation redemption (`e2ee_server_finish`, `e2ee.go:330-337`).
+ * invitation redemption (`e2ee_server_finish`, relay contract).
  */
 @Serializable
 @SerialName("credential")
@@ -122,7 +121,7 @@ data class RelayDeviceCredential(
 
 /**
  * `DeviceEnrollmentResult` — the identity fields of an authenticated
- * `e2ee_server_finish` (`e2ee.go:330-337`). [credentialSecret] is present
+ * `e2ee_server_finish` (relay contract). [credentialSecret] is present
  * only on invitation redemption.
  */
 data class CredentialEnrollment(
@@ -157,7 +156,7 @@ fun CredentialEnrollment.Companion.fromFinish(
     locale = finish.locale,
 )
 
-// ── validation (device-auth.ts:307-350 parity) ────────────────────────
+// ── validation ────────────────────────
 
 private val CONTROL_CHARS = Regex("[\\u0000-\\u001f\\u007f]")
 private val SECRET_PATTERN = Regex("^[A-Za-z0-9_-]{43}$")
@@ -199,7 +198,7 @@ internal fun requireTimestamp(value: Long, label: String): Long {
 
 internal const val SECRET_BYTES = 32
 
-/** `base64.RawURLEncoding` — URL-safe, no padding (`store.go:233`). */
+/** `base64.RawURLEncoding` — URL-safe, no padding (relay contract). */
 internal object Base64Url {
     private val ALPHABET = Regex("^[A-Za-z0-9_-]*$")
 

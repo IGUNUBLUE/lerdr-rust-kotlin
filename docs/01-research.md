@@ -121,11 +121,10 @@ keep a `material3` stable fallback theme file.
 Pane content arrives as **text lines** (post-ANSI from `read_pane`), not a
 PTY byte stream. So we do NOT need a VT100 emulator — we need:
 
-1. An **ANSI→AnnotatedString parser** (SGR colors/attrs; strip the rest) —
-   port of `frontend/src/lib/terminal.ts` parsing, with the existing Go/TS
-   test vectors as golden fixtures.
-2. A **line-diff applier** for `pane_delta` ops (copy/insert/delete) — a
-   direct port of `applyPaneDelta` semantics.
+1. An **ANSI→AnnotatedString parser** (SGR colors/attrs; strip the rest)
+   validated by the committed ANSI fixtures.
+2. A **line-diff applier** for `pane_delta` segments implementing the
+   normative semantics in `docs/specs/pane-delta.md`.
 3. A **virtualized row renderer**: `LazyColumn` keyed by row index +
    generation, monospace font (bundle Geist Mono / JetBrains Mono),
    hardware-accelerated — trivially 60 fps, no WebView tax.
@@ -145,8 +144,7 @@ consumes pane frames/deltas. Both coexist in the agent screen.
 > Termius's input + GitHub's inbox + PagerDuty's urgency + M3E polish —
 > over a wire protocol that never leaves your machines.**
 
-Lerdr already beats every one of them on plumbing (multi-agent coverage,
-E2EE, push, gateway+tailscale transports, structured questions). The new
-app wins on the two axes nobody combined: **semantic clarity** (what the
-agent is doing, needs, finished) and **full terminal parity** when you want
-the raw machine.
+Lerdr combines multi-agent coverage, E2EE, push, structured questions, and
+the Tailscale transport. The app's distinction is **semantic clarity** (what
+the agent is doing, needs, finished) alongside **full terminal fidelity** when
+the user needs the raw machine.

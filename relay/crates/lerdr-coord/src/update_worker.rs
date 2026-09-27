@@ -4,7 +4,7 @@
 //! launches `lerdr-relay update-worker JOB.json` as a transient unit
 //! (`systemd-run --user` / `launchctl submit`), which lands here. The
 //! worker is deliberately synchronous: no tokio runtime, matching the
-//! oracle's `update.Run`.
+//! retired implementation's `update.Run`.
 //!
 //! Flow — `Worker.Run`: read + validate the job, flock
 //! `<release_root>/update.lock`, then `preparing` (download, checksum,
@@ -12,12 +12,12 @@
 //! discarded), `installing` (`herdr plugin install` — Herdr performs the
 //! actual swap + restart), `restarting` (poll `/healthz` for the new
 //! binary's identity), then `succeeded`/`failed` in `update-state.json`.
-//! There is no in-worker rollback: the oracle has none — the `failed`
+//! There is no in-worker rollback: the retired implementation has none — the `failed`
 //! state is terminal and the job file stays for the retry path.
 //!
-//! Divergences from the oracle:
+//! Divergences from the retired implementation:
 //! - Archive asset name is `lerdr-relay_<ver>_<target>.tar.gz` only; the
-//!   oracle's `lerdr_`/`herdr-mobile-relay_` names hold the Go binary
+//!   retired implementation's `lerdr_`/`herdr-mobile-relay_` names hold the Go binary
 //!   and are never installable here.
 //! - Archive extraction uses the `tar` CLI (the speech runtime's
 //!   convention); entry-count/byte caps and member-name checks are
@@ -107,13 +107,13 @@ pub fn run(job_path: &Path) -> Result<(), WorkerError> {
     UpdateWorker::default().run(job_path)
 }
 
-/// Injectable seams — `Worker.Prepare`/`Install`/`Verify` in the oracle.
+/// Injectable seams — `Worker.Prepare`/`Install`/`Verify` in the retired implementation.
 type PrepareFn = Box<dyn Fn(&UpdateJob, Instant) -> Result<StagedRelease, String> + Send + Sync>;
 type InstallFn = Box<dyn Fn(&UpdateJob, Instant) -> Result<(), String> + Send + Sync>;
 type VerifyFn = Box<dyn Fn(&str, &Manifest, Instant) -> Result<(), String> + Send + Sync>;
 
 /// `update.Worker` — `Prepare`/`Install`/`Verify` are injectable seams,
-/// `worker_timeout`/`health_*` shrink the oracle's fixed durations in
+/// `worker_timeout`/`health_*` shrink the retired implementation's fixed durations in
 /// tests.
 #[derive(Default)]
 pub(crate) struct UpdateWorker {
@@ -126,7 +126,7 @@ pub(crate) struct UpdateWorker {
 }
 
 /// `stagedRelease` — the verified staged tree + its manifest. `Drop` is
-/// the oracle's `defer os.RemoveAll(staged.Root)`.
+/// the retired implementation's `defer os.RemoveAll(staged.Root)`.
 pub(crate) struct StagedRelease {
     pub(crate) root: PathBuf,
     pub(crate) manifest: Manifest,
@@ -140,7 +140,7 @@ impl Drop for StagedRelease {
 
 impl UpdateWorker {
     /// `Worker.Run` — the job lifecycle with `fail`/`failStartup` state
-    /// writes at exactly the oracle's boundaries.
+    /// writes at exactly the retired implementation's boundaries.
     pub(crate) fn run(&self, job_path: &Path) -> Result<(), WorkerError> {
         let deadline = Instant::now() + self.worker_timeout.unwrap_or(WORKER_TIMEOUT);
         let job = load_job(job_path)?;
@@ -211,7 +211,7 @@ impl UpdateWorker {
 
         state.state = "restarting".to_owned();
         if let Err(err) = write_state(Path::new(&job.state_path), &state) {
-            // The oracle returns this one unwrapped.
+            // The retired implementation returns this one unwrapped.
             return Err(failed(err.to_string()));
         }
         let verify = self.verify.as_ref().map(|f| f.as_ref());
@@ -326,7 +326,7 @@ fn validate_job(job: &UpdateJob) -> Result<(), String> {
     Ok(())
 }
 
-/// `isLoopback(health.Hostname())` — the oracle's literal allowlist:
+/// `isLoopback(health.Hostname())` — the retired implementation's literal allowlist:
 /// `localhost`, `127.0.0.1`, `::1`. `Url::host()` strips the IPv6
 /// brackets `Hostname()` also drops.
 fn is_loopback_host(health: &url::Url) -> bool {
@@ -351,7 +351,7 @@ fn acquire_lock(path: &Path) -> Result<std::fs::File, WorkerError> {
         .mode(0o600)
         .open(path)
         .map_err(|e| failed(e.to_string()))?;
-    // flock(2) — LOCK_EX|LOCK_NB; the oracle maps every failure to
+    // flock(2) — LOCK_EX|LOCK_NB; the retired implementation maps every failure to
     // ErrConcurrent, errno-insensitive.
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         return Err(WorkerError::Concurrent);
@@ -477,7 +477,7 @@ fn checksum_for_archive(data: &[u8], archive_name: &str) -> Result<String, Strin
 }
 
 /// `downloadBytes` — GET to memory with the size cap; exceeding it is the
-/// oracle's `response exceeds size limit`.
+/// retired implementation's `response exceeds size limit`.
 fn download_bytes(endpoint: &str, maximum: usize, deadline: Instant) -> Result<Vec<u8>, String> {
     let (code, body) = curl_get(
         endpoint,
@@ -632,7 +632,7 @@ fn unique_suffix() -> String {
 }
 
 /// `sha256.New()` over the file — always succeeds once written (a failed
-/// read yields "", which fails the checksum compare like the oracle's).
+/// read yields "", which fails the checksum compare like the retired implementation's).
 fn sha256_file(path: &Path) -> String {
     use sha2::Digest as _;
     let Ok(mut file) = std::fs::File::open(path) else {
@@ -681,7 +681,7 @@ fn install_plugin(job: &UpdateJob, deadline: Instant) -> Result<(), String> {
 /// `runCommandContext` — capture both pipes; past `deadline` the process
 /// GROUP is TERM'd then KILL'd (`terminateProcessGroup`) and the error is
 /// `context deadline exceeded`. Returns `(combined output, error)` —
-/// output accompanies failure like the oracle's, except when the wait
+/// output accompanies failure like the retired implementation's, except when the wait
 /// never completed (Go returns nil there too).
 fn run_command(command: &mut Command, deadline: Instant) -> (Vec<u8>, Option<String>) {
     if Instant::now() >= deadline {
@@ -693,7 +693,7 @@ fn run_command(command: &mut Command, deadline: Instant) -> (Vec<u8>, Option<Str
         Ok(child) => child,
         Err(err) => return (Vec::new(), Some(err.to_string())),
     };
-    // Continuous drains — the oracle wires buffers via io.Copy goroutines;
+    // Continuous drains — the retired implementation wires buffers via io.Copy goroutines;
     // pipe-and-read-after-exit would deadlock a chatty child. Joins are
     // bounded by `command.WaitDelay` (processWaitDelay).
     let stdout = drain(child.stdout.take());
@@ -771,7 +771,7 @@ fn exit_status_text(status: std::process::ExitStatus) -> String {
 
 /// `terminateProcessGroup` — TERM the group, allow the grace window for
 /// it to drain, then KILL; bound `Wait` and the group's final death by
-/// the oracle's delays. Returns `waitCompleted` — whether the child was
+/// the retired implementation's delays. Returns `waitCompleted` — whether the child was
 /// reaped (its output is only meaningful then).
 fn terminate_process_group(child: &mut Child) -> bool {
     let pgid = child.id() as i32;
@@ -839,7 +839,7 @@ fn drain(pipe: Option<impl Read + Send + 'static>) -> thread::JoinHandle<Vec<u8>
 // ── release archive extraction ──────────────────────────────────────────
 
 /// `extractReleaseArchive` — `tar -xzf` after a member-name sweep, with
-/// the oracle's entry cap and post-extract byte cap. The tarball is
+/// the retired implementation's entry cap and post-extract byte cap. The tarball is
 /// SHA-256-pinned by this point, so the caps are belt-and-braces.
 fn extract_release_archive(archive: &Path, destination: &Path) -> Result<(), String> {
     let listing = Command::new("tar")
@@ -874,9 +874,8 @@ fn extract_release_archive(archive: &Path, destination: &Path) -> Result<(), Str
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
     }
-    // Oracle's per-entry caps applied post-extract (the staging dir is
-    // discarded on any failure): cumulative size bound, and the
-    // 0644/0755 normalization `extractRegularFile`/`MkdirAll` apply.
+    // Per-entry caps apply after extraction (the staging dir is discarded on
+    // any failure): cumulative size bound and 0644/0755 normalization.
     let mut extracted: u64 = 0;
     normalize_tree(destination, &mut extracted)?;
     if extracted > MAX_EXTRACTED_BYTES {
@@ -938,7 +937,7 @@ fn normalize_tree(dir: &Path, extracted: &mut u64) -> Result<(), String> {
             };
             let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode));
         } else {
-            // Symlinks/specials: the oracle's extractor rejects them
+            // Symlinks/specials: the retired implementation's extractor rejects them
             // outright — release::verify would too.
             return Err(format!(
                 "release archive contains unsupported entry {:?}",
@@ -1028,7 +1027,7 @@ mod tests {
     use super::*;
     use crate::actions::misc::write_json_atomic;
 
-    /// `currentTestRevision`/`nextTestRevision` — the oracle's fixtures.
+    /// `currentTestRevision`/`nextTestRevision` — the retired implementation's fixtures.
     const CURRENT_REVISION: &str = "0123456789abcdef0123456789abcdef01234567";
     const NEXT_REVISION: &str = "89abcdef0123456789abcdef0123456789abcdef";
 
@@ -1167,7 +1166,7 @@ mod tests {
         assert!(job_path.exists(), "failed job was removed");
     }
 
-    /// The verify-failure path — the oracle's `fail(state)` once Herdr has
+    /// The verify-failure path — the retired implementation's `fail(state)` once Herdr has
     /// run: `failed` state, the error persisted compacted, job retained.
     /// (Rollback itself belongs to Herdr's install step, which owns the
     /// swap — the worker never sees a half-activated tree to undo.)

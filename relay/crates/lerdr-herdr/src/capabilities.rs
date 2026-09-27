@@ -1,5 +1,4 @@
-//! Capability ledger — the port of the oracle's
-//! `internal/herdr/capabilities.go` `capabilityManager`.
+//! Capability ledger for Herdr socket features.
 //!
 //! The ledger answers "can the phone drive X on this Herdr build" as
 //! per-feature evidence (`supported`/`unsupported`/`unknown` + `reason` +
@@ -10,17 +9,16 @@
 //!
 //! 1. `herdr --version` — installed-binary evidence (best-effort, 1s).
 //! 2. `ping` — `ordinary_json` plus server identity/capabilities. A failed
-//!    ping ends the refresh early: every feature stays
-//!    `unknown`/`not_checked` and `ordinary_json` carries the transport
-//!    reason — the oracle's `refresh()` early return.
+//!    ping ends the refresh early: every feature stays `unknown`/`not_checked`
+//!    and `ordinary_json` carries the transport reason.
 //! 3. Schema path — when `herdr api schema --json` yields a
 //!    [`SchemaRegistry`] whose protocol/version match the answering server,
 //!    every tracked method is adjudicated `schema_advertised` /
 //!    `schema_absent` and no probe sockets are burned.
-//! 4. Probe path — schema absent or untrusted: the oracle's three
-//!    optimistic probes (`workspace.move_block`, `tab.move`, `pane.read`)
-//!    with validation-refusal semantics, plus the `workspace.reordered`
-//!    subscription outcome recorded by `subscribe_topology`.
+//! 4. Probe path — schema absent or untrusted: probe
+//!    `workspace.move_block`, `tab.move`, and `pane.read` with
+//!    validation-refusal semantics, then record the `workspace.reordered`
+//!    subscription outcome.
 //! 5. Observed evidence — call-site notes (`operation_succeeded`,
 //!    `method_not_supported`, `subscription_*`) merge over schema/probe
 //!    verdicts while the note's server identity still matches.
@@ -43,7 +41,7 @@ use crate::schema::SchemaRegistry;
 use crate::types::Pong;
 use crate::Client;
 
-/// Feature keys — the oracle's seven, plus method-name keys for the rest of
+/// Feature keys — the retired implementation's seven, plus method-name keys for the rest of
 /// the relay's socket surface when schema evidence exists.
 pub mod features {
     /// Socket speaks ordinary JSON at all — ping reached and answered.
@@ -119,7 +117,7 @@ pub mod features {
 }
 
 /// Refusal codes that mean "the server does not implement this method" —
-/// `noteSocketFeature`'s switch in the oracle.
+/// `noteSocketFeature`'s switch in the retired implementation.
 pub(crate) const UNKNOWN_METHOD_CODES: &[&str] =
     &["unknown_method", "method_not_found", "unsupported_method"];
 
@@ -160,7 +158,7 @@ const LIVE_FEATURES: &[&str] = &[
     features::LAYOUT_APPLY,
 ];
 
-/// Methods beyond the oracle's three probes that get a schema verdict —
+/// Methods beyond the retired implementation's three probes that get a schema verdict —
 /// the relay's whole socket surface, so the phone can hide UI the installed
 /// Herdr cannot serve. Kept in sync with `lerdr-coord`'s dispatch surface
 /// plus `lerdr-herdr`'s typed wrappers.
@@ -362,7 +360,7 @@ struct FeatureNote {
     reason: String,
     /// Server identity the observation was made against (`""` before the
     /// first successful ping — such notes are adopted into the first
-    /// identified server, matching the oracle's carry-over rule).
+    /// identified server, matching the retired implementation's carry-over rule).
     identity: String,
 }
 
@@ -480,7 +478,7 @@ impl CapabilityLedger {
     /// and the server identity clears. Notes keep their recorded identity:
     /// they stop applying to whatever answers next, and apply again only if
     /// a ping re-identifies that same server. Generation bumps once for the
-    /// sweep, like the oracle's `invalidateMany`.
+    /// sweep, like the retired implementation's `invalidateMany`.
     pub(crate) fn invalidate_live(&mut self) {
         self.live_epoch += 1;
         self.identity.clear();
@@ -610,7 +608,7 @@ fn probe_verdict(err: &HerdrError, validation_code: &str) -> (FeatureState, &'st
     }
     match err.phase() {
         DispatchPhase::NotStarted => (FeatureState::Unknown, "server_unavailable"),
-        // Wrote the request but could not classify the answer — the oracle
+        // Wrote the request but could not classify the answer — the retired implementation
         // calls this `probe_failed`, not `server_reply_unavailable`.
         DispatchPhase::DispatchedUnknown => (FeatureState::Unknown, "probe_failed"),
         DispatchPhase::Refused => unreachable!("refused handled above"),
@@ -746,7 +744,7 @@ fn schema_trustworthy(schema: &SchemaRegistry, pong: &Pong, installed: &str) -> 
 /// The refresh itself — `capabilityManager.refresh`. Never fails: every
 /// failure mode lands as `unknown` evidence with a reason.
 pub(crate) async fn collect_capabilities(client: &Client) -> CapabilityReport {
-    // One refresh at a time — the oracle's refreshMu.
+    // One refresh at a time — the retired implementation's refreshMu.
     let _guard = client.capability_refresh_lock().await;
     // `epoch := m.epoch()` — captured before any socket I/O; a bootstrap
     // invalidating mid-collect makes this refresh's report stale.

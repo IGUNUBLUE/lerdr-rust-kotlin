@@ -51,7 +51,7 @@ import java.util.concurrent.Executors
 /**
  * QR entry point for pairing: a CameraX [PreviewView] hosting an
  * `ImageAnalysis` pipeline with an ML Kit barcode analyzer. The first
- * decoded `lerdr://pair` / oracle-style setup link is reported via
+ * decoded `lerdr://pair` / Lerdr-style setup link is reported via
  * [onSetupLink] — [QrScanGate] latches, so it fires at most once and
  * analysis stops there.
  *

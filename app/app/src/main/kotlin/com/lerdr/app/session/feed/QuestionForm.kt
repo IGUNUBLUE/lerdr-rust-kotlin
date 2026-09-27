@@ -26,14 +26,13 @@ import lerdr.core.model.Interaction
 import lerdr.core.model.Option
 
 /**
- * Structured question form — port of the oracle's `QuestionForm.svelte` +
- * `frontend/src/lib/questions.ts` onto `answer_question`/`navigate_question`/
- * `clarify_question` wire actions. The draft logic is kept in pure
- * functions so the ViewModel can own it (the oracle's module-level `drafts`
- * map survives form re-mounts; our `FeedLocal.questionDrafts` does the same).
+ * Structured question form for `answer_question`, `navigate_question`, and
+ * `clarify_question` wire actions. The draft logic is kept in pure functions
+ * so the ViewModel can own it; [FeedLocal.questionDrafts] survives form
+ * re-mounts.
  */
 
-/** The oracle's `QuestionDraft` — checked option indices + the Other slot. */
+/** Lerdr's `QuestionDraft` — checked option indices + the Other slot. */
 @Immutable
 data class QuestionDraft(
     val selected: Set<Int> = emptySet(),
@@ -118,7 +117,7 @@ internal fun updateQuestionOther(
 }
 
 /**
- * Oracle `changeOther` — typing selects Other (always on single-select,
+ * Lerdr `changeOther` — typing selects Other (always on single-select,
  * while non-empty on multi); clearing multi Other unselects it.
  */
 internal fun changeQuestionOtherText(
@@ -132,7 +131,7 @@ internal fun changeQuestionOtherText(
     text,
 )
 
-/** Oracle `progress` — "Question X of Y" only for a sane 1-based range. */
+/** Lerdr `progress` — "Question X of Y" only for a sane 1-based range. */
 internal fun questionProgress(interaction: Interaction): String {
     val current = interaction.questionIndex
     val total = interaction.questionTotal
@@ -144,7 +143,7 @@ internal fun questionProgress(interaction: Interaction): String {
  * The form body — checkbox list on `multi_select`, radio group on
  * `single_select`, the Other row when `other.hidden` is false, then the
  * Previous / Submit / Chat-about-this action row. [enabled] folds the
- * oracle's `responding` disable with the app's reader-role gate.
+ * Lerdr's `responding` disable with the app's reader-role gate.
  */
 @Composable
 internal fun QuestionFormCard(
@@ -207,7 +206,7 @@ internal fun QuestionFormCard(
             ) {
                 Text(interaction.submitLabel.ifEmpty { "Submit" })
             }
-            // The oracle gates this on `can_chat && !other` where `other` is
+            // Lerdr gates this on `can_chat && !other` where `other` is
             // never absent on the wire — its condition is dead code. The
             // spec'd gate is `can_chat` alone.
             if (interaction.canChat) {
@@ -378,7 +377,7 @@ private fun QuestionOtherRow(
                 .fillMaxWidth()
                 .padding(start = spacing.medium)
                 .onFocusChanged { state ->
-                    // Oracle `onfocus` — focusing Other selects it.
+                    // Lerdr `onfocus` — focusing Other selects it.
                     if (state.isFocused && !draft.otherSelected && enabled) {
                         onDraftChange(updateQuestionOther(interaction, draft, true))
                     }

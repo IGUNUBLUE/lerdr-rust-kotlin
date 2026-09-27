@@ -1,7 +1,7 @@
 # 10 — Spec gaps (strict self-review)
 
 > **Alignment note (2026-09):** the project is self-contained — `docs/` +
-> `fixtures/` are the authority. Mentions of "the oracle" / "the Go
+> `fixtures/` are the authority. Mentions of "the predecessor" / "the Go
 > implementation" in this file are **historical provenance** (where each
 > behavior was extracted from), not a standing comparison rule. New gaps
 > are resolved against the spec and vectors, not an external codebase.
@@ -136,7 +136,7 @@ Recorded by the first Rust/Kotlin harness pass; none block Phase 1.
 - **Server-side hello/finish parsing** — `parse_server_hello` /
   `parse_server_finish` validation rules were inferred symmetrically (the
   Go relay never parses them; the JS client does). Error variant names are
-  implementation-chosen, not oracle strings.
+  implementation-chosen, not predecessor strings.
 - **Zeroization** — Go `clear()`s secrets; neither new implementation
   zeroizes yet. Add `zeroize` (Rust) + `Arrays.fill` discipline (Kotlin)
   in the credential-store phase — dep was not in the Phase-0 allowlist.
@@ -161,32 +161,28 @@ Recorded by the first Rust/Kotlin harness pass; none block Phase 1.
 Relay server crate, app shell, terminal surface, and data layer landed;
 none block Phase 1 continuation.
 
-### Wire/semantic (protocol-parity relevant)
+### Wire/semantic
 
 - **Fingerprint scope** — `content_fingerprint` binds content bytes only
   (`sha256(utf8(content))[0..8]` hex), not `lines`/`viewport_rows`/
   `format`. Same content under different budgets chains cleanly; render
   parameters are unpinned. Phase-5 candidate: extend scope or document.
-- **Empty-string fingerprint suppresses watch_pane** — committed deltas
-  store `content_fingerprint=""` (JS `typeof` check), which then blocks
-  `watch_pane` re-issue until a real `pane_content` lands. Ported
-  verbatim; consider a relay-side invariant.
+- **Empty-string fingerprint suppresses `watch_pane`** — committed deltas
+  store `content_fingerprint=""`, which blocks a `watch_pane` re-issue until
+  a real `pane_content` arrives. The relay should maintain this invariant.
 - **4 MiB outbound cap vs pane_content** — a full frame exceeding the
   send-buffer byte cap evicts the client. Delta efficiency gating makes
   it rare but not impossible (large near-unchanged frames that fail
   `Efficient` go full).
-- **Ack-gate oracle semantics pinned** — implicit delta acks while
-  watching; `pane_content` acks iff `ack_required && fingerprint!=""`;
-  `pane_unchanged` never acks (adopts + re-watches); resync → forced
-  `read_pane` (never throttled); server gate = one unacked frame, 4s
-  timeout; client read coalesce = 35s. `verifyContentHash` hardening
-  beyond oracle is on-by-default in Kotlin, flag-off = released-client
-  parity.
-- **Go `Apply` vs client boundary-table divergence confirmed harmful** —
-  Go's `Apply` rejects `copy_lines = count("\n")+1` yet the relay emits
-  exactly that shape for metadata-only frames and JS accepts it. If the
-  Rust relay ever verifies client acks with Go-style `Apply`, it will
-  flag legal frames — use boundary-table semantics relay-side.
+- **Ack-gate semantics** — implicit delta acks apply while watching;
+  `pane_content` acks iff `ack_required && fingerprint!=""`;
+  `pane_unchanged` never acks (adopts + re-watches); resync forces an
+  unthrottled `read_pane`; the server allows one unacked frame with a 4 s
+  timeout; client read coalescing is 35 s. Kotlin enables
+  `verifyContentHash` by default.
+- **Boundary-table rule** — `copy_lines = count("\n")+1` is legal for
+  metadata-only frames. A relay-side verifier must use the boundary-table
+  semantics in `docs/specs/pane-delta.md`, not a strict `SplitAfter` count.
 - **Inbox-overflow busy response can't echo ids** — request/action ids
   live inside the encrypted frame; Go's "Relay is busy" reply has the
   same constraint. Documented behavior, not a bug.
@@ -201,16 +197,16 @@ none block Phase 1 continuation.
   `onNewIntent`→Channel). Re-check on Nav3 updates.
 - **Setup-link divergences (deliberate)** — `lerdr://pair` requires
   `relay=` and allows `ws` (no page origin to inherit, no mixed-content
-  rule); malformed `invite` params → hard reject instead of oracle's
+  rule); malformed `invite` params → hard reject instead of predecessor's
   silent downgrade to bootstrap import. Pairing spec should bless or fix.
 - **Bootstrap `setup` token must be exactly 32 UTF-8 bytes** at
   `toPendingInvitation()` (relay-side requirement); link parse stays
-  oracle-loose (16–512 chars).
+  predecessor-loose (16–512 chars).
 - **`AndroidKeystoreCipher` untestable on JVM** by design — fakes cover
   the store; needs an instrumented smoke test when emulator/Robolectric
   lands.
 - **Draft debounce** intentionally left to the ViewModel
-  (`snapshotFlow.debounce(300)`), unlike oracle's built-in flush.
+  (`snapshotFlow.debounce(300)`), unlike predecessor's built-in flush.
 
 ### Relay-side
 
@@ -228,11 +224,10 @@ none block Phase 1 continuation.
 
 ### Device-admin (relay)
 
-- **Peer-session revocation is lazy, not prompt** — the oracle disconnects
-  every session bound to a revoked credential; `lerdr-relay` disconnects
-  only the session that performed `revoke_device`. Other sessions on the
-  same credential are fenced at their next action (store re-read). Needs a
-  credential→session index to match oracle promptness.
+- **Peer-session revocation** — the required behavior is to disconnect every
+  session bound to a revoked credential promptly. The initial Rust relay
+  disconnected only the session that performed `revoke_device`; the required
+  credential→session index is now recorded as resolved in round 8/9/10.
 - **`reset_devices` during fixture replay kills the replay session** —
   sweep-style tests must run destructive admin fixtures on a dedicated
   connection last (the session-test pattern).
@@ -258,7 +253,7 @@ none block Phase 1 continuation.
   that would consume it (agent list "needs you" dimming) doesn't exist.
 - **Pane-size leases ride `stty` via process lookup** — `lease_pane_size`
   needs `PaneProcessInfo` from Herdr's `pane.inspect`; panes whose TTY
-  can't be resolved fail `failed` like the oracle.
+  can't be resolved fail `failed` like the predecessor.
 
 ## Phase-1 round-7 findings (stations, 2025)
 
@@ -273,41 +268,33 @@ none block Phase 1 continuation.
   subscription validation, signed refs, snooze, and queue bookkeeping;
   actual webpush/vapid fan-out is absent (the app uses FCM/dataSync,
   making this dormant unless a web client appears).
-- **Upload audit logging absent** — uploads record journal activity but
-  the oracle's secret-aware write-audit line is not yet emitted; the
-  central write-audit slice remains queued.
-- **Speech voice updates are requester-only** — the oracle broadcasts
-  voice-catalog changes to all sessions; ours replies to the requesting
-  client only until a manager→broadcast seam is added (the journal
-  forwarder pattern applies).
-- **Questions replay idempotency relies on the store, not the ledger** —
-  the ack ledger is not consulted for question re-answers; the store's
-  own pending/fingerprint checks provide the oracle's semantics.
+- **Upload audit logging** — uploads require secret-aware attempt and result
+  audit rows; this was completed in the later durable-audit work.
+- **Speech voice updates** — catalog changes must fan out to every active
+  session; this was completed through the shared notices broadcast.
+- **Questions replay idempotency** — pending/fingerprint checks in the store
+  provide the required idempotency behavior.
 
 ### Files mode (app)
 
 - **`workspace_file` images decode from base64 in the ViewModel** — fine
   for icons/screenshots; large images will hit the pane-read cap first
-  (bounded at the coordinator, oracle-faithful).
-- **Git diff shown for the selected file only** — the oracle's
-  `workspace_git_diff` is repo-scoped; we filter hunks by path client-
-  side and degrade to "no diff" silently on parse gaps.
+  (bounded at the coordinator, contract-faithful).
+- **Git diff shown for the selected file only** — `workspace_git_diff`
+  returns a repo-scoped diff; the client filters hunks by path and degrades
+  to "no diff" silently on parse gaps.
 
 ## Phase-1 round-8/9/10 findings (stations + orchestrator, 2025)
 
 ### Resolved this round
 
-- **Push identity now keys on `identity.device_id`** — `ActionContext`
-  carries both the transport `client_id` (connection bookkeeping) and the
-  authenticated `device_id`; policy/subscriptions/viewed-pane/event-refs
-  bind the authenticated device like the oracle. Wire `client_id` stays a
-  subscription claim and the `push_unsubscribe` filter only.
-- **Web Push delivery lands** — VAPID load-or-generate (fatal on corrupt
-  key material, matching `push.NewManager`), RFC 8291 aes128gcm payloads
-  (golden-vector pinned), RFC 8292 ES256 JWT, no-redirect 10s client, the
-  oracle's due-order/retry/404-410-prune/recoverPruned semantics. The
-  queue itself (`queue.json`) remains in-memory — the oracle persists it;
-  deliveries in flight at restart are lost, subscriptions survive.
+- **Push identity** now keys on `identity.device_id`: `ActionContext` carries
+  both the transport `client_id` and authenticated `device_id`, while policy,
+  subscriptions, viewed-pane state, and event references use the device id.
+- **Web Push delivery** uses VAPID load-or-generate, RFC 8291 aes128gcm
+  payloads, RFC 8292 ES256 JWT, a no-redirect 10 s client, and the documented
+  delivery/retry/pruning rules. `queue.json` is durable; deliveries in flight
+  at restart are intentionally not resumed.
 - **Voice-catalog + `update_status` fan out relay-wide** through the
   shared `Notices` broadcast (`spawn_notice_broadcast`), requester
   excluded when it already holds the frame.
@@ -342,23 +329,22 @@ none block Phase 1 continuation.
   provider roots (claude/codex/qoder/pi/omp/omo/opencode/hermes),
   bounded tail/JSONL/sqlite reads behind strict containment
   (canonicalized root prefix + `O_NOFOLLOW`), `ConversationBrowser`
-  behind a thin action adapter with the oracle's
+  behind a thin action adapter with the predecessor's
   `sameConversationTuple` post-read recheck. Fixture-verified: 9
   suites, 34 vectors, 52 steps. Deliberate deltas: raw entry-id
   cursors instead of signed `hb1.` envelopes, no prepare/snapshot
   jobs.
-- **Shadow-diff harness lands** — `lerdr-shadow` scripted WS client +
-  normalizer + differ, `lerdr-fake-herdr` fixture endpoint, and
-  `tools/shadow/shadow_diff.py` driving Rust-vs-Rust self mode and
-  Go-oracle-vs-Rust mode on one Herdr socket. Both gates report
-  `IDENTICAL` on the `core` scenario.
+- **Shadow determinism harness** — `lerdr-shadow` provides a scripted WS
+  client, normalizer, and differ; `lerdr-fake-herdr` supplies the fixture
+  endpoint, and `tools/shadow/shadow_diff.py` runs Rust-vs-Rust self mode.
+  Identical repeated traces are the regression gate. Earlier predecessor
+  comparisons are retained only as historical migration evidence.
 
 ### Still open
 
-- **Push queue persistence** — `queue.json` in-memory only (see above).
-- **Idle RSS baseline (release builds, same socket, 2026-09)** — Go
-  `lerdr` 0.27.1 ≈ 22.3 MB vs Rust `lerdr-relay` ≈ 10.4 MB at idle
-  (~2.1x lighter). Load comparison still owed by the shadow harness.
+- **Idle RSS baseline (release builds, same socket, 2026-09)** —
+  `lerdr-relay` measured approximately 10.4 MB at idle. Future load
+  measurements, if needed, use the Rust self-determinism harness.
 - **Plugin packaging exercised** — `herdr plugin link` registers the
   manifest (5 actions, 5 panes, build/startup/event hooks);
   `plugin-on-event.sh`/`plugin-on-startup.sh` → `lerdr-relay
@@ -370,28 +356,26 @@ none block Phase 1 continuation.
   absent. The relay path exists for future web/desktop clients.
 - **`speak_text` on Android plays relay-synthesized WAV** — no on-device
   TTS fallback when the relay lacks `speech_synthesis` (capability-gated
-  section hides; oracle parity).
+  section hides; contract conformance).
 - **Multi-relay settings are per-card** — sections render under each
-  relay card; no global rollup (oracle parity: per-connection).
+  relay card; no global rollup (contract conformance: per-connection).
 
 ## Phase-1 round-11 findings (watch/target reconciliation, 2025)
 
-The pane-watch + exact-target review rejection burned down; the shadow
-harness now drives a dedicated `watch` scenario and both `core` and
-`watch` report `IDENTICAL` against the Go oracle with the tightened
-compare surface (`server_session_id`, `session`, `session_name`,
-`format`, `truncated`, `viewport_*`, `resize_settling`, `interaction`,
-`question_layout`, `target` all compared).
+The pane-watch and exact-target review closed with a dedicated `watch`
+scenario. `lerdr-shadow` now compares repeated Rust runs over the full
+surface: `server_session_id`, `session`, `session_name`, `format`,
+`truncated`, `viewport_*`, `resize_settling`, `interaction`,
+`question_layout`, and `target`.
 
 ### Resolved this round
 
-- **Exact-target admission ported** — `validate_exact_pane_target`
-  (`actions/target.rs`) runs in session dispatch between authorization
-  and the audit-attempt write, matching the oracle's order. Missing
-  target / mismatched `target.pane_id` / stale tuple (`server_session_id`,
-  `terminal_id`, `generation`, `agent_session_id`) reject with the
-  oracle's `invalid_request` shapes; `unwatch_pane`/`release_pane_size`/
-  `cancel_speech` are exempt like the oracle.
+- **Exact-target admission** — `validate_exact_pane_target`
+  (`actions/target.rs`) runs between authorization and the audit-attempt
+  write. Missing targets, mismatched `target.pane_id`, and stale tuples
+  (`server_session_id`, `terminal_id`, `generation`, `agent_session_id`)
+  reject with documented `invalid_request` shapes; `unwatch_pane`,
+  `release_pane_size`, and `cancel_speech` are exempt.
 - **`agents` frames carry the full target tuple** — `server_session_id:
   "primary"`, `generation`, `terminal_id`, `agent_session_id`
   (trimmed `agent_session.value`) are projected, sorted by `pane_id`.
@@ -400,7 +384,7 @@ compare surface (`server_session_id`, `session`, `session_name`,
 - **Per-pane generation tracking** — `Topology` keeps generation across
   accepted snapshots; `agent_stop`/`agent_clear` bump it on non-replayed
   effects (scheduler `slot.generation` is a separate counter, as in the
-  oracle).
+  predecessor).
 - **Watch loop parity** — interval ticker (100/250/500/1000 whitelist,
   250 default) + invalidation fast path, so an update arriving inside
   the ack gate is picked up by the next tick instead of being lost
@@ -410,7 +394,7 @@ compare surface (`server_session_id`, `session`, `session_name`,
   `pane_resync`; the 4 s ack deadline clears pending+acknowledged and
   forces a fresh full frame. `pane_delta` never carries `ack_required`.
   The ctl channel is bounded (`try_send`; acks coalesce).
-- **Two-tier poll** — each tick runs the oracle's `HandleProbePane`
+- **Two-tier poll** — each tick runs the predecessor's `HandleProbePane`
   cheap `visible`-source probe (500 lines) and full-reads only when the
   probe fingerprint moved or the committed frame was `resize_settling`.
 - **`readPaneForDisplay` source/format matrix** — `format:"ansi"` is
@@ -427,10 +411,10 @@ compare surface (`server_session_id`, `session`, `session_name`,
   so metadata-only flips emit the copy-everything delta.
 - **`read_pane` response shape** — failures push `pane_content{content:"",
   format, error, target}` (no receipt); empty-pane and fingerprint-hit
-  paths match the oracle; `capPaneContentLines` tail-caps content before
-  fingerprinting.
+  paths follow the committed wire contract; `capPaneContentLines` tail-caps
+  content before fingerprinting.
 - **`agent_state` projection** — `session` is `agent_session.value` (the
-  oracle's raw `SessionRaw.Value`), `session_name` is `""` — Rust has no
+  predecessor's raw `SessionRaw.Value`), `session_name` is `""` — Rust has no
   title resolver (resolved in round 15: `conversation/resolver.rs` ports
   `internal/session/resolver.go`; Kotlin merges `session_name` verbatim).
 - **`pane_unchanged` always echoes `target`** (`null` when absent), and
@@ -447,7 +431,7 @@ compare surface (`server_session_id`, `session`, `session_name`,
   counter is coordinator-side `content_rev` (not Herdr's — earlier note
   misattributed it); all three read paths (probe, watch frame, direct
   `read_pane`) fence both generation and revision.
-- **Read single-flight** — the oracle dedupes concurrent `read_pane`
+- **Read single-flight** — the predecessor dedupes concurrent `read_pane`
   calls per pane in `d.reads`; Rust always reads. Internal RPC economy,
   not a wire difference.
 - **Title resolver** — resolved in round 15 (see `agent_state`
@@ -459,7 +443,7 @@ compare surface (`server_session_id`, `session`, `session_name`,
   emitted from per-pane `AgentTimes` observation bookkeeping
   (`updated_at` bumps when Herdr's `state_change_seq`/`revision`
   advances; `last_seen_at` refreshes every apply) — memory-only,
-  unlike the oracle's restart-persistent triage records.
+  unlike the predecessor's restart-persistent triage records.
 - **`acknowledged.classificationAgent` probe leg** — the third
   `paneWatchNeedsFrameRead` trigger has no counterpart until the
   classification projection exists.
@@ -472,7 +456,7 @@ agents/workspaces inventory → `watch_pane` terminal stream → ANSI
 render → pane-size lease → interactive key bar):
 
 - **`usesCleartextTraffic=false` blocked every `ws://` relay** —
-  direct-LAN relays are the oracle's normal path and the payload is
+  direct-LAN relays are the predecessor's normal path and the payload is
   `herdr-e2ee-v2` sealed either way; the flag is now `true` with the
   rationale recorded in the manifest.
 - **`RelaySyncService` FGS-deadline crash** — pairing flaps
@@ -486,18 +470,18 @@ render → pane-size lease → interactive key bar):
   service it armed, and the in-service safety net uses the same settle
   window.
 - **`herdr_status.features: null` broke the whole inventory** —
-  Kotlin types `features` as a non-null map (the oracle always
+  Kotlin types `features` as a non-null map (the predecessor always
   allocates it); the Rust relay emitted `null`, so `push_config`/
   `herdr_status` failed decode → `UnknownServerMessage`, inventory
   stayed `starting`, and `acceptsInventorySnapshots` dropped every
   `agents`/`workspaces` frame. The relay now emits `features: {}`
-  (no probe-ledger subsystem yet — the oracle's map is evidence
+  (no probe-ledger subsystem yet — the predecessor's map is evidence
   gathered by active probing).
 - **Agent observation times** — `updated_at`/`last_seen_at` were 0,
   rendering "497253h ago" ages on device. `AgentTimes` now stamps them
   from snapshot-apply observation (change-keyed on `state_change_seq`/
   `revision`, bumped by `bump_generation`); `last_active_at` remains a
-  declared gap (the oracle derives it from the activity journal).
+  declared gap (the predecessor derives it from the activity journal).
 
 ## Round 12 — phone-terminal interaction layer + mobile polish (2025)
 
@@ -510,11 +494,11 @@ only (no `adb input` equivalent).
 ### Landed this round
 
 - **Paired-device rows** (`DevicesSection`) — metadata `FlowRow` +
-  oracle's ≤36rem breakpoint (`WIDE_DEVICE_ROW_MIN`): actions drop
+  predecessor's ≤36rem breakpoint (`WIDE_DEVICE_ROW_MIN`): actions drop
   below the row as equal-width buttons. Fixed the timestamp
   char-per-line collapse.
 - **Single special-keys bar** — merged the duplicate row; keys send the
-  oracle's exact wire spellings (`Left`/`Escape`/`Ctrl+C` — `send_keys`
+  predecessor's exact wire spellings (`Left`/`Escape`/`Ctrl+C` — `send_keys`
   passes names through and the relay normalizes; the old `ArrowLeft`
   style would have been rejected by Herdr).
 - **Latching Ctrl + combos sheet** — Ctrl arms as a modifier
@@ -604,8 +588,8 @@ Critical correctness/security pass ahead of the feature wave:
   unseen. Now a `paneGeneration` counter (bumped on every `panes`
   insert/remove) drives `flatMapLatest` re-resolution.
 - **Pane-size lease lifecycle** — `TerminalViewModel` renews the lease on
-  the oracle's 10 s cadence (`PANE_SIZE_LEASE_REFRESH_MS`), gates on the
-  oracle's 5 min hidden grace (`paneLeaseRenewalAllowed` /
+  the predecessor's 10 s cadence (`PANE_SIZE_LEASE_REFRESH_MS`), gates on the
+  predecessor's 5 min hidden grace (`paneLeaseRenewalAllowed` /
   `PANE_LEASE_HIDDEN_GRACE_MS`), re-leases instantly on the
   resume edge (`sessions.hidden` collector), and releases before unwatch
   in `onCleared`. The renewal loop rides `appScope` — a repeating `delay`
@@ -632,7 +616,7 @@ Critical correctness/security pass ahead of the feature wave:
 - **`@Immutable`** on `FeedUiState`/`TerminalUiState`/`FilesUiState`/
   `FilesBreadcrumb`.
 - **Repository wrappers** for the previously uncalled catalog actions
-  (oracle payloads mirrored): `send_secret` (cap `secret_input`),
+  (predecessor payloads mirrored): `send_secret` (cap `secret_input`),
   `copy_agent_response` (15 s), `tab_reorder` (cap `tab_reorder`),
   `agent_start` (45 s), `agent_rename`/`restart`/`stop`,
   `agent_clear` (45 s), `workspace_create` (45 s) /`rename`/`close`
@@ -640,7 +624,7 @@ Critical correctness/security pass ahead of the feature wave:
   `reorder` (block form when `workspace_reorder_block`, legacy
   `insert_index` otherwise), `list_directories` (10 s) with a parsed
   `DirectoryListing` model. `deviceRole`/`canControl` expose the
-  enrolled credential role for the oracle's `readOnlyRelayIds` UI gate
+  enrolled credential role for the predecessor's `readOnlyRelayIds` UI gate
   (fail-closed: READER unless proven CONTROLLER).
 - **Danger tokens** — `extendedColors.danger/onDanger/dangerContainer/
   onDangerContainer` (muted maroon, not saturated `errorContainer`) for
@@ -649,7 +633,7 @@ Critical correctness/security pass ahead of the feature wave:
 ## Round 15 — Wave-1 feature wave (2026)
 
 Five parallel streams closed the audit's UI-reach gaps; all mutations gate
-on `canControl` (the oracle's `readOnlyRelayIds` behavior).
+on `canControl` (the predecessor's `readOnlyRelayIds` behavior).
 
 - **Home triage** — needs-you cards answer inline via `respond` /
   `answer_question` (the rail no longer navigates away to triage);
@@ -697,108 +681,48 @@ Still open (next wave): voice input, attachment ingress UX, update
 check, diagnostics screen, OSC-52 clipboard, hardware-keyboard map,
 swipe-to-switch-pane, workspace-row reorder surface.
 
-## Round 16 — Wave-2 oracle-parity seams: viewed pane, acknowledge, self-update (2026)
+## Round 16 — Wave-2 lifecycle seams: viewed pane, acknowledge, self-update (2026)
 
-Audit found three oracle behaviors the app never sent; all are
-repository seams + lifecycle wiring rather than protocol changes
-(protocol v3 already covers every frame).
+This wave completed three protocol-v3 lifecycle paths:
 
 - **`push_viewed_pane`** (`SessionRepository.setViewedPane` +
-  `setLocked`, fed by `TerminalViewModel` init/cleared and
-  `LerdrApp`'s `lockState.locked` collector). Matches the oracle's
-  App-level `$effect` exactly: signature =
-  `relay:pane:terminal:agent_session:generation`, non-empty only while
-  visible + unlocked + `server_session_id == "primary"` + relay
-  `connected`; a change pushes `visible:false, unlocked:!locked` to the
-  previous relay then `visible:true, unlocked:true, target` to the new
-  one. Reactive like the oracle — agent regeneration, reconnect, lock,
-  and hide re-derive via `agents`/`connections` collectors under
-  `start()`. Tab switches to Feed/Files clear it (the oracle gates on
-  `view === 'terminal'`).
-- **`acknowledge_pane` on open** — `FeedViewModel.init` calls
-  `acknowledgePane` for non-reader devices (the oracle's `openAgent`
-  gate); `AgentStore.acknowledgeDone` adds the oracle's optimistic
-  `done`→`idle` flip before the command lands.
-- **Relay self-update** — `checkUpdate`/`installUpdate` on
-  `SessionRepository`: `self_update`-gated, 30 s timeout, `data.update`
-  folds into the connection row on success **and** refusal —
-  `CommandException` grew a `data` payload for that. `installUpdate`
-  mirrors `installRelayUpdate`: reads the expected version/revision
-  from `connection.update` (`available && can_install &&
-  target_revision` else `CommandException(reason)`), remembers a
-  pending install, and `reconcilePendingUpdates` declares completion
-  when a reconnect reports `releaseVersion` + `-dirty`-stripped
-  `revision` matching the target (the restart dropped the
-  `command_result`). The oracle's auto-check effect is ported:
-  `check_update` fires once per `relay:version:revision:appVersion`
-  identity on connect (needs `buildConfig = true` for VERSION_NAME).
-  UI lands on the Devices card: `updateStatus`'s full state vocabulary
-  (checking/available/blocked/scheduled/preparing/installing/
-  restarting/succeeded/rolled_back/failed + up-to-date fallback),
-  warning/danger tints, Check + controller-gated Update actions,
-  `shortRevision` port, live-region announcements.
-- **Tests** — `SessionRepositoryTest` +11: exact target frame, dedup,
-  clear-on-leave, lock clear/republish, non-primary gate, hide-clear,
-  regeneration repush, capability refusal, `check_update` payload fold,
-  install expected-fields, refusal payload application. DevicesSection
-  goldens +3 (available/failed/manual-bootstrap).
+  `setLocked`, fed by `TerminalViewModel` and `LerdrApp` lock state). The
+  signature is `relay:pane:terminal:agent_session:generation`; it is non-empty
+  only while visible, unlocked, connected, and on the primary session. Changes
+  clear the former target and publish the new target; Feed/Files clear it.
+- **`acknowledge_pane` on open** — `FeedViewModel` acknowledges opened panes
+  for non-reader devices, and the store applies the documented optimistic
+  `done`→`idle` presentation transition.
+- **Relay self-update** — `checkUpdate`/`installUpdate` are `self_update`
+  gated and reconcile completion after reconnect using the expected
+  version/revision.
+- **Tests** cover exact targets, deduplication, lifecycle clears, lock and
+  capability gates, and update payload reconciliation.
 
-Deferred: workspace-row reorder (oracle `WorkspaceManager`), feed
-diagnostics surface, OSC-52 clipboard, hardware-keyboard map, voice
-input, attachment ingress, swipe-to-switch-pane. (`deploy_app_update`
-was listed here at the time; later confirmed removed upstream — see
-round 14's tail section.)
+Deferred product work included workspace-row reorder, diagnostics, OSC-52,
+hardware-keyboard mapping, voice input, attachment ingress, and pane swipe.
+`deploy_app_update` is reserved only; it has no emitter.
 
-## Round 17 — Wave-3 remaining parity surfaces (2026)
+## Round 17 — Wave-3 remaining surfaces (2026)
 
-Bounded every "still open" item against the oracle; the ones it
-actually implements landed here.
+This historical review closed the remaining in-repository UI-reach gaps.
 
-- **Feed history diagnostics** — `FeedHistoryWarnings.kt` +
-  `FeedViewModel` demand loop port the `ConversationHistory.svelte`
-  warning block the feed dropped: `continuation_incomplete` with
-  reason-specific copy + Reload, `oversized_records` /
-  `omitted_tools`/`omitted_payloads` / `corrupt_records`/`plan_corrupt`
-  rows, the preparing-page poll (1 s cadence, progress-key reset,
-  30 identical snapshots → retryable `preparation_stalled` +
-  Continue), Cancel/Continue/Reload, error codes → Continue vs Retry,
-  `source_changed` reload. Older pages prepend-merge deduped by id.
-- **Pull-to-refresh** — `PullToRefreshBox` on the Agents list armed
-  only at scroll top (oracle `AgentList` touch tracking), LongPress
-  haptic, 900 ms re-arm window, driving the new
-  `SessionRepository.inventoryRefresh` (`refresh_agents` to connected
-  relays + re-dial `disconnected` endpoints — the oracle's
-  `requestInventoryRefresh`).
-- **Workspace-row reorder** — the app has no `WorkspaceManager`
-  surface; move up/down actions lived in the tab strip's overflow menu
-  and went away with it, so reorder currently has no UI. The removed
-  implementation kept `workspaceTrees()` (ports `relayWorkspaceTrees`,
-  linked worktrees nesting under the `repo_key` primary), the
-  block-form payload moving a whole linked group, the legacy
-  `insert_index` fallback, and optimistic `pendingWorkspaceOrder`
-  invalidated on snapshot confirm or membership drift.
-- **Dropped as non-oracle**: voice input (no SpeechRecognition/mic
-  invoke in the oracle — `speech/` is relay→phone playback), OSC-52
-  clipboard (xterm.js never processes it), hardware-keyboard map
-  (oracle only wires Ctrl/Cmd+F → find), swipe-to-switch-pane (the
-  only list gesture is pull-refresh). These may return as
-  product-level enhancements but are not parity debt.
-- Housekeeping: `HomeScreenScreenshotTest` stray NUL bytes →
-  `\u0000` escapes (production group keys use NUL separators).
-
-Genuinely remaining at the time: `deploy_app_update` — wire-catalog
-command with no frontend consumer even in the oracle. Since confirmed
-removed upstream (Tailscale-only transport; see the round-14 tail
-section): the name stays reserved in the v3 catalog and
-`app_deploy_status` remains a parseable frame with no emitter, matching
-post-removal oracle behavior. Plus product-level items the oracle never
-shipped (voice, OSC-52, hardware keys, pane-swipe).
+- **Feed history diagnostics** provide continuation, oversized/corrupt-record,
+  preparing, retry, and reload states; older pages prepend-merge by id.
+- **Pull-to-refresh** is armed only at scroll top and drives
+  `SessionRepository.inventoryRefresh`.
+- **Workspace-row reorder** has no current UI surface.
+- **Out of product scope**: voice input, OSC-52 clipboard, hardware-keyboard
+  mapping, and pane swipe may return as product work, but are not contract
+  debt.
+- `deploy_app_update` remains a reserved v3 name with no emitter;
+  `app_deploy_status` remains parseable for compatibility.
 
 ## Round 14 — relay wave: semantic layer, Herdr boundary, durable push (2026)
 
-Three stations, orchestrator-integrated. Post-merge: `cargo test
---workspace` all green (coord 314), fmt/clippy clean, shadow
-`core`/`watch`/`semantic` × self/go = 6/6 IDENTICAL.
+Three stations integrated the semantic layer, Herdr boundary, and durable push.
+The completed self-mode `core`/`watch`/`semantic` shadow scenarios reported
+identical repeated Rust traces.
 
 ### Resolved this round
 
@@ -812,11 +736,9 @@ Three stations, orchestrator-integrated. Post-merge: `cargo test
   `history.rs` ports the read-merge the classifier consumes. The ack
   ledger has its consumer; drop-keys for the now-real fields are gone
   from all scenarios.
-- **Event-vs-poll commit split** — `CommitKind::{Event,Poll}` mirrors
-  `commitTopologyLocked`'s preserve-committed-status rule on the event
-  path (the emit-blocked finding): pane/tab/workspace events never let
-  a sampled status overwrite committed blocked details; polls do.
-  Verified against the oracle by the semantic scenario.
+- **Event-vs-poll commit split** — `CommitKind::{Event,Poll}` preserves
+  committed blocked details on event updates while polls may replace them.
+  The semantic scenario verifies this contract.
 - **`inventory_status` full projection** — six keys emit for real
   (`state`/`error_code`/`message`/`stale` + both timestamps);
   `mark_inventory_failure` ports `MarkInventoryFailure`. Removed the
@@ -852,9 +774,9 @@ Three stations, orchestrator-integrated. Post-merge: `cargo test
 ### Deliberate semantic decisions
 
 - **`health_check` is the server-advertised value**, not derived from
-  event-stream staleness (matches the oracle's `*bool` — omitted until
-  evidence exists). Transport staleness stays on `Topology.stale`; a
-  reconnect with no capability change republishes no `herdr_status`.
+  event-stream staleness. It stays omitted until evidence exists; transport
+  staleness remains on `Topology.stale`, and an unchanged reconnect does not
+  republish `herdr_status`.
 
 ### Still open (unchanged deltas + deferred waves)
 
@@ -863,18 +785,18 @@ Three stations, orchestrator-integrated. Post-merge: `cargo test
   declared deltas, drop-keys remain.
 - `action_receipt`/`push_config` — Rust-only v3 dispatch evidence and
   implementation-scoped payloads (census-visible, not compared).
-- Startup-burst frame order — unordered pool comparison; the oracle's
+- Startup-burst frame order — unordered pool comparison; the predecessor's
   fixed order is `push_config,agents,workspaces,activity_history,
   inventory_status` vs Rust's `push_config,herdr_status,workspaces,
   agents`.
 - Mid-read `ContentRevision` fence — resolved (round 15 / S6); the
   counter is coordinator-side, portable, now enforced on all read paths.
 - **Removed upstream, not ported**: `webrtc_*`/`herdr-dc-v1`,
-  `lerdr-gateway`, `deploy_app_update`, portmap/UPnP — the oracle's
+  `lerdr-gateway`, `deploy_app_update`, portmap/UPnP — the predecessor's
   CHANGELOG made Tailscale the only transport and deleted these
   binaries/actions. Wire names remain reserved in the v3 catalog for
   compatibility; `app_deploy_status` stays a parseable frame with no
-  emitter (same as post-removal oracle behavior for the native app).
+  emitter (same as post-removal predecessor behavior for the native app).
 - **In flight (wave 2)**: release pipeline / CI matrix; `session_name`
   title resolver; `ContentRevision` mid-read fence; `[[link_handlers]]`
   manifest section; `internal/localize` residual audit.
@@ -882,13 +804,13 @@ Three stations, orchestrator-integrated. Post-merge: `cargo test
 ## Round 15 — wave 2: relay leaves, release pipeline, upstream-removal audit (2026)
 
 Three stations + orchestrator. The wave's headline finding was a
-scoping correction: the oracle deleted its entire non-Tailscale
+scoping correction: the predecessor deleted its entire non-Tailscale
 transport surface (`lerdr-gateway`, WebRTC gateways, `herdr-dc-v1`,
 portmap/UPnP, `deploy_app_update`/`deploying_app`, `stable-state`) —
 "Tailscale is now the only transport" per its CHANGELOG. Those items
 are recorded as **removed upstream, not ported** (roadmap annotated);
 the v3 wire names stay reserved and `app_deploy_status` remains a
-parseable frame with no emitter, matching post-removal oracle behavior.
+parseable frame with no emitter, matching post-removal predecessor behavior.
 
 **Removal scope clarification** — upstream deleted *transports and the
 app-deploy stage*, not the relay's local binary/HTTP surface. `/health`,
@@ -896,7 +818,7 @@ app-deploy stage*, not the relay's local binary/HTTP surface. `/health`,
 `speech-voices` are transport-independent: `common.sh`'s health-wait
 parses the `/healthz` JSON fields, `tailscale-serve.sh` probes it, the
 self-update worker health-checks it post-swap, and `install_update` is a
-live routed action the oracle still ships. Those remain planned work
+live routed action the predecessor still ships. Those remain planned work
 (S9), not part of the skipped web/gateway surface.
 
 **Tailnet exposure** stays script-based: `tailscale-serve.sh` /
@@ -904,7 +826,7 @@ live routed action the oracle still ships. Those remain planned work
 (path-only diffs), wired as the `tailscale-setup` manifest command and
 listed in release `REQUIRED_FILES`. A native `tailscaled` LocalAPI
 serve-config path was considered and declined — it would duplicate the
-script path with a new unsocketed API surface and no oracle to shadow
+script path with a new unsocketed API surface and no predecessor to shadow
 against.
 
 ### Resolved this round
@@ -919,7 +841,7 @@ against.
   first-`id` `thread_name`), scanner caps mirrored. Wired via
   `ResolverSlot` into both commit kinds; committed title lives on the
   shared `AttentionCell` so published clones project it. **Declared
-  delta:** the oracle's title cache is unbounded; the port caps at
+  delta:** the predecessor's title cache is unbounded; the port caps at
   2048 entries (sweep-then-clear) per the bounded-state rule.
 - **`ContentRevision` mid-read fence** — the counter is the
   coordinator's own `content_rev` (the earlier "fake Herdr" note
@@ -928,7 +850,7 @@ against.
   (`mid_read_fence` extracted for ordering tests).
 - **`[[link_handlers]]`** — manifest section + `plugin-open-link`
   scripts: GitHub issue/PR links in panes open a QR overlay on the
-  phone. Spec-only (the oracle ships none) but verified against
+  phone. Spec-only (the predecessor ships none) but verified against
   upstream herdr 0.9.1's real manifest schema/env names.
 - **localize residual** — audited: no gap. Wire errors stay
   `{code,args}`; `NormalizeLocale` + push localization already ported.
@@ -947,7 +869,7 @@ against.
 - **Release-management subcommands** — resolved (S8, `release.rs`):
   all five subcommands (`release-manifest`, `verify-release`,
   `activate-release`, `seal-release`, `prune-releases`) ported with
-  oracle CLI shapes and sync dispatch; `support-state.json` emits
+  predecessor CLI shapes and sync dispatch; `support-state.json` emits
   `release_directory`; `version --json` matches `{version, revision,
   target}`. **Declared divergence:** Go's `release.Verify` requires a
   non-empty `web_hash` (web-bundle builds); the Rust verifier enforces
@@ -976,12 +898,12 @@ against.
   `protocol`), `/readyz` (200 `ready` vs 503 `unavailable`). Live
   inventory reaches the handlers through `InventoryProbeFn` — a closure
   over the topology `watch::Receiver` installed via `Relay::with_health`,
-  same shared-cell idiom as `ResolverSlot`. `serving` is the oracle's
+  same shared-cell idiom as `ResolverSlot`. `serving` is the predecessor's
   one-way `s.ready` latch. Verified live: healthz reports real inventory
   state against the running Herdr socket. Declared omission: `bundle_*`
   keys (no web handler exists to stamp them).
 - **`instance_id`** — `Config` reads `RELAY_INSTANCE_ID` via `relay_env`
-  (`LERDR_` > `HERDR_`), env-only like the oracle.
+  (`LERDR_` > `HERDR_`), env-only like the predecessor.
 - **`update-worker` subcommand** — detached job runner ported
   (`update_worker.rs`, ~1.6k LOC + 13 tests): reads the persisted
   `update-job-*.json`, downloads/extracts the release archive, verifies
@@ -990,7 +912,7 @@ against.
   eligibility now reports the worker available. Divergences: archive name
   is `lerdr-relay_*` only (Go asset names would install the wrong binary);
   HTTP via `curl --max-time` + `\n%{http_code}` trailer; extraction via
-  `tar` with the oracle's caps enforced; no in-worker rollback (plugin
+  `tar` with the predecessor's caps enforced; no in-worker rollback (plugin
   install owns the swap — `failed` is terminal, job file retained).
 - **`speech-voices` CLI** — `lerdr-relay speech-voices
   {list|missing|install|reinstall-runtime|remove} [--languages …]`
@@ -1163,19 +1085,16 @@ negotiated, and exercised end-to-end on both sides.
 
 ## Round 21 — capability contract made canonical (2026)
 
-- **The gap**: `push_config.capabilities` was assembled in code but the
-  full list existed nowhere in the spec — the oracle's source was the
-  de-facto enumeration, and its conditional tail
-  (`server.go:1409-1444`) had never been ported. Consequence observed
-  live: `pane_realtime_delta` was never advertised, so the app's
-  `watch_pane` gate never armed and terminals ran on manual reads
-  alone. `tab_reorder`, `workspace_reorder_block`, `push_policy`,
-  `typed_push`, `device_management`, `agent_response_copy`, and the
-  `speech_*` pair were likewise absent.
-- **The fix**: `docs/03` §4.1 now declares the canonical table — every
-  advertised name, what it unlocks, and its gate — and the code is
-  derived from it, not the other way around. The oracle is provenance
-  for wire shapes; this table is the contract.
+- **The gap**: `push_config.capabilities` was assembled in code but the full
+  list existed nowhere in the specification. Consequence observed live:
+  `pane_realtime_delta` was never advertised, so the app's `watch_pane` gate
+  never armed and terminals ran on manual reads alone. `tab_reorder`,
+  `workspace_reorder_block`, `push_policy`, `typed_push`,
+  `device_management`, `agent_response_copy`, and the `speech_*` pair were
+  likewise absent.
+- **The fix**: `docs/03` §4.1 now declares every advertised name, what it
+  unlocks, and its gate. Code follows that table; historical sources explain
+  wire provenance only.
 - **Wired**: `tab_reorder`/`workspace_reorder_block` refute on their
   single backing methods (`tab.move`, `workspace.move_block`) like the
   other Herdr-gated caps; `typed_push`, `push_policy`, and

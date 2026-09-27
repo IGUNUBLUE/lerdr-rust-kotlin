@@ -1,6 +1,6 @@
 //! Web Push delivery worker — the `internal/push` delivery path port:
 //! `Manager.Run`/`RunOnce` + `sendOne` over the queue bookkeeping in
-//! [`super::push`], plus the two crypto halves the oracle gets from
+//! [`super::push`], plus the two crypto halves the retired implementation gets from
 //! `webpush-go` (v1.4.0):
 //!
 //! - VAPID key persistence (`loadOrGenerateVAPIDKeys`):
@@ -56,7 +56,7 @@ use super::push::{
 
 /// `Run`'s ticker cadence — 250ms between queue passes.
 const WORKER_TICK: Duration = Duration::from_millis(250);
-/// In-flight HTTP sends cap — the oracle drains serially under
+/// In-flight HTTP sends cap — the retired implementation drains serially under
 /// `queue.process`; we bound concurrency per *subscription*
 /// (same-endpoint entries stay serial so `terminalSubscriptions`
 /// semantics hold) and across subscriptions.
@@ -65,7 +65,7 @@ const MAX_IN_FLIGHT_GROUPS: usize = 4;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 /// `Options{TTL: 300}`.
 const PUSH_TTL_SECONDS: u32 = 300;
-/// `Options{Subscriber}` — the oracle's `sub` claim (already an
+/// `Options{Subscriber}` — the retired implementation's `sub` claim (already an
 /// `https:` URL so webpush-go uses it verbatim, no `mailto:`).
 const VAPID_SUBJECT: &str = "https://github.com/IGUNUBLUE/lerdr";
 /// webpush-go's JWT lifetime — `time.Now().Add(12 * time.Hour)`
@@ -115,7 +115,7 @@ fn generate_secret() -> SecretKey {
         rand::rngs::OsRng
             .try_fill_bytes(&mut scalar)
             .expect("OS RNG failure is unrecoverable");
-        // `from_bytes` rejects zero / ≥N scalars — the oracle's
+        // `from_bytes` rejects zero / ≥N scalars — the retired implementation's
         // `params.N` check; P(reject) ≈ 2⁻³².
         if let Ok(secret) = SecretKey::from_bytes((&scalar).into()) {
             return secret;
@@ -182,7 +182,7 @@ impl VapidKeypair {
         Ok(pair)
     }
 
-    /// Ephemeral pair — `Push::default()` has no push dir; the oracle
+    /// Ephemeral pair — `Push::default()` has no push dir; the retired implementation
     /// only ever runs persisted, so this stays a degraded-mode seam.
     fn ephemeral() -> Self {
         VapidKeypair {
@@ -428,7 +428,7 @@ fn vapid_authorization(
 // The send half — `sendOne`: encrypt → POST → classify the result.
 // ---------------------------------------------------------------------------
 
-/// `pushError` + transport failure — the oracle's error taxonomy:
+/// `pushError` + transport failure — the retired implementation's error taxonomy:
 /// status codes drive terminal/retryable classification; transport
 /// failures are Go `net.Error` (retryable); local failures (bad keys,
 /// oversized payload, disallowed scheme) are neither → dropped.
@@ -562,7 +562,7 @@ impl PushSender for WebPushSender {
 
 /// Spawn the delivery worker — `go m.Run(ctx)` plus the VAPID half of
 /// `NewManager`. The key load-or-generate runs synchronously so a bad
-/// key file fails startup like the oracle; the returned handle is the
+/// key file fails startup like the retired implementation; the returned handle is the
 /// task. `cancel` mirrors `ctx`.
 pub(crate) fn spawn_push_worker(
     push: Push,
@@ -587,7 +587,7 @@ fn spawn_worker<S: PushSender>(
 }
 
 /// `Manager.Run` — select on cancel / 250ms tick / wake, drain after
-/// each. A drain error logs once and the loop keeps going (the oracle
+/// each. A drain error logs once and the loop keeps going (the retired implementation
 /// warns and continues; entries survive in the queue).
 async fn worker_loop<S: PushSender>(push: Push, sender: Arc<S>, cancel: CancellationToken) {
     let wake = push.delivery_wake();
@@ -695,7 +695,7 @@ pub(crate) async fn drain_once<S: PushSender>(
             joined = tasks.join_next() => {
                 match joined {
                     Some(Ok(Ok(mut group_results))) => results.append(&mut group_results),
-                    // `accepted`/finish error — the oracle's
+                    // `accepted`/finish error — the retired implementation's
                     // `finish(err)` aborts the pass outright; queued
                     // entries stay queued for the next pass.
                     Some(Ok(Err(code))) => {
@@ -715,13 +715,13 @@ pub(crate) async fn drain_once<S: PushSender>(
     // `finish` — prune recovery runs even on a cancelled/failed pass;
     // `finish`'s `flush()` then persists the pass's queue mutations
     // once. A persist failure masks the recovery error like the
-    // oracle's `persistErr` preference.
+    // retired implementation's `persistErr` preference.
     let recover_result = push.recover_pruned(&results, now);
     push.flush_queue()?;
     recover_result?;
     // `RunOnce` skips the epilogue when `processDue` returned an
     // error (`finish(ctx.Err())`/`finish(err)` propagate first). A
-    // cancelled pass reports like the oracle's `Run` filter
+    // cancelled pass reports like the retired implementation's `Run` filter
     // (`!errors.Is(err, context.Canceled)`) — nothing to warn on.
     if let Some(code) = pass_error {
         return Err(code);
@@ -733,7 +733,7 @@ pub(crate) async fn drain_once<S: PushSender>(
     Ok(results)
 }
 
-/// One subscription group's serial half of the pass — the oracle's
+/// One subscription group's serial half of the pass — the retired implementation's
 /// per-entry `processDue` body for a single `terminalSubscriptions`
 /// key. `terminal` stands in for the map entry: after a 404/410 the
 /// rest of this endpoint's entries prune without a send.
@@ -995,7 +995,7 @@ mod tests {
         let loaded = VapidKeypair::load_or_generate(dir.path()).unwrap();
         assert_eq!(loaded.public_b64(), pair.public_b64());
         // Public PEM written, private untouched content-wise, modes
-        // are the oracle's 600/644.
+        // are the retired implementation's 600/644.
         let public_pem = std::fs::read_to_string(dir.path().join("vapid_public.pem")).unwrap();
         assert!(public_pem.starts_with("-----BEGIN PUBLIC KEY-----"));
         assert_eq!(
@@ -1086,7 +1086,7 @@ mod tests {
 
     #[test]
     fn vapid_rejects_out_of_range_scalar() {
-        // Zero and ≥N scalars fail the oracle's `0 < d < N` check.
+        // Zero and ≥N scalars fail the retired implementation's `0 < d < N` check.
         for scalar in [[0u8; 32], [0xffu8; 32]] {
             let err = parse_vapid_private(&RAW_URL.encode(scalar)).unwrap_err();
             assert!(err.contains("outside the P-256 range"), "error = {err}");
@@ -1196,7 +1196,7 @@ mod tests {
         let endpoint = "https://fcm.googleapis.com/send/abc";
         let now = Timestamp::now();
         let authorization = vapid_authorization(endpoint, &pair, now).unwrap();
-        // `vapid t=<jwt>, k=<b64url-pub>` — oracle/webpush-go casing.
+        // `vapid t=<jwt>, k=<b64url-pub>` — retired implementation/webpush-go casing.
         let Some(rest) = authorization.strip_prefix("vapid t=") else {
             panic!("authorization = {authorization}");
         };
@@ -1791,7 +1791,7 @@ mod tests {
 
     /// Under paused time the 250ms tick can never fire — a delivery
     /// lands only because `publish` raised `wake`. Mirrors the
-    /// oracle's buffered `m.signal()` wakeup.
+    /// retired implementation's buffered `m.signal()` wakeup.
     #[tokio::test(start_paused = true)]
     async fn worker_wakes_on_publish_under_paused_time() {
         let push = Push::default();

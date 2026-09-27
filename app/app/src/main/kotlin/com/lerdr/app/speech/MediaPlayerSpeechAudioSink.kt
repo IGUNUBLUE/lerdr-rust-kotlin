@@ -6,12 +6,12 @@ import kotlinx.coroutines.CompletableDeferred
 
 /**
  * `MediaPlayer`-backed [SpeechAudioSink] — the Android analogue of the
- * oracle's persistent `<audio>` element: relay WAV fragments are written to
+ * Lerdr's persistent `<audio>` element: relay WAV fragments are written to
  * a short-lived cache file and played as ordinary media, which keeps
  * reading with the screen off.
  *
  * [play] suspends until the clip completes, errors, or [interrupt] runs —
- * the same contract `playRelayBlob` gives the oracle loop (`onended` and
+ * the same contract `playRelayBlob` gives Lerdr loop (`onended` and
  * `onpause` both resolve it).
  */
 class MediaPlayerSpeechAudioSink(

@@ -99,7 +99,7 @@ pub struct SessionConfig {
     /// late-joining clients get current state (lerdr-coord wires the
     /// topology projection in here).
     pub snapshot_fn: Option<SnapshotFn>,
-    /// The bootstrap re-arm for `reset_devices` — the oracle's
+    /// The bootstrap re-arm for `reset_devices` — the retired implementation's
     /// `ResetWithBootstrap([]byte(cfg.Token), s.hostname, …)` inputs: the
     /// relay key keeps the printed setup link pairing after the wipe.
     /// `None` on a tokenless relay resets to a pristine, unpaired store
@@ -117,7 +117,7 @@ pub struct SessionConfig {
     ///
     /// [`Relay`]: crate::server::Relay
     pub disconnect_credentials: Option<DisconnectCredentials>,
-    /// `s.auditLog` — the secret-safe remote-write audit the oracle opens
+    /// `s.auditLog` — the secret-safe remote-write audit the retired implementation opens
     /// with `audit.Open(cfg.CacheDir)` (`server.go:576`). When set, every
     /// `Audited` action writes an `attempt` row at admission and a
     /// `result` row per `command_result` — including the hub-owned
@@ -126,7 +126,7 @@ pub struct SessionConfig {
     pub audit: Option<AuditHook>,
     /// Live-registry observer — the [`Relay`] fires it with the
     /// connected-client count after every authenticated registration and
-    /// every teardown (`hub.Clients` watchers in the oracle). lerdr-coord
+    /// every teardown (`hub.Clients` watchers in the retired implementation). lerdr-coord
     /// drives `client.window_title.{set,clear}` through it; `None` — a
     /// bare `serve_connection` with no registry — observes nothing.
     ///
@@ -817,7 +817,7 @@ struct Actor<'a, A: DeviceAuthStore + ?Sized, R: ActionRouter> {
     signal: Signal,
     config: &'a SessionConfig,
     /// `DisconnectCredential` deferred past the response flush
-    /// (`time.AfterFunc(250ms)` in the oracle) — armed by a successful
+    /// (`time.AfterFunc(250ms)` in the retired implementation) — armed by a successful
     /// `revoke_device`/`reset_devices`; peers bound to the destroyed
     /// credentials are swept through `config.disconnect_credentials` and
     /// this session closes too when `self_disconnect` is set.
@@ -1041,7 +1041,7 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
             }
             _ => None,
         };
-        // Device administration is hub-owned in the oracle — the
+        // Device administration is hub-owned in the retired implementation — the
         // `s.deviceAuth.*` arms of the action switch (`server.go:757-853`)
         // — so it resolves straight out of the auth store here; the router
         // never sees it.
@@ -1206,7 +1206,7 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
         Some(reader_denied(action.operation))
     }
 
-    /// The device-admin actions — the `s.deviceAuth.*` arms of the oracle's
+    /// The device-admin actions — the `s.deviceAuth.*` arms of the retired implementation's
     /// action switch (`server.go:757-853`) — answered straight out of the
     /// auth store. `None` for every other action, which the router sees.
     ///
@@ -1214,7 +1214,7 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
     /// resolves on its payload) then the terminal `action_receipt` at
     /// `confirmed` — lerdr-coord's "result message first, receipt last"
     /// ordering. A store refusal answers the `failed` `command_result`
-    /// alone, exactly the oracle's reply shape.
+    /// alone, exactly the retired implementation's reply shape.
     fn device_admin(&mut self, scope: &RequestScope, inbound: &Inbound) -> Option<Vec<Outbound>> {
         let outcome = match scope.action.operation {
             "device_list" => self.admin_list(),
@@ -1270,7 +1270,7 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
 
     /// `device_list` — `activeDeviceCredentials` (tombstones filtered,
     /// `current` marked on the caller's own credential) plus `device_id` and
-    /// `role` from the session identity — `client.Identity()` in the oracle,
+    /// `role` from the session identity — `client.Identity()` in the retired implementation,
     /// which the `authorizeDeviceAction` refresh never reaches (it mutates a
     /// copy).
     fn admin_list(&self) -> AdminOutcome {
@@ -1324,7 +1324,7 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
         }
     }
 
-    /// `revoke_device` — same resolution; on success the oracle drops
+    /// `revoke_device` — same resolution; on success the retired implementation drops
     /// every session holding the revoked credential, deferred past the
     /// response (`time.AfterFunc(250ms, DisconnectCredential)`). The
     /// tombstone's post-bump version is the sweep's `through_version`
@@ -1441,7 +1441,7 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
     /// OTHER session bound to a destroyed credential gets the
     /// `GoingAway`/"device credential revoked" close through the registry
     /// hook; this session follows when its own credential was among them
-    /// (the oracle's sweep includes the requester — the deferral is what
+    /// (the retired implementation's sweep includes the requester — the deferral is what
     /// protects its response). A peer-only sweep leaves this session
     /// running.
     fn disconnect_revoked(&mut self) -> Step {

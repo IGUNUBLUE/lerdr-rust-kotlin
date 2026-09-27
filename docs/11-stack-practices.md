@@ -179,15 +179,16 @@ be re-asserted after takeover (handoff moves PTY fds to a new server).
   shutdown; audit every `select!` arm for cancellation safety.
 - Observability: `tracing` spans per actor; `tokio-console` in dev
   builds.
-- Candidate (phase 3+): `madsim` deterministic simulation for the actor
-  system — heavy commitment, evaluate after core parity.
+- Candidate after core stabilization: `madsim` deterministic simulation for
+  the actor system — heavy commitment, evaluate only if it adds coverage beyond
+  the existing fixture and self-determinism harnesses.
 
 ## Cross-cutting decisions confirmed
 
 | Topic | Decision | Note |
 |---|---|---|
 | DI | Hilt | matches nowinandroid test-double story |
-| Serialization | `kotlinx.serialization` | DTO parity with Rust serde |
+| Serialization | `kotlinx.serialization` | shared protocol DTOs with Rust serde |
 | Screenshot lib | **Roborazzi** (not Paparazzi) | Hilt/Robolectric compat |
 | Rust test stack | `tokio test-util` + `proptest` + `insta` + `rstest` | |
 | Time in tests | virtual on both stacks | `start_paused` / `runTest` |

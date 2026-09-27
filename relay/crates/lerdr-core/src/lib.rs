@@ -1,19 +1,19 @@
 //! `lerdr-core` — the wire-semantics crate for the Lerdr relay.
 //!
-//! Pure, synchronous ports of the Go oracle's wire-facing decision logic:
+//! Pure, synchronous implementations of the relay's frozen wire semantics:
 //!
 //! - [`protocol`]: inbound action envelopes + outbound message DTOs,
-//!   byte-exact with `encoding/json` (frozen `protocol v3` /
-//!   `herdr-e2ee-v2` contract).
+//!   byte-exact with the locally specified `protocol v3` /
+//!   `herdr-e2ee-v2` contract.
 //! - [`delta`]: the pane delta codec (`Build`/`Apply`/`Efficient`).
 //! - [`sendbuffer`]: the per-client bounded outbound queue with tail
 //!   coalescing.
 //! - [`lease`]: pane-size lease arbitration with an injected clock.
-//! - [`json`]: Go-compatible JSON formatting shared by all of the above.
+//! - [`json`]: canonical JSON formatting shared by all of the above.
 //! - [`audit`]: the secret-safe remote-write audit log (`internal/audit`).
 //!
-//! Golden vectors under `fixtures/` are the oracle; conformance tests live
-//! in `tests/`.
+//! Frozen vectors under `fixtures/` define the local contract; conformance
+//! tests live in `tests/`.
 
 pub mod audit;
 pub mod delta;
@@ -30,7 +30,7 @@ pub mod uploadbinary;
 /// (`lerdr-relay`) can report it without a dependency cycle. Precedence:
 ///
 /// 1. `LERDR_VERSION` — stamped by the release pipeline at build time (the
-///    oracle's `main.version` ldflags slot; manifests key on it).
+///    retired implementation's `main.version` ldflags slot; manifests key on it).
 /// 2. `CARGO_PKG_VERSION` — a real crate version once release PRs bump the
 ///    workspace.
 /// 3. `0.0.0-dev` — the workspace ships `version = "0.0.0"` placeholders

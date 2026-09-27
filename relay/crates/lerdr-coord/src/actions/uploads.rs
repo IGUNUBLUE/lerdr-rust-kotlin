@@ -4,7 +4,7 @@
 //! into it, `upload_finish` verifies digests and publishes the attachment
 //! index, `upload_cancel` aborts. Answers are `upload_*_result` frames
 //! (`{type, request_id, result}` / `{type, request_id, error}`), not
-//! `command_result` — the oracle's shape. `send_text`/`submit_prompt`
+//! `command_result` — the retired implementation's shape. `send_text`/`submit_prompt`
 //! expand `Attachment: <ref>` lines through the finished index before
 //! dispatch (see [`expand_attachment_references`]).
 //!
@@ -14,7 +14,7 @@
 //! digest checks, content sniffing, and cleanup rules come from
 //! `internal/upload/upload.go`; every failure code is funneled through
 //! [`public_upload_error_code`] at the reply boundary exactly like the
-//! oracle's `sendUploadError`.
+//! retired implementation's `sendUploadError`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions, Permissions};
@@ -35,9 +35,8 @@ use sha2::{Digest, Sha256};
 use super::ActionContext;
 use crate::topology::Topology;
 
-// `Default*` bounds from internal/upload/upload.go. The protocol docs and
-// e2e fixtures illustrate larger example values; the oracle constants are
-// authoritative.
+// Local upload bounds. Protocol docs and e2e fixtures may illustrate larger
+// example values, but these constants define the relay's accepted limits.
 /// `DefaultChunkBytes`.
 const CHUNK_BYTES: usize = 256 * 1024;
 /// `DefaultMaxFiles`.
@@ -97,7 +96,7 @@ impl UploadError {
     }
 
     /// `&upload.Error{Code: ..., Args: map[string]any{...}}` — every
-    /// arg the oracle emits is an integer.
+    /// arg the retired implementation emits is an integer.
     fn with_args(code: &'static str, args: &[(&'static str, i64)]) -> Self {
         Self {
             code,
@@ -141,7 +140,7 @@ fn public_upload_error_code(code: &str) -> &'static str {
 
 // ── media types ───────────────────────────────────────────────────────
 
-/// `allowedMediaTypes` — the media types the oracle sniffs.
+/// `allowedMediaTypes` — the media types the retired implementation sniffs.
 fn allowed_extensions(media_type: &str) -> Option<&'static [&'static str]> {
     match media_type {
         "image/png" => Some(&[".png"]),
@@ -195,7 +194,7 @@ fn canonical_extension(media_type: &str) -> &'static str {
 
 // ── timestamps ────────────────────────────────────────────────────────
 
-/// Go `time.Time` on the wire — RFC3339Nano. The oracle formats in local
+/// Go `time.Time` on the wire — RFC3339Nano. The retired implementation formats in local
 /// time; the instant is what matters, so we always emit UTC (`Z`).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Timestamp(SystemTime);
@@ -520,7 +519,7 @@ where
                 if item.is_null() {
                     Ok(T::default())
                 } else {
-                    // The oracle's marshal/Unmarshal round-trip normalizes
+                    // The retired implementation's marshal/Unmarshal round-trip normalizes
                     // integral floats to ints (`8.0` -> `8`).
                     let mut item = item.clone();
                     normalize_numbers(&mut item);
@@ -667,12 +666,12 @@ fn upload_error(
 
 // ── shared state ──────────────────────────────────────────────────────
 
-/// The oracle's injectable `now`/`random` seams — used verbatim by the
+/// The retired implementation's injectable `now`/`random` seams — used verbatim by the
 /// production path through `systemNow`/`crypto/rand` equivalents.
 type NowFn = Arc<dyn Fn() -> SystemTime + Send + Sync>;
 type RandomFn = Arc<dyn Fn(&mut [u8]) -> Result<(), ()> + Send + Sync>;
 
-/// Shared upload state — one per relay (the oracle's `upload.Manager`).
+/// Shared upload state — one per relay (the retired implementation's `upload.Manager`).
 /// Owns staged sessions, disk persistence, and the finished-attachment
 /// index `Resolve` consults. All lifecycle errors are [`UploadError`]s
 /// that the handlers translate through [`public_upload_error_code`].
@@ -685,7 +684,7 @@ struct UploadsInner {
     /// `<runtime-dir>/uploads` — staging root for in-flight sessions and
     /// the published attachment records.
     dir: PathBuf,
-    /// `NewManager` failure (`upload_root_*` / quarantine) — the oracle
+    /// `NewManager` failure (`upload_root_*` / quarantine) — the retired implementation
     /// leaves the manager nil and answers `attachment_upload_unavailable`.
     available: AtomicBool,
     now: NowFn,
@@ -1173,7 +1172,7 @@ impl Uploads {
             discard_locked(&mut shared, &self.inner.dir, &request.upload_id, true);
             return Err(error);
         }
-        // Like the oracle's `fail`, every post-lock error discards the
+        // Like the retired implementation's `fail`, every post-lock error discards the
         // session (with a tombstone) — success does the same.
         let result = self.publish(&mut shared, &request.upload_id);
         discard_locked(&mut shared, &self.inner.dir, &request.upload_id, true);
@@ -1776,7 +1775,7 @@ fn chunk_locked(
 
 // ── validation helpers ────────────────────────────────────────────────
 
-/// `validTarget` — the manager-side target sanity check. The oracle
+/// `validTarget` — the manager-side target sanity check. The retired implementation
 /// only requires non-empty fields here; the `server_session_id ==
 /// "primary"` pin lives in the handler-level `validateUploadTarget`.
 fn valid_target(target: &TargetRef) -> bool {
@@ -1795,7 +1794,7 @@ fn valid_disk_target(target: &DiskAttachmentTarget) -> bool {
 }
 
 /// `attachmentTargetMatches` — full equality for same-run records;
-/// persisted records ignore `generation` (the oracle's restart seam).
+/// persisted records ignore `generation` (the retired implementation's restart seam).
 #[allow(dead_code)] // read once input.rs wires expansion
 fn attachment_target_matches(record: &AttachmentRecord, target: &TargetRef) -> bool {
     if !record.persisted_scope {
@@ -1819,7 +1818,7 @@ fn normalize_spec(spec: &FileSpec) -> Result<FileSpec, UploadError> {
         .unwrap_or_default()
         .trim()
         .to_lowercase();
-    // The oracle validates the *raw* name: `TrimSpace` only decides
+    // The retired implementation validates the *raw* name: `TrimSpace` only decides
     // emptiness, `len` bounds the untrimmed string, and the name is
     // carried through unmodified (spaces included). `utf8.ValidString`
     // and `filepath.Base(name) != name` are no-ops here — Rust strings
@@ -1942,7 +1941,7 @@ const GIF89_MAGIC: &[u8] = b"GIF89a";
 /// `validateContent` — magic bytes, text/JSON checks, and the
 /// ZIP-based document-container check.
 fn validate_content(item: &mut SessionFile) -> Result<(), UploadError> {
-    // The oracle stamps `file_index: -1` here — the helper doesn't know
+    // The retired implementation stamps `file_index: -1` here — the helper doesn't know
     // the position; the args still ride along inside the public error.
     let mismatch = || UploadError::with_args("upload_content_type_mismatch", &[("file_index", -1)]);
     match item.spec.media_type.as_str() {
@@ -1971,7 +1970,7 @@ fn validate_content(item: &mut SessionFile) -> Result<(), UploadError> {
             return Err(mismatch())
         }
         // `validTextContent(item) && validJSONContent(item.file)` — a
-        // nil file reads as invalid JSON in the oracle.
+        // nil file reads as invalid JSON in the retired implementation.
         "application/json"
             if !valid_text_content(item) || !item.file.as_mut().is_some_and(valid_json_content) =>
         {
@@ -2768,7 +2767,7 @@ pub(crate) async fn upload_begin(
             BTreeMap::new(),
         )];
     }
-    // `client.Identity()` isn't threaded into ActionContext; the oracle's
+    // `client.Identity()` isn't threaded into ActionContext; the retired implementation's
     // unauthenticated fallback — `connection:<id>` — is what the relay can
     // attest, so per-owner session caps key off the connection.
     let owner = format!("connection:{}", ctx.client_id);
@@ -3043,7 +3042,7 @@ pub(crate) async fn upload_cancel(
 /// dispatch. Called once per text field by the orchestration seam
 /// (`actions/input.rs`); `target` is the message's `TargetRef` claim.
 ///
-/// Returns the exact dispatch-failure text the oracle uses when a
+/// Returns the exact dispatch-failure text the retired implementation uses when a
 /// reference cannot be resolved (caller answers with a `command_result`
 /// phase `failed` and this error string).
 #[allow(dead_code)] // read once input.rs wires expansion
@@ -3582,7 +3581,7 @@ mod tests {
     }
 
     fn crc32(data: &[u8]) -> u32 {
-        // The validator never checks CRCs (the oracle's LimitReader stops
+        // The validator never checks CRCs (the retired implementation's LimitReader stops
         // before the checksum) — a real table keeps the test honest anyway.
         let mut table = [0u32; 256];
         for (index, slot) in table.iter_mut().enumerate() {
@@ -3786,7 +3785,7 @@ mod tests {
         let reference = finish.attachments[0].reference.clone();
         drop(uploads);
         let restarted = Uploads::new(dir);
-        // persisted records match without generation (oracle restart seam)
+        // persisted records match without generation (retired implementation restart seam)
         let mut other = target();
         other.generation = 99;
         let resolved = restarted.resolve(&other, &reference).expect("resolve");

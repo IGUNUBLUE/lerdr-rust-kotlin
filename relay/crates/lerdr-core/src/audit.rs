@@ -6,7 +6,7 @@
 //! `auditWriteDetails` ([`write_details`]), `boundedAuditString`
 //! ([`bounded_audit_string`]), and `auditInteger` ([`audit_integer`]).
 //!
-//! Security contract preserved from the oracle:
+//! Security contract:
 //!
 //! - The audit directory is `0700`, the log file `0600`; both are repaired
 //!   on open and on every append.
@@ -21,8 +21,8 @@
 //!   individually.
 //!
 //! `write_details`/`action_of` take the *decoded raw map*
-//! (`&serde_json::Map<String, Value>`) — the same `message map[string]any`
-//! the oracle hashes and inspects — not [`lerdr_core::protocol::Inbound`]:
+//! (`&serde_json::Map<String, Value>`) used to compute audit fields — not
+//! [`lerdr_core::protocol::Inbound`]:
 //! `payload_sha256` must cover every wire field, including the ones the
 //! typed view drops. `Inbound::raw_fields` is private, so callers pass the
 //! map they decoded (the session layer's `raw_map`).
@@ -184,8 +184,7 @@ impl AuditLog {
         record.host = clamp(&record.host, 255);
         record.phase = clamp(&record.phase, 80);
         record.error = clamp(&record.error, 1000);
-        // `json.Marshal(record)` — the Go-compatible formatter so the line
-        // (and the size it is measured against) matches the oracle's bytes.
+        // Canonical JSON keeps the persisted line and its measured size stable.
         let mut line = crate::json::to_vec(&record).map_err(|e| wrap(e, "encode audit record"))?;
         line.push(b'\n');
         if line.len() > MAX_RECORD_BYTES {
@@ -426,7 +425,7 @@ pub fn write_details(message: &serde_json::Map<String, Value>) -> BTreeMap<Strin
     }
     // `workspace_ids`/`expected_workspace_ids`: non-empty strings only,
     // ≤32 entries, each ≤160 runes. `keys`: ≤32 strings, ≤64 runes each —
-    // the oracle's `keys` arm does *not* drop empty strings.
+    // the retired implementation's `keys` arm does *not* drop empty strings.
     let workspace_ids = bounded_str_list(message.get("workspace_ids"), 160, 32, true);
     if !workspace_ids.is_empty() {
         details.insert("workspace_ids".to_owned(), Value::from(workspace_ids));
@@ -574,7 +573,7 @@ pub fn attempt_record(
 }
 
 /// `recordWriteAudit(client, msg, result)` — the completion record. The
-/// oracle derives attribution from the *message's* pane and only then
+/// retired implementation derives attribution from the *message's* pane and only then
 /// applies `result.PaneID` as the record's pane override; details stay
 /// empty (`Details = nil`).
 pub fn result_record(
@@ -638,7 +637,7 @@ fn clamp(value: &str, limit: usize) -> String {
 /// the `int`/`uint64` arms are unreachable), making the `float64` arm the
 /// whole behavior. Routing through `as_f64` also preserves the precision
 /// quirk: `9007199254740993` decodes as `2^53` and *is* accepted, exactly
-/// like the oracle.
+/// like the retired implementation.
 fn audit_integer(value: &Value) -> Option<i64> {
     match value.as_f64() {
         // `number >= 0 && number <= 1<<53 && number == float64(int64(number))`.
@@ -651,7 +650,7 @@ fn audit_integer(value: &Value) -> Option<i64> {
 /// `json.Marshal` renders integral float64s without a fraction (`500.0` →
 /// `500`), so floats that are exactly representable as `i64` are rewritten
 /// before hashing — this is what keeps `payload_sha256` byte-identical to
-/// the oracle's digest of `json.Marshal(message)`. Wider than the `2^53-1`
+/// the retired implementation's digest of `json.Marshal(message)`. Wider than the `2^53-1`
 /// bound used for the typed decode: exactness of the cast is the only
 /// requirement here.
 fn normalize_numbers(value: &mut Value) {
@@ -729,7 +728,7 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     )
 }
 
-/// A bare-message error for the oracle's `errors.New` paths.
+/// A bare-message error for the retired implementation's `errors.New` paths.
 fn plain(message: &'static str) -> io::Error {
     io::Error::new(ErrorKind::InvalidData, message)
 }
@@ -1006,7 +1005,7 @@ mod tests {
 
     #[test]
     fn rotation_boundary_is_exclusive() {
-        // Oracle: `info.Size() + nextBytes <= maxAuditBytes` → no rotate.
+        // Historical behavior: `info.Size() + nextBytes <= maxAuditBytes` → no rotate.
         // Drive `rotate_if_needed` directly so the boundary doesn't depend on
         // the stamped line's length.
         let dir = TempDir::new().unwrap();
@@ -1063,7 +1062,7 @@ mod tests {
     #[test]
     fn send_secret_via_command_envelope() {
         // action_of reads `action` when `type` is "command" — the rewrite the
-        // oracle performs before classify.
+        // retired implementation performs before classify.
         let message = msg(&[
             ("type", json!("command")),
             ("action", json!("send_secret")),
@@ -1138,7 +1137,7 @@ mod tests {
         let details = write_details(&message);
         let keys = details["keys"].as_array().unwrap();
         assert_eq!(keys[0], "ctrl");
-        assert_eq!(keys[1], "", "oracle keeps empty key strings");
+        assert_eq!(keys[1], "", "empty key strings are preserved");
         assert_eq!(keys[2].as_str().unwrap().chars().count(), 64);
         assert_eq!(details["index"], 2);
         assert!(!details.contains_key("total"));
@@ -1262,7 +1261,7 @@ mod tests {
         assert_eq!(audit_integer(&json!(5.0)), Some(5));
         assert_eq!(audit_integer(&json!(9007199254740992u64)), Some(1 << 53));
         // Go decodes every number as float64: 2^53+1 rounds to 2^53 and is
-        // accepted — the oracle returns 9007199254740992 here.
+        // accepted — the retired implementation returns 9007199254740992 here.
         assert_eq!(audit_integer(&json!(9007199254740993u64)), Some(1 << 53));
         assert_eq!(audit_integer(&json!(-1)), None);
         assert_eq!(audit_integer(&json!(5.5)), None);

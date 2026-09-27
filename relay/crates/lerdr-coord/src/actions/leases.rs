@@ -9,7 +9,7 @@
 //! sweeper restores baselines when leases expire.
 //!
 //! Wire surface: `lease_pane_size`/`release_pane_size` answer with a bare
-//! `command_result` (the oracle emits no `action_receipt` for them), and
+//! `command_result` (the retired implementation emits no `action_receipt` for them), and
 //! the router consults [`Leases::active_columns`]/[`Leases::active_rows`]
 //! when building `read_pane` requests.
 
@@ -263,7 +263,7 @@ impl Leases {
     /// record the lease, apply the minimum via `stty`.
     ///
     /// `owner_alive` is the client connection's cancellation token — the
-    /// oracle checks `ctx.Err()` before and after pane resolution.
+    /// retired implementation checks `ctx.Err()` before and after pane resolution.
     pub(crate) async fn acquire(
         &self,
         owner_alive: &tokio_util::sync::CancellationToken,
@@ -640,7 +640,7 @@ impl Leases {
     }
 
     /// `reconcile` — apply the minimum active lease or `restore` the
-    /// baseline (which deletes the pane entry, like the oracle's `delete`).
+    /// baseline (which deletes the pane entry, like the retired implementation's `delete`).
     async fn reconcile(&self, state: &mut LeaseState, pane_id: &str) -> Result<(), String> {
         enum Step {
             /// No active leases: apply the baseline and drop the entry.
@@ -828,7 +828,7 @@ fn remove_expired(pane: &mut PaneState, now: Instant) -> bool {
 // ── wire surface ──────────────────────────────────────────────────────────
 
 /// `lease_pane_size` — `Acquire`, bare `command_result` (no receipt, matching
-/// the oracle's `sendCommandResult`).
+/// the retired implementation's `sendCommandResult`).
 pub(crate) async fn lease_pane_size(
     ctx: ActionContext,
     owner_alive: &tokio_util::sync::CancellationToken,

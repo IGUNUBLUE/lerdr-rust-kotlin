@@ -163,7 +163,7 @@ fun TerminalContent(
     val surfaceState = rememberTerminalSurfaceState()
     val context = LocalContext.current
 
-    // Find-in-buffer — view-local like the oracle's TerminalView state:
+    // Find-in-buffer — view-local like Lerdr's TerminalView state:
     // the composition is per-pane, so the bar closes with the pane switch.
     var findOpen by rememberSaveable { mutableStateOf(false) }
     var findQuery by rememberSaveable { mutableStateOf("") }
@@ -174,8 +174,8 @@ fun TerminalContent(
     val keyboardController = LocalSoftwareKeyboardController.current
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // The oracle's `noEchoActive` — the pane reports a hidden prompt. The
-    // wire may omit the prompt text; the oracle defaults it to
+    // Lerdr's `noEchoActive` — the pane reports a hidden prompt. The
+    // wire may omit the prompt text; Lerdr defaults it to
     // "Password:". Readers never reach the field (the bar is disabled);
     // the banner still explains what the pane is asking.
     val secretActive = uiState.noEcho
@@ -201,7 +201,7 @@ fun TerminalContent(
 
     // The corpus joins every rendered row — skipped entirely while find is
     // closed so each committed frame doesn't pay an O(text) rebuild for a
-    // feature that isn't on screen (the oracle's terminalFindCorpus note).
+    // feature that isn't on screen (Lerdr's terminalFindCorpus note).
     val findRows = remember(uiState.rows, findOpen) {
         if (findOpen) terminalFindRows(uiState.rows) else emptyList()
     }
@@ -231,7 +231,7 @@ fun TerminalContent(
         activeFindIndex = -1
     }
 
-    // Typing re-anchors on the first match (the oracle's findInputChanged).
+    // Typing re-anchors on the first match (Lerdr's findInputChanged).
     LaunchedEffect(findQuery) {
         activeFindIndex = -1
         if (findResult.matches.isNotEmpty()) revealFindMatch(0)
@@ -263,7 +263,7 @@ fun TerminalContent(
 
     Scaffold(
         modifier = Modifier.onPreviewKeyEvent { event ->
-            // Ctrl/Cmd+F — the oracle's findShortcut on window keydown.
+            // Ctrl/Cmd+F — Lerdr's findShortcut on window keydown.
             if (event.type == KeyEventType.KeyDown &&
                 (event.isCtrlPressed || event.isMetaPressed) &&
                 !event.isAltPressed &&
@@ -512,10 +512,10 @@ fun TerminalContent(
 }
 
 /**
- * The find bar — oracle `.terminal-find`: query field, `n of m` count,
+ * The find bar — Lerdr `.terminal-find`: query field, `n of m` count,
  * previous/next, close. Enter steps forward, Shift+Enter back, Escape
  * closes; the soft keyboard's Search action is Enter. The bar focuses its
- * field when it enters composition — the oracle's focus+select on open.
+ * field when it enters composition — Lerdr's focus+select on open.
  */
 @Composable
 internal fun TerminalFindBar(
@@ -623,7 +623,7 @@ internal fun TerminalFindBar(
 /**
  * Esc Tab arrows Enter ⌫ Ctrl ⌨ — the mockup's single special-keys bar.
  * Every chip enforces the 48 dp touch target; [enabled] is the reader
- * gate (`readOnly` in the oracle — mutating affordances stay reachable
+ * gate (`readOnly` in Lerdr — mutating affordances stay reachable
  * but inert so the bar's layout doesn't jump between roles).
  */
 @Composable
@@ -651,7 +651,7 @@ private fun SpecialKeysBar(
                     .padding(horizontal = spacing.medium, vertical = spacing.small),
             ) {
                 if (!enabled) {
-                    // The oracle's readOnly gate — a persistent hint in
+                    // Lerdr's readOnly gate — a persistent hint in
                     // place of usable keys.
                     Surface(
                         color = MaterialTheme.colorScheme.surfaceContainerHighest,
@@ -688,7 +688,7 @@ private fun SpecialKeysBar(
                 // Latching modifier — tap, then a letter on the keyboard
                 // sends the chord; long-press opens the combos sheet. The
                 // latched state is announced (selected + stateDescription)
-                // and painted on the container (the oracle's aria-pressed
+                // and painted on the container (Lerdr's aria-pressed
                 // + `keyControlStatus`).
                 val ctrlColors = when {
                     !enabled -> MaterialTheme.colorScheme.surfaceContainerHigh to
@@ -743,7 +743,7 @@ private fun SpecialKeysBar(
                 }
             }
             if (ctrlLatched) {
-                // The oracle's `keyControlStatus` — the latch is visible
+                // Lerdr's `keyControlStatus` — the latch is visible
                 // in words, not only in the chip's container color.
                 Text(
                     "Ctrl latched — type a letter for the chord",
@@ -834,7 +834,7 @@ private fun CtrlCombosSheet(
 
 /**
  * label → wire key name (`send_keys` passes names through; Herdr's
- * vocabulary is Up/Down/Left/Right/Esc/Enter/Tab/Backspace — the oracle's
+ * vocabulary is Up/Down/Left/Right/Esc/Enter/Tab/Backspace — Lerdr's
  * `sendTerminalKey` spellings). Ctrl is not here — it's the latching
  * modifier rendered after these keys.
  */
@@ -897,10 +897,10 @@ private fun paneMetaLabel(uiState: TerminalUiState): String? {
 }
 
 /**
- * The oracle's `.secret-prompt` section — explains that the pane is asking
+ * Lerdr's `.secret-prompt` section — explains that the pane is asking
  * for a hidden value (`no_echo`) before the password-mode input bar. When
  * the relay lacks `secret_input` the field stays inert and this carries
- * the oracle's too-old-relay hint as the inline error.
+ * Lerdr's too-old-relay hint as the inline error.
  */
 @Composable
 private fun SecretPromptBanner(

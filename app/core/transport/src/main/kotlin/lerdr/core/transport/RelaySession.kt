@@ -35,8 +35,8 @@ import lerdr.core.protocol.Protocol
 import okhttp3.OkHttpClient
 
 /**
- * The supervised relay session — a port of the oracle's per-relay connection
- * logic in `frontend/src/lib/store.ts` (`connectRelay`, `scheduleReconnect`,
+ * The supervised relay session — a implementation of Lerdr's per-relay connection
+ * logic in the protocol contract (`connectRelay`, `scheduleReconnect`,
  * `sendKeepalive`, `revalidateConnections`, `retireConnection`,
  * `rejectPendingOperations`):
  *
@@ -52,7 +52,7 @@ import okhttp3.OkHttpClient
  *   socket — visible sessions redial, hidden sessions retire until the next
  *   [revalidate].
  * - Sends while disconnected queue in [sendBuffer] (64 items / 4 MiB);
- *   `request` rejects immediately like the oracle's `sendCommand`.
+ *   `request` rejects immediately like Lerdr's `sendCommand`.
  */
 class RelaySession(
     private val url: String,
@@ -82,7 +82,7 @@ class RelaySession(
         )
     },
 ) {
-    /** Per-relay session status — the oracle's `connection.status` + latches. */
+    /** Per-relay session status — Lerdr's `connection.status` + latches. */
     sealed interface SessionState {
         /** No dial yet — waiting for [start] or authentication material. */
         data object Idle : SessionState
@@ -108,7 +108,7 @@ class RelaySession(
 
     /**
      * Decrypted server→client messages across connections. Single-consumer
-     * (the oracle has exactly one handler) and lossless within the bound:
+     * (Lerdr has exactly one handler) and lossless within the bound:
      * frames buffer until collected, so early `push_config` traffic survives
      * subscription order. Overflow aborts the connection — frames can't be
      * skipped mid-stream, so the next dial's resync replays a consistent
@@ -118,7 +118,7 @@ class RelaySession(
         Channel<JsonObject>(ReconnectPolicy.INCOMING_BUFFER_CAPACITY)
     val incoming: kotlinx.coroutines.flow.Flow<JsonObject> = incomingChannel.receiveAsFlow()
 
-    // The oracle's store holds exactly one message consumer; transport
+    // Lerdr's store holds exactly one message consumer; transport
     // callers needing fan-out layer a broadcast above this stream.
 
     /** Wake signal for the dial loop — conflated, like `connectRelay` calls. */
@@ -281,7 +281,7 @@ class RelaySession(
     /**
      * `sendCommand` — write a request and await its `command_result`/
      * `action_receipt`/`error` resolution. The request frame gets
-     * `request_id`, `protocol: 3`, and `client_id` like the oracle.
+     * `request_id`, `protocol: 3`, and `client_id` like Lerdr.
      * Rejects immediately while disconnected — a queued command is answered
      * by nobody. [CommandException.dispatchedUnknown] marks results that may
      * still have landed on the relay.
@@ -359,7 +359,7 @@ class RelaySession(
                         }
                         _state.value = SessionState.Disconnected(reason)
                         // Fatal dial/handshake failures retry at the slowest
-                        // cadence — the oracle floors fatal closes at 60 s.
+                        // cadence — Lerdr floors fatal closes at 60 s.
                         floorMs = if (reason.fatal && reason.code != ReconnectPolicy.UNKNOWN_RELAY_CODE) {
                             ReconnectPolicy.MAX_DELAY_MS
                         } else {
@@ -370,7 +370,7 @@ class RelaySession(
                 }
             }
             // Enrollment persists before the connection becomes visible
-            // (the oracle's onAuthenticated → commitDeviceEnrollment).
+            // (Lerdr's onAuthenticated → commitDeviceEnrollment).
             onEnrolled(authentication, finish)
             _state.value = SessionState.Connected(finish)
             // Phase-5 §0 — `client_caps` is the first post-handshake frame;

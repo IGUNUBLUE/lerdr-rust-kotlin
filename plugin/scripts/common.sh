@@ -57,10 +57,9 @@ relay_release_root() {
     printf '%s\n' "${XDG_DATA_HOME:-$HOME/.local/share}/lerdr"
 }
 
-# The Rust binary is lerdr-relay; earlier releases of this same install root
-# carried the Go lerdr binary, and pre-rename installs used
-# herdr-mobile-relay. Resolving an existing release walks the newest name
-# first so a Go-era bundle still answers during a transition window.
+# The current binary is lerdr-relay; earlier releases in this install root
+# used lerdr, and pre-rename installs used herdr-mobile-relay. Resolving an
+# existing release walks the newest name first during the upgrade window.
 relay_binary() {
     local binary
     local common_dir

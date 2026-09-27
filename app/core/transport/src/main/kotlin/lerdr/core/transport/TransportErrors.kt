@@ -14,7 +14,7 @@ data class DisconnectReason(
     val fatal: Boolean = false,
     val cause: Throwable? = null,
 ) {
-    /** The oracle's `authRejected` latch — a 4401 close. */
+    /** Lerdr's `authRejected` latch — a 4401 close. */
     val isAuthRejection: Boolean
         get() = code == ReconnectPolicy.DEVICE_UNAUTHORIZED_CODE ||
             wsCloseCode == ReconnectPolicy.UNAUTHORIZED_CLOSE_CODE
@@ -46,7 +46,7 @@ sealed class TransportException(message: String, cause: Throwable? = null) : Exc
 }
 
 /**
- * A relay-confirmed command failure — the oracle's `CommandError`. [phase]
+ * A relay-confirmed command failure — Lerdr's `CommandError`. [phase]
  * distinguishes `failed_before_dispatch` from `dispatched_unknown`, where the
  * relay may still have acted after the write succeeded.
  */
@@ -59,7 +59,7 @@ class CommandException(
     val dispatchedUnknown: Boolean = false,
     /**
      * Refusal payloads still carry structured state (e.g. `update` on a
-     * declined `install_update`); the oracle folds it into connection state
+     * declined `install_update`); Lerdr folds it into connection state
      * even on failure, so it must survive the throw.
      */
     val data: kotlinx.serialization.json.JsonElement? = null,

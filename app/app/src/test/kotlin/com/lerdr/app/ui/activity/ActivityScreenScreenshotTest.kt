@@ -81,7 +81,7 @@ class ActivityScreenScreenshotTest {
                             item(
                                 "a1",
                                 ActivityItemKind.ACTION,
-                                "send_text → herdr-mobile-relay",
+                                "send_text → lerdr-relay",
                                 detail = "cargo test -p lerdr-coord",
                                 age = "1m ago",
                             ),

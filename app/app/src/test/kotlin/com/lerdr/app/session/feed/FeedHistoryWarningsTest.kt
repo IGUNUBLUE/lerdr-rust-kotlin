@@ -6,7 +6,7 @@ import lerdr.core.conversation.ConversationDiagnostics
 import org.junit.Test
 
 /**
- * The oracle's `conversation-warning` copy — `continuationMessage`,
+ * Lerdr's `conversation-warning` copy — `continuationMessage`,
  * oversized/omitted diagnostics text, the preparing row, the recover label,
  * `sourceChangedNotice`, and `mergeDiagnostics` — as pure functions.
  */
@@ -92,7 +92,7 @@ class FeedHistoryWarningsTest {
                 ),
             ),
         ).isEqualTo("Preparing history (indexing)…")
-        // The oracle caps the percentage at 100.
+        // Lerdr caps the percentage at 100.
         assertThat(
             preparationStatusText(
                 ConversationBrowseProgress(

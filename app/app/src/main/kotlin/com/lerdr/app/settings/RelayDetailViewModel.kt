@@ -24,7 +24,7 @@ data class RelayDetailUiState(
  *
  * - [reconnect] — no session yet → `connect(endpoint)` creates and dials
  *   it; a live session → `revalidateAll()` redials/probes it (mirrors the
- *   oracle's per-relay probe, which has no narrower wire command).
+ *   Lerdr's per-relay probe, which has no narrower wire command).
  * - [forget] — `removeRelay`: registry entry + credential drop; the
  *   registry diff tears the session down itself, then the screen pops.
  */

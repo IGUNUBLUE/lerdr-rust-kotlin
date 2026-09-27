@@ -1,10 +1,8 @@
 # Lerdr Herdr plugin
 
 This directory is the Herdr plugin root for the Rust relay (`lerdr-relay`).
-`herdr-plugin.toml` registers the plugin as `lerdr.events` — the same plugin
-id the Go implementation ships under — with identical actions, panes, and the
-`pane.agent_status_changed` event hook, plus a `[[startup]]` hook (new for the
-Rust port; see *Deviations*).
+`herdr-plugin.toml` registers `lerdr.events`, its actions and panes, the
+`pane.agent_status_changed` event hook, and the `[[startup]]` hook.
 
 ## Install (managed)
 
@@ -104,9 +102,9 @@ $HERDR_PLUGIN_CONFIG_DIR/relay.env  # token, instance id (plugin-managed)
 ```
 
 Binary resolution order in every script: `$LERDR_RELAY_BIN`/`$HERDR_RELAY_BIN`
-→ `current/lerdr-relay` → `current/lerdr` (Go-era bundle) →
-`current/herdr-mobile-relay` (pre-rename). The fallbacks keep hooks working
-while `current` still points at a Go-era release during a transition.
+→ `current/lerdr-relay` → `current/lerdr` (legacy name) →
+`current/herdr-mobile-relay` (pre-rename). The fallbacks support existing
+installations while the current release is upgraded.
 
 ## Herdr-injected environment
 
@@ -137,18 +135,17 @@ SIGUSR1 re-arm of the setup invitation and `relay.pid` beside `relay.env`.
 `/healthz` must report `status`/`instance`/`version`/`protocol` and
 `release_version`/`revision`/`bundle_hash` for exact-release verification.
 
-## Deviations from the original Go implementation
+## Current plugin contract
 
-- Manifest location: `plugin/herdr-plugin.toml` vs repo root — command paths
-  are `scripts/…` instead of `relay/…`; install uses the subdir form.
-- Binary name `lerdr` → `lerdr-relay`; assets `lerdr_V_*` → `lerdr-relay_V_*`.
-- No asset-name fallback to `lerdr_*` tarballs — those contain the Go binary.
-- Added `[[startup]]` → `scripts/plugin-on-startup.sh` execs
-  `lerdr-relay startup-hook` (doc 09: re-assert `agent.view.set` after
-  session restore/`live_handoff`). The original has no startup hook.
-- Release tarball carries `scripts/` instead of `relay/` and no `web/` bundle
-  or LICENSE yet; `web_hash`/`bundle_hash` manifest fields are kept for
-  contract parity (the binary defines what they hash).
-- `speech-voices.sh` not ported — unnecessary: the binary's `speech-voices`
-  subcommand the script wrapped is implemented natively.
+- The manifest lives at `plugin/herdr-plugin.toml`; command paths use
+  `scripts/…`, and installation uses the subdirectory form.
+- Release archives use `lerdr-relay` and `lerdr-relay_V_*` asset names.
+  Legacy names remain readable only for existing installations.
+- `[[startup]]` runs `scripts/plugin-on-startup.sh`, which invokes
+  `lerdr-relay startup-hook` to re-assert `agent.view.set` after session
+  restore or `live_handoff`.
+- Release tarballs carry `scripts/` rather than a `relay/` directory.
+  `web_hash` and `bundle_hash` remain release-manifest fields defined by the
+  binary.
+- `speech-voices` is a native binary subcommand; no wrapper script is needed.
 - `version` is `0.0.0`, synced to the workspace crates.

@@ -2,7 +2,7 @@
 //! driven through the exact code path the WS session uses.
 //!
 //! lerdr-core's `conformance.rs` already proves the *types* are byte-exact
-//! against the Go oracle; this suite proves the *relay boundary* honors the
+//! with the frozen vectors; this suite proves the *relay boundary* honors the
 //! same contract end to end:
 //!
 //! - every `c2s` envelope decodes through [`Inbound::decode`] — the same
@@ -99,8 +99,8 @@ fn inbound_envelope_fixtures_decode_and_round_trip() {
             "{name}: decoded type differs from fixture type"
         );
 
-        // Re-serialization must reproduce `decoded_json` byte-exactly — the
-        // canonical post-decode bytes the Go oracle emitted.
+        // Re-serialization must reproduce the fixture's canonical
+        // post-decode `decoded_json` bytes exactly.
         let canonical = vector
             .decoded_json
             .as_deref()
@@ -277,7 +277,7 @@ fn is_self_destructive_admin(name: &str) -> bool {
 
 /// Read replies until the request's terminal frame: `action_receipt` for
 /// routed actions, `command_result` first for device-admin (a failed one
-/// is terminal on its own — the oracle emits no receipt for it).
+/// is terminal on its own — the retired implementation emits no receipt for it).
 async fn read_until_terminal(
     client: &mut TestClient,
     session: &mut Session,

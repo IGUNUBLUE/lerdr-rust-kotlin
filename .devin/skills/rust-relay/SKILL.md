@@ -16,7 +16,9 @@ Use when creating or editing crates under `relay/crates/`.
 ## Hard Rules
 
 - **Actors own state; channels own boundaries.** No `Mutex<HashMap>` in hot paths. Shared projections go through `tokio::sync::watch` (latest-value) or `broadcast`; ordered per-subscriber work goes through bounded `mpsc`.
-- **All queues bounded.** A lagging session actor is evicted — this mirrors the Go sendbuffer contract (64 msgs / 4 MiB). Never `unbounded_channel`.
+- **All queues bounded.** A lagging session actor is evicted per the
+  committed send-buffer contract (64 messages / 4 MiB). Never
+  `unbounded_channel`.
 - Error taxonomy per layer: `thiserror` enums at crate edges (`HerdrError`, `E2eeError`, `CoordError`); `anyhow` only in the binary wiring. Dispatch boundary (`NotStarted`/`DispatchedUnknown`/`Refused`) must survive to `ActionReceipt.phase`.
 - Structured concurrency: spawned tasks tracked in `JoinSet`/`CancellationToken`; watch tasks die with their last subscriber; graceful shutdown via token cascade, not task leaks.
 - `tracing` instrumentation: `#[instrument]` on actor loops and request handlers; `tracing-journald` layer behind a feature flag (journald acceptance test exists).

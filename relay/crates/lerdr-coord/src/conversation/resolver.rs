@@ -1,9 +1,7 @@
-//! `Resolver` — the agent-session title resolver, a port of the oracle's
-//! `internal/session/resolver.go`. The topology commit feeds every agent
-//! row through [`Resolver::session_name_with_project`]
-//! (`resolveAgentSessionName`, `internal/app/server.go`), which shares the
-//! [`Reader`]'s directory-aware transcript location and then applies the
-//! provider-specific title grammar:
+//! `Resolver` — the agent-session title resolver. The topology commit feeds
+//! every agent row through [`Resolver::session_name_with_project`], which
+//! shares the [`Reader`]'s directory-aware transcript location and then
+//! applies the provider-specific title grammar:
 //!
 //! - OMP: first `type:"title"` header wins; else the latest
 //!   `title_change`; else the last `session.title`
@@ -17,10 +15,10 @@
 //!   whose `id` matches (`codexIndexThreadName`).
 //! - Anything else: `""`.
 //!
-//! Like the oracle, the resolver caches titles for 60 s keyed on the
+//! Like the retired implementation, the resolver caches titles for 60 s keyed on the
 //! normalized `(agent, cwd, foreground_cwd, session_id)` tuple and
 //! validates the cached entry against the freshly resolved location, so a
-//! moved transcript re-resolves inside the TTL. Divergence: the oracle's
+//! moved transcript re-resolves inside the TTL. Divergence: the retired implementation's
 //! cache is unbounded; this port caps it at [`MAX_TITLE_CACHE_ENTRIES`]
 //! with the same sweep-then-clear eviction as the location cache, matching
 //! the relay's bounded-state rule.
@@ -61,7 +59,7 @@ struct TitleEntry {
 }
 
 /// `session.Resolver` — `Send + Sync`, the title cache behind a mutex;
-/// resolution is synchronous file I/O identical to the oracle's.
+/// resolution is synchronous file I/O identical to the retired implementation's.
 pub struct Resolver {
     reader: Arc<Reader>,
     titles: Mutex<HashMap<TitleKey, TitleEntry>>,
@@ -146,7 +144,7 @@ impl Resolver {
     }
 }
 
-/// The `switch` in `SessionNameWithProject` — the oracle matches OMP/Pi on
+/// The `switch` in `SessionNameWithProject` — the retired implementation matches OMP/Pi on
 /// the literal lower-cased name (no separator stripping) and Hermes on the
 /// separator-stripped name; `qoder`/`claude`/`codex` are substring tests.
 fn session_title(agent_lower: &str, location: &Location, session_id: &str) -> String {

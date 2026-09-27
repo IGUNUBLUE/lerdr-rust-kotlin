@@ -49,7 +49,7 @@ private data class HomeInputs(
 
 /**
  * Mission-control projection: needs-you rail from blocked/question agents,
- * working/idle agents grouped by `relay ▸ workspace` (the oracle's
+ * working/idle agents grouped by `relay ▸ workspace` (Lerdr's
  * `workspaceGroups`), relay strip from the configured endpoints × live
  * connection rows. `agentStore.responding` folds the in-flight answer set
  * onto attention cards; a 30 s ticker re-derives the relative-age labels
@@ -142,11 +142,11 @@ class RealHomeRepository @Inject constructor(
     }
 
     /**
-     * The oracle's `workspaceGroups` (`workspaces.ts`): bucket agents by
+     * Lerdr's `workspaceGroups`: bucket agents by
      * `workspaceIdentity` (`workspace_id`, else `cwd`, else the pane's raw
      * id), prefer the `workspaces` snapshot's label, then order groups by
      * recency → label → host. Status sections group independently, matching
-     * the oracle's per-status `workspaceGroupTrees` split.
+     * Lerdr's per-status `workspaceGroupTrees` split.
      */
     private fun List<Agent>.toGroups(
         workspaces: List<RelayWorkspace>,
@@ -155,7 +155,7 @@ class RealHomeRepository @Inject constructor(
         val records = workspaces.associateBy {
             it.relayId + "\u0000" + it.workspaceId
         }
-        // Order groups like the oracle: newest member activity first, then
+        // Order groups like Lerdr: newest member activity first, then
         // label, then host — case-insensitive so ordering stays stable.
         return groupBy(::workspaceIdentity)
             .entries
@@ -195,7 +195,7 @@ class RealHomeRepository @Inject constructor(
             )
 
     /**
-     * The oracle's `groupLabel` — sole distinct project, else sole distinct
+     * Lerdr's `groupLabel` — sole distinct project, else sole distinct
      * cwd basename, else the first tab label, else "Workspace".
      */
     private fun groupLabel(agents: List<Agent>): String {
@@ -344,7 +344,7 @@ class RealHomeRepository @Inject constructor(
 
 /**
  * `pathBase` — basename of a filesystem path, both separators, trailing
- * slashes stripped; "workspace" when nothing remains (the oracle's
+ * slashes stripped; "workspace" when nothing remains (Lerdr's
  * WorkspaceManager fallback).
  */
 internal fun pathBase(path: String): String =

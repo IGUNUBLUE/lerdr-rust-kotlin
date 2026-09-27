@@ -1,6 +1,6 @@
 //! Per-(client, pane) watch tasks — the `pane_watch.go` port.
 //!
-//! One task per watched pane per client session. The oracle polls every
+//! One task per watched pane per client session. The retired implementation polls every
 //! `interval` (`pollPaneWatch` on a ticker); this port keeps that
 //! two-tier tick — a cheap `visible`-source probe, then a full
 //! `HandleReadPane` read only when the probe moved — and adds the Herdr
@@ -37,7 +37,7 @@
 //!   frame clears the gate, matching the last acked frame is a dup,
 //!   anything else is foreign and pushes `pane_resync`.
 //! - **4 s ack timeout** resets the gate AND the acked fingerprint (the
-//!   oracle clears `pending` + `acknowledged` + `probeFingerprint`); the
+//!   retired implementation clears `pending` + `acknowledged` + `probeFingerprint`); the
 //!   next send is a full `ack_required` frame.
 //! - `pane_resync` forces a fresh read + full frame.
 //! - Frame selection (`paneWatchUpdate`): same **frame** fingerprint
@@ -46,10 +46,10 @@
 //!   metadata; `delta::efficient` → a real `pane_delta` chained on
 //!   `base_fingerprint`; otherwise full `pane_content`. `ack_required`
 //!   rides only full frames — `paneDeltaResponse` never sets it.
-//! - `interval_ms` resolves through the oracle's whitelist
+//! - `interval_ms` resolves through the retired implementation's whitelist
 //!   `{100, 250, 500, 1000}` ms (`requestedPaneWatchInterval`); anything
 //!   else is the 250 ms default.
-//! - A `content_fingerprint` matching the initial read emits the oracle's
+//! - A `content_fingerprint` matching the initial read emits the retired implementation's
 //!   `knownFingerprint` frame instead of a duplicate `pane_content`: a
 //!   copy-everything `pane_delta` (`CopyLines = count("\n") + 1`) that
 //!   still engages the ack gate.
@@ -77,7 +77,7 @@ use crate::classify::store::{prepare_pane_response, PaneSemantics};
 use crate::fingerprint::content_fingerprint;
 use crate::history::Manager as HistoryManager;
 
-/// `paneWatchAckTimeout` — the oracle's gate reset window.
+/// `paneWatchAckTimeout` — the retired implementation's gate reset window.
 pub const ACK_TIMEOUT: Duration = Duration::from_secs(4);
 
 /// `messageInt(message["lines"], 30)` — the `watch_pane` fallback
@@ -102,7 +102,7 @@ pub(crate) const DEFAULT_WATCH_INTERVAL: Duration = Duration::from_millis(250);
 const WATCH_CTL_QUEUE: usize = 16;
 
 /// `requestedPaneWatchInterval` (`pane_watch.go:291-299`): the wire
-/// `interval_ms` resolves through the oracle's whitelist — anything not
+/// `interval_ms` resolves through the retired implementation's whitelist — anything not
 /// in `{100, 250, 500, 1000}` ms (absent, non-integral, out-of-set)
 /// falls back to `defaultPaneWatchInterval`.
 ///
@@ -147,7 +147,7 @@ pub(crate) fn read_format(message: &Inbound) -> ReadFormat {
     }
 }
 
-/// The wire spelling of a [`ReadFormat`] on outbound frames — the oracle
+/// The wire spelling of a [`ReadFormat`] on outbound frames — the retired implementation
 /// emits the normalized string it read with.
 pub(crate) fn format_wire(format: ReadFormat) -> &'static str {
     match format {
@@ -157,7 +157,7 @@ pub(crate) fn format_wire(format: ReadFormat) -> &'static str {
 }
 
 /// `readPaneForDisplay` (dispatch.go:1077-1098) — the source/format
-/// matrix the oracle reads panes through. A non-ansi read is the only
+/// matrix the retired implementation reads panes through. A non-ansi read is the only
 /// shape Herdr can serve by harvesting scrollback through the agent's
 /// mouse-scroll interface: `recent`/`recent-unwrapped` in text format
 /// scrolls the operator's real pane up and snaps it back, once per read
@@ -206,14 +206,14 @@ pub(crate) fn cap_pane_content_lines(content: &str, limit: u32) -> &str {
 }
 
 /// `paneFrameFingerprint` (server.go:2832-2881) — frame-level identity
-/// the watch's unchanged-check runs on. The oracle's tagged hash walks
+/// the watch's unchanged-check runs on. The retired implementation's tagged hash walks
 /// `{content, format, truncated, viewport_only, viewport_rows,
 /// resize_settling, attention_kind, prompt, command, options,
 /// interaction, question_layout}` — `writeField` writes a tag byte
 /// (0 absent, 1 string, 2 bool, 3 JSON), the u64-LE length, then the
 /// bytes. Internal only — never on the wire — but kept field-faithful so
 /// a metadata- or semantics-only change moves the fingerprint and emits
-/// the copy-delta exactly like the oracle.
+/// the copy-delta exactly like the retired implementation.
 fn frame_fingerprint(frame: &WatchFrame, format: ReadFormat) -> String {
     let mut digest = Sha256::new();
     let mut write_field = |tag: u8, data: &[u8]| {
@@ -329,7 +329,7 @@ pub(crate) struct WatchDeps {
 pub enum WatchCtl {
     /// `pane_applied` — the client committed a frame; carries the wire
     /// `content_fingerprint` (`""` when the field is absent — the watch
-    /// ignores it, matching the oracle).
+    /// ignores it, matching the retired implementation).
     Ack(String),
     /// `pane_resync` — the client lost the chain; force full re-read.
     Resync,
@@ -403,7 +403,7 @@ impl WatchSet {
     }
 
     /// `unwatch_pane` — stop and drop the watch. Returns whether one was
-    /// live (the oracle answers unknown panes with a no-op receipt too).
+    /// live (the retired implementation answers unknown panes with a no-op receipt too).
     pub fn stop(&mut self, pane_id: &str) -> bool {
         if let Some(entry) = self.entries.remove(pane_id) {
             // A full queue drops `Stop` — the abort still kills the task.
@@ -477,11 +477,11 @@ struct WatchState {
     /// ack timeout and resync.
     probe_fingerprint: String,
     /// Fingerprint of the last `pane_applied`-committed frame — the
-    /// oracle's `acknowledged.contentFingerprint`. Cleared on ack
+    /// retired implementation's `acknowledged.contentFingerprint`. Cleared on ack
     /// timeout and resync so a stale ack reads as foreign.
     acked_fingerprint: String,
     /// Gate: a frame is awaiting `pane_applied`. The companion deadline
-    /// is the oracle's `pending.sentAt + ackTimeout` — an absolute
+    /// is the retired implementation's `pending.sentAt + ackTimeout` — an absolute
     /// `Instant` because the select arms' futures are rebuilt every loop
     /// turn (a relative `sleep` would restart on every tick).
     pending_ack: bool,
@@ -569,11 +569,11 @@ enum FrameRead {
     /// A verified frame ready to push.
     Frame(Box<WatchFrame>),
     /// Transient failure or a mid-read fence — retry next tick, silently
-    /// (the oracle's `frame == nil` paths send nothing either).
+    /// (the retired implementation's `frame == nil` paths send nothing either).
     Retry,
     /// `pane_not_found` — the pane is definitively gone upstream.
     /// Distinct from `Retry` because the client must hear about it: the
-    /// silent-skip oracle behavior leaves a dead pane rendering as a
+    /// silent-skip retired implementation behavior leaves a dead pane rendering as a
     /// ghost ("Watching pane…") forever.
     Gone,
 }
@@ -615,10 +615,10 @@ async fn watch_loop(
 
     // Initial frame — `runPaneWatch`'s first pass. A `content_fingerprint`
     // matching the fresh read means the client already holds the content:
-    // the oracle's `knownFingerprint` branch still ships the frame's
+    // the retired implementation's `knownFingerprint` branch still ships the frame's
     // metadata as a copy-everything `pane_delta` (base = the known
     // fingerprint) and engages the ack gate (`watch.pending = frame`).
-    // A failed read emits nothing — the oracle sleeps and retries the nil
+    // A failed read emits nothing — the retired implementation sleeps and retries the nil
     // frame every interval; the first tick does the same here (the empty
     // `probe_fingerprint` forces the full read). A definitively dead pane
     // is the exception — the client gets the terminal frame at once.
@@ -652,7 +652,7 @@ async fn watch_loop(
         FrameRead::Retry => {}
     }
 
-    // `next_tick` is the oracle's ticker — fires every `interval` whether
+    // `next_tick` is the retired implementation's ticker — fires every `interval` whether
     // or not a poll ran (gated ticks only advance the schedule), so a
     // `pane.updated` missed while the gate was shut is picked up by the
     // first tick after it opens. `next_read` is the freshness boundary —
@@ -730,7 +730,7 @@ async fn watch_loop(
             }
             _ = timeout => {
                 // The ack never landed: drop the gate AND the acked base
-                // (the oracle clears `pending`, `acknowledged` and
+                // (the retired implementation clears `pending`, `acknowledged` and
                 // `probeFingerprint`) so a late/stale ack reads as
                 // foreign and the next poll's probe always full-reads a
                 // fresh `ack_required` rebuild.
@@ -815,7 +815,7 @@ async fn watch_loop(
 /// leg; only the topology-seeded mid-read drift leg can still fire (a
 /// commit landing inside the read window — rare, and strictly fresher
 /// on retry). At most one re-read per call; a still-dirty result serves
-/// — the periodic tick is the final fallback, matching the oracle's
+/// — the periodic tick is the final fallback, matching the retired implementation's
 /// poll-always posture.
 pub(crate) async fn pane_read_fresh(
     handle: &TopologyHandle,
@@ -866,13 +866,13 @@ pub(crate) async fn pane_read_fresh(
 /// `pollPaneWatch` (pane_watch.go:165-223) — the tick: a cheap
 /// `visible`-source probe first (`HandleProbePane`), a full
 /// `HandleReadPane` read only when `paneWatchNeedsFrameRead` says the
-/// frame moved. Probe/read failures are silent — the oracle's poll
+/// frame moved. Probe/read failures are silent — the retired implementation's poll
 /// returns without sending.
 async fn poll(pane_id: &str, spec: &WatchSpec, deps: &WatchDeps, state: &mut WatchState) {
     // `HandleProbePane` (dispatch.go:1169-1191) — `pane.read` on the
     // `visible` source at a fixed 500 lines in the watch's format,
     // fenced on the pane's generation *and* content revision mid-read
-    // (the oracle checks both: a committed state change under the probe
+    // (the retired implementation checks both: a committed state change under the probe
     // must not let stale content steer the needs-read decision) plus the
     // upstream output watermark (`pane_read_fresh`).
     let (generation, content_rev, observed_before) = {
@@ -963,7 +963,7 @@ async fn poll(pane_id: &str, spec: &WatchSpec, deps: &WatchDeps, state: &mut Wat
 /// generation fence. The upstream revision fences inside
 /// [`pane_read_fresh`]; a verified read's revision folds into the
 /// watch's served watermark. `Retry` = transient failure or the pane was
-/// replaced under the read — the caller emits nothing (the oracle's
+/// replaced under the read — the caller emits nothing (the retired implementation's
 /// `frame == nil` paths send nothing either: the initial loop retries,
 /// the poll just ends). `Gone` = `pane_not_found` — the caller pushes
 /// the terminal frame so the client stops rendering the corpse.
@@ -989,7 +989,7 @@ async fn read_watch_frame(
     // the shared ledger; the `agent_update` broadcast + `wake` ride
     // inside when the displayed status moved. `paneWatchFrame` builds no
     // `request_id`, so a gone-pane failure row carries `""` like the
-    // oracle's `stringValue(message, "request_id")` miss.
+    // retired implementation's `stringValue(message, "request_id")` miss.
     crate::actions::acknowledge_pane_state(
         &deps.handle,
         &deps.notices,
@@ -1000,7 +1000,7 @@ async fn read_watch_frame(
     // `applyPaneReadLease` — an active size lease marks the read
     // viewport-only and carries `viewport_rows`; client-sent
     // `terminal_columns`/`terminal_rows` are ignored wholesale (the
-    // oracle `delete`s them before applying the lease).
+    // retired implementation `delete`s them before applying the lease).
     let viewport_only = deps.leases.active_columns(pane_id).await.is_some();
     let viewport_rows = if viewport_only {
         deps.leases.active_rows(pane_id).await
@@ -1087,7 +1087,7 @@ fn send_frame(
     }
     // `acknowledged.frameFingerprint == current.frameFingerprint` → nil:
     // identical frames — content AND metadata — don't re-send, but the
-    // oracle still adopts the read as `acknowledged` — a `pane_applied`
+    // retired implementation still adopts the read as `acknowledged` — a `pane_applied`
     // echoing it then reads as a dup, not a foreign resync.
     if !state.force_full
         && !state.sent_frame_fingerprint.is_empty()
@@ -1181,7 +1181,7 @@ fn full_frame(pane_id: &str, spec: &WatchSpec, frame: &WatchFrame) -> Outbound {
 
 /// `paneDeltaResponse` (pane_watch.go:353-364) — every response key
 /// except `content`, plus `type`/`base_fingerprint`/`segments`.
-/// `ack_required` is never among the copied keys (the oracle sets it
+/// `ack_required` is never among the copied keys (the retired implementation sets it
 /// after the response map is built, on the full-frame branches only).
 fn delta_frame(
     pane_id: &str,
@@ -1228,7 +1228,7 @@ fn delta_frame(
 
 /// `pane_unchanged` — answers `read_pane` when the wire fingerprint already
 /// matches the client's (fingerprint-hit path,
-/// `unchangedPaneResponse`). The oracle always emits the `target` key —
+/// `unchangedPaneResponse`). The retired implementation always emits the `target` key —
 /// the request's echo, or `null`.
 pub fn pane_unchanged(pane_id: &str, fingerprint: &str, target: Option<TargetRef>) -> Outbound {
     Outbound::PaneUnchanged(PaneUnchanged {
@@ -1573,7 +1573,7 @@ mod tests {
     }
 
     /// `watch_pane` with a matching `content_fingerprint` emits the
-    /// oracle's copy-everything `pane_delta`, not a `pane_content` echo —
+    /// retired implementation's copy-everything `pane_delta`, not a `pane_content` echo —
     /// and like every `pane_delta`, carries no `ack_required`.
     #[tokio::test]
     async fn known_fingerprint_emits_copy_delta_not_content() {
@@ -1659,7 +1659,7 @@ mod tests {
         cancel.cancel();
     }
 
-    /// A failed initial `pane.read` emits no error frame — the oracle's
+    /// A failed initial `pane.read` emits no error frame — the retired implementation's
     /// `frame == nil` → sleep → loop; the first tick retries and sends a
     /// full `pane_content` (`sent_fingerprint` is still empty).
     #[tokio::test(start_paused = true)]
@@ -2021,7 +2021,7 @@ mod tests {
         settle().await;
         assert!(rx.try_recv().is_err(), "empty ack must not push anything");
 
-        // Foreign fingerprint — the oracle pushes `pane_resync`.
+        // Foreign fingerprint — the retired implementation pushes `pane_resync`.
         watches.ack("wE:pE", Some("0000000000000000"));
         let pushed = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await
@@ -2309,7 +2309,7 @@ mod tests {
             );
             assert_eq!(params.get("format").and_then(Value::as_str), Some("text"));
         }
-        // Probe depth is the oracle's fixed 500; the full read is the
+        // Probe depth is the retired implementation's fixed 500; the full read is the
         // spec's lines.
         assert_eq!(reads[1].get("lines").and_then(Value::as_u64), Some(500));
         assert_eq!(reads[2].get("lines").and_then(Value::as_u64), Some(30));
@@ -2457,7 +2457,7 @@ mod tests {
     }
 
     /// `pane_unchanged` carries the request's `target` echo — `null` when
-    /// absent, matching the oracle's `response["target"]` passthrough.
+    /// absent, matching the retired implementation's `response["target"]` passthrough.
     #[test]
     fn pane_unchanged_echoes_target() {
         let hit = pane_unchanged("wE:pE", "911169ddaaf146af", None);

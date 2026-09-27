@@ -7,7 +7,7 @@
 //! `authenticated = true` after the client finish opened correctly, to
 //! atomically consume the invitation / refresh the credential.
 //!
-//! [`AuthError::is_rejected`] is the retry semantics oracle: a rejected auth
+//! [`AuthError::is_rejected`] is the retry semantics retired implementation: a rejected auth
 //! means the same selector can never succeed (unknown, revoked, superseded,
 //! expired, or burned), so the connection closes with
 //! [`UNAUTHORIZED_CLOSE_CODE`] and the phone stops retrying. Transient
@@ -128,7 +128,7 @@ impl Drop for IssuedInvitation {
 }
 
 /// The bootstrap re-arm for [`DeviceAuthStore::reset_devices`] — the
-/// oracle's `ResetWithBootstrap` inputs (`s.cfg.Token` + `s.hostname`):
+/// retired implementation's `ResetWithBootstrap` inputs (`s.cfg.Token` + `s.hostname`):
 /// after the wipe the printed setup link keeps pairing.
 #[derive(Clone)]
 pub struct BootstrapRearm {
@@ -159,7 +159,7 @@ impl Drop for BootstrapRearm {
 /// means "stop retrying" (4401), everything else is transient.
 ///
 /// The `Display` text doubles as the `command_result.error` payload for the
-/// device-admin actions — the variant strings are the oracle's
+/// device-admin actions — the variant strings are the retired implementation's
 /// `internal/deviceauth` errors verbatim.
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
@@ -199,7 +199,7 @@ pub enum AuthError {
     #[error("invalid device locale")]
     InvalidLocale,
     /// The store does not implement device administration — surfaced as
-    /// the oracle's nil-`deviceAuth` answer, verbatim (capital D).
+    /// the retired implementation's nil-`deviceAuth` answer, verbatim (capital D).
     #[error("Device management is unavailable")]
     Unsupported,
     /// Store I/O / corruption — transient at the auth boundary.
@@ -254,7 +254,7 @@ pub trait DeviceAuthStore: Send + Sync {
     // The session actor serves the device-admin actions straight out of
     // this store — the `s.deviceAuth.*` calls inside the Go hub's action
     // switch (`internal/app/server.go`). Stores without an admin surface
-    // keep the defaults and the client gets the oracle's nil-`deviceAuth`
+    // keep the defaults and the client gets the retired implementation's nil-`deviceAuth`
     // answer ("Device management is unavailable" via
     // [`AuthError::Unsupported`]).
 

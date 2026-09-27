@@ -94,7 +94,7 @@ import lerdr.core.transport.TransportException
 
 /**
  * One journaled activity row, scoped to the relay that emitted it — the
- * oracle's normalized `Activity` (`activity_key = relayId:id` dedupe).
+ * Lerdr's normalized `Activity` (`activity_key = relayId:id` dedupe).
  */
 data class RelayActivity(
     val key: String,
@@ -119,11 +119,10 @@ data class UploadFileDigest(
  * Session hub — owns the per-relay [RelaySessionHandle] lifecycle and routes
  * everything a live connection produces or consumes:
  *
- * - [relayRegistry] diffs drive connect/teardown (`connectRelay` /
- *   `disconnectRelay` in the oracle);
+ * - [relayRegistry] diffs drive connect/teardown;
  * - [credentialStore] records feed `getAuthentication`; [RelaySession]'s
- *   `onEnrolled` commits the issued credential back through the store
- *   (`commitDeviceEnrollment` parity — invitation redemption included);
+ *   `onEnrolled` persists the issued credential, including invitation
+ *   redemption;
  * - inbound frames demux: [StoreReducer] first (agents/workspaces/
  *   connection), then pane frames to their [PaneSurface] (raw JSON —
  *   presence semantics the typed DTOs erase), then command results to the
@@ -185,7 +184,7 @@ class SessionRepository @Inject constructor(
 
     private val _activities = MutableStateFlow<List<RelayActivity>>(emptyList())
 
-    /** Cross-relay activity journal, newest first, capped like the oracle's 500. */
+    /** Cross-relay activity journal, newest first, capped like Lerdr's 500. */
     val activities: StateFlow<List<RelayActivity>> = _activities.asStateFlow()
 
     // ── lifecycle ─────────────────────────────────────────────────────
@@ -204,9 +203,8 @@ class SessionRepository @Inject constructor(
                 reconcileSessions(endpoints)
             }
         }
-        // Oracle parity: the viewed-pane effect re-derives when the agent
-        // projection (regeneration/respawn) or a relay's connection status
-        // moves, not only when the screen changes.
+        // Re-derive the viewed-pane frame when agent projection or connection
+        // status changes, not only when the screen changes.
         scope.launch { agents.collect { repushViewedPane() } }
         scope.launch {
             connectionStore.connections.collect {
@@ -218,9 +216,8 @@ class SessionRepository @Inject constructor(
     }
 
     /**
-     * `setHidden` fan-out — hidden sessions retire keepalives per policy, and
-     * open panes unwatch/re-watch with the app (`visibilitychange` parity:
-     * the `openPanes` intent survives, so resume re-arms watch + read).
+     * `setHidden` fans out to sessions. Open panes retain their intent, so
+     * resuming re-arms watch and read.
      */
     fun setHidden(hidden: Boolean) {
         synchronized(lock) { sessions.values.toList() }
@@ -264,7 +261,7 @@ class SessionRepository @Inject constructor(
     }
 
     /**
-     * This device's enrolled role on the relay — the oracle's
+     * This device's enrolled role on the relay — Lerdr's
      * `readOnlyRelayIds` source. Only a stored credential carries a role;
      * invitations and unpaired relays return null.
      */
@@ -272,7 +269,7 @@ class SessionRepository @Inject constructor(
         (authByRelay[relayId] as? RelayDeviceCredential)?.role
 
     /**
-     * The oracle's `readOnly` gate (fail-closed): mutating UI enables only
+     * Lerdr's `readOnly` gate (fail-closed): mutating UI enables only
      * when the enrolled role is proven CONTROLLER.
      */
     fun canControl(relayId: String): Boolean = deviceRole(relayId) == DeviceRole.CONTROLLER
@@ -292,7 +289,7 @@ class SessionRepository @Inject constructor(
     private var viewedSignature: String = ""
 
     /**
-     * The oracle's `$securityState.locked` input — `LerdrApp` feeds
+     * Lerdr's `$securityState.locked` input — `LerdrApp` feeds
      * `lockState.locked`. A transition re-derives the signature: locking
      * clears the viewed pane (`unlocked: false`), unlocking re-publishes it.
      */
@@ -304,7 +301,7 @@ class SessionRepository @Inject constructor(
 
     /**
      * `push_viewed_pane` — tells each relay which pane this device is
-     * viewing so push delivery suppresses it (the oracle's App-level
+     * viewing so push delivery suppresses it (Lerdr's App-level
      * `$effect`). Deduped by the `relay:pane:terminal:session:generation`
      * signature; a change clears the previous relay's view before
      * publishing the new one. Session screens call this on enter/leave;
@@ -316,7 +313,7 @@ class SessionRepository @Inject constructor(
     }
 
     /**
-     * The oracle's reactive core: the signature is non-empty only while the
+     * Lerdr's reactive core: the signature is non-empty only while the
      * app is visible + unlocked, the agent is a `primary`-session pane with
      * a complete target tuple, and its relay is `connected`.
      */
@@ -360,9 +357,8 @@ class SessionRepository @Inject constructor(
                 put("type", "push_viewed_pane")
                 put("protocol", Protocol.VERSION)
                 put("visible", visible)
-                // Oracle parity: the set frame reports `unlocked: true`
-                // outright (a locked app yields an empty signature, never a
-                // set frame); only the clear frame reports the real state.
+                // A visible frame always reports `unlocked: true`; a locked
+                // app has no viewed-pane signature and sends only a clear frame.
                 put("unlocked", if (visible) true else !_locked.value)
                 target?.let {
                     put("target", LerdrJson.encodeToJsonElement(TargetRef.serializer(), it))
@@ -374,9 +370,9 @@ class SessionRepository @Inject constructor(
     // ── relay self-update (check_update / install_update) ──────────
 
     /**
-     * `check_update` — `self_update`-gated (the oracle's checkRelayUpdate).
+     * `check_update` — `self_update`-gated (Lerdr's checkRelayUpdate).
      * The reply's `data.update` folds into the connection row like the
-     * oracle's connection.update assignment.
+     * Lerdr's connection.update assignment.
      */
     suspend fun checkUpdate(relayId: String): CommandResultMessage {
         if (connectionStore.connectionNow(relayId)
@@ -399,7 +395,7 @@ class SessionRepository @Inject constructor(
     }
 
     /**
-     * `install_update` — deploys the checked candidate (the oracle's
+     * `install_update` — deploys the checked candidate (Lerdr's
      * `installRelayUpdate`). Only an `available` + `can_install` update
      * with a `target_revision` is installable; the expected version and
      * revision ride the request so a mid-flight upstream move refuses
@@ -442,7 +438,7 @@ class SessionRepository @Inject constructor(
     /**
      * A `install_update` we dispatched whose relay restarted mid-install —
      * kept until the reconnect reports `releaseVersion`/`revision` matching
-     * the target (the oracle's `pendingRelayUpdates`, process-scoped here:
+     * the target (Lerdr's `pendingRelayUpdates`, process-scoped here:
      * the restart lands within seconds while the app stays alive).
      */
     /** A dispatched `install_update` awaiting post-restart confirmation. */
@@ -461,10 +457,9 @@ class SessionRepository @Inject constructor(
     }
 
     /**
-     * The oracle's `$connections` effect: on reconnect a pending install
-     * whose `releaseVersion`/`revision` (modulo `-dirty`) now matches the
-     * target is declared complete — the restart dropped the session before
-     * `command_result` could land.
+     * On reconnect, declare a pending install complete when its reported
+     * version and revision match the installed target. The restart can occur
+     * before its `command_result` arrives.
      */
     private fun reconcilePendingUpdates() {
         for ((relayId, pending) in pendingUpdates) {
@@ -480,9 +475,8 @@ class SessionRepository @Inject constructor(
     }
 
     /**
-     * The oracle's auto-check effect (App.svelte): once per
-     * `relay:releaseVersion:revision:appVersion` identity, a connected
-     * `self_update`-capable relay gets a `check_update` — a failed check
+     * Once per `relay:releaseVersion:revision:appVersion` identity, issue
+     * `check_update` for a connected relay with `self_update`. A failed check
      * releases the identity so the next reconnect retries.
      */
     private val autoCheckedUpdates = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
@@ -947,7 +941,7 @@ class SessionRepository @Inject constructor(
 
     /**
      * `acknowledge_pane` — dismiss a finished pane's attention state. Like
-     * the oracle, a `done` pane flips to `idle` optimistically before the
+     * Lerdr, a `done` pane flips to `idle` optimistically before the
      * command lands; readers never reach this (callers gate on
      * [canControl]).
      */
@@ -1258,7 +1252,7 @@ class SessionRepository @Inject constructor(
         return sendToAgent(agent, Inbound(type = "agent_restart"))
     }
 
-    /** `agent_clear` — wipe the pane's transcript (oracle's 45 s window). */
+    /** `agent_clear` — wipe the pane's transcript (Lerdr's 45 s window). */
     suspend fun clearAgent(paneId: String): CommandResultMessage {
         val agent = requireAgent(paneId)
         return sendToAgent(
@@ -1353,7 +1347,7 @@ class SessionRepository @Inject constructor(
 
     /**
      * `workspace_close` — optionally the whole linked-worktree group when
-     * [closeGroup] is set (the oracle's 30 s window).
+     * [closeGroup] is set (Lerdr's 30 s window).
      */
     suspend fun closeWorkspace(
         relayId: String,
@@ -1391,7 +1385,7 @@ class SessionRepository @Inject constructor(
     /**
      * `upload_begin` — stages a batch on the relay; answers
      * `upload_begin_result` `{upload_id, chunk_bytes, expires_at, limits}`.
-     * Upload frames carry only `target` + their own fields — the oracle's
+     * Upload frames carry only `target` + their own fields — Lerdr's
      * `sendUploadRequest` spreads the request over the top-level map, so
      * `files`/`upload_id`/`file_index`/`sequence`/`sha256` ride as raw
      * extras the flat [Inbound] does not declare.
@@ -1553,7 +1547,7 @@ class SessionRepository @Inject constructor(
     }
 
     /**
-     * The oracle's `attachmentController` gate — upload frames need an exact
+     * Lerdr's `attachmentController` gate — upload frames need an exact
      * target tuple; without one the relay answers `upload_scope_mismatch`.
      */
     fun canAttachTo(paneId: String): Boolean =
@@ -1667,7 +1661,7 @@ class SessionRepository @Inject constructor(
     /**
      * `rejectPendingOperations` for uploads — a dropped session strands every
      * in-flight `upload_*`; the frame may still have landed, so the failure is
-     * `dispatched_unknown` like the oracle.
+     * `dispatched_unknown` like Lerdr.
      */
     private fun rejectUploads(relayId: String, message: String) {
         for ((requestId, pending) in pendingUploads) {
@@ -1867,7 +1861,7 @@ class SessionRepository @Inject constructor(
         return parseWorkspaceGitDiff(result.data, path)
     }
 
-    /** `workspaceInspectionAvailable` — the oracle's capability + cwd gate. */
+    /** `workspaceInspectionAvailable` — Lerdr's capability + cwd gate. */
     private fun requireWorkspaceInspection(agent: Agent) {
         val connection = connectionStore.connectionNow(agent.relayId)
         if (connection?.capabilities?.contains(WORKSPACE_INSPECTION_CAPABILITY) != true) {
@@ -1904,8 +1898,8 @@ class SessionRepository @Inject constructor(
     }
 
     /**
-     * `inventoryRefresh` — the oracle's pull-to-refresh action
-     * (`App.svelte` → `requestInventoryRefresh`): `refresh_agents` to
+     * `inventoryRefresh` — Lerdr's pull-to-refresh action
+     *: `refresh_agents` to
      * every connected relay, plus `connect()` for registered endpoints
      * currently `disconnected`.
      */
@@ -2020,7 +2014,7 @@ class SessionRepository @Inject constructor(
      * `speak_text`, …) whose replies come back as the correlated
      * `command_result` (payload in `data`) and/or as typed frames on
      * [frames]. Extras spread over the top-level map exactly like the
-     * oracle's `sendCommand`.
+     * Lerdr's `sendCommand`.
      */
     suspend fun request(
         relayId: String,

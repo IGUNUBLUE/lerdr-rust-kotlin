@@ -353,7 +353,7 @@ class HomeViewModelTest {
     @Test
     fun `refreshInventory works without any connected relay`() = runTest {
         val h = Harness(this, tmp.root)
-        // No `connectReady` — the oracle fires regardless; disconnected
+        // No `connectReady` — Lerdr fires regardless; disconnected
         // endpoints simply get re-dialed by the repository seam.
         h.viewModel.refreshInventory()
         h.pump()

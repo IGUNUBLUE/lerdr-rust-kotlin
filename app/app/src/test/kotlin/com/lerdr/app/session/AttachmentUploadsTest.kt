@@ -210,7 +210,7 @@ class AttachmentUploadsTest {
     )
 
     @Test
-    fun `begin chunk finish writes oracle wire fields`() = runTest {
+    fun `begin chunk finish writes Lerdr wire fields`() = runTest {
         val body = "hello attachment".toByteArray()
         val source = sourceOf("content://docs/a.txt" to body)
         val h = Harness(this, tmp.root, source)
@@ -381,7 +381,7 @@ class AttachmentUploadsTest {
             runCatching { h.uploads.upload(h.paneId) }
         }
         val begin = h.awaitFrameCount("upload_begin", 1).last()
-        // chunk_bytes above the client cap — the oracle rejects the session.
+        // chunk_bytes above the client cap — Lerdr rejects the session.
         h.emitResult(
             "upload_begin_result",
             begin["request_id"]!!.jsonPrimitive.content,

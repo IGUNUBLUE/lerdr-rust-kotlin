@@ -15,7 +15,7 @@ import kotlinx.serialization.json.contentOrNull
 import lerdr.core.model.CommandResultMessage
 
 /**
- * `SpeechState` — the oracle's `'off' | 'idle' | 'speaking' | 'error'`
+ * `SpeechState` — Lerdr's `'off' | 'idle' | 'speaking' | 'error'`
  * lifecycle. `off` while the setting is disabled; `error` latches until the
  * next [RelaySpeechPlayer.speak]/[RelaySpeechPlayer.stop] or a re-enable.
  */
@@ -25,7 +25,7 @@ enum class SpeechPhase { OFF, IDLE, SPEAKING, ERROR }
 @Immutable
 data class SpeechPlayerState(
     val phase: SpeechPhase = SpeechPhase.OFF,
-    /** The last synthesis/playback failure, surfaced like the oracle toast. */
+    /** The last synthesis/playback failure, surfaced like Lerdr toast. */
     val issue: String? = null,
 )
 
@@ -35,7 +35,7 @@ class SpeechPlaybackException(message: String, cause: Throwable? = null) :
 
 /**
  * `SpeechRequest` — one in-flight `speak_text` exchange: [await] the
- * `command_result`, or [cancel] it, which sends the oracle's fire-and-forget
+ * `command_result`, or [cancel] it, which sends Lerdr's fire-and-forget
  * `cancel_speech` frame under the same `speech_request_id`.
  */
 interface SpeechExchange {
@@ -53,9 +53,9 @@ fun interface SpeechSender {
 }
 
 /**
- * The audio endpoint — port of the oracle's persistent `<audio>` element.
+ * The audio endpoint — implementation of Lerdr's persistent `<audio>` element.
  * [play] suspends until the clip ends, fails, or [interrupt] cuts it short
- * (the oracle's `onpause` resolve, which is how `stopSpeech` unwinds the
+ * (Lerdr's `onpause` resolve, which is how `stopSpeech` unwinds the
  * playback loop). Implemented by `MediaPlayerSpeechAudioSink` in production
  * and by a fake in tests.
  */
@@ -69,7 +69,7 @@ interface SpeechAudioSink {
  * fragments are synthesized on the computer and played here as ordinary
  * media, prefetching the next fragment while the current one speaks.
  *
- * Oracle semantics mirrored (`frontend/src/lib/speech.ts`):
+ * Lerdr semantics mirrored:
  * - [speak] refuses while locked, disabled, or handed blank text, and every
  *   call abandons the previous run through a generation guard.
  * - Chunks come from [SpeechChunker.speechChunks] at 240 chars over
@@ -78,7 +78,7 @@ interface SpeechAudioSink {
  * - The next chunk's request is issued before the current clip plays.
  * - [stop] bumps the generation, sends `cancel_speech` for the in-flight
  *   request (if any) and resolves the current clip — the parked `await`
- *   observes the bumped generation and exits, exactly like the oracle's
+ *   observes the bumped generation and exits, exactly like Lerdr's
  *   `onpause` path.
  * - Disabling the setting or it being off at call time forces `off`;
  *   enabling flips `off` → `idle`.
@@ -106,7 +106,7 @@ class RelaySpeechPlayer(
      */
     private val generation = AtomicLong(0)
 
-    /** Synchronous reads of the flows, like the oracle's `get(store)`. */
+    /** Synchronous reads of the flows, like Lerdr's `get(store)`. */
     @Volatile
     private var enabledNow = false
 
@@ -194,7 +194,7 @@ class RelaySpeechPlayer(
             throw cancelled
         } catch (failure: Exception) {
             if (gen != generation.get()) return
-            // Bump like the oracle so a stale completion cannot revive this run.
+            // Bump like Lerdr so a stale completion cannot revive this run.
             generation.incrementAndGet()
             inFlight = null
             _state.value = SpeechPlayerState(
@@ -205,7 +205,7 @@ class RelaySpeechPlayer(
         }
     }
 
-    /** `data.audio` — the base64 WAV payload, or the oracle's "no audio" error. */
+    /** `data.audio` — the base64 WAV payload, or Lerdr's "no audio" error. */
     private fun decodeAudio(result: CommandResultMessage): ByteArray {
         val audio = (result.data as? JsonObject)?.get("audio")
             ?.let { it as? JsonPrimitive }?.contentOrNull

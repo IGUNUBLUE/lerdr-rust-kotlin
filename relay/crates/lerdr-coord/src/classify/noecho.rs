@@ -179,7 +179,7 @@ fn bounded_noncolon(rest: &str, max: usize) -> bool {
         && !segment.contains(':')
 }
 
-/// The oracle's `promptPatterns` — case-insensitive, anchored at both ends.
+/// The retired implementation's `promptPatterns` — case-insensitive, anchored at both ends.
 fn prompt_match(line: &str) -> bool {
     if sudo_prompt(line)
         || ssh_password_prompt(line)

@@ -1,16 +1,15 @@
-//! Provider transcript roots — a port of `internal/agentroots` (`resolve`,
-//! `expandTilde`, `profileAgentDirs`, and the per-provider entry points).
+//! Provider transcript roots (`resolve`, `expandTilde`, `profileAgentDirs`,
+//! and per-provider entry points).
 //!
-//! Ordering contract (the oracle doc comment is authoritative): the relay's
-//! `HERDR_<AGENT>_CONFIG_DIRS`/`*_DATA_DIRS` list first (colon-separated, like
-//! `PATH`), then the agent's own single-directory variable, then discovered
-//! profile bases, then the home default — which is always moved to the end
-//! even when named explicitly. Entries are trimmed, a leading `~`/`~/` is
-//! expanded against `home`, and anything still relative is dropped.
+//! Ordering contract: the relay's `HERDR_<AGENT>_CONFIG_DIRS`/`*_DATA_DIRS`
+//! list first (colon-separated, like `PATH`), then the agent's own
+//! single-directory variable, then discovered profile bases, then the home
+//! default — which is always moved to the end even when named explicitly.
+//! Entries are trimmed, a leading `~`/`~/` is expanded against `home`, and
+//! anything still relative is dropped.
 //!
-//! The Go package caches `profileAgentDirs` for 60 s (5 s when a dangling
-//! symlink is present); this port resolves on demand — the caller caches
-//! locations, so the extra `readdir` per locate is not observable.
+//! Resolution is on demand; the caller caches locations, so the extra
+//! `readdir` per locate is not observable.
 
 use std::path::Path;
 

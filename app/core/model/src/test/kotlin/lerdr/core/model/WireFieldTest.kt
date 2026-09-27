@@ -10,7 +10,7 @@ import kotlinx.serialization.json.jsonObject
 import org.junit.Test
 
 /**
- * Presence-triple semantics for Go `map[string]any` fields: absent, explicit
+ * Presence-triple semantics for prior relay implementation fields: absent, explicit
  * `null`, and a value are three distinct wire states and must survive a
  * decode→encode round-trip untouched.
  */

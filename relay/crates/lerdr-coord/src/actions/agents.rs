@@ -1,7 +1,7 @@
 //! Agent lifecycle — `handleAgentStart`/`handleClear` plus
 //! `lifecycle.go`'s `ValidateStart`/`Start` workflow.
 //!
-//! The oracle pipeline, preserved:
+//! The retired implementation pipeline, preserved:
 //!
 //! 1. `ValidateStart` — profile exists, `name` matches
 //!    `^[a-z][a-z0-9_-]{0,31}$`, prompt within the rune cap, `cwd` resolves
@@ -20,7 +20,7 @@
 //!    prompt after a confirmed start is `completed_with_warning`, never a
 //!    failure that hides the new pane.
 //!
-//! `agent_clear` and `agent_restart` share the oracle's single handler: a
+//! `agent_clear` and `agent_restart` share the retired implementation's single handler: a
 //! fresh same-profile pane replaces the old one, which is then closed — a
 //! close failure downgrades to `completed_with_warning` because the
 //! replacement already exists.
@@ -109,7 +109,7 @@ pub(crate) async fn agent_start(
 }
 
 async fn start_inner(ctx: &ActionContext, request_id: &str, message: &Inbound) -> Outcome {
-    // The oracle checks the raw values — a whitespace name fails the name
+    // The retired implementation checks the raw values — a whitespace name fails the name
     // pattern, not the required check.
     let profile_id = message.profile_id.as_str();
     let name = message.name.as_str();
@@ -134,7 +134,7 @@ async fn start_inner(ctx: &ActionContext, request_id: &str, message: &Inbound) -
         Err(err) => {
             // A target that survived the failure stays open: publish the
             // topology so the empty pane appears on the phone and a retry
-            // can start into it (the oracle's `MarkTopologyChanged`+`wake`).
+            // can start into it (the retired implementation's `MarkTopologyChanged`+`wake`).
             if !err.pane_id.is_empty() {
                 ctx.handle.refresh().await;
             }
@@ -165,7 +165,7 @@ async fn start_inner(ctx: &ActionContext, request_id: &str, message: &Inbound) -
                 }
             }
             ctx.handle.refresh().await;
-            // The oracle records the start even when the initial prompt
+            // The retired implementation records the start even when the initial prompt
             // degraded the result to completed_with_warning.
             record_activity(
                 ctx,
@@ -215,7 +215,7 @@ async fn clear_inner(ctx: &ActionContext, request_id: &str, message: &Inbound) -
             "This agent does not match an available launch profile",
         );
     };
-    // `"clear-" + hex(unix_nanos)[..8]` — the oracle's replacement name.
+    // `"clear-" + hex(unix_nanos)[..8]` — the retired implementation's replacement name.
     let nanos_hex = format!(
         "{:x}",
         std::time::SystemTime::now()
@@ -252,7 +252,7 @@ async fn clear_inner(ctx: &ActionContext, request_id: &str, message: &Inbound) -
     {
         Ok(_) => Outcome::completed(pane_id, Some(data)),
         Err(_) => {
-            // The replacement exists and stays — the oracle surfaces the
+            // The replacement exists and stays — the retired implementation surfaces the
             // stranded old pane as a warning, not a failure.
             data["warning"] =
                 serde_json::json!("Replacement started, but the old pane could not be closed");
@@ -268,7 +268,7 @@ async fn clear_inner(ctx: &ActionContext, request_id: &str, message: &Inbound) -
     }
     ctx.handle.refresh().await;
     if outcome.ok {
-        // `agent_restart` flows through `handleClear` in the oracle and
+        // `agent_restart` flows through `handleClear` in the retired implementation and
         // records the `agent_clear` kind — the same quirk applies here.
         record_activity(
             ctx,
@@ -368,7 +368,7 @@ enum StartErrorKind {
     /// Nothing reached Herdr / a confirmed refusal — safe classification.
     Herdr(HerdrError),
     /// The create reported no root pane — `ErrCreatedTargetUnknown`, which
-    /// the oracle always couples with `ErrDispatchedUnknown`.
+    /// the retired implementation always couples with `ErrDispatchedUnknown`.
     CreatedTargetUnknown,
 }
 
@@ -735,7 +735,7 @@ fn start_err(pane_id: &str, err: HerdrError) -> StartError {
     }
 }
 
-/// `ShellJoin` — single-quote escaping identical to the oracle's.
+/// `ShellJoin` — single-quote escaping identical to the retired implementation's.
 fn shell_join(argv: &[String]) -> String {
     argv.iter()
         .map(|value| shell_quote(value))
@@ -853,7 +853,7 @@ mod tests {
         assert_eq!(shell_join(&["".into()]), "''");
         assert_eq!(shell_join(&["it's".into()]), "'it'\"'\"'s'");
         assert_eq!(shell_join(&["a b".into()]), "'a b'");
-        // `~` is outside the oracle's safe set → single-quoted like the
+        // `~` is outside the retired implementation's safe set → single-quoted like the
         // shell requires.
         assert_eq!(shell_join(&["~/x".into()]), "'~/x'");
     }
@@ -1102,7 +1102,7 @@ mod tests {
         let (frames, handle) = run_clear(true).await;
         let result = command_result(&frames);
         assert_eq!(result.phase.as_deref(), Some("completed"), "{frames:?}");
-        // The oracle bumps the generation for `result.OK` even while the
+        // The retired implementation bumps the generation for `result.OK` even while the
         // lifecycle refresh is still running.
         await_generation(&handle, "wE:p1", 1).await;
     }

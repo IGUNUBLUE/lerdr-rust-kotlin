@@ -1,8 +1,9 @@
-# 07 — Execution prompt
+# 07 — Historical execution record
 
-The master prompt to drive the build. Designed for an orchestrator
-agent session (Devin/Herdr) that can run parallel stations. Each phase is
-a loop with an explicit exit gate; never advance a phase on red.
+This captures the migration-era orchestration prompt. All phases described
+below are complete; it is retained for provenance, not as a live build plan.
+For present-day work, use `AGENTS.md`, the numbered specifications, current
+source, and frozen `fixtures/`.
 
 ---
 
@@ -34,105 +35,79 @@ GLOBAL RULES — non-negotiable:
 6. One PR per coherent unit; CI green before merge; no direct pushes to
    main.
 
-PHASE LOOP — for the current phase, repeat until its exit gate is green:
+HISTORICAL PHASE LOOP — this was the migration workflow:
   a) Pick the next item from the phase's work list.
   b) Implement in the assigned station/module only.
   c) Verify: unit tests + interop/vector tests for that item.
   d) Commit (branch per item) → PR → merge when CI green.
   e) Report: what landed, what failed, what's next.
-  f) If blocked twice on the same item: stop, document the blocker in
-     docs/blockers.md, escalate to me with options.
 
-Start at PHASE 0. Print the phase exit checklist when you believe it is
-met and wait for my confirmation before starting the next phase.
+The completed roadmap is recorded in `docs/05-roadmap.md`; do not restart
+these phases or look outside this repository for implementation guidance.
 ```
 
-## Phase 0 — fixtures (parallel, ~1 session)
+## Phase 0 — fixtures — complete
 
 ```
-fixtures/ is committed and frozen — this phase is DONE. Layout kept
-for reference:
+fixtures/ is committed and frozen. The corpus contains:
 
-  fixtures/e2ee/       — handshake transcripts (credential+invitation),
-                         derived keys, sealed/opened frame pairs, both
-                         codecs, negative cases (bad proof, replayed seq)
-  fixtures/panedelta/  — op sequences + expected applied buffers
+  fixtures/crypto/     — handshake transcripts, derived keys, sealed/opened
+                         frame pairs, codecs, and negative cases
+  fixtures/pane/       — delta sequences + expected applied buffers
   fixtures/ansi/       — ANSI lines → expected span runs
-  fixtures/question/   — pane content → QuestionInteraction
-  fixtures/conversation/ — JSONL samples → Entry pages, per agent kind
-  fixtures/envelope/   — Inbound/outbound JSON samples for every action
-                         in the catalog (field shapes, optionality)
+  fixtures/questions/  — pane content → QuestionInteraction
+  fixtures/conversation/ — JSONL samples → Entry pages per agent kind
+  fixtures/protocol/   — inbound/outbound JSON samples for the catalog
 
-Gate: every fixture reproducible by a script in fixtures/gen/; vector
-tests green on both sides.
+The Rust and Kotlin fixture consumers are the executable contract. Vectors are
+revised only with a deliberate in-repository protocol change.
 ```
 
-## Phase 1 — Kotlin core + app MVP (2 parallel stations)
+## Phase 1 — Kotlin core + app MVP (historical stations)
 
 ```
-Station A (:core) — owns app/core/**:
-  protocol DTOs, e2ee session, transport (OkHttp WS + backoff),
-  terminal engine (ANSI parser + delta applier + ack gate),
-  store (StateFlows), data (Keystore creds, DataStore, drafts).
-  Verify: fixture tests + REAL pairing against the Rust relay
-  (LERDR_RUST_INTEROP=1 spawns one; or a live device session).
+Station A (:core) — protocol DTOs, E2EE session, OkHttp transport, terminal
+engine, store, and data modules. Verification used fixture tests plus pairing
+against the Rust relay.
 
-Station B (:app/:feature) — owns app/app/** + app/feature/**:
-  M3E theme, nav graph, Home (needs-you rail + agent list + relays
-  strip), pairing screens, notification channels + foreground service,
-  Agent Feed (conversation pages, tool cards, question cards, composer),
-  biometric lock.
-  Verify: unit + Paparazzi screenshot tests; manual run against a fake
-  :core:store until Station A lands the real one (define the interface
-  boundary FIRST — store interfaces in :core:api if needed).
+Station B (:app) — M3E theme, navigation, home/pairing surfaces, notification
+channels + foreground service, feed, and biometric lock. Verification used
+unit tests, Roborazzi screenshot tests, and a fake `:core:store` until the
+real seam landed.
 
-Shared-seam rule: Station A publishes interfaces/fakes first; Station B
-codes against them. Any seam change = orchestrator merges it.
-
-Exit gate: on a real phone — pair via QR, see agents, get attention
-notification, answer an approval, send a prompt, watch the feed update.
-All without a WebView.
+The historical shared-seam rule was to publish interfaces/fakes before a
+consumer feature. The completed app supports QR pairing, inventory, attention
+notifications, approvals, prompts, and live feed updates without a WebView.
 ```
 
-## Phase 2 — terminal parity + remaining features (2 stations)
+
+## Phase 2 — terminal and remaining features — complete
 
 ```
-Station A (:core:terminal hardening + terminal UI):
-  virtualized LazyColumn renderer, special-keys bar, IME/KeyEvent input,
-  pane size lease with adjustResize, find-in-buffer, scroll-to-live.
-  Verify: ANSI fixtures render pixel-comparable (golden screenshots),
-  delta sequence fixtures apply exactly.
+The delivered Android client includes the documented terminal, workspace,
+activity, speech, update, device-management, and upload surfaces.
 
-Station B (remaining features):
-  workspaces/worktrees/files/git views, activity journal, speech,
-  updates, device management, push policy UI, uploads.
-
-Exit gate: the ~70-action catalog is reachable in UI; no feature exists
-only in the old web app.
+Historical exit gate: every supported catalog action had an intentional UI
+reach or capability-gated omission. The retired web client is not a feature
+authority.
 ```
 
-## Phase 3 — Rust relay core (2 stations + shadow harness)
+## Phase 3 — Rust relay core — complete
 
 ```
-Station A (transport core): lerdr-core, lerdr-e2ee, session actor,
-  send buffer semantics, axum /ws endpoint. Verify: fixture vectors +
-  the Kotlin app pairs and works against it.
+The Rust relay, Herdr client, pane-watch path, coordinator, store, and push
+subsystems are implemented. `tools/shadow` runs scripted traffic against fake
+Herdr and compares repeated Rust runs; self-mode determinism is the regression
+gate.
 
-Station B (herdr + watch): lerdr-herdr (socket API + CLI fallback +
-  events), lerdr-watch (fingerprints, deltas, ack gate), lerdr-coord,
-  lerdr-store, lerdr-push. Verify: shadow harness — scripted scenarios
-  against the fake Herdr produce a deterministic normalized outbound
-  stream (`tools/shadow` self-mode is the regression gate).
-
-Exit gate: shadow traces deterministic; Kotlin app + scripted client
-both pass against Rust.
+Historical exit gate: the Kotlin app and scripted protocol client pass against
+the Rust relay.
 ```
 
-## Phase 4+ — completion, gateway, protocol v2
+## Phase 4+ — completion and protocol revision — complete
 
-Per docs/05-roadmap.md. Conversation readers port from fixtures last in
-phase 4 (they drift; do them when everything else is stable).
-```
+The completed phase record is in `docs/05-roadmap.md`. Conversation readers
+are maintained from their in-repository specifications and fixtures.
 
 ## Orchestration notes for whoever runs the prompt
 

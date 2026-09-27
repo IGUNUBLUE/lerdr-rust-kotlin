@@ -16,7 +16,7 @@ import kotlinx.coroutines.launch
 import lerdr.core.store.Agent
 import lerdr.core.store.RelayStatus
 
-/** The browser's two lists — flat file tree vs. changed files (oracle tabs). */
+/** The browser's two lists — flat file tree vs. changed files (Lerdr tabs). */
 enum class FilesSection(val label: String) {
     FILES("Files"),
     CHANGES("Changes"),
@@ -99,7 +99,7 @@ internal fun breadcrumbsOf(rootLabel: String, currentDir: String): List<FilesBre
     return crumbs
 }
 
-/** `statusLabel` — the oracle's porcelain-XY → human label mapping. */
+/** `statusLabel` — Lerdr's porcelain-XY → human label mapping. */
 internal fun gitStatusLabel(status: String): String = when {
     status == "??" -> "New"
     status.contains('D') -> "Deleted"
@@ -109,7 +109,7 @@ internal fun gitStatusLabel(status: String): String = when {
     else -> status.trim().ifEmpty { "Changed" }
 }
 
-/** `diffLineTone` — the oracle's per-line unified-diff classification. */
+/** `diffLineTone` — Lerdr's per-line unified-diff classification. */
 enum class DiffLineTone {
     META,
     FILE,
@@ -135,11 +135,10 @@ internal fun diffLineToneOf(line: String): DiffLineTone = when {
 
 /**
  * Files-mode mutation point — owns workspace loads and preview fetches for
- * the screen's lifetime. Mirrors the oracle's `WorkspaceInspector`:
- * generation counters drop stale results, tree + git load in parallel with
- * `allSettled` semantics (a git failure degrades to `available=false` while
- * a tree failure errors the whole browser), and the workspace reloads when
- * the agent's `cwd` changes under it.
+ * the screen's lifetime. Generation counters drop stale results; tree and Git
+ * load in parallel, a Git failure becomes `available=false`, and a tree
+ * failure errors the browser. The workspace reloads when the agent's `cwd`
+ * changes.
  */
 class FilesViewModel(
     private val paneId: String,
@@ -148,7 +147,7 @@ class FilesViewModel(
 
     private val relayId = paneId.substringBefore("::")
 
-    /** Stale-load guards — the oracle's workspaceGeneration/previewGeneration. */
+    /** Stale-load guards — Lerdr's workspaceGeneration/previewGeneration. */
     private var workspaceGeneration = 0
     private var previewGeneration = 0
 
@@ -204,7 +203,7 @@ class FilesViewModel(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), FilesUiState(paneId))
 
     init {
-        // `loadedIdentity` — the oracle keys the listing to pane+cwd and
+        // `loadedIdentity` — Lerdr keys the listing to pane+cwd and
         // reloads when the agent moves directories.
         viewModelScope.launch {
             sessions.agent(paneId)
@@ -218,7 +217,7 @@ class FilesViewModel(
     /**
      * `loadWorkspace` — tree + git status in parallel. A rejected tree errors
      * the browser; a rejected git status degrades to "not a repo" with the
-     * failure as the reason (the oracle's `Promise.allSettled` split).
+     * failure as the reason (Lerdr's `Promise.allSettled` split).
      */
     fun loadWorkspace() {
         val generation = ++workspaceGeneration
@@ -328,7 +327,7 @@ class FilesViewModel(
         }
     }
 
-    /** `selectSection` — tab switch clears the open preview (oracle parity). */
+    /** A tab switch clears the open preview. */
     fun selectSection(section: FilesSection) {
         if (section == local.value.section) return
         previewGeneration += 1

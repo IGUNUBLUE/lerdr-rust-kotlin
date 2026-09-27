@@ -2,12 +2,12 @@ package lerdr.core.conversation
 
 /**
  * Page-level model for `get_conversation_history` — the wire `BrowsePage`
- * (`internal/conversation/browser.go`) normalized for the feed, plus the
+ * (relay contract) normalized for the feed, plus the
  * request side. The fixtures under `fixtures/conversation/` pin the
  * reader-level contract this projection preserves.
  */
 
-/** Page lifecycle — Go `BrowseState`. */
+/** Page lifecycle — prior relay implementation. */
 enum class ConversationBrowseState(val wire: String) {
     /** Entries are final for this read. */
     READY("ready"),
@@ -33,7 +33,7 @@ enum class ConversationBrowseState(val wire: String) {
     }
 }
 
-/** Read path the relay served the page from — Go `BrowseMode`. */
+/** Read path the relay served the page from — prior relay implementation. */
 enum class ConversationBrowseMode(val wire: String) {
     /** Tail window of the live transcript source (JSONL readers). */
     RECENT("recent"),
@@ -153,7 +153,7 @@ data class ConversationPage(
 }
 
 /** Machine codes carried in `reason_code` and `error.code`. Open set — the
- * relay may add codes; these are the ones the Go oracle emits today. */
+ * relay may add codes; these are the ones the Go Lerdr emits today. */
 object ConversationReason {
     const val INVALID_PROVIDER = "invalid_provider"
     const val INVALID_SESSION = "invalid_session"

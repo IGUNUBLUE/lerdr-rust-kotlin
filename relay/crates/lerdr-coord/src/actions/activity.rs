@@ -1,6 +1,6 @@
 //! Relay-side activity journal — the `internal/activity` port.
 //!
-//! The oracle records every routed mutation (`recordActivity`: action,
+//! The retired implementation records every routed mutation (`recordActivity`: action,
 //! status, summary, pane, request — success and failure) plus agent-state
 //! transitions into a bounded journal; `get_activity` answers
 //! `activity_history` with the newest entries in append order and
@@ -51,7 +51,7 @@ const JOURNAL_FILENAME: &str = "activity.jsonl";
 /// doomed-id set guarding clear/compaction rewrites.
 const TOMBSTONE_FILENAME: &str = "activity.tombstones";
 
-/// `entryIDSequence` — process-global like the oracle's package atomic,
+/// `entryIDSequence` — process-global like the retired implementation's package atomic,
 /// so ids keep climbing across journals and clears.
 static ENTRY_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// `os.CreateTemp`'s disambiguator — unique sibling temp names under the
@@ -70,7 +70,7 @@ pub(crate) struct NewEntry {
     /// or the transition kinds (`working`, `blocked`, `finished`).
     pub kind: String,
     /// `Entry.Status` — `sent`/`completed`/`failed`/`approved`/… — the
-    /// oracle's per-call-site strings, not a closed enum.
+    /// retired implementation's per-call-site strings, not a closed enum.
     pub status: String,
     /// `Entry.Summary` — the human sentence the feed shows.
     pub summary: String,
@@ -164,7 +164,7 @@ pub(crate) enum JournalEvent {
 
 #[allow(dead_code)]
 impl JournalEvent {
-    /// The wire frame the oracle broadcasts for this event.
+    /// The wire frame the retired implementation broadcasts for this event.
     pub(crate) fn into_outbound(self) -> Outbound {
         match self {
             Self::Recorded(entry) => Outbound::Activity(ActivityMessage {
@@ -180,7 +180,7 @@ impl JournalEvent {
     }
 }
 
-/// Shared activity journal — one per relay (the oracle's
+/// Shared activity journal — one per relay (the retired implementation's
 /// `activity.Journal` ring). Handlers call [`Journal::record`] as they
 /// complete so the feed reflects what actually happened.
 #[derive(Clone)]
@@ -232,7 +232,7 @@ impl Default for Journal {
         Self {
             inner: Arc::new(Mutex::new(Inner::default())),
             storage: None,
-            // The oracle's worker mailbox is 64 deep; the fanout buffer
+            // The retired implementation's worker mailbox is 64 deep; the fanout buffer
             // only bounds a lagging subscriber's backlog.
             events: broadcast::channel(64).0,
         }
@@ -242,7 +242,7 @@ impl Default for Journal {
 impl Journal {
     /// `OpenJournal` — open (creating) the durable journal under `dir`
     /// and replay it. Failure means the directory cannot serve the
-    /// oracle's durability contract; the factory falls back to
+    /// retired implementation's durability contract; the factory falls back to
     /// [`Journal::default`]'s in-memory ring.
     pub(crate) fn open(dir: &Path) -> io::Result<Journal> {
         // `os.MkdirAll(cacheDir, 0o700)` + `os.Chmod` — create the
@@ -349,14 +349,14 @@ impl Journal {
         Ok(())
     }
 
-    /// Record one completed/failed action — the oracle's
+    /// Record one completed/failed action — the retired implementation's
     /// `recordActivity`/`Commit`: normalize, stamp `id` + `timestamp`,
     /// append, evict oldest past the ring bounds, return the committed
     /// entry so the caller can wire the `activity` push.
     ///
     /// Durable journals write `activity.jsonl` first and mutate the ring
     /// only after the write+fsync lands; a failed append drops the entry
-    /// (the oracle's caller logs `activity append failed` and skips the
+    /// (the retired implementation's caller logs `activity append failed` and skips the
     /// broadcast) so memory and file never diverge — the file is
     /// authoritative on the next [`Journal::open`].
     ///
@@ -408,7 +408,7 @@ impl Journal {
 
     /// `record`'s append half — durable write first when the journal is
     /// file-backed, then the ring. Returns `false` on a failed durable
-    /// append (the oracle's `Commit` error path — the entry is dropped,
+    /// append (the retired implementation's `Commit` error path — the entry is dropped,
     /// nothing is broadcast).
     fn append_locked(&self, inner: &mut Inner, entry: &ActivityEntry) -> bool {
         if let Some(storage) = &self.storage {
@@ -425,7 +425,7 @@ impl Journal {
         // byte bound always keeps at least the newest entry; a single
         // entry exceeding `maxBytes` is unreachable here (extract, the
         // only unbounded field, is truncated far below it), where the
-        // oracle would reject the append outright.
+        // retired implementation would reject the append outright.
         while inner.entries.len() > MAX_ITEMS {
             if let Some((size, _)) = inner.entries.pop_front() {
                 inner.bytes -= size;
@@ -462,7 +462,7 @@ impl Journal {
     /// that went stale before it could be published: write-ahead the
     /// tombstone, compact the journal without the entry, restore the
     /// prior tombstone set (the crash window closes between the
-    /// tombstone and the rewrite, exactly like the oracle).
+    /// tombstone and the rewrite, exactly like the retired implementation).
     pub(crate) fn discard(&self, id: &str) {
         if id.is_empty() {
             return;
@@ -527,7 +527,7 @@ impl Journal {
     }
 
     /// `Clear` — drains the journal; the [`JournalEvent::Cleared`]
-    /// broadcast is the oracle's empty-history republish. Durable I/O
+    /// broadcast is the retired implementation's empty-history republish. Durable I/O
     /// failures are swallowed here — callers with an error surface
     /// (`clear_activities`) use [`Journal::try_clear`].
     #[allow(dead_code)] // tests + callers without an error surface
@@ -593,7 +593,7 @@ fn encode_line(entry: &ActivityEntry) -> io::Result<Vec<u8>> {
 /// `json.Unmarshal` into `activity.Entry` — the caller skips `None`
 /// (corrupt lines). `MilliTimestamp.UnmarshalJSON` additionally accepts
 /// an RFC3339 string; patch it into the millis integer `ActivityEntry`
-/// models and retry, so the read path covers every journal the oracle
+/// models and retry, so the read path covers every journal the retired implementation
 /// can open.
 fn decode_entry(line: &[u8]) -> Option<ActivityEntry> {
     if let Ok(entry) = serde_json::from_slice::<ActivityEntry>(line) {
@@ -715,7 +715,7 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
 
 /// `retainWithinLimits` — the newest `maxItems` survive, then the oldest
 /// evict until `maxBytes`; a lone entry over the byte bound is an error
-/// like the oracle's (unreachable post-`NormalizeEntry`).
+/// like the retired implementation's (unreachable post-`NormalizeEntry`).
 fn retain_within_limits(entries: Vec<ActivityEntry>) -> io::Result<Vec<(usize, ActivityEntry)>> {
     let skip = entries.len().saturating_sub(MAX_ITEMS);
     let mut retained = Vec::with_capacity(entries.len() - skip);
@@ -798,7 +798,7 @@ fn append_durable(storage: &Storage, inner: &mut Inner, entry: ActivityEntry) ->
 }
 
 /// `os.OpenFile(path, O_WRONLY|O_CREATE|O_APPEND, 0o600)` — open per
-/// append like the oracle, repair the mode, write + fsync + close.
+/// append like the retired implementation, repair the mode, write + fsync + close.
 fn append_line(path: &Path, data: &[u8]) -> io::Result<()> {
     let mut file = OpenOptions::new()
         .append(true)
@@ -898,7 +898,7 @@ fn write_tombstones(storage: &Storage, tombstones: &BTreeSet<String>) -> io::Res
 }
 
 /// `os.CreateTemp(dir, "<prefix>.*.tmp")` — a unique sibling temp file
-/// carrying the oracle's 0600 mode.
+/// carrying the retired implementation's 0600 mode.
 fn create_temp(dir: &Path, prefix: &str) -> io::Result<(File, PathBuf)> {
     for _ in 0..32 {
         let nanos = SystemTime::now()
@@ -925,7 +925,7 @@ fn create_temp(dir: &Path, prefix: &str) -> io::Result<(File, PathBuf)> {
 }
 
 /// `temp.Chmod(0o600)` + write + `Sync` + rename + `syncDirectory` —
-/// the oracle's durable-rewrite shape for both journal and tombstones.
+/// the retired implementation's durable-rewrite shape for both journal and tombstones.
 fn write_atomic(dir: &Path, prefix: &str, target: &Path, payload: &[u8]) -> io::Result<()> {
     let (mut temp, temp_path) = create_temp(dir, prefix)?;
     let result = (|| {
@@ -946,7 +946,7 @@ fn write_atomic(dir: &Path, prefix: &str, target: &Path, payload: &[u8]) -> io::
 
 /// `syncDirectory` — fsync the containing dir so a rename/removal is
 /// durable; EINVAL/ENOTSUP/ENOSYS mean the filesystem cannot fsync a
-/// directory, which the oracle treats as success.
+/// directory, which the retired implementation treats as success.
 fn sync_directory(dir: &Path) -> io::Result<()> {
     let dir = File::open(dir)?;
     match dir.sync_all() {
@@ -992,7 +992,7 @@ fn encoded_len(entry: &ActivityEntry) -> usize {
 
 /// `get_activity` — `{"type":"activity_history","activities":[…]}`.
 /// `limit` rides the raw-field seam (`messageInt(msg["limit"], 500)`):
-/// integral numbers only, clamped to [1, 500]. The oracle answers in
+/// integral numbers only, clamped to [1, 500]. The retired implementation answers in
 /// journal order — oldest → newest — never newest-first.
 pub(crate) async fn get_activity(
     ctx: ActionContext,
@@ -1008,7 +1008,7 @@ pub(crate) async fn get_activity(
     };
     let entries = ctx.activities.recent(limit);
     vec![Outbound::ActivityHistory(ActivityHistoryMessage {
-        // The oracle's `recentActivities` maps an empty view to
+        // The retired implementation's `recentActivities` maps an empty view to
         // `"activities":null`, not `[]` (`append(nil)` stays nil).
         activities: Some(if entries.is_empty() {
             MaybeNull::Null
@@ -1021,7 +1021,7 @@ pub(crate) async fn get_activity(
 
 /// `HandleClearActivities` — drains the journal, then `command_result`
 /// (`completed`) + receipt. A durable-clear failure answers `failed`
-/// with the oracle's "Activity history could not be cleared" and skips
+/// with the retired implementation's "Activity history could not be cleared" and skips
 /// the empty-history republish; the `activityW == nil` "storage is
 /// unavailable" branch stays unreachable — the factory always builds a
 /// journal (in-memory is the fallback).
@@ -1164,7 +1164,7 @@ mod tests {
             tail.iter().map(|e| e.summary.as_str()).collect::<Vec<_>>(),
             ["e7", "e8", "e9"]
         );
-        // Over-large limit answers everything, like the oracle's clamp.
+        // Over-large limit answers everything, like the retired implementation's clamp.
         assert_eq!(journal.recent(500).len(), 10);
     }
 
@@ -1345,7 +1345,7 @@ mod tests {
         let [Outbound::ActivityHistory(message)] = frames.as_slice() else {
             panic!()
         };
-        // The oracle serializes an empty view as `"activities":null`.
+        // The retired implementation serializes an empty view as `"activities":null`.
         assert!(matches!(message.activities, Some(MaybeNull::Null)));
     }
 
@@ -1676,7 +1676,7 @@ mod tests {
 
     #[test]
     fn clear_failure_keeps_entries_and_skips_broadcast() {
-        // A clear that cannot write tombstones fails like the oracle —
+        // A clear that cannot write tombstones fails like the retired implementation —
         // nothing drains, no empty-history republish.
         let dir = tempfile::tempdir().unwrap();
         let journal = Journal::open(dir.path()).unwrap();

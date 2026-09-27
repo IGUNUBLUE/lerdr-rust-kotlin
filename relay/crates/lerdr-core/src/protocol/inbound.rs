@@ -1,14 +1,12 @@
 //! Client -> server action envelope.
 //!
-//! Port of `Inbound` + `DecodeMap` from `internal/protocol/protocol.go`.
-//! Field order mirrors the Go struct exactly so that re-serializing a decoded
-//! message reproduces the canonical `decoded_json` byte-for-byte.
+//! The canonical field order ensures re-serializing a decoded message
+//! reproduces `decoded_json` byte-for-byte.
 //!
-//! `DecodeMap` first round-trips the raw map through `json.Marshal` (which
-//! sorts keys and collapses duplicate keys last-wins); [`Inbound::decode_map`]
-//! does the same through [`crate::json::to_vec`] so that `json.RawMessage`
-//! fields (`subscription`, `policy`) hold the normalized — not wire-verbatim —
-//! bytes, exactly like the Go path.
+//! [`Inbound::decode_map`] round-trips the raw map through canonical JSON,
+//! sorting keys and applying last-wins duplicate-key semantics so
+//! [`RawJson`](crate::json::RawJson) fields (`subscription`, `policy`) hold
+//! normalized rather than wire-verbatim bytes.
 
 use serde::{Deserialize, Serialize};
 
@@ -467,9 +465,9 @@ pub struct Inbound {
     /// Wire fields the typed view does not model — the raw decoded map,
     /// captured by [`Inbound::decode_map`] before normalization so
     /// [`Inbound::raw`]/[`Inbound::raw_str`]/[`Inbound::raw_int`] see
-    /// exactly what Go's handlers see. `skip` keeps it out of both the
-    /// typed decode and `encode()` — `decoded_json` parity is preserved
-    /// because Go's `Inbound` never carries these fields either.
+    /// exactly what a decoded inbound frame exposes. `skip` keeps it out of
+    /// both the typed decode and `encode()` so canonical `decoded_json` bytes
+    /// omit fields outside the inbound contract.
     #[serde(skip)]
     raw_fields: serde_json::Map<String, serde_json::Value>,
 }

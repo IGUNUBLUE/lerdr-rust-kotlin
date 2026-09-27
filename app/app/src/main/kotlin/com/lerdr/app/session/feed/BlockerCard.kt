@@ -27,15 +27,12 @@ import lerdr.core.store.Agent
 import lerdr.core.store.attentionKind
 
 /**
- * The pinned blocker card — triage parity with the oracle's
- * `AgentList`/`TerminalView` blocked state. The header carries the ⚠
- * warning mark; approval choices are color-coded with
- * [approvalButtonTone] (the oracle's `agents.ts` port); a question
- * interaction mounts [QuestionFormCard]; anything else falls back to the
- * oracle's "switch to Terminal" hint.
+ * The pinned blocker card displays a warning mark, color-coded approval
+ * choices, [QuestionFormCard] for structured questions, and a session hint
+ * for other interactions.
  */
 
-/** Oracle `approvalButtonTone` buckets. */
+/** Lerdr `approvalButtonTone` buckets. */
 internal enum class ApprovalTone { APPROVE, TRUST, DENY }
 
 private val DENY_WORDS = Regex("\\b(no|deny|reject|cancel|exit)\\b")
@@ -44,7 +41,7 @@ private val TRUST_WORDS =
 
 /**
  * `approvalButtonTone` — the LAST option is always the deny tone (the
- * oracle treats position as the reject slot); deny keywords anywhere and
+ * Lerdr treats position as the reject slot); deny keywords anywhere and
  * trust keywords map next; everything else approves.
  */
 internal fun approvalButtonTone(option: String, index: Int, total: Int): ApprovalTone {
@@ -58,7 +55,7 @@ internal fun approvalButtonTone(option: String, index: Int, total: Int): Approva
  * The blocker card. [interaction] is the effective question (the
  * ViewModel's command-result override wins over the stale store copy);
  * [enabled] folds `responding` + the reader-role gate into one switch —
- * mutating affordances stay visible but inert like the oracle.
+ * mutating affordances stay visible but inert like Lerdr.
  */
 @Composable
 internal fun FeedBlockerCard(

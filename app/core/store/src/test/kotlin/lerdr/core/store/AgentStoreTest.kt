@@ -291,7 +291,7 @@ class AgentStoreTest {
         assertThat(degraded.options).isNull()
 
         // Once rewritten, the wire kind is gone — regaining the capability
-        // cannot recover it (the next snapshot re-arms it). Oracle-faithful.
+        // cannot recover it (the next snapshot re-arms it). Lerdr-faithful.
         store.renormalizeAttention("r1", true)
         assertThat(store.agents.value[0].attentionKind).isEqualTo("unknown")
     }

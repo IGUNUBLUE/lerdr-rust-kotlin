@@ -43,7 +43,7 @@ import dagger.hilt.android.EntryPointAccessors
 
 /**
  * Whole-app lock gate — while [locked] the children are not composed at
- * all (the oracle's unlock screen "covers the page", docs/security.md)
+ * all (Lerdr's unlock screen "covers the page", docs/security.md)
  * and a minimal brand surface takes over. Entering the locked state
  * fires exactly one [onUnlockRequest]; a dismissal or failure leaves the
  * surface up and the button retries. Unlocking drops the branch and the

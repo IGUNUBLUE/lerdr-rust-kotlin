@@ -110,12 +110,12 @@
     ],
     "async_dedupe": true,
     "notes": [
-      "action_receipt is Rust's v3 dispatch-evidence addition \u2014 Go has no counterpart; dropped (census still shows it).",
+      "action_receipt is v3 dispatch evidence; it is excluded from the normalized trace but remains in the type census.",
       "inventory_status compares the full six-key projection (state/error_code/message/stale + both timestamps); last_attempt_at/last_success_at are wall-clock volatile.",
       "Watch frames compare {type,pane_id,ack_required,content/segments,format,truncated,viewport_only/viewport_rows,resize_settling,interaction,question_layout,target}: fingerprints (content_fingerprint, base_fingerprint) are content-derived and dropped globally.",
-      "pane_content/pane_delta compare the full semantic projection for real \u2014 attention_kind/prompt/command/options/no_echo/no_echo_prompt/interaction/question_layout all land from the shared classify+noecho pass.",
-      "Go's watch is ticker-driven; Rust's is tick + invalidation-assisted \u2014 the pane_updated emit is a wake nudge, not a requirement, and arrival timing inside the collect window is scheduler-owned.",
-      "Go pushes an empty activity_history at connect; drop_matches removes only the null-activities variant.",
+      "pane_content/pane_delta compare the full semantic projection: attention_kind/prompt/command/options/no_echo/no_echo_prompt/interaction/question_layout land from the shared classify+noecho pass.",
+      "Watch uses periodic polling plus invalidation assistance; pane_updated is a wake nudge, not a requirement, and arrival timing inside the collect window is scheduler-owned.",
+      "The null activity_history startup form is excluded by drop_matches.",
       "control.set seeds pane content before watch_pane so the shared fake is deterministic across both runs of a diff."
     ],
     "drop_matches": [

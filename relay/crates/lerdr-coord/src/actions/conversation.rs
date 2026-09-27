@@ -7,7 +7,7 @@
 //! "Agent changed while conversation history was loading" instead of serving
 //! the previous agent's transcript.
 //!
-//! Unavailable sources are not command failures: the oracle completes the
+//! Unavailable sources are not command failures: the retired implementation completes the
 //! command with `page.available=false` + a `reason_code`, so `Outcome` is
 //! `completed` whenever the read produced a page at all. `phase:"failed"` is
 //! reserved for the dispatch-boundary errors (pane gone, read error, agent
@@ -26,7 +26,7 @@ const ACTION: &str = "get_conversation_history";
 
 /// The comparable half of `coordinator.AgentState` —
 /// `sameConversationTuple`: raw agent name, pane cwd, normalized project
-/// context, resolved session id. The oracle also compares a per-pane
+/// context, resolved session id. The retired implementation also compares a per-pane
 /// `Generation`; the topology projection has no equivalent counter, so the
 /// tuple alone carries the check here.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,7 +39,7 @@ pub(crate) struct ConversationTuple {
 
 /// `projectContextForAgent` — `NormalizeProjectContext(agent.Agent, …)` over
 /// the pane's cwd + foreground hint. `AgentInfo.agent` is `Option` where the
-/// oracle's `Agent` is a plain string; `""` normalizes the same.
+/// retired implementation's `Agent` is a plain string; `""` normalizes the same.
 /// `pub(crate)` — the projector's finished-branch fence re-checks it.
 pub(crate) fn conversation_tuple(agent: &AgentInfo) -> ConversationTuple {
     let provider = agent
@@ -107,12 +107,11 @@ pub(crate) async fn conversation_history(
         limit: message.limit,
         retry: message.retry,
     };
-    // `ConversationBrowser::read_page` is `async` for API parity but its body
+    // `ConversationBrowser::read_page` is async for its API shape but its body
     // is synchronous: a bounded transcript scan plus (for the sqlite-backed
-    // providers) a ~3s-capped `sqlite3` subprocess. The oracle performs the
-    // same work inside its request handler; a fresh browser per request drops
-    // the reader's 60s location cache, which is the correctness-preserving
-    // choice — `retry` has nothing stale to evict either way.
+    // providers) a ~3s-capped `sqlite3` subprocess. A fresh browser per
+    // request avoids stale location state, so `retry` has nothing stale to
+    // evict.
     let browser = ConversationBrowser::new(home_dir());
     let page = match browser.read_page(request).await {
         Ok(page) => page,

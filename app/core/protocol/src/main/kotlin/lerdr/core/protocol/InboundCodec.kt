@@ -19,7 +19,7 @@ object InboundCodec {
 
     fun decode(raw: JsonObject): Inbound {
         var message = LerdrJson.decodeFromJsonElement(Inbound.serializer(), raw)
-        // Go `raw["action"].(string)` — only string values count.
+        // prior relay implementation — only string values count.
         val action = (raw["action"] as? kotlinx.serialization.json.JsonPrimitive)
             ?.takeIf { it.isString }?.content
         if (!action.isNullOrEmpty() && (message.type.isEmpty() || message.type == "command")) {

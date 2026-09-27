@@ -1,5 +1,4 @@
-//! `lerdr-shadow` — the Phase-3 shadow-diff parity harness.
-//!
+//! `lerdr-shadow` — the self-determinism trace-diff harness.
 //! Two binaries share this library:
 //!
 //! - `lerdr-shadow` — a scripted `herdr-e2ee-v2` client (`run`) that plays a

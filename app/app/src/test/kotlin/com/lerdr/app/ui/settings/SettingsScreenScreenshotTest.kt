@@ -2,8 +2,13 @@ package com.lerdr.app.ui.settings
 
 import androidx.activity.ComponentActivity
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasScrollAction
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performScrollToNode
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.lerdr.app.settings.RelayRowUi
@@ -102,6 +107,31 @@ class SettingsScreenScreenshotTest {
                 )
             }
         }
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun settings_about() {
+        composeRule.setContent {
+            LerdrTheme {
+                SettingsContent(
+                    uiState = SettingsUiState(),
+                    appVersion = "0.1.0",
+                    notificationsEnabled = true,
+                    appLockReady = true,
+                    snackbarHostState = SnackbarHostState(),
+                    onSelectTopLevel = {},
+                    onOpenRelay = {},
+                    onRevalidateAll = {},
+                    onThemeMode = {},
+                    onAppLockChange = {},
+                    onOpenNotificationSettings = {},
+                )
+            }
+        }
+        composeRule.onNode(hasScrollAction()).performScrollToNode(hasText("Protocol"))
+        composeRule.onNodeWithText("Protocol").assertIsDisplayed()
+        composeRule.onNodeWithText("Reference implementation").assertDoesNotExist()
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
 }

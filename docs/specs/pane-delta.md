@@ -1,15 +1,11 @@
 # Pane Delta — `pane_delta` / `pane_content` / `pane_applied` / `pane_resync`
 
-Spec for the pane streaming delta codec and the watch ack chain. Closes
-`docs/10-spec-gaps.md` P0-1. All line numbers cite `~/Projects/lerdr`
-(original Go implementation — provenance only).
+This is the normative pane-streaming delta and watch-ack specification. It
+closes `docs/10-spec-gaps.md` P0-1 and is enforced by the pane fixtures.
 
-Sources: `internal/panedelta/delta.go` (algorithm),
-`internal/app/pane_watch.go` (watch lifecycle, sender policy),
-`internal/app/server.go` (fingerprints, dispatch),
-`internal/transport/sendbuffer.go`, `internal/transport/ws.go` (coalescing),
-`frontend/src/lib/store.ts` (client-side apply — the released contract).
-
+The byte and boundary details were historically extracted from the retired Go
+relay and client. The source paths below are archival provenance only; current
+implementations follow this document and `fixtures/pane/`.
 ---
 
 ## 1. Line model
@@ -17,7 +13,7 @@ Sources: `internal/panedelta/delta.go` (algorithm),
 Both sides model pane content as **lines that retain their `\n`**
 (`strings.SplitAfter(content, "\n")`, `delta.go:19-20`).
 
-| Input | Lines (Go `SplitAfter`) | Notes |
+| Input | Lines (`SplitAfter`) | Notes |
 |---|---|---|
 | `""` | `[""]` | one empty line |
 | `"a\nb"` | `["a\n", "b"]` | no trailing newline |
@@ -28,22 +24,16 @@ Both sides model pane content as **lines that retain their `\n`**
 The phantom `""` element is load-bearing: it participates in anchor search
 and `copy_lines` bounds, and it is why `Build` emits `{}` (empty-literal)
 segments for the `identical-empty` / `delete-all` cases (`flushLiteral`
-fires with `len(lines)==1`). Verified against Go `SplitAfter` behavior and
-the `pane.delta` fixture suite — an earlier revision of this table claimed
-no phantom line; that was wrong.
+fires with `len(lines)==1`). The committed `pane.delta` fixtures confirm this
+behavior; an earlier revision of this table claimed no phantom line.
 
-> CRITICAL PARITY NOTE. The released JS client does **not** use `SplitAfter`
-> semantics to *index* the previous buffer. It builds a **boundary table**:
-> `boundaries = [0] ++ [i+1 for each '\n' at index i] ++ [len(previous)]`
-> (`store.ts:3118-3122`). For `"a\nb\n"` this yields `[0, 2, 4, 4]` — a
-> duplicate trailing boundary — so `copy_lines` can legally range up to
-> `len(boundaries)-1 = count("\n")+1`. Go `Apply` rejects that same segment
-> (`end > len(lines)`, `delta.go:75`). The relay emits such a segment for the
-> "content unchanged, metadata changed" case (`pane_watch.go:340-343`), so a
-> client implementing strict Go `Apply` would resync on every unchanged-pane
-> delta. **Implement the boundary-table semantics (§6), not `SplitAfter`
-> indexing.** Flagged as OPEN QUESTION-1 (whether to "fix" the relay or bless
-> JS semantics — treat JS as normative until decided).
+> **Critical client rule.** The Kotlin client indexes the previous buffer with
+> a boundary table, not `SplitAfter` positions:
+> `boundaries = [0] ++ [i+1 for each '\n' at index i] ++ [len(previous)]`.
+> For `"a\nb\n"` this yields `[0, 2, 4, 4]`, so `copy_lines` can legally range
+> up to `count("\n")+1`. The relay can emit that shape for metadata-only
+> changes. Implement the boundary-table semantics (§6), not the stricter
+> relay-side verifier in §5.
 
 ## 2. Segment codec
 
@@ -124,15 +114,15 @@ literalBytes = Σ len(segment.Text)              # bytes, not runes
 return literalBytes + 64*len(segments) < len(current)*3/4
 ```
 
-- Byte lengths throughout (`len(string)` in Go = UTF-8 bytes).
+- Byte lengths throughout (`len(string)` = UTF-8 bytes).
 - Each segment is charged a flat **64 bytes** regardless of its actual JSON size.
 - Strict `<` on integer arithmetic: `len(current)*3/4` truncates toward zero.
 - Deliberate slack: a delta may carry up to ~3/4 of the full frame in literals
   and still ship, because a full frame costs `content` + the same metadata.
 
-## 5. `Apply` semantics (Go reference — relay-side verifier)
+## 5. Relay-side verifier semantics
 
-`Apply(previous, segments) (string, bool)` (`delta.go:69-86`):
+`Apply(previous, segments) (string, bool)`:
 
 ```
 lines = SplitAfter(previous, "\n")
@@ -153,8 +143,8 @@ Rejects: negative `copy_start`, integer-overflow `end`, and `end` beyond the
 
 ## 6. Client-side apply (Kotlin contract — normative)
 
-Mirror `store.ts:3113-3142`. Reject the whole delta → forced `read_pane` on any
-violation.
+The client contract is the boundary-table algorithm below. Reject the whole
+delta → forced `read_pane` on any violation.
 
 ```
 boundaries = [0]
@@ -177,16 +167,19 @@ for seg in segments:                    # segments must be a JSON array
 return concat(chunks)
 ```
 
-Differences from Go `Apply` (deliberate — the JS client is the deployed contract):
+The client-side boundary-table algorithm above is the normative apply
+contract. Historical implementations used a stricter `SplitAfter` count in
+some relay-side verification paths; that divergence is provenance, not an
+alternate client rule.
 
-| Case | Go `Apply` | Client apply |
-|---|---|---|
-| `copy_lines = count("\n")+1` on trailing-`\n` previous | **reject** (end > lines) | **accept** (dup boundary) — the relay emits exactly this |
-| `copy_lines: 0` present | literal (writes `text`) | reject |
-| `copy_start` out of range vs `len(lines)` | reject at copy time | `boundaries[copy_start]` indexes the table — reject via `copy_end` bound only |
+| Case | Required client result |
+|---|---|
+| `copy_lines = count("\n")+1` on trailing-`\n` previous | accept via the duplicate boundary |
+| `copy_lines: 0` present | reject |
+| `copy_start` out of range | reject through the `copy_end` bound |
 
-`copy_start` beyond `len(boundaries)-1` always fails through `copy_end`, so no
-separate lower bound is needed past `>= 0` (`store.ts:3132-3134`).
+`copy_start` beyond `len(boundaries)-1` fails through `copy_end`, so no
+separate lower bound is needed past `>= 0`.
 
 ### 6.1 Metadata-only delta fast path (`store.ts:1577-1585`)
 
@@ -412,11 +405,9 @@ to `""`.
 
 ## 11. OPEN QUESTIONS
 
-1. **Apply semantics divergence**: Go `Apply` rejects `copy_lines = count("\n")+1`
-   on newline-terminated content; the released JS client accepts it via the
-   boundary table, and the relay emits such segments for metadata-only frames.
-   Kotlin must implement the JS semantics for wire compatibility; decide whether
-   the Rust relay's verifier (if any) keeps `SplitAfter` semantics or aligns.
+1. **Relay-side verification**: any verifier must apply the normative
+   boundary-table rule for newline-terminated content. The historical strict
+   `SplitAfter` divergence is not a wire alternative.
 2. **Fingerprint scope**: `content_fingerprint` covers content only, not
    `lines`/`format`. A client could supply a fingerprint computed at a different
    `lines` budget and (with matching content) receive `pane_unchanged`/tiny-delta
@@ -425,4 +416,4 @@ to `""`.
 3. **Max `pane_content` size vs 4 MiB send cap**: a pane read capped at
    `lines=10000` of very long lines could exceed `MaxOutboundMessageBytes` and
    evict the client (see `sendbuffer.md` §4). Whether pane reads need a byte cap
-   before encoding is a product decision — Go has none.
+   before encoding is a product decision.

@@ -30,9 +30,9 @@ import lerdr.core.protocol.BinaryUploadChunk
 import lerdr.core.transport.CommandException
 
 /**
- * `DEFAULT_ATTACHMENT_MIME_TYPES` — the oracle's allowed media-type set
- * (`attachments.ts`). Anything outside it is rejected client-side with
- * `attachment_unknown_mime` before a byte crosses the wire.
+ * `DEFAULT_ATTACHMENT_MIME_TYPES` — Lerdr's allowed media-type set. Anything
+ * outside it is rejected client-side with `attachment_unknown_mime` before a
+ * byte crosses the wire.
  */
 val DEFAULT_ATTACHMENT_MIME_TYPES: Set<String> = setOf(
     "application/json",
@@ -55,7 +55,7 @@ val DEFAULT_ATTACHMENT_MIME_TYPES: Set<String> = setOf(
 )
 
 /**
- * `AttachmentLimits` — the client-side pre-checks the oracle passes into
+ * `AttachmentLimits` — the client-side pre-checks Lerdr passes into
  * `AttachmentBatchController` (`maxFiles: 8, maxFileBytes: 20 MiB,
  * maxBatchBytes: 50 MiB, maxChunkBytes: 256 KiB`); the relay's own
  * `upload_begin_result.limits` re-validates server-side.
@@ -86,7 +86,7 @@ data class AttachmentIssue(
     val args: Map<String, JsonElement>? = null,
 )
 
-/** One row of the composer's attachment tray — the oracle's `publicItem`. */
+/** One row of the composer's attachment tray — Lerdr's `publicItem`. */
 data class AttachmentItem(
     val clientId: String,
     val name: String,
@@ -196,17 +196,13 @@ class ContentResolverAttachmentSource(
 }
 
 /**
- * `AttachmentBatchController` port — one upload batch per pane. Selection
- * validates against [AttachmentLimits] (the oracle's client-side constants),
+ * One upload batch per pane. Selection validates against [AttachmentLimits];
  * [upload] streams each file through `upload_begin`/`upload_chunk`/
- * `upload_finish` with per-chunk and whole-file SHA-256, and [cancel]
- * dismisses the batch with `upload_cancel` when a session was staged.
+ * `upload_finish` with per-chunk and whole-file SHA-256, and [cancel] sends
+ * `upload_cancel` when a session was staged.
  *
- * Lifetime is bound to the screen like the oracle's per-component
- * controller: [FeedViewModel] owns one instance per pane and calls
- * [discard] from `onCleared`. Constructed per-screen in `AgentFeedScreen`
- * (`AppEntryPoint` does not expose it); the `@Inject` constructor keeps the
- * DI graph honest for future providers.
+ * [FeedViewModel] owns one instance per pane and calls [discard] from
+ * `onCleared`; a new screen starts with no retained batch.
  */
 class AttachmentUploads internal constructor(
     private val scope: CoroutineScope,
@@ -365,7 +361,7 @@ class AttachmentUploads internal constructor(
 
     /**
      * `restart` — re-stages items stuck INTERRUPTED. A staged-but-failed
-     * session gets `upload_cancel` first like the oracle's `restart()`.
+     * session gets `upload_cancel` first like Lerdr's `restart()`.
      */
     suspend fun restart(paneId: String): List<UploadAttachment> {
         val batch = batchFor(paneId)
@@ -410,7 +406,7 @@ class AttachmentUploads internal constructor(
     /**
      * `cancel` — dismiss-all: clears the batch, kills the upload coroutine,
      * and sends `upload_cancel` for a staged session — including the
-     * still-pending `upload_begin` race the oracle's `pendingBegin` covers.
+     * still-pending `upload_begin` race Lerdr's `pendingBegin` covers.
      */
     suspend fun cancel(paneId: String) {
         val batch = batches[paneId] ?: return
@@ -444,8 +440,7 @@ class AttachmentUploads internal constructor(
     }
 
     /**
-     * `onDestroy` parity — fire-and-forget [cancel] on the manager scope,
-     * then drop the batch entry so a future screen starts empty.
+     * Cancels any staged upload without waiting, then drops the batch entry.
      */
     fun discard(paneId: String) {
         val batch = batches[paneId] ?: return
@@ -460,7 +455,7 @@ class AttachmentUploads internal constructor(
     /**
      * `startUpload` — the begin/chunk/finish pipeline. Each chunk is a
      * `chunk_bytes` slice streamed from [AttachmentSource]; the whole-file
-     * digest folds into the same pass (the oracle's hash-worker computes the
+     * digest folds into the same pass (Lerdr's hash-worker computes the
      * identical digest in parallel — one streaming pass keeps SAF content
      * out of memory twice over).
      */
@@ -522,7 +517,7 @@ class AttachmentUploads internal constructor(
             val uploadId = begin.uploadId.orEmpty()
             if (!limitsValid) {
                 // The session exists relay-side — keep the id so a later
-                // cancel() can still discard it (the oracle does the same).
+                // cancel() can still discard it (Lerdr does the same).
                 synchronized(batch) { batch.activeUploadId = uploadId }
                 val issue = AttachmentIssue(INVALID_RESPONSE)
                 markInterrupted(batch, uploadItems, issue)
@@ -536,7 +531,7 @@ class AttachmentUploads internal constructor(
             // `capability_unsupported`, which `issueFrom` maps like any
             // command failure.
             val binaryChunks = begin.chunkEncoding == BinaryUploadChunk.ENCODING
-            // `sequence` is global across the batch's files, like the oracle.
+            // `sequence` is global across the batch's files, like Lerdr.
             var sequence = 0
             for (fileIndex in uploadItems.indices) {
                 val item = uploadItems[fileIndex]
@@ -603,7 +598,7 @@ class AttachmentUploads internal constructor(
 
     /**
      * One file's chunk loop — [sequence] counts across the whole batch like
-     * the oracle; returns the next value, or -1 when the run was superseded.
+     * Lerdr; returns the next value, or -1 when the run was superseded.
      * Plain IO failures propagate; the caller maps them through the
      * `began` fallback.
      */
@@ -715,7 +710,7 @@ class AttachmentUploads internal constructor(
     /**
      * `issueFrom` — `ApiError`/`CommandException` codes that already carry an
      * `attachment_*` public code pass through (with args); everything else
-     * collapses to the fallback like the oracle.
+     * collapses to the fallback like Lerdr.
      */
     private fun issueFrom(error: Throwable, fallback: String): AttachmentIssue {
         val command = error as? CommandException
@@ -813,7 +808,7 @@ class AttachmentUploads internal constructor(
         const val UPLOAD_BUSY = "attachment_upload_busy"
         const val UPLOAD_STATE_UNKNOWN = "attachment_upload_state_unknown"
 
-        /** The oracle's local lock failures — never a public `attachment_*` relay code. */
+        /** Lerdr's local lock failures — never a public `attachment_*` relay code. */
         const val BATCH_LOCKED = "attachment_batch_locked"
         const val BATCH_NOT_RESTARTABLE = "attachment_batch_not_restartable"
 
@@ -846,8 +841,8 @@ class AttachmentUploads internal constructor(
 }
 
 /**
- * `attachmentIssueText` — the oracle's code → user string map
- * (`attachments.ts`); unknown codes fall through to the generic line.
+ * `attachmentIssueText` — Lerdr's code → user string map
+ *; unknown codes fall through to the generic line.
  */
 fun attachmentIssueText(issue: AttachmentIssue): String = when (issue.code) {
     AttachmentUploads.BATCH_LIMIT -> "Select at most ${

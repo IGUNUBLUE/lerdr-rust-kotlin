@@ -11,7 +11,7 @@ import lerdr.core.protocol.LerdrJson
 
 /**
  * Client outbound send buffer — a port of the relay's per-client `sendBuffer`
- * (`internal/transport/sendbuffer.go`, `lerdr-core/src/sendbuffer.rs`) for the
+ * (relay contract, `lerdr-core/src/sendbuffer.rs`) for the
  * client→relay direction. Capacity is bounded in items AND serialized
  * plaintext bytes; overflow is **rejected**, never evicted — queued messages
  * survive untouched. The [REPLACEABLE_TYPES] set coalesces against an
@@ -164,7 +164,7 @@ class ClientSendBuffer(
         /**
          * Message types whose newest frame supersedes a queued same-type
          * tail — the exact list from `encodeMessage` in
-         * `internal/transport/ws.go`. Snapshot/state streams collapse;
+         * relay contract. Snapshot/state streams collapse;
          * deltas, receipts, and per-event broadcasts never do.
          */
         val REPLACEABLE_TYPES: Set<String> = setOf(

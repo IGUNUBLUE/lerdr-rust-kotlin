@@ -6,8 +6,8 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 /**
- * How a relay endpoint is dialed. The oracle's `TransportKind` is a single
- * `'websocket'` (`frontend/src/lib/transports/types.ts:4`) — the ws/wss
+ * How a relay endpoint is dialed. Lerdr's `TransportKind` is a single
+ * `'websocket'` — the ws/wss
  * distinction lives in the URL scheme, so it is modeled here as the kind.
  */
 @Serializable
@@ -17,12 +17,12 @@ enum class RelayTransport(val scheme: String, val defaultPort: Int) {
 }
 
 /**
- * One persisted relay entry — the non-secret slice of the oracle's
- * `RelayConfig` (`frontend/src/lib/types.ts:80-95`). The relay key and
+ * One persisted relay entry — the non-secret slice of Lerdr's
+ * `RelayConfig`. The relay key and
  * pairing credentials are NOT here: secrets live in [CredentialStore] so a
  * DataStore read never exposes them.
  *
- * [paired] mirrors the oracle's `paired?: true` flag: the entry came from an
+ * [paired] mirrors Lerdr's `paired?: true` flag: the entry came from an
  * encrypted pairing link and keeps no relay key, so a missing credential
  * means "re-pair", not "dial plaintext".
  */
@@ -51,7 +51,7 @@ data class RelayEndpoint(
 
     companion object {
         /**
-         * Parses a bare `ws://`/`wss://` origin (the oracle's
+         * Parses a bare `ws://`/`wss://` origin (Lerdr's
          * `safeSocketOrigin` contract: no credentials, path, query, or
          * fragment). Returns null when the value is not a socket origin.
          */
@@ -78,7 +78,7 @@ data class RelayEndpoint(
 internal class SocketOrigin(val scheme: RelayTransport, val host: String, val port: Int)
 
 /**
- * `safeSocketOrigin` (`config.ts:129-146`): bare ws/wss authority only —
+ * `safeSocketOrigin`: bare ws/wss authority only —
  * no userinfo, no path beyond `/`, no query, no fragment. `java.net.URI`
  * under-parses exotic-but-legal hostnames (underscores, IPv6), so the
  * authority is split by hand when `URI.host` gives up.
@@ -140,8 +140,7 @@ fun relayLabelFromUrl(url: String): String =
 
 /**
  * `makeRelayId` — stable slug of `label-url`, so an invitation re-import for
- * the same relay lands on the same id and the stored credential follows it
- * (`config.ts:115-122`).
+ * the same relay lands on the same id and the stored credential follows it.
  */
 fun makeRelayId(label: String, url: String): String {
     val base = "${label.ifEmpty { relayLabelFromUrl(url) }}-$url"

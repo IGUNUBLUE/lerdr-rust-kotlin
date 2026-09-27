@@ -1,4 +1,4 @@
-//! `queue.json` — the oracle's `durableQueue` file (`internal/push/queue.go`).
+//! `queue.json` — the retired implementation's `durableQueue` file (`internal/push/queue.go`).
 //!
 //! The file is the delivery queue's durable half: `{"entries": …,
 //! "delivered": …}` marshaled like Go's `json.MarshalIndent(q.state,
@@ -8,21 +8,21 @@
 //! padded) — handled by the `go_bytes_b64` serde module on the field.
 //!
 //! Load semantics follow the repo's durable-file convention rather than
-//! the oracle's hard failure (`newDurableQueue` errors `NewManager` on
+//! the retired implementation's hard failure (`newDurableQueue` errors `NewManager` on
 //! a corrupt file): a file that doesn't decode whole is salvaged
 //! member-wise, renamed aside for forensics (`quarantineIndex`-style,
 //! `queue.invalid-<unix-nanos>.json`), and rebuilt from what survived.
 //! A file the salvage can't parse at all yields an empty queue — the
 //! rebuilt file is the artifact that matters.
 //!
-//! Persist runs through [`persist`] — the oracle's `persistLocked`
+//! Persist runs through [`persist`] — the retired implementation's `persistLocked`
 //! (`maxQueueEntries`/`maxQueueBytes` caps, then atomic tmp+rename).
 //! The dirty/flush split lives in `super::push`: immediate mutations
 //! (`enqueue`/`cancelKey`/`removeSubscriptions`/…) persist inline with
-//! rollback like the oracle; drain-pass mutations (`finishInMemory`,
+//! rollback like the retired implementation; drain-pass mutations (`finishInMemory`,
 //! `rescheduleInMemory`, the recover/restore halves) mark
 //! `state.queue_dirty` and land once per pass through `flush_queue`
-//! (the oracle's `flush()` inside `finish`).
+//! (the retired implementation's `flush()` inside `finish`).
 
 use std::collections::BTreeMap;
 use std::io;
@@ -71,7 +71,7 @@ pub(crate) struct LoadedQueue {
 
 /// `newDurableQueue` — read `queue.json` under `dir`; absent is empty,
 /// undecodable is salvaged + quarantined + rebuilt (see the module doc
-/// for the deliberate delta from the oracle's fatal decode error).
+/// for the deliberate delta from the retired implementation's fatal decode error).
 pub(crate) fn load_queue(dir: &Path) -> io::Result<LoadedQueue> {
     let path = dir.join(QUEUE_FILENAME);
     let data = match std::fs::read(&path) {
@@ -169,7 +169,7 @@ fn quarantine(path: &Path) -> io::Result<()> {
 
 /// `durableQueue.persistLocked` — `maxQueueEntries`/`maxQueueBytes`
 /// caps, then `MarshalIndent` + `\n` through `atomic_write` at `0600`.
-/// `push_queue_limit` is the oracle's own error string for the caps;
+/// `push_queue_limit` is the retired implementation's own error string for the caps;
 /// `push_persist_failed` matches the sibling files' I/O mapping.
 pub(crate) fn persist(
     dir: &Path,
@@ -182,7 +182,7 @@ pub(crate) fn persist(
     let file = QueueFile { entries, delivered };
     let mut data = serde_json::to_string_pretty(&file).map_err(|_| "push_persist_failed")?;
     data.push('\n');
-    // The oracle bounds `len(marshal) + 1` — the newline is already in.
+    // The retired implementation bounds `len(marshal) + 1` — the newline is already in.
     if data.len() > MAX_QUEUE_BYTES {
         return Err("push_queue_limit");
     }
@@ -317,7 +317,7 @@ mod tests {
         let record = &value["delivered"]["id-c"];
         assert_eq!(record["tag"], serde_json::json!("herdr-id-c"));
         assert!(record["accepted_at"].is_string());
-        // Mode is the oracle's 0600.
+        // Mode is the retired implementation's 0600.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

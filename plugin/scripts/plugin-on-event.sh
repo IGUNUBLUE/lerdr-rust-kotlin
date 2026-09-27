@@ -3,8 +3,8 @@
 set -eu
 
 RELEASE_ROOT=${LERDR_RELEASE_ROOT:-${HERDR_RELEASE_ROOT:-"${XDG_DATA_HOME:-$HOME/.local/share}/lerdr"}}
-# The Rust binary is lerdr-relay; earlier bundles at this root carried the Go
-# lerdr binary, and pre-rename installs used herdr-mobile-relay.
+# The current binary is lerdr-relay; earlier bundles at this root used lerdr,
+# and pre-rename installs used herdr-mobile-relay.
 RELAY_BIN=${LERDR_RELAY_BIN:-${HERDR_RELAY_BIN:-}}
 if [ -z "$RELAY_BIN" ] || [ ! -x "$RELAY_BIN" ]; then
     RELAY_BIN=

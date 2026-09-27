@@ -27,9 +27,8 @@ import lerdr.core.store.WorkspaceStore
 import lerdr.core.transport.CommandException
 
 /**
- * `WorktreeInfo` — one `worktrees[]` row of the `worktree_list` result
- * (`herdr.Worktree`, `frontend/src/lib/types.ts`). `branch` and
- * `openWorkspaceId` are genuinely nullable on the wire.
+ * `WorktreeInfo` — one `worktrees[]` row of the `worktree_list` result.
+ * `branch` and `openWorkspaceId` are genuinely nullable on the wire.
  */
 @Immutable
 data class WorktreeEntry(
@@ -45,7 +44,7 @@ data class WorktreeEntry(
     /** `worktree.branch || worktree.label` — the row title. */
     val title: String get() = branch?.takeIf { it.isNotEmpty() } ?: label
 
-    /** The oracle's row gate: openable unless already open, bare, or prunable. */
+    /** Lerdr's row gate: openable unless already open, bare, or prunable. */
     val openable: Boolean get() = openWorkspaceId == null && !isBare && !isPrunable
 }
 
@@ -77,13 +76,13 @@ data class WorktreesUiState(
     val workspacePath: String = "",
     /** `worktree.is_linked_worktree` — only then is Remove offered. */
     val linkedWorktree: Boolean = false,
-    /** `worktree_management` capability gate (oracle `worktreeManagementAvailable`). */
+    /** `worktree_management` capability gate (Lerdr `worktreeManagementAvailable`). */
     val managementAvailable: Boolean = false,
     val loading: Boolean = true,
     val listing: WorktreeListing? = null,
     val error: String? = null,
     val busy: Boolean = false,
-    /** Inline status line — the oracle's `form-status` (errors tinted). */
+    /** Inline status line — Lerdr's `form-status` (errors tinted). */
     val status: String? = null,
     val statusError: Boolean = false,
     /** Remove-confirm dialog open. */
@@ -92,16 +91,16 @@ data class WorktreesUiState(
     val confirmForce: Boolean = false,
     /** The workspace is gone — the sheet should dismiss. */
     val shouldDismiss: Boolean = false,
-    // Create form drafts (oracle maxlengths: branch/base 512, label 128).
+    // Create form drafts (Lerdr maxlengths: branch/base 512, label 128).
     val branchDraft: String = "",
     val baseDraft: String = "",
     val labelDraft: String = "",
 )
 
 /**
- * `parseWorktreeListing` — the oracle's `listWorktrees` validation: `source`
+ * `parseWorktreeListing` — Lerdr's `listWorktrees` validation: `source`
  * and a `worktrees` array must be present, everything else degrades to
- * defaults. Invalid payloads throw like the oracle's CommandError.
+ * defaults. Invalid payloads throw like Lerdr's CommandError.
  */
 internal fun parseWorktreeListing(data: JsonElement?): WorktreeListing {
     val obj = data as? JsonObject
@@ -136,24 +135,23 @@ internal fun parseWorktreeListing(data: JsonElement?): WorktreeListing {
 }
 
 /**
- * Worktree management for one workspace — the sheet's mutation point. Ports
- * the oracle's worktree dialog flows (`showWorktrees`/`createWorktree`/
- * `openWorktree`/`confirmAction('remove')` in WorkspaceManager.svelte):
+ * Worktree management for one workspace — the sheet's mutation point:
+ * create, open, and remove worktrees.
  *
  * - `worktree_list{workspace_id}` → `command_result.data` listing (30 s);
  * - `worktree_create{workspace_id, branch, base?, label?}` (75 s);
  * - `worktree_open{workspace_id, path}` — exactly one of path/branch (75 s);
- * - `worktree_remove{workspace_id, force}` (75 s), with the oracle's
+ * - `worktree_remove{workspace_id, force}` (75 s), with Lerdr's
  *   force escalation: a `dirty_worktree_requires_force` refusal keeps the
  *   confirm dialog open in force mode.
  *
  * The relay answers refusals as `command_result{ok:false, data:{code,
  * force_available}}` plus an `action_receipt{error.code}` — the thrown
  * [CommandException] drops `data`, so a frames collector correlates the
- * refusal by the `action_id` this VM assigns (the oracle sends none — the
+ * refusal by the `action_id` this VM assigns (Lerdr sends none — the
  * relay echoes it into the receipt, which is exactly what the watch needs).
  *
- * After every successful mutation `refresh_agents` fans out (the oracle's
+ * After every successful mutation `refresh_agents` fans out (Lerdr's
  * `requestAgents`) and the listing reloads.
  */
 class WorktreesViewModel(
@@ -163,7 +161,7 @@ class WorktreesViewModel(
     workspaces: WorkspaceStore,
 ) : ViewModel() {
 
-    /** Stale-load guard — the oracle's `worktreeLoadGeneration`. */
+    /** Stale-load guard — Lerdr's `worktreeLoadGeneration`. */
     private var loadGeneration = 0
 
     /**
@@ -286,7 +284,7 @@ class WorktreesViewModel(
 
     /**
      * `workspaceManagementAvailable('worktree_management')` + `sendCommand`'s
-     * inventory gate — every `worktree_*` type sits in the oracle's
+     * inventory gate — every `worktree_*` type sits in Lerdr's
      * `INVENTORY_REQUIRED_COMMANDS`, so a non-ready inventory refuses before
      * the frame leaves.
      */
@@ -445,7 +443,7 @@ class WorktreesViewModel(
     /**
      * `confirmAction('remove')` — `worktree_remove{workspace_id, force}`.
      * A `dirty_worktree_requires_force` refusal keeps the dialog open in
-     * force mode (the oracle's `{...action, force: true}`); success marks
+     * force mode (Lerdr's `{...action, force: true}`); success marks
      * the sheet for dismissal.
      */
     fun confirmRemove() {
@@ -505,7 +503,7 @@ class WorktreesViewModel(
     }
 
     /**
-     * Oracle `setStatus` for mutations — `dispatched_unknown` appends the
+     * Lerdr `setStatus` for mutations — `dispatched_unknown` appends the
      * refresh hint and reloads the listing (the mutation may have landed).
      */
     private fun reportMutationFailure(failure: Exception, unknownHint: String) {
@@ -528,7 +526,7 @@ class WorktreesViewModel(
         const val WORKTREE_REMOVE = "worktree_remove"
         const val DIRTY_WORKTREE_CODE = "dirty_worktree_requires_force"
 
-        /** Oracle timeouts: list 30 s, mutations 75 s. */
+        /** Lerdr timeouts: list 30 s, mutations 75 s. */
         const val LIST_TIMEOUT_MS = 30_000L
         const val MUTATION_TIMEOUT_MS = 75_000L
 

@@ -60,7 +60,7 @@ sealed interface LerdrKey : NavKey {
 
 /**
  * Parsed `lerdr://pair?…` / `<origin>/#…` setup link — the Android mirror of
- * the oracle's `SetupFragment`/`parseSetupLink` (docs/specs/pairing-store.md
+ * Lerdr's `SetupFragment`/`parseSetupLink` (docs/specs/pairing-store.md
  * §A.2). Two shapes exist: `setup` alone is the relay-token bootstrap;
  * `setup` + `invite` is a device invitation.
  */

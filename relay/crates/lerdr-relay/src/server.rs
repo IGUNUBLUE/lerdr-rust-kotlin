@@ -1,10 +1,9 @@
-//! The axum server — `Hub` + `HandleWebSocket` in the Go oracle.
+//! The axum server.
 //!
 //! Routes: `GET /ws` (upgraded, `herdr-e2ee-v2` subprotocol mandatory) and
-//! the probe endpoints `GET /health`, `GET /healthz`, `GET /readyz`
-//! (`server.go:1258-1260`). No web assets — the product is Android-only
-//! (`docs/02-architecture.md`), so `/healthz` omits the oracle's
-//! `bundle_*` keys it only emits when a web handler is installed.
+//! the probe endpoints `GET /health`, `GET /healthz`, `GET /readyz`. No web
+//! assets — the product is Android-only (`docs/02-architecture.md`), so
+//! `/healthz` omits web-bundle identity keys.
 //!
 //! Lifecycle: every connection's session runs under a child
 //! [`CancellationToken`]; [`Relay::shutdown`] cascades to all of them, the
@@ -68,7 +67,7 @@ pub struct HealthProbe {
     /// `s.revision` — the build's commit stamp.
     pub revision: String,
     /// `s.state.InventoryStatus` — evaluated per request. `None` reports
-    /// the oracle's zero-value map (`state: "starting"`).
+    /// the retired implementation's zero-value map (`state: "starting"`).
     pub inventory: Option<InventoryProbeFn>,
 }
 
@@ -96,12 +95,12 @@ struct Shared {
     config: SessionConfig,
     health: HealthProbe,
     /// `s.ready` — set once `serve` starts accepting; never cleared, like
-    /// the oracle's one-way latch under `s.mu`.
+    /// the retired implementation's one-way latch under `s.mu`.
     serving: AtomicBool,
     shutdown: CancellationToken,
     /// `hub.clients` + `hub.blocked` under the `register`/`mu` pair — one
     /// mutex serializes registration against the `DisconnectCredential`
-    /// sweep like the oracle's lock ordering does.
+    /// sweep like the retired implementation's lock ordering does.
     registry: Mutex<Registry>,
     next_client_id: AtomicU64,
     tracker: TaskTracker,
@@ -211,7 +210,7 @@ impl Relay {
 
     /// Broadcast to every live client except `exclude` — used when the
     /// requester already carries the frame in its own response (the
-    /// oracle's `broadcastToAll` + per-client response ordering).
+    /// retired implementation's `broadcastToAll` + per-client response ordering).
     pub fn broadcast_except(&self, message: &Outbound, exclude: &str) {
         let registry = self.shared.registry.lock().expect("registry poisoned");
         for (id, registration) in registry.clients.iter() {
@@ -240,7 +239,7 @@ impl Relay {
         let shutdown = self.shared.shutdown.clone();
         let tracker = self.shared.tracker.clone();
         // `s.ready = true` — one-way latch once the bound listener is in
-        // axum's hands (the oracle sets it right after Listen succeeds).
+        // axum's hands (the retired implementation sets it right after Listen succeeds).
         self.shared.serving.store(true, Ordering::Relaxed);
         axum::serve(
             listener,
@@ -288,7 +287,7 @@ impl Shared {
     }
 }
 
-/// `X-Herdr-Relay-Instance` — the oracle's literal header name.
+/// `X-Herdr-Relay-Instance` — the retired implementation's literal header name.
 const INSTANCE_HEADER: header::HeaderName =
     header::HeaderName::from_static("x-herdr-relay-instance");
 
@@ -314,7 +313,7 @@ async fn health(State(shared): State<Arc<Shared>>) -> Response {
 /// `handleHealthz` — full status JSON: readiness derives from the serve
 /// latch plus the live inventory state (`ready`/`error` → `ready`/
 /// `degraded`, anything else → `starting`). `bundle_*` keys are omitted:
-/// the oracle emits them only when a web-bundle handler is installed and
+/// the retired implementation emits them only when a web-bundle handler is installed and
 /// this relay serves no web bundle.
 async fn healthz(State(shared): State<Arc<Shared>>) -> Response {
     let inventory = inventory_map(&shared.health);
@@ -369,7 +368,7 @@ fn readiness_label(serving: bool, inventory_state: Option<&str>) -> &'static str
     }
 }
 
-/// `s.state.InventoryStatus()` minus the `message` key — the oracle
+/// `s.state.InventoryStatus()` minus the `message` key — the retired implementation
 /// strips the free-text detail from HTTP responses (`delete(inventory,
 /// "message")`) but keeps every other key unconditionally.
 fn inventory_map(health: &HealthProbe) -> serde_json::Map<String, serde_json::Value> {
@@ -380,7 +379,7 @@ fn inventory_map(health: &HealthProbe) -> serde_json::Map<String, serde_json::Va
         },
         None => serde_json::Map::new(),
     };
-    // `type` is the wire discriminator — not part of the oracle's map.
+    // `type` is the wire discriminator — not part of the retired implementation's map.
     map.remove("type");
     map.remove("message");
     // `inventoryStatusLocked` emits all six keys unconditionally; an

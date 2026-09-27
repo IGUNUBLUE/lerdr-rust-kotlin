@@ -15,7 +15,7 @@ import lerdr.core.terminal.AckGate
 import lerdr.core.terminal.PaneSurface
 
 /**
- * Wire-shaping helpers for pane/session commands. The oracle spreads
+ * Wire-shaping helpers for pane/session commands. Lerdr spreads
  * `agentTargetPayload(agent)` — `{target, server_session_id}` — plus the raw
  * `pane_id` onto every pane-directed frame; several fields the relay reads
  * (`content_fingerprint`, `interval_ms`, `activity_label`) never enter the
@@ -28,7 +28,7 @@ private val RESOURCE_ID = Regex("^[A-Za-z0-9._:@%+-]{1,160}$")
 /**
  * `targetRefForAgent` — the exact terminal identity a pane command needs.
  * Null when the relay has not reported a complete target tuple yet; the
- * oracle rejects the command ("no exact terminal identity") in that case.
+ * Lerdr rejects the command ("no exact terminal identity") in that case.
  */
 internal fun Agent.wireTarget(): TargetRef? {
     val serverSessionId = serverSessionId ?: return null

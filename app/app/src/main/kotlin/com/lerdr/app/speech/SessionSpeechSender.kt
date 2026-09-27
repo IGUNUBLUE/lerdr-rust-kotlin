@@ -11,18 +11,18 @@ import lerdr.core.model.CommandResultMessage
 import lerdr.core.model.Inbound
 
 /**
- * `SpeechSender` over [SessionRepository] — the wire shape the oracle's
+ * `SpeechSender` over [SessionRepository] — the wire shape Lerdr's
  * `speakToAgent` emits:
  *
  * - `speak_text` — `text` on the typed [Inbound], `language` and a fresh
  *   `speech_request_id` as raw extras (the flat `Inbound` declares neither).
  *   Awaits the correlated `command_result` carrying `data.audio` (base64
- *   WAV). The oracle's 20 s command budget applies.
+ *   WAV). Lerdr's 20 s command budget applies.
  * - `cancel_speech` — fire-and-forget under the same `speech_request_id`;
  *   the relay flags the in-flight synthesis cancelled (and tombstones the
  *   id, so a late `speak_text` starts cancelled). It receipts with a
  *   `confirmed` action_receipt — `request()` consumes it and the result is
- *   dropped. Unlike the oracle's raw send this frame gets a `request_id`,
+ *   dropped. Unlike Lerdr's raw send this frame gets a `request_id`,
  *   which only earns the receipt — harmless parity.
  */
 class SessionSpeechSender(
@@ -54,7 +54,7 @@ class SessionSpeechSender(
         override suspend fun await(): CommandResultMessage = deferred.await()
 
         override fun cancel() {
-            // `promise.cancel` in the oracle: raw `cancel_speech` on the
+            // `promise.cancel` in Lerdr: raw `cancel_speech` on the
             // same speech_request_id — the speak_text reply is abandoned,
             // never awaited a second time.
             scope.launch {

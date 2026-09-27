@@ -26,7 +26,7 @@ data class TerminalSpanUi(
     val bold: Boolean = false,
     val italic: Boolean = false,
     val underline: Boolean = false,
-    /** SGR 2 — the oracle renders it as 70% opacity on the fg color. */
+    /** SGR 2 — Lerdr renders it as 70% opacity on the fg color. */
     val dim: Boolean = false,
     /** `terminal-link` leaf — the normalized http(s) target. */
     val href: String? = null,
@@ -54,7 +54,7 @@ data class TerminalRowUi(
  * The write cursor: last row, one cell past its content — the position a
  * real terminal would append at. The wire frame carries no cursor
  * coordinates (the pane is a text capture), so this is the approximation
- * the oracle's capture model implies.
+ * Lerdr's capture model implies.
  */
 @Immutable
 data class TerminalCursorUi(

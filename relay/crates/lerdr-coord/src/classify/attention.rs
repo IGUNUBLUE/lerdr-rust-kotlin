@@ -21,7 +21,7 @@ pub(crate) enum AttentionKind {
 }
 
 /// `question.Classification` — the `interaction`/`question_layout` fields
-/// mirror the oracle's attention shape for the projection that lands with
+/// mirror the retired implementation's attention shape for the projection that lands with
 /// the session watcher; the handlers drive `parse_question` directly and
 /// read only `kind`/`options`/`approval_focus` for now.
 #[derive(Debug, Clone, Default)]

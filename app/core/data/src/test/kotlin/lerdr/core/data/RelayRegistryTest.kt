@@ -169,9 +169,9 @@ class RelayRegistryTest {
     }
 
     @Test
-    fun `makeRelayId matches the oracle slug rules`() {
+    fun `makeRelayId matches Lerdr slug rules`() {
         // The scheme strip is anchored at index 0, so with a label present
-        // the "wss://" survives as a slug segment — same as the oracle.
+        // the "wss://" survives as a slug segment — same as Lerdr.
         assertThat(makeRelayId("My Box", "wss://Box.Example.com:8443"))
             .isEqualTo("my-box-wss-box-example-com-8443")
         assertThat(makeRelayId("", "wss://desk.local")).isEqualTo("desk-wss-desk-local")

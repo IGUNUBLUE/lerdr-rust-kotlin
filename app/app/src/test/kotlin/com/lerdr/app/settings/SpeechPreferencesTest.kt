@@ -12,7 +12,7 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 
 /**
- * `lerdr_speech_enabled` / `lerdr_speech_language` — the oracle's
+ * `lerdr_speech_enabled` / `lerdr_speech_language` — Lerdr's
  * localStorage keys on DataStore, including the `adoptRelaySpeech`
  * first-relay onboarding.
  */

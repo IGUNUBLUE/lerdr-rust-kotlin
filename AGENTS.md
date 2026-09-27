@@ -1,10 +1,11 @@
 # Agent Instructions
 
-Lerdr: Rust relay + Kotlin/Compose Android app. `docs/` is the spec and
-the authority — read `00-inventory`, `02-architecture`, `03-protocol`,
-`04-app-design`, `05-roadmap`, `08-herdr-boundary`, `10-spec-gaps` before
-implementing anything. The project is self-contained: it does not track
-or compare against any external implementation.
+Lerdr is an independent Rust relay + Kotlin/Compose Android app. `docs/`
+defines the product and protocol; committed `fixtures/` anchor the frozen
+wire contract. Read `00-inventory`, `02-architecture`, `03-protocol`,
+`04-app-design`, `05-roadmap`, `08-herdr-boundary`, and `10-spec-gaps`
+before implementing anything. Current code and tests resolve implementation
+questions; record unspecified behavior in `docs/10-spec-gaps.md`.
 
 ## Rules
 
@@ -18,8 +19,12 @@ or compare against any external implementation.
   deliberate protocol revision.
 - Parallel work uses disjoint file ownership; shared/generated files
   belong to the orchestrator.
-- Comments citing the original implementation (e.g. "the reference") are
-  historical provenance, not a standing comparison rule.
+- The earlier Go project is historical provenance, not an implementation
+  authority. Do not browse, clone, search, or compare against its repository
+  (including through agents, external tools, or local copies). Resolve
+  questions using this repository's docs, fixtures, source, and tests.
+  Herdr is a live host dependency: consult its API documentation when
+  working on that boundary, not the earlier mobile relay.
 
 ## Verification
 

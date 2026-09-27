@@ -1,16 +1,15 @@
 # 08 — The Herdr boundary (deep dive) + improved service topology
 
-Source: `internal/herdr/{socket_api,client,events,send_input,capabilities}.go`.
-This is the only contract the relay has with the host — getting its Rust
-shape right is what makes the rest of the service cheap.
+This document defines Lerdr's contract with Herdr. It is implemented by
+`lerdr-herdr` and anchored by the current Herdr schema/capability facts
+recorded here; the retired Go client is historical provenance only.
 
 ## The wire contract
 
 **Transport**: Unix socket (path from config/env), newline-delimited JSON.
-**One request per connection** — Herdr closes the socket after each
-response. Connection pooling is impossible by design; the Go client
-learned this the hard way (cached conn → every read hit a dead write →
-retry). Reads dial fresh per attempt (v0.26.3 fix).
+One request per connection — Herdr closes the socket after each response.
+Connection pooling is impossible by design; each Lerdr read dials a fresh
+connection per attempt.
 
 ```jsonc
 → {"id":"lerdr-api-42","method":"pane.read","params":{...}}\n
@@ -77,11 +76,10 @@ Each carries `FeatureState{supported|unsupported|unknown}` + evidence.
 Rust side: `Capabilities` struct, refreshed on reconnect, exposed to
 clients in `push_config.herdr_status`.
 
-## The improved service topology (Rust)
+## The service topology (Rust)
 
-The Go relay grew organically: mutexes around shared maps, a coordinator
-crate bolted on, watch loops holding locks. In Rust we make the actor
-model explicit — **channels own the boundaries, tasks own the state**:
+Lerdr uses an explicit actor model — **channels own the boundaries, tasks own
+the state**:
 
 ```
                     Herdr (unix socket / CLI)
@@ -127,90 +125,64 @@ model explicit — **channels own the boundaries, tasks own the state**:
 ### Rules this topology enforces
 
 1. **No `Mutex<HashMap>` for hot state.** Topology lives in one actor;
-   readers hold `watch::Receiver`s. Session outbound is `mpsc` (bounded —
-   lag → evict, same contract as Go sendbuffer).
+   readers hold `watch::Receiver`s. Session outbound is bounded `mpsc`;
+   lag evicts the session.
 2. **Singleflight on Herdr reads.** N watchers of the same pane → one
-   `pane.read` in flight; results fan out. Cuts Herdr load ~N:1 on the
-   hot path the phone-heavy UX creates.
+   `pane.read` in flight; results fan out. This bounds Herdr load on the hot
+   phone-driven path.
 3. **Semaphore around dials.** Each request = a socket; cap concurrent
-   dials (e.g. 32) so a thundering herd of watch probes can't fd-storm
-   Herdr.
+   dials (e.g. 32) so a thundering herd of watch probes cannot fd-storm Herdr.
 4. **Dispatch boundary travels end-to-end.** `HerdrError` maps onto
    `ActionReceipt.phase`: `NotStarted` → `failed_before_dispatch`,
    `DispatchedUnknown` → `dispatched_unknown`, `Refused` → `confirmed`
    error path. The mobile UI gets honest receipts.
 5. **Event-driven, not polled.** Inventory is a projection of the event
-   stream + bootstrap, not periodic `agent.list` polling (the Go relay
-   still polls in places — the Rust one shouldn't).
+   stream + bootstrap, with polling only as an explicit fallback.
 6. **Watch tasks die with their subscribers.** `tokio::select!` on
    unsubscribe/shutdown; no orphan reads.
 
-## Kotlin app — revised module layout (nowinandroid-aligned)
+## Kotlin app modules
 
-Current official guidance (nowinandroid, 2026): 3 layers
-(data/domain/UI), repositories expose **Flows** (never snapshots), UDF
-with ViewModel+StateFlow, **single feature modules** (the api/impl split
-was dropped for Navigation 3), test doubles over mocks, Baseline
-Profiles for cold start.
+The current Gradle settings are authoritative; the Android project contains:
 
 ```
 app/
-├── core/
-│   ├── model/          # shared DTOs (Agent, Workspace, Question…)
-│   ├── data/           # repositories — expose Flows, merge WS+local
-│   ├── network/        # WS transport, E2EE, reconnect (was transport)
-│   ├── crypto/         # e2ee handshake/session (Keystore-wrapped keys)
-│   ├── terminal/       # ANSI parser, delta applier, frame store
-│   ├── conversation/   # paging source for Entry feeds
-│   ├── designsystem/   # M3E theme + isolated expressive wrappers
-│   ├── ui/             # shared compose components (agent row, tool card)
-│   ├── datastore/      # DataStore prefs, Keystore credentials, drafts
-│   ├── notifications/  # channels, push-open deep links
-│   ├── service/        # foreground connection service + lifecycle
-│   └── testing/        # fakes for every repository + fixture loaders
-├── feature/
-│   ├── agents/         # home mission control
-│   ├── session/        # feed + terminal + details modes
-│   ├── activity/       # journal
-│   ├── workspaces/     # tree/files/git
-│   ├── pairing/        # QR, devices, invitations
-│   └── settings/       # relays, push, speech, app
-├── navigation/         # Nav3 entry providers + top-level destinations
-├── app/                # Application, MainActivity, nav host, DI graph
-├── app-benchmarks/     # Macrobenchmark + Baseline Profile generator
-└── androidTest/        # device tests
+├── core/{model,protocol,e2ee,terminal,testing,transport,store,
+│         conversation,designsystem,data}
+├── navigation/
+└── app/
 ```
 
-### App best-practice rules (enforce via skills + lint)
+The app uses Flow-backed repositories, ViewModel + StateFlow UI state,
+fixture-driven protocol/terminal/crypto tests, and a foreground connection
+service. See [02 — Target architecture](02-architecture.md) for the current
+module inventory and dependencies.
 
-- **Repositories expose `Flow`, never suspend-get.** UI collects with
-  `collectAsStateWithLifecycle`. Offline-first: DataStore/DB is the
-  source of truth; WS deltas reconcile into it.
-- **`@Immutable`/`@Stable` on every model** crossing into compose;
-  `key()` in all lazy lists; state reads deferred into layout/draw
-  phases where possible.
-- **No mocking libs in tests** — fakes in `:core:testing` (nowinandroid
-  convention). Fixture-driven unit tests for protocol/terminal/crypto.
-- **Baseline Profile + Startup Profile** generated from a paired-session
-  journey — cold start is the first impression of "native".
-- **Foreground service** type `dataSync`, visible persistent
-  notification, `onTaskRemoved` → restart intent, battery-exemption UX
-  behind a settings flag.
-- **One ViewModel per screen**, scoped to Nav3 entries; no god-store.
-  The WS session is in `:core:service` + `:core:data` — survives config
-  changes and nav.
+### App integration rules
 
-## Repo-level skills to ship
+- Repositories expose `Flow`; UI collects lifecycle-aware state.
+- Models crossing into Compose are `@Immutable`/`@Stable` where applicable,
+  and lazy lists use stable keys.
+- Tests use fakes in `:core:testing` and frozen fixtures for
+  protocol/terminal/crypto behavior.
+- The foreground service owns the long-lived connection and presents its
+  required persistent notification.
+- Screen ViewModels own screen state; transport and synchronized store state
+  survive configuration and navigation changes.
 
-Created in `.devin/skills/` (see commit): `herdr-api` (boundary rules),
-`protocol-parity` (fixture/vector workflow), `rust-relay` (actor
-topology + error taxonomy), `android-app` (module + Compose rules).
+## Repository skills
 
-## Authoritative findings from the upstream repo (herdrdev/herdr)
+The repository provides `herdr-api` (boundary rules), `protocol-parity`
+(fixture/vector workflow), `rust-relay` (actor topology + error taxonomy), and
+`android-app` (module + Compose rules). The legacy skill name
+`protocol-parity` means conformance to this repository's frozen contract, not
+comparison with another implementation.
 
-Read `docs/next/website/src/content/docs/{socket-api,plugins}.mdx` +
-`api/herdr-api.schema.json` (131 methods). Corrections/upgrades over the
-reverse-engineered notes above:
+## Recorded Herdr integration findings
+
+The following are the Herdr API facts Lerdr relies on. They are recorded here
+so Lerdr's implementation guidance remains self-contained; the installed
+runtime schema is the capability-discovery input.
 
 - **Runtime schema introspection**: `herdr api schema --json` dumps the
   installed API's full JSON Schema. `lerdr-herdr` gains a `SchemaRegistry`:

@@ -26,7 +26,7 @@ class DeviceAuthentication private constructor(
 
     /**
      * The credential the relay issued during an invitation handshake, ready to
-     * present on the next connection (`commitDeviceEnrollment` in the oracle).
+     * present on the next connection (`commitDeviceEnrollment` in Lerdr).
      * Returns null when [finish] carries no `credential_secret`.
      */
     fun issuedCredential(finish: E2EEServerFinish): DeviceAuthentication? {

@@ -22,14 +22,14 @@ import org.junit.Test
 
 /**
  * Conformance over `fixtures/conversation/conversation.page.*.json` — the
- * golden vectors exported from the Go readers (`page_export_test.go`).
+ * golden vectors for the relay reader contract.
  *
  * Each vector step is one reader-level page read: `{before, limit} →
  * {available, reason_code, expected_entries, has_more, total, next_cursor,
  * source_corrupt, file_truncated, omo_plan}`. The app never reads transcript
  * files — it consumes the wire `BrowsePage` — so the harness rewrites every
- * step into the wire payload the Go browser emits for that read, then asserts
- * the projected [ConversationPage] field-for-field:
+ * step into the matching wire payload, then asserts the projected
+ * [ConversationPage] field-for-field:
  *
  * - `available=false` reader outcomes (`invalid_provider`, `invalid_session`,
  *   `source_unavailable`, `path_uncontained`) become `browseUnavailable`
@@ -156,7 +156,7 @@ class ConversationPageConformanceTest {
     /**
      * Rewrites a step's reader-level expectation into the wire `BrowsePage`
      * payload the Go browser emits for the same read
-     * (`internal/conversation/browser.go`):
+     * (relay contract):
      *
      * - reader `available=false` becomes `browseUnavailable` for file agents
      *   (only the source-location codes can produce it); sqlite readers route

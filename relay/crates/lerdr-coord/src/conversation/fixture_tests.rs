@@ -1,6 +1,6 @@
 //! Golden fixture conformance for `fixtures/conversation/conversation.page.*.json`.
 //!
-//! Mirrors the oracle exporter `internal/conversation/page_export_test.go`:
+//! Mirrors the retired implementation exporter `internal/conversation/page_export_test.go`:
 //! each vector's `files` (and sqlite `statements`) materialize under a fresh
 //! temporary HOME, each `steps[]` entry runs through [`Reader`], and the
 //! resulting [`Page`] is compared field-for-field against the declared

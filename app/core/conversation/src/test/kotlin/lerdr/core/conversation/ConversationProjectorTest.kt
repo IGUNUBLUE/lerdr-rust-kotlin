@@ -16,7 +16,7 @@ import org.junit.Test
 /**
  * Wire-contract invariants for [ConversationProjector] — the same checks the
  * released web client applies in `normalizeConversationPage`
- * (`frontend/src/lib/store.ts`), plus the request-side clamping.
+ *, plus the request-side clamping.
  */
 class ConversationProjectorTest {
 

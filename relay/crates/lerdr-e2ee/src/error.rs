@@ -1,9 +1,8 @@
 //! Error taxonomy for the e2ee layer.
 //!
-//! `Display` strings reproduce the Go reference's `errors.New` text verbatim —
-//! `crypto.failures` vectors pin them via `go_error`. [`E2eeError::class`]
-//! maps each variant onto the suite's `expected_error` vocabulary
-//! (`format` / `replay` / `seq` / `auth`).
+//! `Display` strings are frozen by the `crypto.failures` vectors via
+//! `go_error`. [`E2eeError::class`] maps each variant onto the suite's
+//! `expected_error` vocabulary (`format` / `replay` / `seq` / `auth`).
 
 /// Failure classes of the `crypto.failures` suite.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

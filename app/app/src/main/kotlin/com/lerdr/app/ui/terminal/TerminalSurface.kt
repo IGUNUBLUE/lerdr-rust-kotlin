@@ -172,7 +172,7 @@ fun TerminalSurface(
     }
 
     // Find overlays — only rows carrying a match re-measure, with the
-    // oracle's dark mark fg over the SGR color. Keyed on the range map, so
+    // Lerdr's dark mark fg over the SGR color. Keyed on the range map, so
     // query/active changes leave the committed row layouts untouched.
     val findLayouts = remember(
         renderRows, renderFindRanges, textMeasurer, baseStyle, textColor, findTextColor,
@@ -210,7 +210,7 @@ fun TerminalSurface(
         state.stickThresholdPx = with(density) { STICK_THRESHOLD_DP.dp.toPx() }
     }
 
-    // The oracle's handleScroll: scrolling up into history releases the
+    // Lerdr's handleScroll: scrolling up into history releases the
     // follow-live pin; landing at the bottom edge re-pins it. Programmatic
     // scrolls (follow-live, find reveal) are excluded from the read.
     LaunchedEffect(state) {
@@ -358,7 +358,7 @@ fun TerminalSurface(
                 .horizontalScroll(horizontalScroll)
                 // Long-press-drag selects a cell range; a held press that
                 // never moves past the touch slop opens the context menu
-                // (the gesture the oracle bound to long-press). The
+                // (the gesture Lerdr bound to long-press). The
                 // detector sits AFTER the scrollers — innermost on the
                 // Main pass — so once the long-press wins, its moves are
                 // consumed before the scroll drag can claim them.
@@ -723,7 +723,7 @@ private fun TerminalGrid(
                         size = Size(bounds.width, metrics.rowHeight),
                     )
                     if (range.active) {
-                        // The oracle's .active box-shadow ring.
+                        // Lerdr's .active box-shadow ring.
                         drawRect(
                             color = FIND_ACTIVE_RING_COLOR,
                             topLeft = Offset(bounds.left, rowTop),
@@ -773,7 +773,7 @@ private fun TerminalGrid(
 /**
  * Scroll/highlight handle for [TerminalSurface] — owns the vertical
  * [scrollState] so callers can reveal a find match, and carries the
- * follow-live pin (`virtualStickToBottom` in the oracle): true while the
+ * follow-live pin (`virtualStickToBottom` in Lerdr): true while the
  * view rides the write edge, released by scrolling into history or by a
  * find reveal, re-armed within [stickThresholdPx] of the bottom.
  */
@@ -855,7 +855,7 @@ class TerminalSurfaceState internal constructor(
         try {
             val target = (row * rowHeight - (scrollState.viewportSize - rowHeight) / 2f)
                 .coerceIn(0f, scrollState.maxValue.toFloat())
-            // Instant like the oracle's `scrollTop =` assignment — stepping
+            // Instant like Lerdr's `scrollTop =` assignment — stepping
             // through matches shouldn't animate between jumps.
             scrollState.scrollTo(target.toInt())
             stickToBottom = scrollState.maxValue - scrollState.value < stickThresholdPx
@@ -876,7 +876,7 @@ class TerminalSurfaceState internal constructor(
 
     /**
      * The "scroll to live" affordance — jump to the write edge and re-arm
-     * the follow-live pin (the oracle's scrollToBottom button).
+     * the follow-live pin (Lerdr's scrollToBottom button).
      */
     suspend fun scrollToLive() {
         scrollToBottom()
@@ -919,7 +919,7 @@ private const val MAGNIFIER_LIFT_ROWS = 4f
 /** Robolectric reports no usable android.widget.Magnifier — lens off in tests. */
 private val MAGNIFIER_SUPPORTED = Build.FINGERPRINT != "robolectric"
 
-/** Follow-live re-pin distance — the oracle's 48 px bottom edge. */
+/** Follow-live re-pin distance — Lerdr's 48 px bottom edge. */
 private const val STICK_THRESHOLD_DP = 48
 
 /** Cursor block opacity — translucent so the glyph under it stays legible. */
@@ -972,7 +972,7 @@ private fun shortenMenuLabel(href: String): String =
 /**
  * Row → AnnotatedString: SGR fields → [SpanStyle], links underlined.
  * [findRanges] overlay the mark fg — added last, they win over the SGR
- * colors underneath (the oracle's mark color swap keeps matched glyphs
+ * colors underneath (Lerdr's mark color swap keeps matched glyphs
  * legible on the highlight fill).
  */
 private fun TerminalRowUi.toAnnotatedString(
@@ -1015,7 +1015,7 @@ private fun TerminalRowUi.toAnnotatedString(
     return builder.toAnnotatedString()
 }
 
-/** SGR 2 (`dim`) — the oracle's `opacity: .7`. */
+/** SGR 2 (`dim`) — Lerdr's `opacity: .7`. */
 private const val DIM_ALPHA = 0.7f
 
 @PreviewLightDark

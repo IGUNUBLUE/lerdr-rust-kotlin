@@ -113,9 +113,9 @@ pub trait FrameIo: Send {
     type Reader: FrameRead;
     type Writer: FrameWrite;
 
-    /// The encrypted-frame codec this transport negotiates (`conn.Codec()`).
-    /// The WS path is [`Codec::Json`]: the Go oracle rejects binary frames on
-    /// the encrypted socket (`requireText`).
+    /// The encrypted-frame codec this transport negotiates.
+    /// The WebSocket protocol carries [`Codec::Json`] text frames only; a
+    /// binary frame is a protocol violation.
     fn codec(&self) -> Codec;
     /// Transport label for logs and metrics (`conn.TransportName()`).
     fn transport(&self) -> &'static str;

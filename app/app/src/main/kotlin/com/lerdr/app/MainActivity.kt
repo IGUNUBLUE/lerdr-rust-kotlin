@@ -70,7 +70,7 @@ class MainActivity : FragmentActivity() {
                     }
                 }
 
-                // App-lock gate — the oracle "verifies before it will
+                // App-lock gate — Lerdr "verifies before it will
                 // connect at open"; locked content is never composed.
                 LockGate {
                     LerdrNavDisplay(navigator = navigator) {
@@ -89,7 +89,7 @@ class MainActivity : FragmentActivity() {
     override fun onStart() {
         super.onStart()
         // Foreground — sessions resume keepalives; revalidate probes each
-        // connection for staleness (the oracle's revalidateConnections).
+        // connection for staleness (Lerdr's revalidateConnections).
         sessions.setHidden(false)
         sessions.revalidateAll()
     }

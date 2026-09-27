@@ -72,7 +72,7 @@ private fun failedPage(
 )
 
 /**
- * Conversation-history demand loop — the oracle's `get_conversation_history`
+ * Conversation-history demand loop — Lerdr's `get_conversation_history`
  * controller ported: diagnostics surface, preparing-page polling, stall
  * pause, cancel/continue, cursorless reload, and `retry` wire re-issues.
  */
@@ -577,7 +577,7 @@ class FeedViewModelHistoryTest {
         assertThat(vm.uiState.value.entries.map { it.id })
             .containsExactly("e1", "e2").inOrder()
 
-        // The oracle's reloadHistory/returnToLatest — a fresh head demand.
+        // Lerdr's reloadHistory/returnToLatest — a fresh head demand.
         vm.loadHistory()
         h.pump()
 

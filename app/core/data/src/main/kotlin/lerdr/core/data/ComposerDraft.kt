@@ -7,8 +7,8 @@ import kotlinx.serialization.json.add
 import lerdr.core.model.AgentState
 
 /**
- * One composer draft record — the oracle's `PromptDraftRecord`
- * (`prompt-drafts.ts:9-14`): `{version, identity, text, updatedAt}`.
+ * One composer draft record — Lerdr's `PromptDraftRecord`
+ *: `{version, identity, text, updatedAt}`.
  */
 data class ComposerDraft(
     /** The pane-scoped identity produced by [composerDraftIdentity]. */
@@ -17,7 +17,7 @@ data class ComposerDraft(
     val updatedAtEpochMs: Long,
 )
 
-/** `PromptDraftSaveResult` (`prompt-drafts.ts:44`). */
+/** `PromptDraftSaveResult`. */
 enum class DraftSaveResult {
     SAVED,
     CLEARED,
@@ -26,10 +26,10 @@ enum class DraftSaveResult {
 }
 
 /**
- * `promptDraftIdentity` (`prompt-drafts.ts:46-54`) — a draft belongs to a
+ * `promptDraftIdentity` — a draft belongs to a
  * pane, not a conversation: relay + terminal/pane coordinates + agent kind
  * + cwd, so an agent restart or a same-pane different-cwd session does not
- * resurrect a stale draft. Serialized as a JSON array, same as the oracle's
+ * resurrect a stale draft. Serialized as a JSON array, same as Lerdr's
  * `JSON.stringify([...])`.
  */
 fun composerDraftIdentity(relayId: String, agent: AgentState): String {

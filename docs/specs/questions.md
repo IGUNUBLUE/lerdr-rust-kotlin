@@ -1,16 +1,11 @@
 # Questions — `Interaction` schema, `answer_question` / `clarify_question` / `navigate_question`
 
-Spec for the structured-question contract between relay and client. Closes
-`docs/10-spec-gaps.md` P0-3. All line numbers cite `~/Projects/lerdr`
-(original Go implementation — provenance only).
+This is the normative structured-question contract between relay and client.
+It closes `docs/10-spec-gaps.md` P0-3.
 
-Sources: `internal/question/parser.go` (Interaction/Option/Other schema, id,
-parse dispatch), `internal/question/input.go` (Focus → key planning),
-`internal/question/attention.go` (attention kinds),
-`internal/coordinator/approval.go` (action handlers, watcher, phases),
-`internal/coordinator/dispatch.go` (dispatch + acknowledge),
-`internal/app/server.go` (carriers: `blocked`, pane frames, snapshots),
-`frontend/src/lib/types.ts` + `store.ts` (client contract).
+The field and terminal-navigation details were historically extracted from the
+retired Go relay and client. Their paths below are archival provenance only;
+implement against this specification and the committed fixtures.
 
 ---
 
@@ -187,25 +182,23 @@ Related: `acknowledge_pane` (`dispatch.go:287,619-635`) clears the *attention
 badge* on an agent (displayed-status bookkeeping), emitting `agent_update` when
 it changes — it does not answer the question.
 
-## 8. Focus → keys (relay-internal, documented for the Rust port)
+## 8. Focus → keys (relay-internal)
 
-`Focus{Kind, Index}` is server-side cursor bookkeeping (`parser.go:36-39`):
+`Focus{Kind, Index}` is server-side cursor bookkeeping:
 kinds `"option"`, `"other"`, `"submit"`, `"chat"`. `PlanInput` maps intents:
 
 | Intent | Keys |
 |---|---|
-| `navigate previous` | `Left` (`Shift+Tab` for opencode) (`input.go:25-29`) |
-| `navigate next` | `Right` (`Tab` for opencode) (`input.go:30-34`) |
-| `clarify` | navigate to `chat` focus + `Enter` (`input.go:36-37`) |
-| select option i | Up/Down by `position(target) − position(current)` + `Enter` (`input.go:345-374`) |
-| other (claude) | navigate to last option + `Ctrl+U` (clear) then text + `Enter` (`input.go:295-343`) |
-| multi-select | per-option Enter toggles; `submit` focus sits at `AllOptionCount` (`input.go:351-352`) |
+| `navigate previous` | `Left` (`Shift+Tab` for opencode) |
+| `navigate next` | `Right` (`Tab` for opencode) |
+| `clarify` | navigate to `chat` focus + `Enter` |
+| select option i | Up/Down by `position(target) − position(current)` + `Enter` |
+| other (claude) | navigate to last option + `Ctrl+U` (clear) then text + `Enter` |
+| multi-select | per-option Enter toggles; `submit` focus sits at `AllOptionCount` |
 
-Per-agent planners (`codex`, `qoder`, `opencode`, `omp`, `claude` fallback —
-`input.go:40-51`) differ in where `other`/`submit` sit; the Rust port must
-re-derive these from the per-agent terminal layouts. Position models are
-`navigationKeys`/`qoderNavigationKeys`/`openCodeNavigationKeys`
-(`input.go:345-423`).
+Per-agent planners (`codex`, `qoder`, `opencode`, `omp`, `claude` fallback)
+differ in where `other`/`submit` sit. The relay derives their positions from
+the corresponding terminal layouts.
 
 ## 9. Edge cases
 

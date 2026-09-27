@@ -38,7 +38,7 @@ class AppPreferences @Inject constructor(
     }
 
     /**
-     * Opt-in app lock (oracle docs/security.md "device verification") —
+     * Opt-in app lock (Lerdr docs/security.md "device verification") —
      * when on, `security.LockGate` covers the UI at process start until
      * `BiometricPrompt` verifies the user once. Defaults off. UX gate
      * only: this flag is not a secret and the Keystore credential seal

@@ -70,7 +70,7 @@ object ManageSheetTags {
 }
 
 /**
- * The session ⋯ surface — a modal bottom sheet mirroring the oracle's
+ * The session ⋯ surface — a modal bottom sheet mirroring Lerdr's
  * `ManageDialog`: rename (`agent_rename`), restart (`agent_restart`),
  * clear (`agent_clear`), stop (`agent_stop`), copy the last response
  * (`copy_agent_response`), plus a metadata block (pane id, cwd, workspace,
@@ -290,7 +290,7 @@ private fun ManageActions(
 }
 
 /**
- * The oracle's confirm step — the panel *replaces* the action list so the
+ * Lerdr's confirm step — the panel *replaces* the action list so the
  * destructive tap can never be an accident. Focus starts on Cancel.
  */
 @Composable

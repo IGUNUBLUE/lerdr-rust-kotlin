@@ -3,8 +3,8 @@
 //! Go's `json.Marshal` HTML-escapes (`<` `>` `&` → `<` `>` `&`,
 //! U+2028/U+2029 escaped) and renders `\b`/`\f` as ``/`\f` rather
 //! than the `\b`/`\f` shorthands `serde_json` emits. Encoders in this crate
-//! build wire bytes with [`escape_string`] so output is byte-identical to the
-//! Go reference for any field content, not just fixture-shaped content.
+//! build wire bytes with [`escape_string`] so output follows the frozen
+//! canonical encoding for any field content, not just fixture-shaped content.
 //!
 //! On the decode side, `json.Unmarshal` treats an explicit JSON `null` as a
 //! no-op that leaves the Go zero value in place; [`null_default`] mirrors that

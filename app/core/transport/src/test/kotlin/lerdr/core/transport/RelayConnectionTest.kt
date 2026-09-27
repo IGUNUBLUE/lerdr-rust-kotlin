@@ -198,7 +198,7 @@ class RelayConnectionTest {
             runBlocking { connection.connect() }
             error("connect should have failed")
         } catch (expected: TransportException.EncryptionRequired) {
-            // oracle: 'Relay did not negotiate encrypted transport'
+            // Lerdr: 'Relay did not negotiate encrypted transport'
         }
         assertThat(connection.state.value).isInstanceOf(RelayConnection.State.Closed::class.java)
     }

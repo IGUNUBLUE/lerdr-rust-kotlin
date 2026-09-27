@@ -151,7 +151,7 @@ class DraftStoreTest {
     // ── identity ─────────────────────────────────────────────────────
 
     @Test
-    fun `composerDraftIdentity matches the oracle shape`() {
+    fun `composerDraftIdentity matches Lerdr shape`() {
         val agent = AgentState(
             rawPaneId = "p1",
             workspaceId = "w1",

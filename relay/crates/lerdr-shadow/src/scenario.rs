@@ -75,7 +75,7 @@ pub struct CompareConfig {
     #[serde(default)]
     pub drop_types: BTreeSet<String>,
     /// Predicate drops: any frame matching a `{type, contains}` clause is
-    /// excluded — e.g. Go's empty startup `activity_history`
+    /// excluded — for example, an empty startup `activity_history`
     /// (`{"type":"activity_history","contains":{"activities":null}}`).
     /// Distinct from `drop_types`: the frame survives when populated.
     #[serde(default)]
@@ -260,15 +260,14 @@ pub enum Step {
     },
     /// `pane_applied` — ack the most recent `pane_content`/`pane_delta`
     /// observed for `pane_id`, echoing that frame's `content_fingerprint`
-    /// (the oracle's `handlePaneApplied` matches it against `pending`).
-    /// Fails the step when no pane frame has been seen — ack before the
-    /// first `expect` is a scenario bug.
+    /// against the pending pane content. Fails the step when no pane frame has
+    /// been seen — ack before the first `expect` is a scenario bug.
     AckPane {
         label: String,
         /// `pane_id` — `{placeholders}` resolve like frame fields.
         pane_id: String,
         /// Optional `target` object — rendered like a frame; its
-        /// `server_session_id` also rides top-level (`putTarget` parity).
+        /// `server_session_id` also rides top-level on target-bearing actions.
         #[serde(default)]
         target: Option<Value>,
         #[serde(default)]

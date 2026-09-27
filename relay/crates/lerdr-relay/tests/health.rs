@@ -134,7 +134,7 @@ async fn healthz_reports_full_shape() {
     assert_eq!(inventory["last_success_at"], 1_699_999_000);
     assert_eq!(inventory["stale"], false);
     // `delete(inventory, "message")` — and `type` is the wire
-    // discriminator, never part of the oracle's map.
+    // discriminator, never part of the retired implementation's map.
     assert!(inventory.get("message").is_none(), "{inventory}");
     assert!(inventory.get("type").is_none(), "{inventory}");
 }
@@ -177,7 +177,7 @@ async fn readyz_follows_live_inventory() {
 }
 
 /// Before `serve` runs, `s.ready` is false: even a ready inventory
-/// reports `starting`/`unavailable` (the oracle's `s.ready` leg).
+/// reports `starting`/`unavailable` (the retired implementation's `s.ready` leg).
 #[tokio::test]
 async fn readyz_unavailable_before_serving() {
     let (_cell, probe) = inventory_cell("ready");

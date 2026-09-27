@@ -152,7 +152,7 @@ class HomeScreenScreenshotTest {
                                 agentLabel = "claude · lerdr",
                                 kind = AttentionKind.APPROVAL,
                                 metaLabel = "approval · 40s",
-                                prompt = "Run go test ./internal/… ?",
+                                prompt = "Run cargo test -p lerdr-coord?",
                                 options = listOf("Allow", "Always allow", "Deny"),
                                 controllable = true,
                                 provider = "claude",
@@ -238,7 +238,7 @@ class HomeScreenScreenshotTest {
 
     @Test
     fun home_refreshing() {
-        // The oracle's `pullRefreshing` window — the pull indicator holds
+        // Lerdr's `pullRefreshing` window — the pull indicator holds
         // over the list for ~900 ms after the gesture fires.
         composeRule.setContent {
             LerdrTheme {

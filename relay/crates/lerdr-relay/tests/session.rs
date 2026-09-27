@@ -1139,7 +1139,7 @@ async fn binary_chunk_without_capability_is_capability_unsupported() {
     client.send_json(&mut session, &frame).await;
     let reply = client.read_until_type(&mut session, "error").await;
     // The carrier has no request id — the member is omitted, matching
-    // the oracle's `request_id,omitempty` envelope.
+    // the retired implementation's `request_id,omitempty` envelope.
     assert!(reply.get("request_id").is_none() || reply["request_id"].is_null());
     assert_eq!(reply["error"]["code"], "capability_unsupported");
     assert_eq!(reply["error"]["args"]["operation"], "upload_chunk");

@@ -87,7 +87,7 @@ class FilesViewModelTest {
 
         /**
          * Connected session + agent row. [capabilities] lets a test drop
-         * `workspace_inspection` to exercise the oracle's gate.
+         * `workspace_inspection` to exercise Lerdr's gate.
          */
         suspend fun connectReady(
             capabilities: String = "\"pane_realtime_delta\",\"workspace_inspection\"",
@@ -212,8 +212,8 @@ class FilesViewModelTest {
         val state = vm.uiState.value
         assertThat(state.loading).isFalse()
         assertThat(state.workspaceError).isEqualTo("Workspace is unavailable")
-        // Oracle parity — the throw precedes git assignment, so the Changes
-        // tab falls back to its generic "unavailable" message.
+        // The tree failure occurs before Git assignment, so the Changes tab
+        // falls back to its generic "unavailable" message.
         assertThat(state.git).isNull()
     }
 
@@ -232,7 +232,7 @@ class FilesViewModelTest {
     }
 
     @Test
-    fun `not-a-repo status carries the oracle's reason`() = runTest {
+    fun `not-a-repo status carries Lerdr's reason`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectReady()
         h.respondWith(git = """{"available":false,"files":[]}""")
@@ -246,7 +246,7 @@ class FilesViewModelTest {
     }
 
     @Test
-    fun `invalid payloads map to the oracle's validation errors`() = runTest {
+    fun `invalid payloads map to Lerdr's validation errors`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectReady()
         h.respondWith(tree = """{"entries":"nope"}""")
@@ -319,7 +319,7 @@ class FilesViewModelTest {
     }
 
     @Test
-    fun `selectSection clears the open preview like the oracle`() = runTest {
+    fun `selectSection clears the open preview`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectReady()
         h.respondWith()

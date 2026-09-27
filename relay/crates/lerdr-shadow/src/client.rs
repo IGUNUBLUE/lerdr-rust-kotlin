@@ -32,9 +32,8 @@ use crate::scenario::{render, render_str, step_scope, Match, Scenario, Step, PRO
 use crate::trace::{now_ms, Record, TraceWriter};
 use crate::{Result, ShadowError};
 
-/// The fixed bootstrap selector both relays arm from the relay key
-/// (`{kind: invitation, id: "bootstrap", version: 1}` — Go
-/// `EnsureBootstrapInvitation`, Rust `mint_invitation`).
+/// The fixed bootstrap selector both relay runs arm from the relay key
+/// (`{kind: invitation, id: "bootstrap", version: 1}`).
 pub const BOOTSTRAP_INVITATION_ID: &str = "bootstrap";
 pub const BOOTSTRAP_LOCALE: &str = "en";
 
@@ -48,7 +47,7 @@ pub struct RunParams {
     pub auth_version: u64,
     pub locale: String,
     pub scenario: Scenario,
-    /// Label written into the trace meta (`go`, `rust`, `rust-a`, …).
+    /// Label written into the trace meta (`rust-a`, `rust-b`, …).
     pub side: String,
     pub trace_path: PathBuf,
     /// Whole-handshake deadline.
@@ -504,8 +503,8 @@ impl Executor<'_> {
                     }
                     if let Some(target) = target {
                         let target = render(target, &scenario.vars, &scope)?;
-                        // `putTarget` parity — `server_session_id` also rides
-                        // top-level on target-bearing actions.
+                        // Target-bearing actions carry `server_session_id`
+                        // at the top level as well.
                         if let Some(ssid) = target
                             .get("server_session_id")
                             .and_then(Value::as_str)

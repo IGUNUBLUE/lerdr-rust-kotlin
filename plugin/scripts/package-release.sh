@@ -141,9 +141,9 @@ RELEASE_TOOL="$WORKSPACE/target/release/lerdr-relay"
     exit 1
 }
 
-# The binary's own release-manifest/verify-release subcommands (the oracle's
-# internal/release contract) are authoritative once they land; until then
-# scripts/release-manifest.py produces the identical schema-1 manifest.
+# Prefer the binary's release-manifest/verify-release subcommands when they
+# are available. Otherwise scripts/release-manifest.py builds and verifies
+# the same local schema-1 manifest offline.
 if "$RELEASE_TOOL" release-manifest --help >/dev/null 2>&1 &&
     "$RELEASE_TOOL" verify-release --help >/dev/null 2>&1; then
     manifest_tool() { "$RELEASE_TOOL" release-manifest "$@" >/dev/null; }

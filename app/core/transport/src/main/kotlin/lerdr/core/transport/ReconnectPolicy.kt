@@ -4,7 +4,7 @@ import kotlin.random.Random
 
 /**
  * Reconnect, keepalive, and staleness policy — a 1:1 port of the Go client's
- * scheduler in `frontend/src/lib/store.ts`. Every constant is the oracle's;
+ * scheduler in the protocol contract. Every constant is Lerdr's;
  * the wire-level ping is `refresh_agents`, never a dedicated ping frame.
  */
 object ReconnectPolicy {
@@ -15,7 +15,7 @@ object ReconnectPolicy {
     const val MAX_DELAY_MS = 60_000L
 
     /**
-     * Backoff exponent cap — `2 ** min(attempt - 1, 5)` in the oracle, so the
+     * Backoff exponent cap — `2 ** min(attempt - 1, 5)` in Lerdr, so the
      * exponential saturates at 32 s rather than [MAX_DELAY_MS]; the 60 s
      * ceiling only binds via a fatal-close floor.
      */
@@ -89,7 +89,7 @@ object ReconnectPolicy {
      * delay    = round(base * jitter)
      * ```
      *
-     * A [floorMs] above the ladder forces slow retries — the oracle passes
+     * A [floorMs] above the ladder forces slow retries — Lerdr passes
      * [MAX_DELAY_MS] for fatal closes other than `unknown_relay`.
      */
     class Backoff(private val random: () -> Double = { Random.nextDouble() }) {
@@ -106,7 +106,7 @@ object ReconnectPolicy {
             return Math.round(base * jitter)
         }
 
-        /** `reconnectAttempts.delete` — the oracle resets on any inbound message. */
+        /** `reconnectAttempts.delete` — Lerdr resets on any inbound message. */
         fun reset() {
             attempt = 0
         }

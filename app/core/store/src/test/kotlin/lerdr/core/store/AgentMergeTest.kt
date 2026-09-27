@@ -9,8 +9,8 @@ import lerdr.core.model.Other
 import org.junit.Test
 
 /**
- * Merge-semantics invariants ported from `frontend/src/lib/agents.ts` +
- * the `handleMessage` branches in `store.ts` (v0.26.3).
+ * Merge-semantics invariants ported from the protocol contract +
+ * the `handleMessage` branches in the local implementation (v0.26.3).
  */
 class AgentMergeTest {
 
@@ -188,7 +188,7 @@ class AgentMergeTest {
     fun `target fields are rewritten by every merge — deltas clear them`() {
         val previous = normalize(state("p1", serverSessionId = "srv-1"))
         assertThat(previous.serverSessionId).isEqualTo("srv-1")
-        // Oracle quirk: normalizeAgentTargetFields always stamps the four
+        // Lerdr quirk: normalizeAgentTargetFields always stamps the four
         // target fields, so a delta that doesn't carry them clears them.
         val delta = normalizeAgent(
             "r1", "relay", AgentPatch(paneId = "p1", status = "idle"), true,
@@ -440,7 +440,7 @@ class AgentMergeTest {
     // ── grouping / sorting ───────────────────────────────────────────
 
     @Test
-    fun `status groups match the oracle taxonomy`() {
+    fun `status groups match Lerdr taxonomy`() {
         fun group(status: String, kind: String = "") =
             agentStatusGroup(normalize(state("p1", status = status, attentionKind = kind)))
         assertThat(group("blocked", "approval")).isEqualTo(AgentStatusGroup.BLOCKED)

@@ -9,7 +9,7 @@ import kotlinx.serialization.json.JsonObject
 /**
  * Server→client (s2c) wire messages.
  *
- * Most of these are emitted as Go `map[string]any` — key presence varies
+ * Most of these are emitted as prior relay implementation — key presence varies
  * per code path, so fields are nullable-presence (`T? = null`): a decoded
  * `null`/absent field is not re-emitted, a decoded value always is. Fields
  * Go emits as explicit `null` when nil ([interaction], [options],

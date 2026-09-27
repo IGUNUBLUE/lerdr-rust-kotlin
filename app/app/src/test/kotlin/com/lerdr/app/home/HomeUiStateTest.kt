@@ -7,7 +7,7 @@ import lerdr.core.model.Other
 import org.junit.Test
 
 /**
- * `AttentionCardUi` quick-answer eligibility — the oracle's rule: a lone
+ * `AttentionCardUi` quick-answer eligibility — Lerdr's rule: a lone
  * `single_select` question without a free-text Other answers inline;
  * anything else takes the session's full form.
  */

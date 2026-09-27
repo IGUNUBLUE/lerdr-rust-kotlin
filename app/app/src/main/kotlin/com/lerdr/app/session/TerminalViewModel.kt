@@ -54,15 +54,15 @@ data class TerminalUiState(
     val leaseColumns: Int = 0,
     val leaseRows: Int = 0,
     /**
-     * The oracle's `readOnly` gate, inverted — mutating affordances
+     * Lerdr's `readOnly` gate, inverted — mutating affordances
      * (input bar, key chips, secret field) enable only for an enrolled
-     * CONTROLLER credential. Fail-closed like the oracle.
+     * CONTROLLER credential. Fail-closed like Lerdr.
      */
     val canControl: Boolean = false,
     /**
      * Relay `secret_input` capability — the hidden-prompt answer path
      * (`send_secret`). Without it the bar stays in plain mode and the
-     * prompt banner carries the oracle's too-old-relay hint instead.
+     * prompt banner carries Lerdr's too-old-relay hint instead.
      */
     val secretInputSupported: Boolean = false,
     /**
@@ -97,7 +97,7 @@ class TerminalViewModel(
 
     /**
      * The lease the relay applied (clamped to its bounds), renewed on the
-     * oracle's 10 s cadence — the relay TTL is ~120 s and the renewal is
+     * Lerdr's 10 s cadence — the relay TTL is ~120 s and the renewal is
      * also what re-arms the lease after a reconnect dropped it. Volatile:
      * written on viewModelScope, read on appScope.
      */
@@ -179,14 +179,14 @@ class TerminalViewModel(
     private var reLeaseJob: Job? = null
 
     init {
-        // push_viewed_pane: the terminal view is the oracle's "viewed"
+        // push_viewed_pane: the terminal view is Lerdr's "viewed"
         // signal — entering publishes it, leaving clears it.
         sessions.setViewedPane(paneId)
         viewModelScope.launch { sessions.openPane(paneId) }
         leaseLoopJob = appScope.launch {
             while (true) {
                 delay(LEASE_REFRESH_MS)
-                // The oracle gates hidden renewals on a 5 min grace — after it
+                // Lerdr gates hidden renewals on a 5 min grace — after it
                 // the relay TTL hands the pane's size back to the desktop.
                 val columns = leasedColumns
                 if (columns > 0 && sessions.paneLeaseRenewalAllowed()) {
@@ -366,7 +366,7 @@ class TerminalViewModel(
     }
 
     private companion object {
-        /** The oracle's `PANE_SIZE_LEASE_REFRESH_MS` — 10 s against a ~120 s TTL. */
+        /** Lerdr's `PANE_SIZE_LEASE_REFRESH_MS` — 10 s against a ~120 s TTL. */
         const val LEASE_REFRESH_MS = 10_000L
     }
 }

@@ -292,7 +292,7 @@ class SpeechViewModelTest {
         backgroundScope.launch { viewModel.uiState.collect { } }
         h.connectSpeech(speechLanguages = listOf("fr", "en"))
         h.await { viewModel.uiState.value.enabled }
-        // Device language is en — the oracle prefers it when the relay
+        // Device language is en — Lerdr prefers it when the relay
         // speaks it too.
         assertThat(viewModel.uiState.value.language).isEqualTo("en")
         assertThat(viewModel.uiState.value.speakableLanguages)
@@ -327,7 +327,7 @@ class SpeechViewModelTest {
             val catalog = viewModel.uiState.value.catalog!!
             assertThat(catalog.engineInstalled).isTrue()
             assertThat(catalog.cacheDir).isEqualTo("/home/u/.cache/lerdr/voices")
-            // One row per offered language — oracle parity.
+            // One row per offered language — Lerdr parity.
             assertThat(catalog.rows.map { it.language })
                 .containsExactly("en", "fr", "de", "es", "zh")
                 .inOrder()

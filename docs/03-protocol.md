@@ -1,9 +1,10 @@
 # 03 — Protocol specification (extracted)
 
-Normative source: `internal/protocol/protocol.go`, `internal/transport/e2ee.go`,
-`internal/transport/ws.go`, `internal/transport/sendbuffer.go`,
-`internal/app/pane_watch.go` in `IGUNUBLUE/lerdr` @ v0.26.3. This document
-is the contract every implementation must satisfy byte-for-byte.
+Normative source: this specification, the detailed contracts in
+`docs/specs/`, and the committed golden vectors in `fixtures/`. They define
+the immutable `protocol v3` / `herdr-e2ee-v2` bytes every Lerdr component must
+satisfy. The protocol was originally extracted from the retired Go relay; that
+provenance does not create an external comparison or regeneration workflow.
 
 ## Layers
 
@@ -268,16 +269,18 @@ client → pane_applied F1                                     # ack
   (cols 40–240, rows 10–120, TTL ~120 s, renewed ~30 s); release on hide.
   The shared pane physically resizes — a lease means "I am the viewport".
 
-## 6. Transport availability matrix
+## 6. Supported transport
 
 | Path | How | E2EE |
 |---|---|---|
-| Direct WSS | Tailscale Serve / LAN / Cloudflare tunnel URL in relay config | yes, in-band |
-| Gateway | `wss://gateway` registers under `relay_id` derived from relay key; gateway copies opaque frames | yes — gateway sees ciphertext only |
-| WebRTC direct | `herdr-dc-v1` DataChannel negotiated inside a gateway session; takes over after first real message; gateway dropped 10 s later | its own handshake inside DC |
+| Tailscale Serve | Tailscale terminates the tailnet listener and forwards to the relay's loopback WebSocket endpoint | yes, in-band |
 
-Reconnect: exponential backoff 1 s→60 s, reset on wake, keepalive pings as
-health check, E2EE handshake on every new socket (sessions are per-conn).
+Reconnect uses exponential backoff (1 s→60 s), resets on wake, sends
+keepalive pings, and performs an E2EE handshake on every new socket.
+
+Gateway, Cloudflare, direct-LAN, and WebRTC paths are not deployed. Their
+reserved protocol-v3 names remain historical compatibility details, not
+transport options.
 
 ## 7. Compatibility notes for implementers
 

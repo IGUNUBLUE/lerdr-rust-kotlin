@@ -16,7 +16,7 @@ pub(crate) const OTHER_TEXT_MAX_RUNES: usize = 100_000;
 
 // ═══════════════════════════════════════════════════════════════════════
 // Inbound payloads — `approvalPayload`/`questionPayload` decoding and the
-// field validation the oracle applies before the state machine runs.
+// field validation the retired implementation applies before the state machine runs.
 // ═══════════════════════════════════════════════════════════════════════
 
 /// `approvalPayload`.
@@ -55,7 +55,7 @@ impl ApprovalPayload {
 }
 
 /// `questionPayload` — one payload type serves `answer_question`,
-/// `clarify_question`, and `navigate_question` exactly like the oracle.
+/// `clarify_question`, and `navigate_question` exactly like the retired implementation.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct QuestionPayload {
     pub(crate) interaction_id: String,
@@ -111,7 +111,7 @@ impl QuestionPayload {
     }
 
     /// `handleNavigateQuestion` — direction is validated before the
-    /// interaction id, matching the oracle's order.
+    /// interaction id, matching the retired implementation's order.
     pub(crate) fn decode_navigate(message: &Inbound) -> Result<Self, &'static str> {
         if message.direction != "previous" && message.direction != "next" {
             return Err("Question navigation is no longer available");
@@ -178,7 +178,7 @@ pub(crate) fn sorted_unique(values: &[i64]) -> Vec<i64> {
 }
 
 /// `hashPayload` — the scheduler's in-memory conflict key (hex of the JSON
-/// encoding; not an integrity digest, same as the oracle).
+/// encoding; not an integrity digest, same as the retired implementation).
 pub(crate) fn hash_payload<T: Serialize>(payload: &T) -> String {
     hex::encode(serde_json::to_vec(payload).unwrap_or_default())
 }
@@ -272,7 +272,7 @@ pub(crate) fn is_zero_i64(value: &i64) -> bool {
 /// `interactionID` — sha256 of the canonical identity JSON, 20 hex chars.
 /// The bytes must match Go's `json.Marshal` exactly (`lerdr_core::json` —
 /// HTML-safe escapes), and a nil `Options`/`Position` marshals `null`/
-/// omits like the oracle's untagged slices.
+/// omits like the retired implementation's untagged slices.
 pub(crate) fn interaction_id(interaction: &Interaction) -> String {
     #[derive(Serialize)]
     struct Identity<'a> {

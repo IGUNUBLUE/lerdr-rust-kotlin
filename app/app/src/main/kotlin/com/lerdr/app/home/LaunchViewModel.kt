@@ -56,18 +56,18 @@ data class DirectoryBrowserUi(
 )
 
 /**
- * Both launch sheets' projected state — the oracle's LaunchView +
+ * Both launch sheets' projected state — Lerdr's LaunchView +
  * WorkspaceManager create dialog flattened into one form model (they share
  * the relay picker, cwd, and the directory browser).
  */
 @Immutable
 data class LaunchUiState(
-    /** Connected relays with a `ready` agent inventory (oracle `connectedRelays`). */
+    /** Connected relays with a `ready` agent inventory (Lerdr `connectedRelays`). */
     val relays: List<LaunchRelayOption> = emptyList(),
     /** Connected-but-not-ready labels — "Agent inventory is unavailable on …". */
     val unavailableRelayLabels: List<String> = emptyList(),
     val relayId: String = "",
-    /** `!canControl(relayId)` — submit disabled + the oracle's read-only warning. */
+    /** `!canControl(relayId)` — submit disabled + Lerdr's read-only warning. */
     val readOnly: Boolean = false,
     // ── agent form ──────────────────────────────────────────────────
     val profiles: List<AgentProfile> = emptyList(),
@@ -83,7 +83,7 @@ data class LaunchUiState(
     val cwd: String = "",
     val cwdLabel: String = "",
     /**
-     * A `list_directories` result landed for [relayId] — the oracle's
+     * A `list_directories` result landed for [relayId] — Lerdr's
      * `directoryRelayId === relayId` submit gate.
      */
     val directoryReady: Boolean = false,
@@ -103,9 +103,8 @@ data class LaunchUiState(
 )
 
 /**
- * Launch flows behind the Home FAB — `agent_start` ("New agent") and
- * `workspace_create` ("New workspace"), both ports of the oracle's
- * LaunchView / WorkspaceManager create dialog onto a modal sheet.
+ * Launch flows behind the Home FAB: `agent_start` ("New agent") and
+ * `workspace_create` ("New workspace") each use a modal sheet.
  *
  * The VM lives on Home's NavEntry scope so a submit's `waitForAgent`
  * survives sheet dismissal; results arrive on [events]/[messages].
@@ -134,7 +133,7 @@ class LaunchViewModel(
         val workspaceLabel: String = "",
         val cwd: String = "",
         val cwdLabel: String = "",
-        /** Relay the current listing belongs to — the oracle's `directoryRelayId`. */
+        /** Relay the current listing belongs to — Lerdr's `directoryRelayId`. */
         val directoryRelayId: String = "",
         val directory: DirectoryBrowserUi = DirectoryBrowserUi(),
         val submitting: Boolean = false,
@@ -168,7 +167,7 @@ class LaunchViewModel(
     ).stateIn(viewModelScope, SharingStarted.Eagerly, LaunchUiState())
 
     init {
-        // The oracle's $effect: keep the picked relay valid while a sheet is
+        // Lerdr's $effect: keep the picked relay valid while a sheet is
         // open — a disconnecting relay falls back to the first ready one.
         viewModelScope.launch {
             combine(sessions.relays, sessions.connections, ::Pair).collect {
@@ -245,7 +244,7 @@ class LaunchViewModel(
         draft.update { it.copy(workspaceId = workspaceId, status = null) }
     }
 
-    /** The oracle's name field: maxlength 32, `[a-z][a-z0-9_-]{0,31}`. */
+    /** Lerdr's name field: maxlength 32, `[a-z][a-z0-9_-]{0,31}`. */
     fun onNameChange(value: String) {
         draft.update { it.copy(name = value.take(NAME_MAX), status = null) }
     }
@@ -291,7 +290,7 @@ class LaunchViewModel(
     }
 
     /**
-     * `list_directories` — oracle `loadDirectory`: the browsed folder becomes
+     * `list_directories` — Lerdr `loadDirectory`: the browsed folder becomes
      * the selected cwd on success; the suggested name follows it.
      */
     fun loadDirectory(path: String) {
@@ -349,7 +348,7 @@ class LaunchViewModel(
     }
 
     /**
-     * `agent_start` — the oracle's submit: gated on a directory listing
+     * `agent_start` — Lerdr's submit: gated on a directory listing
      * landed for this relay, a valid profile, and a name matching
      * `[a-z][a-z0-9_-]{0,31}`. On success the sheet closes, a toast reports
      * the wire warning (or "Agent started."), and `waitForAgent` navigates
@@ -409,7 +408,7 @@ class LaunchViewModel(
     }
 
     /**
-     * `workspace_create` — the oracle's create dialog: on a
+     * `workspace_create` — Lerdr's create dialog: on a
      * `dispatched_unknown` the sheet closes and warns against a blind retry;
      * other failures stay in the form.
      */
@@ -456,7 +455,7 @@ class LaunchViewModel(
     }
 
     /**
-     * The oracle's `waitForAgent` — match on `raw_pane_id` first, else on
+     * Lerdr's `waitForAgent` — match on `raw_pane_id` first, else on
      * name (agent or tab label) + cwd; refresh once, give up after 6 s.
      */
     private suspend fun waitForAgent(
@@ -567,7 +566,7 @@ class LaunchViewModel(
         )
     }
 
-    /** Connected + inventory ready — the oracle's `connectedRelays` filter. */
+    /** Connected + inventory ready — Lerdr's `connectedRelays` filter. */
     private fun readyRelays(
         relays: List<RelayEndpoint>,
         connections: Map<String, RelayConnection>,
@@ -586,7 +585,7 @@ class LaunchViewModel(
     }
 }
 
-/** The oracle's `validAgentName` — `[a-z][a-z0-9_-]{0,31}`. */
+/** Lerdr's `validAgentName` — `[a-z][a-z0-9_-]{0,31}`. */
 internal fun validAgentName(value: String): Boolean =
     Regex("[a-z][a-z0-9_-]{0,31}").matches(value)
 
@@ -595,7 +594,7 @@ private val NonNameChars = Regex("[^a-z0-9_-]+")
 private val EdgeSeparators = Regex("^[-_]+|[-_]+$")
 
 /**
- * The oracle's `launchNamePart` — NFKD, strip diacritics, lowercase,
+ * Lerdr's `launchNamePart` — NFKD, strip diacritics, lowercase,
  * non-name chars collapse to `-`, edges trimmed; when the result doesn't
  * start with a letter it is suffixed onto the fallback.
  */
@@ -611,7 +610,7 @@ internal fun launchNamePart(value: String, fallback: String): String {
 }
 
 /**
- * The oracle's `suggestedLaunchName` — `<dir-basename>-<profile>` capped to
+ * Lerdr's `suggestedLaunchName` — `<dir-basename>-<profile>` capped to
  * the 32-char wire name, e.g. `/home/u/api-server` + `claude` →
  * `api-server-claude`.
  */

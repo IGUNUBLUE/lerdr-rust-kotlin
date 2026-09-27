@@ -1,4 +1,4 @@
-//! Pairing bootstrap — the oracle's `armBootstrap`/`ArmBootstrapInvitation`
+//! Pairing bootstrap — the retired implementation's `armBootstrap`/`ArmBootstrapInvitation`
 //! (`internal/app/server.go`) plus the setup-link rendering the shell scripts
 //! own (`relay/common.sh`, `internal/setuphelper`).
 //!
@@ -131,7 +131,7 @@ pub fn offer_for_invitation(
 }
 
 /// `armBootstrapLocked` — the fresh one-use record. `Role::Controller` +
-/// `locale: "en"` mirror the oracle's hardcoded bootstrap metadata; `name`
+/// `locale: "en"` mirror the retired implementation's hardcoded bootstrap metadata; `name`
 /// carries the host label.
 fn mint_invitation(
     label: &str,
@@ -212,7 +212,7 @@ pub fn invitation_fragment(invitation: &Invitation, label: &str, relay_url: &str
 }
 
 /// `url.QueryEscape` — `[A-Za-z0-9-_.~]` pass through, space becomes `+`,
-/// every other byte is `%XX` uppercase. Both oracle encoders (Go
+/// every other byte is `%XX` uppercase. Both retired implementation encoders (Go
 /// `url.Values` and `URLSearchParams`) parse this shape back losslessly.
 fn form_encode(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
@@ -308,7 +308,7 @@ pub fn reset_device_store(device_auth_dir: &Path) -> io::Result<()> {
 }
 
 /// [`DeviceAuthStore`] decorator that traces the pairing lifecycle — the
-/// oracle's issued/redeemed journal lines without leaking secrets (only ids,
+/// retired implementation's issued/redeemed journal lines without leaking secrets (only ids,
 /// roles, and outcomes are logged).
 pub struct EventedAuthStore {
     inner: Arc<FileAuthStore>,

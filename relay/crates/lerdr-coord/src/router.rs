@@ -49,7 +49,7 @@ use crate::watches::{
 /// sink registers only after the handshake commits.
 pub type ClientSinkLookup = Arc<dyn Fn(&str) -> Option<ClientSink> + Send + Sync>;
 
-/// Cross-session action state — the oracle's singletons (`paneSizeM`,
+/// Cross-session action state — the retired implementation's singletons (`paneSizeM`,
 /// the profile resolver, the question store, the upload manager, the
 /// activity journal, `history.Manager`) live once per relay, not once
 /// per connection. The acknowledgment ledger is `Topology`'s shared
@@ -95,7 +95,7 @@ impl HerdRouterFactory {
     /// relay).
     /// `runtime_dir` roots the persisted subsystems — uploads stage under
     /// `runtime_dir/uploads`, push state under `runtime_dir/push`, the
-    /// activity journal under `runtime_dir/activity` (the oracle's
+    /// activity journal under `runtime_dir/activity` (the retired implementation's
     /// data-dir layout). `audit` is the process-wide write-audit log the
     /// session layer also records into (`audit.Open(cfg.CacheDir)`).
     /// `devices_of` reports the live connected-controller count for the
@@ -216,7 +216,7 @@ impl HerdRouterFactory {
 
     /// `Manager.Run` — the Web Push delivery worker: VAPID load-or-generate
     /// under the push dir (fails startup on a bad key file like the
-    /// oracle), then the wake/tick drain loop until `cancel`.
+    /// retired implementation), then the wake/tick drain loop until `cancel`.
     pub fn spawn_push_worker(
         &self,
         cancel: CancellationToken,
@@ -466,7 +466,7 @@ macro_rules! spawn_action {
             // write. The request context is rebuilt from `Inbound` (the
             // admission-time `attempt` row already hashed the raw map);
             // attribution reads live topology at result time, matching
-            // the oracle's `s.state.Agent` inside `recordWriteAudit`.
+            // the retired implementation's `s.state.Agent` inside `recordWriteAudit`.
             let audit_ctx = ctx.audit.as_ref().and_then(|log| {
                 audit::is_audited(&msg.r#type).then(|| {
                     (
@@ -1085,7 +1085,7 @@ impl HerdRouter {
     /// push → receipt. `content_fingerprint` rides the raw seam: a string
     /// equal to the fresh read's fingerprint answers `pane_unchanged` (the
     /// computed fingerprint is canonical 16-lower-hex, so any malformed
-    /// wire value is simply a miss — never an error). Like the oracle, an
+    /// wire value is simply a miss — never an error). Like the retired implementation, an
     /// explicit read stops the pane's watch.
     fn route_read_pane(
         &mut self,
@@ -1108,7 +1108,7 @@ impl HerdRouter {
         if self.sink().is_none() {
             return refused(&request_id, &action_id, "session_not_ready");
         }
-        // The oracle's `read_pane` supersedes the watch (`stopPaneWatch`) —
+        // The retired implementation's `read_pane` supersedes the watch (`stopPaneWatch`) —
         // otherwise the watch could race a frame past this read's answer.
         self.watches.stop(&pane_id);
         // `HandleReadPane` opens with `handleAcknowledge(requestID, paneID)`
@@ -1139,7 +1139,7 @@ impl HerdRouter {
             // `applyPaneReadLease` — an active size lease marks the read
             // viewport-only (the pane was resized for this shape) and
             // feeds `viewport_rows`; client-sent `terminal_*` fields are
-            // ignored (the oracle `delete`s them before the lease).
+            // ignored (the retired implementation `delete`s them before the lease).
             let viewport_only = leases.active_columns(&pane_id).await.is_some();
             let viewport_rows = if viewport_only {
                 leases.active_rows(&pane_id).await
@@ -1218,7 +1218,7 @@ impl HerdRouter {
 
     /// `watch_pane` — `startPaneWatch`. A re-issued watch on the same
     /// pane replaces the previous one (`previous.cancel()`); `interval_ms`
-    /// resolves through the oracle's whitelist, `lines` through the
+    /// resolves through the retired implementation's whitelist, `lines` through the
     /// `30`/`1..=10000` default+clamp, `format` honors `"ansi"`, and a
     /// wire `content_fingerprint` matching the first read adopts the
     /// current frame instead of pushing a duplicate.
@@ -1300,7 +1300,7 @@ impl HerdRouter {
     /// directly, `target.agent_session_id` through the session index)
     /// and spawn the per-pane feed; its first `conversation_update` is
     /// the current conversation on `reset:true`. An unresolvable address
-    /// is the oracle-family `Outcome::failed` — `command_result` +
+    /// is the retired implementation-family `Outcome::failed` — `command_result` +
     /// `failed_before_dispatch`, the same boundary shape
     /// `get_conversation_history` reports a gone pane through.
     fn route_subscribe_conversation(
@@ -1385,7 +1385,7 @@ fn non_empty(s: &str) -> Option<String> {
 /// (server.go:2757-2817) + `unchangedPaneResponse`. The wire
 /// `content_fingerprint` compares against the *prepared* content's
 /// fingerprint (the merged/semantic view the client holds), not the raw
-/// read's. `target` echoes the request's when present (the oracle
+/// read's. `target` echoes the request's when present (the retired implementation
 /// assigns `resp["target"]` only then; `pane_unchanged` emits the key
 /// either way — `null` when absent).
 #[allow(clippy::too_many_arguments)]
@@ -1722,7 +1722,7 @@ mod tests {
     /// `HandleReadPane`'s mid-read fence ordering (dispatch.go:1120-1145):
     /// a committed row that only moved `content_rev` answers the `changed`
     /// error; a generation move answers `replaced` — and wins when both
-    /// moved (the oracle checks generation first). Deterministic version
+    /// moved (the retired implementation checks generation first). Deterministic version
     /// of the race: the swapped topologies stand in for a commit landing
     /// while `pane.read` was in flight.
     #[test]
@@ -1796,7 +1796,7 @@ mod tests {
         }
 
         // The pane disappearing bumps `generation` (and clears the cell,
-        // moving `content_rev` too) — `replaced` still wins: the oracle
+        // moving `content_rev` too) — `replaced` still wins: the retired implementation
         // checks generation before content revision.
         let mut gone = Topology::default();
         gone.accept(snapshot("/one", true));
@@ -1858,7 +1858,7 @@ mod tests {
     }
 
     /// Both answer shapes echo the request `target` when present (the
-    /// oracle assigns `resp["target"]` before the unchanged check).
+    /// retired implementation assigns `resp["target"]` before the unchanged check).
     #[test]
     fn read_pane_frames_echo_request_target() {
         let target = || {
@@ -1929,7 +1929,7 @@ mod tests {
         assert_eq!(pane_lines(&msg), 30);
 
         // Off-whitelist `interval_ms` — even in-range-feeling values like
-        // 2000 ms — snap to the oracle's 250 ms default.
+        // 2000 ms — snap to the retired implementation's 250 ms default.
         let msg = inbound(
             serde_json::json!({"type":"watch_pane","pane_id":"wE:pE","interval_ms":10,"content_fingerprint":"a948904f2f0f479b","lines":20000})
                 .as_object()

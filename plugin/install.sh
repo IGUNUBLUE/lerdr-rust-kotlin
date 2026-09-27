@@ -4,9 +4,9 @@ set -eu
 
 REPO=${LERDR_RELEASE_REPOSITORY:-${HERDR_RELEASE_REPOSITORY:-IGUNUBLUE/lerdr}}
 BINARY=lerdr-relay
-# Earlier releases of this same install root shipped the Go lerdr binary;
-# pre-rename installs used herdr-mobile-relay. Both names resolve when reading
-# an existing install, but release archives only ever ship lerdr-relay.
+# Earlier releases in this install root used the `lerdr` binary name;
+# pre-rename installs used `herdr-mobile-relay`. Both names resolve when
+# reading an existing install, but release archives only ever ship lerdr-relay.
 LEGACY_BINARIES="lerdr herdr-mobile-relay"
 SENTINEL_NAME=.lerdr-installation
 LEGACY_SENTINEL=.herdr-mobile-relay-installation
@@ -559,8 +559,8 @@ main() {
     mkdir -p "$stage"
     chmod 700 "$stage"
     tar -xzf "$archive_path" -C "$stage" || fatal "release extraction failed"
-    # Release archives ship lerdr-relay; a Go-era bundle still carrying the old
-    # executable name resolves the same way the runtime wrappers do.
+    # Release archives ship lerdr-relay; legacy bundles may carry an earlier
+    # executable name, resolved the same way as the runtime wrappers.
     release_binary=
     for candidate in $BINARY $LEGACY_BINARIES; do
         if [ -x "$stage/$candidate" ]; then

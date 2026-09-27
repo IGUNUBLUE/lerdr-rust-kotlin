@@ -20,35 +20,32 @@ import lerdr.core.conversation.ConversationBrowseState
 import lerdr.core.conversation.ConversationDiagnostics
 
 /**
- * Conversation-history diagnostics + preparation surface — the port of the
- * oracle's `conversation-warning` block (`ConversationHistory.svelte`):
- * one centered status line per warning, rendered in the oracle's template
- * order above the transcript, plus the recover affordances the controller
- * (`conversation-history.ts`) backs with `get_conversation_history`
- * re-requests. There are no dedicated wire commands — Cancel only stops the
- * client-side poll loop, Continue/Retry re-issue the stored cursor, and
- * "Reload history" re-browses cursorless.
+ * Conversation-history diagnostics and preparation surface. It renders one
+ * centered status line per warning above the transcript and exposes recovery
+ * through `get_conversation_history`: Cancel stops the client-side poll loop,
+ * Continue/Retry re-issue the stored cursor, and "Reload history" browses
+ * cursorless. There are no dedicated wire commands.
  */
 
-/** Oracle `HISTORY_PREPARATION_INTERVAL_MS` — delay between preparing polls. */
+/** Lerdr `HISTORY_PREPARATION_INTERVAL_MS` — delay between preparing polls. */
 internal const val HISTORY_PREPARATION_INTERVAL_MS = 1_000L
 
-/** Oracle `HISTORY_MAX_PREPARATION_POLLS` — unchanged-progress polls before a stall pause. */
+/** Lerdr `HISTORY_MAX_PREPARATION_POLLS` — unchanged-progress polls before a stall pause. */
 internal const val HISTORY_MAX_PREPARATION_POLLS = 30
 
-/** Oracle `HISTORY_WIRE_PAGE_SIZE` — the history view's request limit. */
+/** Lerdr `HISTORY_WIRE_PAGE_SIZE` — the history view's request limit. */
 internal const val HISTORY_WIRE_PAGE_SIZE = 200
 
-/** Oracle `sourceChangedNotice` — errors that resolve through a cursorless reload. */
+/** Lerdr `sourceChangedNotice` — errors that resolve through a cursorless reload. */
 internal val HISTORY_RELOAD_CODES = setOf("source_changed", "invalid_cursor", "cursor_expired")
 
-/** Oracle `recoverHistory` label split — work-guard codes read "Continue". */
+/** Lerdr `recoverHistory` label split — work-guard codes read "Continue". */
 internal val HISTORY_CONTINUE_CODES = setOf(
     "work_deadline", "work_limit", "stalled", "preparation_stalled",
 )
 
 /**
- * Oracle `continuationMessage()` — the `continuation_incomplete` copy.
+ * Lerdr `continuationMessage()` — the `continuation_incomplete` copy.
  * `resolution_limit` softens to "could not be fully checked"; every other
  * reason (including `partial_link` and missing) reads "continues in another
  * session".
@@ -60,12 +57,12 @@ internal fun continuationWarningText(reason: String?): String = when (reason) {
         "This conversation continues in another session, but part of that history is unavailable. Reload to try again."
 }
 
-/** Oracle oversized-records warning — singular/plural "record(s) were". */
+/** Lerdr oversized-records warning — singular/plural "record(s) were". */
 internal fun oversizedRecordsText(count: Int): String =
     "$count oversized " + (if (count == 1) "record was" else "records were") +
         " skipped from the full history."
 
-/** Oracle omitted-tools/payloads warning — counts appended only when present. */
+/** Lerdr omitted-tools/payloads warning — counts appended only when present. */
 internal fun omittedActivityText(diagnostics: ConversationDiagnostics): String = buildString {
     append("Some tool activity is shortened to keep this history page within its response limit")
     if (diagnostics.omittedTools > 0) {
@@ -82,9 +79,9 @@ internal fun omittedActivityText(diagnostics: ConversationDiagnostics): String =
 }
 
 /**
- * Oracle preparing row — `Preparing history ({phase || 'scanning'})` plus
+ * Lerdr preparing row — `Preparing history ({phase || 'scanning'})` plus
  * ` — {percent}% scanned` when the page reports `source_bytes`, always
- * terminated by the oracle's ellipsis.
+ * terminated by Lerdr's ellipsis.
  */
 internal fun preparationStatusText(progress: ConversationBrowseProgress?): String =
     buildString {
@@ -100,16 +97,16 @@ internal fun preparationStatusText(progress: ConversationBrowseProgress?): Strin
         append('…')
     }
 
-/** Oracle recover-affordance label — `Continue` for work-guard stalls, else `Retry`. */
+/** Lerdr recover-affordance label — `Continue` for work-guard stalls, else `Retry`. */
 internal fun historyRecoverLabel(code: String): String =
     if (code in HISTORY_CONTINUE_CODES) "Continue" else "Retry"
 
-/** Oracle `sourceChangedNotice` — true when the error resolves by reloading. */
+/** Lerdr `sourceChangedNotice` — true when the error resolves by reloading. */
 internal fun isHistorySourceChanged(error: String?, code: String): Boolean =
     error != null && code in HISTORY_RELOAD_CODES
 
 /**
- * Oracle `mergeDiagnostics` — cursorful pages merge into the accumulated
+ * Lerdr `mergeDiagnostics` — cursorful pages merge into the accumulated
  * window report: counts keep the max, flags OR, and `continuation_reason`
  * prefers the newer page.
  */
@@ -129,7 +126,7 @@ internal fun mergeHistoryDiagnostics(
 )
 
 /**
- * The warning block — oracle template order: source-changed notice,
+ * The warning block — Lerdr template order: source-changed notice,
  * preparation row, continuation warning, oversized records, omitted tool
  * activity, corrupt records, the generic error + recover affordance, then
  * `emptyHistoryText` for a healthy-but-empty authoritative window.
@@ -165,7 +162,7 @@ internal fun FeedHistoryWarnings(
                 onAction = onReloadHistory,
             )
         }
-        // Oracle: `nextCursor && (preparationPolls >= max || state === 'preparing')`
+        // Lerdr: `nextCursor && (preparationPolls >= max || state === 'preparing')`
         // — `hasMoreHistory` tracks the non-empty nextCursor.
         if (hasMoreHistory &&
             (preparationPaused || browseState == ConversationBrowseState.PREPARING)
@@ -224,7 +221,7 @@ internal fun FeedHistoryWarnings(
                 onAction = onRecoverHistory,
             )
         }
-        // Oracle `emptyHistoryText` — `!historyBusy && !error` and an
+        // Lerdr `emptyHistoryText` — `!historyBusy && !error` and an
         // authoritative empty window; a damaged/truncated source reads
         // "No readable …" instead of "No conversation messages …".
         val historyBusy = historyLoading || browseState == ConversationBrowseState.PREPARING
@@ -247,7 +244,7 @@ internal fun FeedHistoryWarnings(
 
 /**
  * One `conversation-warning` line — small centered status text, error rows
- * tinted danger, with the oracle's optional inline action button.
+ * tinted danger, with Lerdr's optional inline action button.
  */
 @Composable
 private fun HistoryWarning(
@@ -263,7 +260,7 @@ private fun HistoryWarning(
         modifier = modifier
             .fillMaxWidth()
             .semantics {
-                // role="status" vs role="alert" in the oracle template.
+                // role="status" vs role="alert" in Lerdr template.
                 liveRegion = if (error) LiveRegionMode.Assertive else LiveRegionMode.Polite
             }
             .padding(horizontal = spacing.medium),

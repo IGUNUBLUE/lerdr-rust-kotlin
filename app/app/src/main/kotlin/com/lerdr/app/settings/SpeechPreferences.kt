@@ -14,14 +14,14 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 
 /**
- * Read-aloud preferences — the oracle's `lerdr_speech_enabled` /
+ * Read-aloud preferences — Lerdr's `lerdr_speech_enabled` /
  * `lerdr_speech_language` localStorage keys on the shared `lerdr`
  * preferences DataStore (namespaced beside [AppPreferences]' keys).
  *
- * Mirrors `frontend/src/lib/speech.ts`:
+ * Mirrors the protocol contract:
  * - [enabled] defaults off; [language] resolves a stored valid code, else
  *   the device language when it is speakable, else English.
- * - [setLanguage] refuses codes outside `SPEECH_LANGUAGES` — the oracle's
+ * - [setLanguage] refuses codes outside `SPEECH_LANGUAGES` — Lerdr's
  *   `isSpeechLanguage` guard.
  * - [adoptRelaySpeech] is the one-time onboarding: the first relay that
  *   advertises speakable languages picks the language it can actually
@@ -44,7 +44,7 @@ class SpeechPreferences @Inject constructor(
     /**
      * `speechLanguage` — effective selection: the stored code when it is a
      * speakable language, else the device language when speakable, else
-     * English (`storedLanguage()` in the oracle).
+     * English (`storedLanguage()` in Lerdr).
      */
     val language: Flow<String> = dataStore.data
         .map { resolveLanguage(it[LANGUAGE_KEY]) }
@@ -66,7 +66,7 @@ class SpeechPreferences @Inject constructor(
      * the unset language with one the relay can speak (preferring the
      * current effective language, then English) and default the toggle on
      * if the user never set it. Both writes ride one `edit` so they land
-     * atomically — the oracle's two localStorage writes, tightened.
+     * atomically — Lerdr's two localStorage writes, tightened.
      */
     suspend fun adoptRelaySpeech(languages: List<String>) {
         val speakable = languages.filter(::isSpeechLanguage)
