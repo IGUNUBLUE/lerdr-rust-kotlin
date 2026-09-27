@@ -1477,11 +1477,23 @@ impl Client {
         self.ledger().live_epoch()
     }
 
-    pub(crate) fn herdr_bin(&self) -> Option<PathBuf> {
+    /// The configured `herdr` binary override (`HERDR_BIN`/`--herdr-bin`);
+    /// `resolve_herdr_bin` still applies PATH/install-location discovery.
+    pub fn herdr_bin(&self) -> Option<PathBuf> {
         self.inner.config.herdr_bin.clone()
     }
 
-    pub(crate) fn socket_path_hint(&self) -> Option<PathBuf> {
+    /// The resolved `herdr` binary path — subprocesses
+    /// (`terminal session observe`) inherit the same resolution order as
+    /// schema introspection.
+    pub fn resolved_herdr_bin(&self) -> PathBuf {
+        crate::cli::resolve_herdr_bin(self.inner.config.herdr_bin.as_deref())
+    }
+
+    /// The transport's socket path, when it has one — the
+    /// `HERDR_SOCKET_PATH` subprocesses (`terminal session observe`) are
+    /// pointed at.
+    pub fn socket_path_hint(&self) -> Option<PathBuf> {
         self.inner.transport.socket_path_hint()
     }
 

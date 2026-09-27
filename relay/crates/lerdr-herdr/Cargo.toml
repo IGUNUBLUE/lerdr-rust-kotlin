@@ -13,6 +13,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 futures-core = "0.3" # Stream trait for the event API surface
+base64 = { workspace = true } # observe.rs decodes terminal.frame bytes
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
