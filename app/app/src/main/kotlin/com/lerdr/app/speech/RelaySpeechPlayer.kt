@@ -172,9 +172,10 @@ class RelaySpeechPlayer(
      */
     private suspend fun playChunks(relayId: String, chunks: List<String>, gen: Long) {
         val language = languageNow
-        var pending = sender.send(relayId, chunks[0], language)
-        inFlight = pending
+        var pending: SpeechExchange
         try {
+            pending = sender.send(relayId, chunks[0], language)
+            inFlight = pending
             for (index in chunks.indices) {
                 val request = pending
                 val result = request.await()
