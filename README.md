@@ -59,11 +59,24 @@ herdr plugin install IGUNUBLUE/lerdr-rust-kotlin/plugin
 Herdr clones the repo, runs the `[[build]]` hook, and registers the
 `lerdr.events` plugin. The hook downloads the checksum-verified
 `lerdr-relay` bundle from the matching GitHub release — no Rust toolchain
-required — then opens the **Lerdr: Setup** pane. Choose **Tailscale Serve**
-there to publish the relay on this machine's tailnet HTTPS name and print
-the private setup QR.
+required — then opens the **Lerdr: Setup** pane.
 
-### 2 · Install the app — on your phone
+### 2 · Print the setup QR — same machine
+
+In the **Lerdr: Setup** pane choose **Tailscale Serve**: it publishes the
+relay on this machine's tailnet HTTPS name and prints a terminal QR plus
+the private setup link. To print it again later:
+
+```sh
+herdr plugin action invoke setup-link --plugin lerdr.events
+```
+
+The QR encodes a one-shot pairing link (relay token + tailnet address),
+armed fresh on every print and good for one phone within ~10 minutes —
+the full generation chain is documented in
+[plugin/README.md](plugin/README.md#how-the-setup-qr-is-produced).
+
+### 3 · Install the app — on your phone
 
 Download `lerdr_<version>_universal.apk` from the
 [latest release](https://github.com/IGUNUBLUE/lerdr-rust-kotlin/releases/latest)
@@ -71,15 +84,10 @@ and open it — Android asks once to allow installs from the source app.
 From v0.0.12 the app checks GitHub releases on its own and can update
 in place (Settings → App update).
 
-### 3 · Pair
+### 4 · Pair
 
 Scan the setup QR from the app's pairing screen — or paste the
-`lerdr://pair` link — and the phone shows `1 computer · live`. The QR
-encodes a one-shot pairing link (relay token + tailnet address), armed
-fresh each time it is printed and good for one phone within ~10 minutes.
-Reprint it anytime with the **Lerdr: Show Phone Setup QR** plugin action —
-the full generation chain is documented in
-[plugin/README.md](plugin/README.md#how-the-setup-qr-is-produced).
+`lerdr://pair` link — and the phone shows `1 computer · live`.
 
 ## Build from source
 
