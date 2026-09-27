@@ -24,6 +24,9 @@ sha2 = "0.11"
 hmac = "0.13"
 base64 = "0.23"
 hex = "0.4"
+# Terminal screen emulator behind the `terminal session observe` stream —
+# canonical grid + ANSI re-emit; app-facing bytes stay `pane.read`-shaped.
+vt100 = "0.16"
 # Phase-5 §2.2 `frame_zstd` — negotiated pane-frame compression.
 zstd = "0.14"
 # Web Push delivery worker: HTTPS POST to push services — rustls-only,

@@ -36,6 +36,7 @@ mod cli;
 mod client;
 mod error;
 mod events;
+pub mod observe;
 pub mod schema;
 mod singleflight;
 mod transport;

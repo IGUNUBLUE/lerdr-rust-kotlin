@@ -76,6 +76,7 @@ use crate::actor::{Invalidation, TopologyHandle};
 use crate::classify::store::{prepare_pane_response, PaneSemantics};
 use crate::fingerprint::content_fingerprint;
 use crate::history::Manager as HistoryManager;
+use crate::pane_stream::{PaneStream, StreamOutcome};
 
 /// `paneWatchAckTimeout` — the retired implementation's gate reset window.
 pub const ACK_TIMEOUT: Duration = Duration::from_secs(4);
@@ -431,6 +432,26 @@ impl WatchSet {
     }
 }
 
+/// The live terminal stream's slot in one watch — `pane_stream.rs` feeds
+/// a `vt100` emulator off `terminal session observe` frames and renders
+/// the same text `pane.read` produced, so everything downstream
+/// (fingerprints, deltas, gates) is unchanged.
+///
+/// - `stream`: `Some` while an observer is attached. `None` + `failed`
+///   means the watch polls for life; `None` + `!failed` means the
+///   observer died with the pane (`terminal.closed`) and a same-id
+///   respawn re-attaches it in [`poll`].
+/// - `failed`: spawn/EOF failure — a missing CLI or dead stream is
+///   stable state; never flap by re-spawning.
+/// - `dirty`: frames arrived since the last render attempt — turns
+///   stream events into polls.
+#[derive(Default)]
+struct StreamSlot {
+    stream: Option<PaneStream>,
+    failed: bool,
+    dirty: bool,
+}
+
 /// `paneWatchFrame` (pane_watch.go:31-38) — one read distilled for the
 /// gate: content + its wire fingerprint, the frame-level fingerprint
 /// `paneWatchUpdate` skips on, the emitted metadata + semantic fields,
@@ -613,6 +634,15 @@ async fn watch_loop(
     let cancel = &deps.cancel;
     let mut state = WatchState::new();
 
+    // Attach the live `terminal session observe` stream up front — until
+    // its first frame lands (and forever if it never does) every read
+    // below falls through to `pane.read`, so spawn failure costs nothing.
+    let mut slot = StreamSlot {
+        stream: PaneStream::spawn(&deps.handle.client, &pane_id),
+        ..StreamSlot::default()
+    };
+    slot.failed = slot.stream.is_none();
+
     // Initial frame — `runPaneWatch`'s first pass. A `content_fingerprint`
     // matching the fresh read means the client already holds the content:
     // the retired implementation's `knownFingerprint` branch still ships the frame's
@@ -622,7 +652,7 @@ async fn watch_loop(
     // frame every interval; the first tick does the same here (the empty
     // `probe_fingerprint` forces the full read). A definitively dead pane
     // is the exception — the client gets the terminal frame at once.
-    match read_watch_frame(&pane_id, &spec, &deps, &mut state).await {
+    match read_watch_frame(&pane_id, &spec, &deps, &mut state, slot.stream.as_ref()).await {
         FrameRead::Frame(frame) => {
             let frame = *frame;
             if spec.known_fingerprint.as_deref() == Some(frame.content_fingerprint.as_str()) {
@@ -692,6 +722,10 @@ async fn watch_loop(
                             state.acked_fingerprint = fingerprint;
                             state.ungate();
                             debug!("pane_applied — gate cleared");
+                            // Streamed output that landed while the gate
+                            // was shut renders now rather than on the
+                            // next tick.
+                            try_poll_stream(&pane_id, &spec, &deps, &mut state, &mut slot).await;
                         } else if !state.acked_fingerprint.is_empty()
                             && fingerprint == state.acked_fingerprint
                         {
@@ -714,7 +748,15 @@ async fn watch_loop(
                         // Client-initiated recovery — bypass the cadence
                         // AND the probe tier: `force_full` answers with
                         // the full frame whatever the probe would say.
-                        match read_watch_frame(&pane_id, &spec, &deps, &mut state).await {
+                        match read_watch_frame(
+                            &pane_id,
+                            &spec,
+                            &deps,
+                            &mut state,
+                            slot.stream.as_ref(),
+                        )
+                        .await
+                        {
                             FrameRead::Frame(frame) => {
                                 send_frame(&pane_id, &spec, sink.as_ref(), &mut state, *frame);
                             }
@@ -726,6 +768,34 @@ async fn watch_loop(
                         next_read = tokio::time::Instant::now() + spec.interval;
                     }
                     Some(WatchCtl::Stop) | None => break,
+                }
+            }
+            // `terminal.frame` events — the stream replaces the socket
+            // poll while attached: `Updated` marks the emulator dirty and
+            // renders (gated like a tick), `Closed` emits the gone frame
+            // (a respawned pane re-attaches in `poll`), `Ended` drops to
+            // snapshot reads for the rest of the watch.
+            outcome = async { slot.stream.as_mut().unwrap().next_render().await },
+                if slot.stream.is_some() => {
+                match outcome {
+                    StreamOutcome::Updated => {
+                        slot.dirty = true;
+                        try_poll_stream(&pane_id, &spec, &deps, &mut state, &mut slot).await;
+                        next_read = tokio::time::Instant::now() + spec.interval;
+                    }
+                    StreamOutcome::Closed => {
+                        slot.stream = None;
+                        send_gone(&pane_id, &spec, sink.as_ref(), &mut state);
+                    }
+                    StreamOutcome::Ended => {
+                        debug!("pane stream ended — resuming snapshot reads");
+                        slot.stream = None;
+                        slot.failed = true;
+                        // Unread emulator content is silently dropped —
+                        // the next socket read freshens it. Force a probe
+                        // so the handoff isn't one interval stale.
+                        state.probe_fingerprint.clear();
+                    }
                 }
             }
             _ = timeout => {
@@ -746,7 +816,7 @@ async fn watch_loop(
                 // gated tick probes nothing; the first tick after the ack
                 // lands picks the update up.
                 if !state.pending_ack {
-                    poll(&pane_id, &spec, &deps, &mut state).await;
+                    poll(&pane_id, &spec, &deps, &mut state, &mut slot).await;
                     next_read = tokio::time::Instant::now() + spec.interval;
                 }
             }
@@ -784,7 +854,7 @@ async fn watch_loop(
                     && !state.pending_ack
                     && tokio::time::Instant::now() >= next_read
                 {
-                    poll(&pane_id, &spec, &deps, &mut state).await;
+                    poll(&pane_id, &spec, &deps, &mut state, &mut slot).await;
                     next_read = tokio::time::Instant::now() + spec.interval;
                 }
             }
@@ -868,7 +938,19 @@ pub(crate) async fn pane_read_fresh(
 /// `HandleReadPane` read only when `paneWatchNeedsFrameRead` says the
 /// frame moved. Probe/read failures are silent — the retired implementation's poll
 /// returns without sending.
-async fn poll(pane_id: &str, spec: &WatchSpec, deps: &WatchDeps, state: &mut WatchState) {
+async fn poll(
+    pane_id: &str,
+    spec: &WatchSpec,
+    deps: &WatchDeps,
+    state: &mut WatchState,
+    slot: &mut StreamSlot,
+) {
+    // While the observer is attached and has rendered, the emulator is
+    // the read — no `pane.read` at all, so no scroll harvesting and no
+    // probe/read two-tier.
+    if slot.stream.as_ref().is_some_and(PaneStream::is_initialized) {
+        return try_poll_stream(pane_id, spec, deps, state, slot).await;
+    }
     // `HandleProbePane` (dispatch.go:1169-1191) — `pane.read` on the
     // `visible` source at a fixed 500 lines in the watch's format,
     // fenced on the pane's generation *and* content revision mid-read
@@ -905,6 +987,13 @@ async fn poll(pane_id: &str, spec: &WatchSpec, deps: &WatchDeps, state: &mut Wat
     };
     // The probe verified the pane is alive — a previous death notice is
     // obsolete (same-id respawn): a future death must re-emit it.
+    // Revival is also the observer's re-attach point: `terminal.closed`
+    // dropped the stream with the old terminal, and a missing stream is
+    // retried only here — not on every tick.
+    if state.gone && !slot.failed && slot.stream.is_none() {
+        slot.stream = PaneStream::spawn(&deps.handle.client, pane_id);
+        slot.failed = slot.stream.is_none();
+    }
     state.gone = false;
     let (generation_now, content_rev_now, classification_agent, observed_now) = {
         let topology = deps.handle.topology.borrow();
@@ -942,7 +1031,7 @@ async fn poll(pane_id: &str, spec: &WatchSpec, deps: &WatchDeps, state: &mut Wat
     if !needs_read {
         return;
     }
-    let frame = match read_watch_frame(pane_id, spec, deps, state).await {
+    let frame = match read_watch_frame(pane_id, spec, deps, state, slot.stream.as_ref()).await {
         FrameRead::Frame(frame) => *frame,
         // `frame == nil` → the probe fingerprint stays stale, so the next
         // tick retries the full read.
@@ -954,6 +1043,47 @@ async fn poll(pane_id: &str, spec: &WatchSpec, deps: &WatchDeps, state: &mut Wat
     };
     state.probe_fingerprint = probe_fingerprint;
     send_frame(pane_id, spec, deps.sink.as_ref(), state, frame);
+}
+
+/// The streaming half of [`poll`]: the emulator is the read, so "did it
+/// move" is `slot.dirty` (a `terminal.frame` applied) plus the same
+/// metadata legs the socket probe watches — a committed
+/// `resize_settling` frame or a `classification_agent` change re-renders
+/// even without new bytes. The ack gate applies exactly like a tick:
+/// gated polls leave `dirty` set so the first ungated attempt sends.
+async fn try_poll_stream(
+    pane_id: &str,
+    spec: &WatchSpec,
+    deps: &WatchDeps,
+    state: &mut WatchState,
+    slot: &mut StreamSlot,
+) {
+    if state.pending_ack {
+        return;
+    }
+    let Some(stream) = slot.stream.as_ref() else {
+        return;
+    };
+    if !stream.is_initialized() {
+        return;
+    }
+    let classification_agent = deps.handle.topology.borrow().classification_agent(pane_id);
+    let metadata_moved = state.sent_resize_settling
+        || (!state.sent_frame_fingerprint.is_empty()
+            && state.sent_classification_agent != classification_agent);
+    if !slot.dirty && !metadata_moved {
+        return;
+    }
+    match read_watch_frame(pane_id, spec, deps, state, Some(stream)).await {
+        FrameRead::Frame(frame) => {
+            slot.dirty = false;
+            send_frame(pane_id, spec, deps.sink.as_ref(), state, *frame);
+        }
+        // `Retry` (a mid-read fence tripped) keeps `dirty` — the next
+        // tick retries. `Gone` cannot arise here: stream reads never
+        // produce it; `terminal.closed` drives `send_gone` instead.
+        FrameRead::Retry | FrameRead::Gone => {}
+    }
 }
 
 /// `readPaneWatchFrame` (pane_watch.go:225-246) — the `HandleReadPane`
@@ -972,6 +1102,7 @@ async fn read_watch_frame(
     spec: &WatchSpec,
     deps: &WatchDeps,
     state: &mut WatchState,
+    stream: Option<&PaneStream>,
 ) -> FrameRead {
     let (generation, content_rev, agent, classification_agent) = {
         let topology = deps.handle.topology.borrow();
@@ -1007,18 +1138,24 @@ async fn read_watch_frame(
     } else {
         None
     };
-    let read = match pane_read_fresh(
-        &deps.handle,
-        pane_id,
-        display_source(spec.format, viewport_only, &agent),
-        spec.lines,
-        spec.format,
-    )
-    .await
-    {
-        Ok(read) => read,
-        Err(err) if err.refusal_code() == Some("pane_not_found") => return FrameRead::Gone,
-        Err(_) => return FrameRead::Retry,
+    // The emulator is the read when it has rendered at least once — it
+    // produces the same text `pane.read` would for this
+    // (`display_source`, `format`, `lines`) tuple without touching the
+    // host pane. Until the first frame lands (and whenever the stream is
+    // absent) the socket path reads unchanged.
+    let source = display_source(spec.format, viewport_only, &agent);
+    let (text, truncated, revision) = match stream.filter(|s| s.is_initialized()) {
+        Some(stream) => {
+            let (text, truncated) =
+                stream.render_parts(source, spec.format == ReadFormat::Ansi, spec.lines);
+            (text, truncated, None)
+        }
+        None => match pane_read_fresh(&deps.handle, pane_id, source, spec.lines, spec.format).await
+        {
+            Ok(read) => (read.text, read.truncated, Some(read.revision)),
+            Err(err) if err.refusal_code() == Some("pane_not_found") => return FrameRead::Gone,
+            Err(_) => return FrameRead::Retry,
+        },
     };
     // `HandleReadPane`'s mid-read fences — generation (`replaced`) and
     // `ContentRevision` (`changed`).
@@ -1034,8 +1171,12 @@ async fn read_watch_frame(
     // so a *future* death re-emits `pane_not_found`.
     state.gone = false;
     // Verified under this generation — the read's upstream revision
-    // joins the served watermark (`0` folds to nothing on 0.9.1).
-    state.fold_upstream(generation, read.revision);
+    // joins the served watermark (`0` folds to nothing on 0.9.1). Stream
+    // reads carry no socket revision — `terminal.frame` seq is a
+    // different axis and must not feed the `pane.output_changed` dedupe.
+    if let Some(revision) = revision {
+        state.fold_upstream(generation, revision);
+    }
     // `classifyPaneResponse`'s settle flag — viewport reads inside the
     // window are flagged so the app won't commit possibly-redrawn rows.
     let resize_settling = viewport_only
@@ -1045,11 +1186,11 @@ async fn read_watch_frame(
             .await;
     // `preparePaneResponse` — classify the capped raw read, merge
     // claude-like history when warranted, `noecho.Match` the tail.
-    let capped = cap_pane_content_lines(&read.text, spec.lines);
+    let capped = cap_pane_content_lines(&text, spec.lines);
     let prepared = prepare_pane_response(
         pane_id,
         capped,
-        read.truncated,
+        truncated,
         &classification_agent,
         viewport_only,
         spec.lines,

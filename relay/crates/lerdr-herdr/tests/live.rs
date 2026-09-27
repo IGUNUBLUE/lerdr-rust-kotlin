@@ -117,3 +117,46 @@ async fn live_topology_subscribe() {
     // Sanity: EventStreamError is in scope for the API surface check.
     let _ = EventStreamError::Lagged;
 }
+
+/// `terminal session observe` against a real pane — the stream behind the
+/// relay-side emulator. Verifies the CLI accepts the socket env, emits a
+/// first `terminal.frame` (`full`, geometry-bearing) promptly, and that
+/// `bytes` decodes as ANSI content.
+#[tokio::test]
+async fn live_terminal_observe() {
+    let Some(client) = live_client() else {
+        eprintln!("HERDR_LIVE not set — skipping live test");
+        return;
+    };
+    let snap = client.session_snapshot().await.expect("session.snapshot");
+    let Some(pane) = snap.panes.first() else {
+        eprintln!("no panes in snapshot — skipping observe check");
+        return;
+    };
+    let bin = client.resolved_herdr_bin();
+    let socket = client
+        .socket_path_hint()
+        .expect("unix client carries a socket path");
+    let mut stream = lerdr_herdr::observe::ObserveStream::spawn(&bin, &pane.pane_id, &socket)
+        .expect("observe spawn");
+
+    let event = tokio::time::timeout(Duration::from_secs(10), stream.next())
+        .await
+        .expect("first frame timed out");
+    match event {
+        lerdr_herdr::observe::ObserveEvent::Frame(frame) => {
+            assert!(frame.seq >= 1, "seq {}", frame.seq);
+            assert!(frame.width > 0 && frame.height > 0);
+            assert!(!frame.bytes.is_empty(), "empty initial frame");
+            eprintln!(
+                "observe frame: seq={} full={} {}x{} bytes={}",
+                frame.seq,
+                frame.full,
+                frame.width,
+                frame.height,
+                frame.bytes.len()
+            );
+        }
+        other => panic!("expected a frame, got {other:?}"),
+    }
+}

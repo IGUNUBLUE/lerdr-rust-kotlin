@@ -55,6 +55,16 @@ truncated}}`.
 `pane.send_input` params: `{pane_id, text?, keys?}` — routed through
 Herdr's input method so paste-mode is honored (send_input.go).
 
+`herdr terminal session observe <pane_id>` (CLI subprocess, one per
+watch) — pushes NDJSON `terminal.frame` records (`seq`, `full`,
+base64 ANSI `bytes`, `width`/`height`) rendered at the pane's real
+geometry, read-only; `terminal.closed` reports pane exit. The relay
+feeds the bytes to a `vt100` screen emulator and renders the same
+`(source, format, lines)` text `pane.read` produces — push instead of
+poll, no mouse-scroll scrollback harvesting. `LERDR_PANE_STREAM=off`
+disables it; spawn failure/EOF/`closed` fall back to `pane.read`
+polling.
+
 ### Event stream — the reactive spine
 
 `Bootstrap()`: subscribe (`lerdr-events`, topology subscription set) →

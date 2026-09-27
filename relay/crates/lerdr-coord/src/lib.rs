@@ -43,6 +43,7 @@ pub mod conversation;
 mod convo_subs;
 mod fingerprint;
 mod history;
+mod pane_stream;
 pub mod release;
 mod router;
 mod snapshot;
