@@ -37,7 +37,7 @@ use tracing::Instrument;
 use crate::actions::{self, ActionContext};
 use crate::actor::TopologyHandle;
 use crate::convo_subs::{ConvoSubDeps, ConvoSubSet, ConvoSubSpec};
-use crate::snapshot::topology_broadcast;
+use crate::snapshot::{full_inventory, topology_broadcast};
 use crate::topology::Topology;
 use crate::watches::{
     display_source, format_wire, pane_lines, read_format, watch_interval, WatchDeps, WatchSet,
@@ -317,12 +317,35 @@ impl HerdRouter {
                 if topo_rx.changed().await.is_err() {
                     return;
                 }
+                // The last revision this client was sent. `broadcast_frames`
+                // holds only the latest commit's diff, and `borrow()`
+                // coalesces skipped sends — a burst of commits (a pane's
+                // death publishes `pane.closed`/`tab.closed`/`workspace.closed`
+                // back-to-back) can overwrite a removal batch before this
+                // task runs, and a missed diff never resends. Detect the gap
+                // and heal with the full current rows.
+                let mut sent_revision: Option<u64> = None;
                 loop {
                     let topology = topo_rx.borrow().clone();
+                    let revision = topology.revision;
+                    let frames = match sent_revision {
+                        Some(last) if revision > last + 1 => {
+                            tracing::debug!(
+                                last_sent = last,
+                                revision,
+                                "topology revisions skipped — pushing full inventory"
+                            );
+                            full_inventory(&topology)
+                                .into_iter()
+                                .chain(topology_broadcast(&topology))
+                                .collect()
+                        }
+                        _ => topology_broadcast(&topology),
+                    };
                     if let Some(sink) = sink_of(&client_id) {
                         let mut gone = false;
-                        for message in topology_broadcast(&topology) {
-                            gone = sink.try_send(&message).is_err();
+                        for message in &frames {
+                            gone = sink.try_send(message).is_err();
                             if gone {
                                 break;
                             }
@@ -330,6 +353,10 @@ impl HerdRouter {
                         if gone {
                             return; // client gone — session drop stops us
                         }
+                        // Only a completed send earns the watermark — a
+                        // missing sink means the frames never landed, so
+                        // the next wake still heals the gap.
+                        sent_revision = Some(revision);
                     }
                     tokio::select! {
                         _ = cancel.cancelled() => break,

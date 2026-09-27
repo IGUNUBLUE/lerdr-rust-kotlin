@@ -501,6 +501,12 @@ struct WatchState {
     /// restarts its upstream counter, so the watermark resets with the
     /// epoch rather than suppressing the replacement's events as stale.
     upstream_rev_generation: i64,
+    /// The pane was definitively gone (`pane_not_found` refusal) at the
+    /// last read — the terminal `pane_content{error}` frame was already
+    /// pushed, so further dead reads stay silent until a respawned pane
+    /// revives the watch (same-id reuse folds through the generation
+    /// fence, which the read path already enforces).
+    gone: bool,
 }
 
 impl WatchState {
@@ -518,6 +524,7 @@ impl WatchState {
             force_full: false,
             upstream_rev: 0,
             upstream_rev_generation: -1,
+            gone: false,
         }
     }
 
@@ -557,6 +564,42 @@ impl WatchState {
     }
 }
 
+/// The outcome of a watch-side `pane.read` attempt.
+enum FrameRead {
+    /// A verified frame ready to push.
+    Frame(Box<WatchFrame>),
+    /// Transient failure or a mid-read fence — retry next tick, silently
+    /// (the oracle's `frame == nil` paths send nothing either).
+    Retry,
+    /// `pane_not_found` — the pane is definitively gone upstream.
+    /// Distinct from `Retry` because the client must hear about it: the
+    /// silent-skip oracle behavior leaves a dead pane rendering as a
+    /// ghost ("Watching pane…") forever.
+    Gone,
+}
+
+/// Push the dead-pane terminal frame — one `pane_content` carrying
+/// `error: "pane_not_found"` per death transition. Bypasses the ack
+/// gate (it is a notice, not content the client acks) and drops any
+/// pending gate so a post-respawn frame is never suppressed by the
+/// corpse's outstanding ack. The watch stays armed: Herdr can reuse the
+/// pane id, and the generation fence already rejects frames that belong
+/// to the dead epoch.
+fn send_gone(pane_id: &str, spec: &WatchSpec, sink: &dyn FrameSink, state: &mut WatchState) {
+    if state.gone {
+        return;
+    }
+    state.gone = true;
+    state.ungate();
+    let _ = sink.try_send(&Outbound::PaneContent(Box::new(PaneContent {
+        r#type: "pane_content".to_owned(),
+        pane_id: Some(pane_id.to_owned()),
+        error: Some("pane_not_found".to_owned()),
+        target: Some(MaybeNull::Value(spec.target.clone())),
+        ..PaneContent::default()
+    })));
+}
+
 /// The watch loop — exits on `Stop`, cancel, closed sink, or closed
 /// invalidation feed.
 async fn watch_loop(
@@ -577,30 +620,36 @@ async fn watch_loop(
     // fingerprint) and engages the ack gate (`watch.pending = frame`).
     // A failed read emits nothing — the oracle sleeps and retries the nil
     // frame every interval; the first tick does the same here (the empty
-    // `probe_fingerprint` forces the full read).
-    if let Some(frame) = read_watch_frame(&pane_id, &spec, &deps, &mut state).await {
-        if spec.known_fingerprint.as_deref() == Some(frame.content_fingerprint.as_str()) {
-            // `paneWatchUpdate`'s same-fingerprint branch:
-            // `CopyLines: strings.Count(content, "\n") + 1`.
-            let copy_lines =
-                i64::try_from(frame.content.matches('\n').count() + 1).unwrap_or(i64::MAX);
-            let message = delta_frame(
-                &pane_id,
-                &spec,
-                &frame,
-                frame.content_fingerprint.clone(),
-                vec![delta::Segment {
-                    copy_lines,
-                    ..delta::Segment::default()
-                }],
-            );
-            if sink.try_send(&message) {
-                debug!("watch fingerprint hit — copy-segment delta");
-                state.sent(&frame);
+    // `probe_fingerprint` forces the full read). A definitively dead pane
+    // is the exception — the client gets the terminal frame at once.
+    match read_watch_frame(&pane_id, &spec, &deps, &mut state).await {
+        FrameRead::Frame(frame) => {
+            let frame = *frame;
+            if spec.known_fingerprint.as_deref() == Some(frame.content_fingerprint.as_str()) {
+                // `paneWatchUpdate`'s same-fingerprint branch:
+                // `CopyLines: strings.Count(content, "\n") + 1`.
+                let copy_lines =
+                    i64::try_from(frame.content.matches('\n').count() + 1).unwrap_or(i64::MAX);
+                let message = delta_frame(
+                    &pane_id,
+                    &spec,
+                    &frame,
+                    frame.content_fingerprint.clone(),
+                    vec![delta::Segment {
+                        copy_lines,
+                        ..delta::Segment::default()
+                    }],
+                );
+                if sink.try_send(&message) {
+                    debug!("watch fingerprint hit — copy-segment delta");
+                    state.sent(&frame);
+                }
+            } else {
+                send_frame(&pane_id, &spec, sink.as_ref(), &mut state, frame);
             }
-        } else {
-            send_frame(&pane_id, &spec, sink.as_ref(), &mut state, frame);
         }
+        FrameRead::Gone => send_gone(&pane_id, &spec, sink.as_ref(), &mut state),
+        FrameRead::Retry => {}
     }
 
     // `next_tick` is the oracle's ticker — fires every `interval` whether
@@ -665,10 +714,14 @@ async fn watch_loop(
                         // Client-initiated recovery — bypass the cadence
                         // AND the probe tier: `force_full` answers with
                         // the full frame whatever the probe would say.
-                        if let Some(frame) =
-                            read_watch_frame(&pane_id, &spec, &deps, &mut state).await
-                        {
-                            send_frame(&pane_id, &spec, sink.as_ref(), &mut state, frame);
+                        match read_watch_frame(&pane_id, &spec, &deps, &mut state).await {
+                            FrameRead::Frame(frame) => {
+                                send_frame(&pane_id, &spec, sink.as_ref(), &mut state, *frame);
+                            }
+                            FrameRead::Gone => {
+                                send_gone(&pane_id, &spec, sink.as_ref(), &mut state);
+                            }
+                            FrameRead::Retry => {}
                         }
                         next_read = tokio::time::Instant::now() + spec.interval;
                     }
@@ -830,7 +883,7 @@ async fn poll(pane_id: &str, spec: &WatchSpec, deps: &WatchDeps, state: &mut Wat
             topology.upstream_rev_of(pane_id),
         )
     };
-    let Ok(probe) = pane_read_fresh(
+    let probe = match pane_read_fresh(
         &deps.handle,
         pane_id,
         ReadSource::Visible,
@@ -838,9 +891,21 @@ async fn poll(pane_id: &str, spec: &WatchSpec, deps: &WatchDeps, state: &mut Wat
         spec.format,
     )
     .await
-    else {
-        return;
+    {
+        Ok(probe) => probe,
+        // A definitively dead pane is not a silent probe miss — the
+        // client is owed the terminal frame or it renders the ghost
+        // forever.
+        Err(err) => {
+            if err.refusal_code() == Some("pane_not_found") {
+                send_gone(pane_id, spec, deps.sink.as_ref(), state);
+            }
+            return;
+        }
     };
+    // The probe verified the pane is alive — a previous death notice is
+    // obsolete (same-id respawn): a future death must re-emit it.
+    state.gone = false;
     let (generation_now, content_rev_now, classification_agent, observed_now) = {
         let topology = deps.handle.topology.borrow();
         (
@@ -877,10 +942,15 @@ async fn poll(pane_id: &str, spec: &WatchSpec, deps: &WatchDeps, state: &mut Wat
     if !needs_read {
         return;
     }
-    let Some(frame) = read_watch_frame(pane_id, spec, deps, state).await else {
+    let frame = match read_watch_frame(pane_id, spec, deps, state).await {
+        FrameRead::Frame(frame) => *frame,
         // `frame == nil` → the probe fingerprint stays stale, so the next
         // tick retries the full read.
-        return;
+        FrameRead::Retry => return,
+        FrameRead::Gone => {
+            send_gone(pane_id, spec, deps.sink.as_ref(), state);
+            return;
+        }
     };
     state.probe_fingerprint = probe_fingerprint;
     send_frame(pane_id, spec, deps.sink.as_ref(), state, frame);
@@ -892,16 +962,17 @@ async fn poll(pane_id: &str, spec: &WatchSpec, deps: &WatchDeps, state: &mut Wat
 /// source/format matrix, `capPaneContentLines`, and the mid-read
 /// generation fence. The upstream revision fences inside
 /// [`pane_read_fresh`]; a verified read's revision folds into the
-/// watch's served watermark. `None` = read failed or the pane was
+/// watch's served watermark. `Retry` = transient failure or the pane was
 /// replaced under the read — the caller emits nothing (the oracle's
 /// `frame == nil` paths send nothing either: the initial loop retries,
-/// the poll just ends).
+/// the poll just ends). `Gone` = `pane_not_found` — the caller pushes
+/// the terminal frame so the client stops rendering the corpse.
 async fn read_watch_frame(
     pane_id: &str,
     spec: &WatchSpec,
     deps: &WatchDeps,
     state: &mut WatchState,
-) -> Option<WatchFrame> {
+) -> FrameRead {
     let (generation, content_rev, agent, classification_agent) = {
         let topology = deps.handle.topology.borrow();
         (
@@ -936,7 +1007,7 @@ async fn read_watch_frame(
     } else {
         None
     };
-    let read = pane_read_fresh(
+    let read = match pane_read_fresh(
         &deps.handle,
         pane_id,
         display_source(spec.format, viewport_only, &agent),
@@ -944,7 +1015,11 @@ async fn read_watch_frame(
         spec.format,
     )
     .await
-    .ok()?;
+    {
+        Ok(read) => read,
+        Err(err) if err.refusal_code() == Some("pane_not_found") => return FrameRead::Gone,
+        Err(_) => return FrameRead::Retry,
+    };
     // `HandleReadPane`'s mid-read fences — generation (`replaced`) and
     // `ContentRevision` (`changed`).
     {
@@ -952,9 +1027,12 @@ async fn read_watch_frame(
         if topology.generation_of(pane_id) != generation
             || topology.content_rev_of(pane_id) != content_rev
         {
-            return None;
+            return FrameRead::Retry;
         }
     }
+    // A verified read means the pane is alive — clear the terminal flag
+    // so a *future* death re-emits `pane_not_found`.
+    state.gone = false;
     // Verified under this generation — the read's upstream revision
     // joins the served watermark (`0` folds to nothing on 0.9.1).
     state.fold_upstream(generation, read.revision);
@@ -991,7 +1069,7 @@ async fn read_watch_frame(
         semantics: prepared.semantics,
     };
     frame.frame_fingerprint = frame_fingerprint(&frame, spec.format);
-    Some(frame)
+    FrameRead::Frame(Box::new(frame))
 }
 
 /// `paneWatchUpdate` (pane_watch.go:325-351) — pick and push the right
@@ -1267,7 +1345,12 @@ pub(crate) mod test_support {
                         .get("id")
                         .and_then(|v| v.as_str().map(str::to_owned))
                         .unwrap_or_default();
-                    let body = json!({ "id": id, "result": result }).to_string();
+                    // `{"__error__":{...}}` canned bodies reply with the
+                    // error envelope — refusal-path tests need it.
+                    let body = match result.get("__error__") {
+                        Some(err) => json!({ "id": id, "error": err }).to_string(),
+                        None => json!({ "id": id, "result": result }).to_string(),
+                    };
                     let _ = write.write_all(body.as_bytes()).await;
                     let _ = write.write_all(b"\n").await;
                     let _ = write.shutdown().await;
@@ -1319,6 +1402,12 @@ pub(crate) mod test_support {
                 "truncated": false,
             }
         })
+    }
+
+    /// A canned refusal body — FakeHerdr rewrites it as the `error`
+    /// envelope (`{"code","message"}`), e.g. a `pane_not_found` read.
+    pub(crate) fn refused(code: &str) -> Value {
+        json!({"__error__": {"code": code, "message": "refused"}})
     }
 
     /// A `pane.updated` invalidation naming `pane_id` (`None` = global).
@@ -1606,6 +1695,97 @@ mod tests {
         }
         // Probe (visible, 500) + the conditional full read.
         assert_eq!(herdr.dials.load(Ordering::Relaxed), 3);
+        watches.stop("wE:pE");
+        cancel.cancel();
+    }
+
+    /// `pane_not_found` is a definitive refusal, not a silent miss: the
+    /// watch pushes one terminal `pane_content{error}` for the death and
+    /// stays silent while every later read keeps refusing — the ghost
+    /// frame tells the client to drop the pane instead of "Watching
+    /// pane…" forever.
+    #[tokio::test(start_paused = true)]
+    async fn gone_pane_emits_terminal_error_once() {
+        let herdr = FakeHerdr::serving(vec![refused("pane_not_found")]);
+        let (sink, mut rx) = recording_sink();
+        let (invalidations, _) = broadcast::channel(16);
+        let cancel = CancellationToken::new();
+        let mut watches = WatchSet::default();
+        watches.start(
+            "wE:pE".to_owned(),
+            spec(30, Duration::from_millis(50), None),
+            deps(&herdr.client(), sink, &invalidations, cancel.clone()),
+        );
+
+        let frame = rx.recv().await.expect("terminal watch frame");
+        match frame {
+            Outbound::PaneContent(content) => {
+                assert_eq!(content.pane_id.as_deref(), Some("wE:pE"));
+                assert_eq!(content.error.as_deref(), Some("pane_not_found"));
+                assert_eq!(content.ack_required, None);
+                match content.target {
+                    Some(MaybeNull::Value(target)) => {
+                        assert_eq!(target.pane_id, "wE:pE");
+                    }
+                    other => panic!("expected target value, got {other:?}"),
+                }
+            }
+            other => panic!("expected pane_content, got {other:?}"),
+        }
+        // Paused time drives ~1s of ticks; every read keeps refusing and
+        // the notice must not repeat.
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .is_err(),
+            "dead pane emitted a second frame"
+        );
+        assert!(herdr.dials.load(Ordering::Relaxed) > 1);
+        watches.stop("wE:pE");
+        cancel.cancel();
+    }
+
+    /// A reused pane id revives the watch: dead → alive emits the
+    /// terminal frame then a normal `pane_content`, and a second death
+    /// re-arms the notice.
+    #[tokio::test(start_paused = true)]
+    async fn respawned_pane_revives_watch_and_rearms_notice() {
+        let herdr = FakeHerdr::serving(vec![
+            refused("pane_not_found"),         // initial read → gone
+            pane_read_result("wE:pE", "v1\n"), // tick probe → alive
+            pane_read_result("wE:pE", "v1\n"), // tick full read → frame
+            refused("pane_not_found"),         // next probe → dead again
+            refused("pane_not_found"),         // stays dead
+        ]);
+        let (sink, mut rx) = recording_sink();
+        let (invalidations, _) = broadcast::channel(16);
+        let cancel = CancellationToken::new();
+        let mut watches = WatchSet::default();
+        watches.start(
+            "wE:pE".to_owned(),
+            spec(30, Duration::from_millis(50), None),
+            deps(&herdr.client(), sink, &invalidations, cancel.clone()),
+        );
+
+        for expected in ["pane_not_found", "alive", "pane_not_found"] {
+            let frame = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .expect("watch frame within window")
+                .expect("channel open");
+            match (expected, frame) {
+                ("pane_not_found", Outbound::PaneContent(content)) => {
+                    assert_eq!(content.error.as_deref(), Some("pane_not_found"));
+                }
+                ("alive", Outbound::PaneContent(content)) => {
+                    assert_eq!(content.content.as_deref(), Some("v1\n"));
+                    assert!(content.error.is_none());
+                    // The full frame gates on `pane_applied` — the next
+                    // tick's probe only runs after the client's ack.
+                    watches.ack("wE:pE", content.content_fingerprint.as_deref());
+                }
+                (expected, other) => panic!("expected {expected} frame, got {other:?}"),
+            }
+        }
         watches.stop("wE:pE");
         cancel.cancel();
     }

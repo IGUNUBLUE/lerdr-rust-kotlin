@@ -320,6 +320,27 @@ pub(crate) fn committed_inventory(topology: &Topology) -> Vec<Outbound> {
     ]
 }
 
+/// The recovery push for a client forwarder that skipped committed
+/// revisions: `broadcast_frames` carries only the *latest* commit's
+/// dedup'd diff, so a skipped commit takes the sole copy of its changes
+/// with it — a pane removal or status flip that never re-fires would
+/// leave the client rendering ghosts forever. The full current rows are
+/// replaceable, so pushing them unconditionally converges the client no
+/// matter which intermediate batches were missed.
+pub(crate) fn full_inventory(topology: &Topology) -> Vec<Outbound> {
+    let mut frames = committed_inventory(topology);
+    frames.push(Outbound::HerdrStatus(HerdrStatusMessage {
+        status: Some(MaybeNull::Value(herdr_status(topology))),
+        r#type: "herdr_status".to_owned(),
+        ..HerdrStatusMessage::default()
+    }));
+    frames.push(Outbound::CapsUpdate(CapsUpdateMessage {
+        capabilities: Some(MaybeNull::Value(effective_capabilities(topology))),
+        r#type: "caps_update".to_owned(),
+    }));
+    frames
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,6 +406,29 @@ mod tests {
         // `focused` is a wire field — flipping it republishes `agents`.
         topology.accept(snapshot_with(AgentStatus::Idle, false));
         assert_eq!(types(&broadcast_diff(&topology, &mut view)), "agents");
+    }
+
+    /// `full_inventory` is the forwarder's revision-gap heal: every
+    /// diff-carrying leg, unconditionally, so a skipped batch (whose diff
+    /// may have held the only copy of a removal) can never strand a client.
+    #[test]
+    fn full_inventory_covers_every_broadcast_leg() {
+        let mut topology = Topology::default();
+        topology.accept(snapshot_with(AgentStatus::Idle, true));
+        assert_eq!(
+            types(&full_inventory(&topology)),
+            "inventory_status,agents,workspaces,herdr_status,caps_update"
+        );
+        // The pane row is the full current list — a healed client drops
+        // any ghost a missed removal left behind.
+        let Outbound::Agents(agents) = &full_inventory(&topology)[1] else {
+            panic!("expected agents");
+        };
+        let Some(MaybeNull::Value(rows)) = &agents.agents else {
+            panic!("expected agents value");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].pane_id.as_str(), "wE:p1");
     }
 
     #[test]
