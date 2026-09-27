@@ -32,9 +32,9 @@ import androidx.navigation3.ui.NavDisplay
  *   ([rememberViewModelStoreNavEntryDecorator]) on top of the saveable-state
  *   holder — entries get ViewModels keyed by nav key.
  * - Transitions follow docs/04 §Motion: a Material shared-axis-X slide for
- *   forward/back list→detail pushes (peer session modes slide in tab
- *   order), and a fade-through for bottom-bar tab switches. Predictive
- *   back keeps the platform default (fade in under a scaling-down top).
+ *   forward list→detail pushes (peer session modes slide in tab order),
+ *   a fade-through for bottom-bar tab switches, and a simple fade for
+ *   every back/pop — predictive back uses the same fade.
  *
  * Feature screens contribute destinations through [entryBuilder] — the
  * `EntryProviderScope<LerdrKey>` receiver keeps everything on the sealed key
@@ -57,7 +57,8 @@ fun LerdrNavDisplay(
             rememberViewModelStoreNavEntryDecorator(),
         ),
         transitionSpec = { forwardSpec(slideDistancePx) },
-        popTransitionSpec = { popSpec(slideDistancePx) },
+        popTransitionSpec = { popSpec() },
+        predictivePopTransitionSpec = { popSpec() },
         entryProvider = entryProvider<LerdrKey>(
             fallback = { key ->
                 NavEntry(key) {
@@ -99,13 +100,10 @@ private fun AnimatedContentTransitionScope<Scene<LerdrKey>>.forwardSpec(
     return sharedAxisX(forward = forward, slidePx = slidePx)
 }
 
-/** Back transition — fade-through between tabs, reversed shared-axis else. */
-private fun AnimatedContentTransitionScope<Scene<LerdrKey>>.popSpec(
-    slidePx: Int,
-): ContentTransform {
-    if (isTopLevelSwitch()) return fadeThrough()
-    return sharedAxisX(forward = false, slidePx = slidePx)
-}
+/** Back transition — a plain crossfade, also used by predictive back. */
+private fun AnimatedContentTransitionScope<Scene<LerdrKey>>.popSpec(): ContentTransform =
+    fadeIn(tween(180, delayMillis = 40, easing = LinearEasing)) togetherWith
+        fadeOut(tween(90, easing = LinearEasing))
 
 /**
  * Material shared-axis X: both surfaces slide 30dp along the travel
