@@ -50,7 +50,11 @@ class LerdrNavigator(val backStack: NavBackStack<LerdrKey>) {
         backStack.removeLastOrNull()
     }
 
-    /** Bottom-bar navigation — tabs replace, Home pops to the root. */
+    /**
+     * Bottom-bar navigation — a top-level destination replaces whatever
+     * sits above the root ("exit through home"), so system Back always
+     * lands on Home instead of walking a history of visited tabs.
+     */
     fun navigateTopLevel(key: LerdrKey) {
         when (key) {
             LerdrKey.Home -> {
@@ -60,7 +64,7 @@ class LerdrNavigator(val backStack: NavBackStack<LerdrKey>) {
             }
             else -> {
                 if (backStack.lastOrNull() == key) return
-                backStack.removeAll { it == key }
+                while (backStack.size > 1) backStack.removeLastOrNull()
                 backStack.add(key)
             }
         }
