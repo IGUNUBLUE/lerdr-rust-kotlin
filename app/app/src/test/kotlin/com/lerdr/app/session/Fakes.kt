@@ -38,13 +38,13 @@ class FakeRelaySessionHandle(
     override val incoming: Flow<JsonObject> = incomingChannel.receiveAsFlow()
 
     /** Every raw frame the repository wrote, in order. */
-    val sentRaw = mutableListOf<String>()
+    val sentRaw = java.util.concurrent.CopyOnWriteArrayList<String>()
 
     /** Typed messages sent via [send]. */
-    val sentTyped = mutableListOf<Inbound>()
+    val sentTyped = java.util.concurrent.CopyOnWriteArrayList<Inbound>()
 
     /** `request` invocations — the test assigns [responder] to complete them. */
-    val requests = mutableListOf<Inbound>()
+    val requests = java.util.concurrent.CopyOnWriteArrayList<Inbound>()
 
     /** The auth material the factory captured at create() time. */
     var lastAuthLookup: (() -> DeviceAuthentication?)? = null
@@ -75,7 +75,7 @@ class FakeRelaySessionHandle(
     }
 
     /** `0x03` binary upload chunks sent through [sendBytes]. */
-    val sentBytes = mutableListOf<ByteArray>()
+    val sentBytes = java.util.concurrent.CopyOnWriteArrayList<ByteArray>()
 
     override fun sendBytes(payload: ByteArray): Boolean {
         sentBytes += payload
@@ -279,7 +279,7 @@ class FakeAttachmentSource(
     private val names: Map<String, String> = emptyMap(),
     private val mimes: Map<String, String?> = emptyMap(),
 ) : AttachmentSource {
-    val opens = mutableListOf<String>()
+    val opens = java.util.concurrent.CopyOnWriteArrayList<String>()
 
     override fun probe(uri: String): AttachmentProbe? {
         val bytes = files[uri] ?: return null
