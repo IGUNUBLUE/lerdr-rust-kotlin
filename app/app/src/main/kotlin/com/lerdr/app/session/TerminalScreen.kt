@@ -115,11 +115,19 @@ fun TerminalScreen(
     val appContext = LocalContext.current.applicationContext
     val viewModel: TerminalViewModel = viewModel(key = "terminal:$paneId") {
         val entryPoint = EntryPointAccessors.fromApplication(appContext, AppEntryPoint::class.java)
-        TerminalViewModel(paneId, entryPoint.sessionRepository(), entryPoint.appScope())
+        TerminalViewModel(
+            paneId,
+            entryPoint.sessionRepository(),
+            entryPoint.appScope(),
+            entryPoint.appPreferences(),
+        )
     }
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val terminalFontScale by viewModel.terminalFontScale.collectAsStateWithLifecycle()
     TerminalContent(
         uiState = uiState,
+        terminalFontScale = terminalFontScale,
+        onFontScaleChanged = viewModel::persistFontScale,
         onOpenFeed = onOpenFeed,
         onOpenFiles = onOpenFiles,
         onBack = onBack,
@@ -156,12 +164,23 @@ fun TerminalContent(
     onPaneLinkActivate: suspend (row: Int, col: Int) -> PaneLinkActivatedResult? = { _, _ -> null },
     /** `pane_search` — full-scrollback result; null when unsupported/failed. */
     onPaneSearch: suspend (query: String) -> PaneSearchResult? = { null },
+    /** Persisted pinch-zoom — applied to the surface, reported back on change. */
+    terminalFontScale: Float = 1f,
+    onFontScaleChanged: (Float) -> Unit = {},
 ) {
     val spacing = LerdrTheme.spacing
     val colors = LerdrTheme.extendedColors
     val scope = rememberCoroutineScope()
-    val surfaceState = rememberTerminalSurfaceState()
+    val surfaceState = rememberTerminalSurfaceState(onFontScaleChanged = onFontScaleChanged)
     val context = LocalContext.current
+
+    // Persisted zoom applies silently — the callback only fires on pinch
+    // gestures, so assigning here cannot echo into a preference write.
+    LaunchedEffect(terminalFontScale) {
+        if (surfaceState.fontScale != terminalFontScale) {
+            surfaceState.fontScale = terminalFontScale
+        }
+    }
 
     // Find-in-buffer — view-local like Lerdr's TerminalView state:
     // the composition is per-pane, so the bar closes with the pane switch.

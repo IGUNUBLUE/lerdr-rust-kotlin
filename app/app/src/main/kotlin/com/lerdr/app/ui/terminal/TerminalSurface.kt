@@ -780,6 +780,11 @@ private fun TerminalGrid(
 @Stable
 class TerminalSurfaceState internal constructor(
     internal val scrollState: ScrollState,
+    /**
+     * Fires on pinch-driven zoom changes only — a persisted scale applied
+     * from preferences must not echo back as a fresh write.
+     */
+    internal val onFontScaleChanged: (Float) -> Unit = {},
 ) {
     internal var rowHeightPx = 0f
     internal var stickThresholdPx = 0f
@@ -839,7 +844,11 @@ class TerminalSurfaceState internal constructor(
         internal set
 
     internal fun zoomBy(factor: Float) {
-        fontScale = (fontScale * factor).coerceIn(MIN_FONT_SCALE, MAX_FONT_SCALE)
+        val next = (fontScale * factor).coerceIn(MIN_FONT_SCALE, MAX_FONT_SCALE)
+        if (next != fontScale) {
+            fontScale = next
+            onFontScaleChanged(next)
+        }
     }
 
     /**
@@ -887,7 +896,10 @@ class TerminalSurfaceState internal constructor(
 @Composable
 fun rememberTerminalSurfaceState(
     scrollState: ScrollState = rememberScrollState(),
-): TerminalSurfaceState = remember(scrollState) { TerminalSurfaceState(scrollState) }
+    onFontScaleChanged: (Float) -> Unit = {},
+): TerminalSurfaceState = remember(scrollState, onFontScaleChanged) {
+    TerminalSurfaceState(scrollState, onFontScaleChanged)
+}
 
 /** Monospace probe — ten digits average out per-glyph hinting error. */
 private const val CELL_PROBE = "0123456789"

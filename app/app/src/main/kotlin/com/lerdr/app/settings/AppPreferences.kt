@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -52,9 +53,22 @@ class AppPreferences @Inject constructor(
         dataStore.edit { it[APP_LOCK_ENABLED_KEY] = enabled }
     }
 
+    /**
+     * Terminal pinch-zoom level — persisted so a legible scale survives
+     * leaving and re-entering the pane. Clamped to the renderer's bounds.
+     */
+    val terminalFontScale: Flow<Float> = dataStore.data
+        .map { it[TERMINAL_FONT_SCALE_KEY] ?: 1f }
+        .distinctUntilChanged()
+
+    suspend fun setTerminalFontScale(scale: Float) {
+        dataStore.edit { it[TERMINAL_FONT_SCALE_KEY] = scale }
+    }
+
     companion object {
         val THEME_MODE_KEY = stringPreferencesKey("lerdr_theme_mode")
         val APP_LOCK_ENABLED_KEY = booleanPreferencesKey("lerdr_app_lock_enabled")
+        val TERMINAL_FONT_SCALE_KEY = floatPreferencesKey("lerdr_terminal_font_scale")
     }
 }
 

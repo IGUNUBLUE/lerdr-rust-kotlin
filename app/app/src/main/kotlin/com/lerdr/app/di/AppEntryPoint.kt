@@ -3,6 +3,7 @@ package com.lerdr.app.di
 import com.lerdr.app.home.HomeRepository
 import com.lerdr.app.pairing.PairingManager
 import com.lerdr.app.session.SessionRepository
+import com.lerdr.app.settings.AppPreferences
 import com.lerdr.app.update.AppUpdateManager
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
@@ -23,6 +24,7 @@ interface AppEntryPoint {
     fun pairingManager(): PairingManager
     fun draftStore(): DraftStore
     fun appUpdateManager(): AppUpdateManager
+    fun appPreferences(): AppPreferences
 
     @AppScope
     fun appScope(): CoroutineScope
