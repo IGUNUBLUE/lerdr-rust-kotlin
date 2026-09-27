@@ -100,10 +100,22 @@ private fun AnimatedContentTransitionScope<Scene<LerdrKey>>.forwardSpec(
     return sharedAxisX(forward = forward, slidePx = slidePx)
 }
 
-/** Back transition — a plain crossfade, also used by predictive back. */
+/**
+ * Back transition — a soft reveal, also used by predictive back. The
+ * outgoing surface stays opaque through most of the incoming fade and
+ * exits fast at the end; a symmetric crossfade dips both layers below
+ * full opacity mid-transition and the window background reads as a
+ * flash.
+ */
 private fun AnimatedContentTransitionScope<Scene<LerdrKey>>.popSpec(): ContentTransform =
-    fadeIn(tween(180, delayMillis = 40, easing = LinearEasing)) togetherWith
-        fadeOut(tween(90, easing = LinearEasing))
+    fadeIn(tween(PopFadeInMillis, easing = EmphasizedDecelerate)) togetherWith
+        fadeOut(
+            tween(
+                PopFadeOutMillis,
+                delayMillis = PopFadeInMillis - PopFadeOutMillis,
+                easing = LinearEasing,
+            ),
+        )
 
 /**
  * Material shared-axis X: both surfaces slide 30dp along the travel
@@ -154,3 +166,8 @@ private const val FadeThroughDurationMillis = 300
 private const val FadeThroughOutMillis = 90
 private const val FadeThroughInMillis = 210
 private const val FadeThroughScaleFrom = 0.92f
+
+// Pop reveal: 240ms decelerated incoming over an outgoing surface that
+// only leaves in the last 90ms — no frame ever dips below full opacity.
+private const val PopFadeInMillis = 240
+private const val PopFadeOutMillis = 90
