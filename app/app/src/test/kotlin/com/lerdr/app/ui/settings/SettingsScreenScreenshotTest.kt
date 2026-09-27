@@ -58,6 +58,8 @@ class SettingsScreenScreenshotTest {
                     onThemeMode = {},
                     onAppLockChange = {},
                     onOpenNotificationSettings = {},
+                    onCheckUpdate = {},
+                    onUpdateAction = {},
                 )
             }
         }
@@ -104,6 +106,8 @@ class SettingsScreenScreenshotTest {
                     onThemeMode = {},
                     onAppLockChange = {},
                     onOpenNotificationSettings = {},
+                    onCheckUpdate = {},
+                    onUpdateAction = {},
                 )
             }
         }
@@ -126,6 +130,8 @@ class SettingsScreenScreenshotTest {
                     onThemeMode = {},
                     onAppLockChange = {},
                     onOpenNotificationSettings = {},
+                    onCheckUpdate = {},
+                    onUpdateAction = {},
                 )
             }
         }

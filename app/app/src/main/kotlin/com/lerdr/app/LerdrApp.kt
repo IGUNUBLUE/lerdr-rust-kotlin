@@ -4,6 +4,7 @@ import android.app.Application
 import com.lerdr.app.di.AppScope
 import com.lerdr.app.security.LockState
 import com.lerdr.app.session.SessionRepository
+import com.lerdr.app.update.AppUpdateManager
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
@@ -22,6 +23,9 @@ class LerdrApp : Application() {
     @AppScope
     lateinit var appScope: CoroutineScope
 
+    @Inject
+    lateinit var updates: AppUpdateManager
+
     override fun onCreate() {
         super.onCreate()
         // Lerdr verifies before it connects at open: when the app
@@ -36,5 +40,8 @@ class LerdrApp : Application() {
         appScope.launch {
             lockState.locked.collect { sessions.setLocked(it) }
         }
+        // One GitHub latest-release probe per cold start — unrelated to the
+        // lock gate and relay sessions (pure HTTPS, no credentials).
+        updates.checkNow()
     }
 }

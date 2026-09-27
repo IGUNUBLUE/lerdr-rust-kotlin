@@ -2,6 +2,8 @@ package com.lerdr.app.settings
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import com.google.common.truth.Truth.assertThat
+import com.lerdr.app.notify.LerdrNotifier
+import com.lerdr.app.update.AppUpdateManager
 import com.lerdr.app.session.FakeCredentialStore
 import com.lerdr.app.session.FakeRelaySessionFactory
 import com.lerdr.app.session.FakeRelaySessionHandle
@@ -17,6 +19,10 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.flow.first
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+import org.robolectric.RuntimeEnvironment
 import kotlinx.serialization.json.JsonObject
 import lerdr.core.data.RelayEndpoint
 import lerdr.core.data.RelayInvitation
@@ -35,6 +41,8 @@ import org.junit.rules.TemporaryFolder
 private fun json(raw: String): JsonObject =
     LerdrJson.parseToJsonElement(raw) as JsonObject
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34], application = com.lerdr.app.TestApp::class)
 @OptIn(ExperimentalCoroutinesApi::class)
 class SettingsViewModelTest {
 
@@ -75,6 +83,18 @@ class SettingsViewModelTest {
         )
         val preferences = AppPreferences(dataStore)
 
+        /**
+         * Lazy — `RelayDetailViewModelTest` shares this harness but runs
+         * plain JUnit where `RuntimeEnvironment` is unavailable.
+         */
+        val updateManager by lazy {
+            AppUpdateManager(
+                RuntimeEnvironment.getApplication(),
+                scope,
+                LerdrNotifier(RuntimeEnvironment.getApplication()),
+            )
+        }
+
         val endpoint = RelayEndpoint(
             id = "r1",
             label = "workstation",
@@ -89,7 +109,7 @@ class SettingsViewModelTest {
         fun handle(): FakeRelaySessionHandle =
             factory.handleFor(origin) ?: error("no session for $origin")
 
-        fun viewModel() = SettingsViewModel(repository, preferences)
+        fun viewModel() = SettingsViewModel(repository, preferences, updateManager)
 
         fun detailViewModel(relayId: String = "r1") =
             RelayDetailViewModel(relayId, repository)

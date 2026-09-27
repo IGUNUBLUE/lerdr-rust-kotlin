@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -28,6 +29,8 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsOff
+import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
@@ -52,10 +55,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.tooling.preview.PreviewLightDark
 import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -64,6 +69,8 @@ import com.lerdr.app.nav.rememberLerdrNavBadges
 import com.lerdr.app.nav.topLevelNavItems
 import com.lerdr.app.security.BiometricPromptHelper
 import com.lerdr.app.security.SecurityEntryPoint
+import com.lerdr.app.update.AppUpdateState
+import com.lerdr.app.update.UpdatePhase
 import com.lerdr.core.designsystem.components.LerdrSegmentedControl
 import com.lerdr.core.designsystem.components.LerdrSettingsDivider
 import com.lerdr.core.designsystem.components.LerdrSettingsGroup
@@ -96,9 +103,22 @@ fun SettingsScreen(
         EntryPointAccessors.fromApplication(appContext, SecurityEntryPoint::class.java)
     }
     val viewModel: SettingsViewModel = viewModel {
-        SettingsViewModel(entryPoint.sessionRepository(), entryPoint.appPreferences())
+        SettingsViewModel(
+            entryPoint.sessionRepository(),
+            entryPoint.appPreferences(),
+            entryPoint.appUpdateManager(),
+        )
     }
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    // Returning from the install-permission grant resumes the pending
+    // update step (download or install) without a second tap.
+    LifecycleResumeEffect(uiState.update.phase) {
+        if (uiState.update.phase == UpdatePhase.NEEDS_INSTALL_PERMISSION) {
+            viewModel.resumeUpdateAfterPermission()
+        }
+        onPauseOrDispose { }
+    }
 
     val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(uiState.lastError) {
@@ -127,6 +147,14 @@ fun SettingsScreen(
         },
         onAppLockChange = viewModel::setAppLockEnabled,
         onOpenNotificationSettings = { openNotificationSettings(context) },
+        onCheckUpdate = viewModel::checkForUpdate,
+        onUpdateAction = {
+            if (uiState.update.phase == UpdatePhase.NEEDS_INSTALL_PERMISSION) {
+                context.startActivity(viewModel.installPermissionIntent())
+            } else {
+                viewModel.startUpdate()
+            }
+        },
     )
 }
 
@@ -144,6 +172,8 @@ fun SettingsContent(
     onThemeMode: (ThemeMode) -> Unit,
     onAppLockChange: (Boolean) -> Unit,
     onOpenNotificationSettings: () -> Unit,
+    onCheckUpdate: () -> Unit,
+    onUpdateAction: () -> Unit,
     badges: LerdrNavBadges = LerdrNavBadges(),
 ) {
     val spacing = LerdrTheme.spacing
@@ -333,6 +363,12 @@ fun SettingsContent(
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         },
+                    )
+                    LerdrSettingsDivider()
+                    UpdateRow(
+                        update = uiState.update,
+                        onCheckUpdate = onCheckUpdate,
+                        onUpdateAction = onUpdateAction,
                     )
                     LerdrSettingsDivider()
                     ListItem(
@@ -542,6 +578,65 @@ private val ThemeMode.label: String
         ThemeMode.DARK -> "Dark"
     }
 
+/**
+ * About-section row driving the GitHub self-update flow — label tracks
+ * [AppUpdateManager]'s phase, the trailing button is the single action
+ * for that phase (check / update / grant / install).
+ */
+@Composable
+private fun UpdateRow(
+    update: AppUpdateState,
+    onCheckUpdate: () -> Unit,
+    onUpdateAction: () -> Unit,
+) {
+    val (supporting, actionLabel) = when (update.phase) {
+        UpdatePhase.UNCHECKED -> "Not checked yet" to "Check"
+        UpdatePhase.CHECKING -> "Checking for updates…" to null
+        UpdatePhase.UP_TO_DATE -> "You're on the latest version" to "Check"
+        UpdatePhase.AVAILABLE -> {
+            val size = update.apkBytes.takeIf { it > 0 }
+                ?.let { " · ${it / 1_000_000} MB" }.orEmpty()
+            "v${update.latestVersion} available$size" to "Update"
+        }
+        UpdatePhase.NEEDS_INSTALL_PERMISSION ->
+            "Allow Lerdr to install updates" to "Allow"
+        UpdatePhase.DOWNLOADING -> "Downloading v${update.latestVersion}…" to null
+        UpdatePhase.READY_TO_INSTALL ->
+            "v${update.latestVersion} downloaded" to "Install"
+        UpdatePhase.FAILED -> "Couldn't check for updates" to "Retry"
+    }
+    ListItem(
+        colors = listItemGroupColors(),
+        headlineContent = { Text("App update") },
+        supportingContent = { Text(supporting) },
+        leadingContent = {
+            Icon(
+                Icons.Default.SystemUpdate,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        },
+        trailingContent = {
+            if (actionLabel == null) {
+                CircularProgressIndicator(modifier = Modifier.size(24.dp))
+            } else {
+                TextButton(
+                    onClick = if (update.phase == UpdatePhase.UNCHECKED ||
+                        update.phase == UpdatePhase.UP_TO_DATE ||
+                        update.phase == UpdatePhase.FAILED
+                    ) {
+                        onCheckUpdate
+                    } else {
+                        onUpdateAction
+                    },
+                ) {
+                    Text(actionLabel)
+                }
+            }
+        },
+    )
+}
+
 @PreviewLightDark
 @Composable
 private fun SettingsContentPreview() {
@@ -581,6 +676,8 @@ private fun SettingsContentPreview() {
             onThemeMode = {},
             onAppLockChange = {},
             onOpenNotificationSettings = {},
+            onCheckUpdate = {},
+            onUpdateAction = {},
         )
     }
 }

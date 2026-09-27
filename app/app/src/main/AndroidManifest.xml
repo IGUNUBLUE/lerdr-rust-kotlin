@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Self-update: hand a staged GitHub-release APK to the installer. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.CAMERA" />
@@ -44,8 +46,19 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="lerdr" android:host="agent" />
                 <data android:scheme="lerdr" android:host="agents" />
+                <data android:scheme="lerdr" android:host="settings" />
             </intent-filter>
         </activity>
+
+        <!-- Fires the install hand-off when a release-APK download
+             completes while the app process is dead. -->
+        <receiver
+            android:name=".update.UpdateDownloadReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.DOWNLOAD_COMPLETE" />
+            </intent-filter>
+        </receiver>
 
         <!-- Pins live relay sessions while the app is backgrounded.
              Started by AgentAttentionNotifier on first CONNECTED relay. -->

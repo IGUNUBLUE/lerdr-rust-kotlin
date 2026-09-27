@@ -15,6 +15,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lerdr.app.di.AppEntryPoint
+import com.lerdr.app.update.UpdatePhase
 import com.lerdr.core.designsystem.components.LerdrNavBadge
 import com.lerdr.core.designsystem.components.LerdrNavItem
 import com.lerdr.navigation.LerdrKey
@@ -32,6 +33,8 @@ import lerdr.core.store.agentNeedsResponse
 data class LerdrNavBadges(
     val needsYou: Int = 0,
     val computersAlert: Boolean = false,
+    /** A newer GitHub release is available or staged — dot on Settings. */
+    val updateAlert: Boolean = false,
 )
 
 /**
@@ -41,12 +44,16 @@ data class LerdrNavBadges(
 @Composable
 fun rememberLerdrNavBadges(): LerdrNavBadges {
     val appContext = LocalContext.current.applicationContext
-    val sessions = remember(appContext) {
+    val app = remember(appContext) {
         EntryPointAccessors.fromApplication(appContext, AppEntryPoint::class.java)
-            .sessionRepository()
     }
+    val sessions = remember(app) { app.sessionRepository() }
     val badges by remember(sessions) {
-        combine(sessions.agents, sessions.connections) { agents, connections ->
+        combine(
+            sessions.agents,
+            sessions.connections,
+            app.appUpdateManager().state,
+        ) { agents, connections, update ->
             LerdrNavBadges(
                 needsYou = agents.count {
                     agentNeedsResponse(it) || agentNeedsInspection(it)
@@ -54,6 +61,8 @@ fun rememberLerdrNavBadges(): LerdrNavBadges {
                 computersAlert = connections.values.any {
                     it.authRejected || it.status == RelayStatus.DISCONNECTED
                 },
+                updateAlert = update.phase == UpdatePhase.AVAILABLE ||
+                    update.phase == UpdatePhase.READY_TO_INSTALL,
             )
         }
     }.collectAsStateWithLifecycle(initialValue = LerdrNavBadges())
@@ -103,5 +112,6 @@ fun topLevelNavItems(
         unselectedIcon = Icons.Outlined.Settings,
         selected = selected is LerdrKey.Settings || selected is LerdrKey.RelayDetail,
         onClick = { onSelect(LerdrKey.Settings) },
+        badge = if (badges.updateAlert) LerdrNavBadge.Dot else LerdrNavBadge.None,
     ),
 )

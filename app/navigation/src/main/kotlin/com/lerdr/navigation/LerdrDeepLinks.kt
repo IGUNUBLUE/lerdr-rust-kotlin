@@ -25,6 +25,7 @@ object LerdrDeepLinks {
     const val HOST_PAIR = "pair"
     const val HOST_AGENT = "agent"
     const val HOST_AGENTS = "agents"
+    const val HOST_SETTINGS = "settings"
 
     /**
      * Resolve a URI string to its destination key, or null when the link is
@@ -40,6 +41,7 @@ object LerdrDeepLinks {
                     ?.takeIf(String::isNotEmpty)
                     ?.let(LerdrKey::AgentFeed)
                 HOST_AGENTS -> LerdrKey.Home
+                HOST_SETTINGS -> LerdrKey.Settings
                 else -> null
             }
         }
