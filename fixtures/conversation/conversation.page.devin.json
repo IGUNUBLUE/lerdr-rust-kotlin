@@ -1,0 +1,223 @@
+{
+  "format_version": 1,
+  "suite": "conversation.page.devin",
+  "source": {
+    "repo": "IGUNUBLUE/lerdr-rust-kotlin",
+    "commit": "9d5ea4d",
+    "package": "relay/crates/lerdr-coord/src/conversation",
+    "generator": "manual — Devin CLI writes ATIF documents at ~/.local/share/devin/cli/transcripts/<session>.json"
+  },
+  "notes": [
+    "devin transcripts are single ATIF JSON documents (schema_version ATIF-v1.7), not JSONL; the reader parses the whole file",
+    "entry.id is the ATIF step_id (string or number); next_cursor is the first entry id of the page",
+    "system steps (sysprompt/telemetry) are skipped; agent steps wire tool_calls to same-step observation.results via source_call_id",
+    "files[].jsonl_lines carries the whole document as a single line; append_jsonl_lines cannot model devin's rewrite-in-place update, so live-tail coverage lives in the browser subscription tests",
+    "env.\"HERDR_DEVIN_DATA_DIRS\" points the XDG-based root resolution at the materialized HOME"
+  ],
+  "vectors": [
+    {
+      "name": "basic-conversation",
+      "comment": "user + agent message + tool call with same-step observation output; system step skipped",
+      "agent": "devin",
+      "cwd": "/work",
+      "session_id": "amber-otter",
+      "env": {
+        "HERDR_DEVIN_DATA_DIRS": "{home}/.local/share/devin/cli"
+      },
+      "files": [
+        {
+          "path": ".local/share/devin/cli/transcripts/amber-otter.json",
+          "jsonl_lines": [
+            "{\"schema_version\":\"ATIF-v1.7\",\"session_id\":\"amber-otter\",\"agent\":{\"name\":\"devin\",\"version\":\"3000.11.3\",\"model_name\":\"SWE-2 Max\"},\"steps\":[{\"step_id\":\"1\",\"timestamp\":\"2026-09-26T13:31:31Z\",\"source\":\"system\",\"message\":\"You are Devin, an interactive command line agent from Cognition.\",\"extra\":{\"telemetry\":{\"source\":\"sysprompt\",\"operation\":\"normal\"}}},{\"step_id\":\"2\",\"timestamp\":\"2026-09-26T13:31:45Z\",\"source\":\"user\",\"message\":\"fix the flaky checkout test\",\"extra\":{\"telemetry\":{\"source\":\"user\",\"operation\":\"unknown\"}}},{\"step_id\":\"3\",\"timestamp\":\"2026-09-26T13:32:10Z\",\"source\":\"agent\",\"message\":\"I'll reproduce it first.\",\"model_name\":\"swe-2-max\",\"reasoning_content\":\"the test times out only under -race\",\"tool_calls\":[{\"tool_call_id\":\"call_abc123\",\"function_name\":\"exec\",\"arguments\":{\"command\":\"cargo test -p checkout --test flaky\",\"timeout\":30000}}],\"observation\":{\"results\":[{\"source_call_id\":\"call_abc123\",\"content\":\"test checkout::flaky ... FAILED after 3 retries\"}]},\"metrics\":{\"prompt_tokens\":1200,\"completion_tokens\":88}},{\"step_id\":\"4\",\"timestamp\":\"2026-09-26T13:33:02Z\",\"source\":\"agent\",\"message\":\"Found it — the retry loop drops the session cookie.\",\"model_name\":\"swe-2-max\"}]}"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "label": "full-read",
+          "available": true,
+          "total": 3,
+          "has_more": false,
+          "next_cursor": "2",
+          "expected_entries": [
+            {
+              "id": "2",
+              "timestamp": "2026-09-26T13:31:45Z",
+              "role": "user",
+              "text": "fix the flaky checkout test"
+            },
+            {
+              "id": "3",
+              "timestamp": "2026-09-26T13:32:10Z",
+              "role": "assistant",
+              "text": "I'll reproduce it first.",
+              "tools": [
+                {
+                  "id": "call_abc123",
+                  "name": "exec",
+                  "input": "{\"command\":\"cargo test -p checkout --test flaky\",\"timeout\":30000}",
+                  "output": "test checkout::flaky ... FAILED after 3 retries"
+                }
+              ]
+            },
+            {
+              "id": "4",
+              "timestamp": "2026-09-26T13:33:02Z",
+              "role": "assistant",
+              "text": "Found it — the retry loop drops the session cookie."
+            }
+          ]
+        },
+        {
+          "label": "cursor-before-step-3",
+          "before": "3",
+          "limit": 1,
+          "available": true,
+          "total": 3,
+          "has_more": false,
+          "next_cursor": "2",
+          "expected_entries": [
+            {
+              "id": "2",
+              "timestamp": "2026-09-26T13:31:45Z",
+              "role": "user",
+              "text": "fix the flaky checkout test"
+            }
+          ]
+        },
+        {
+          "label": "limit-one-tail",
+          "limit": 1,
+          "available": true,
+          "total": 3,
+          "has_more": true,
+          "next_cursor": "4",
+          "expected_entries": [
+            {
+              "id": "4",
+              "timestamp": "2026-09-26T13:33:02Z",
+              "role": "assistant",
+              "text": "Found it — the retry loop drops the session cookie."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "tool-only-step",
+      "comment": "an agent step with no message still surfaces its tool calls; a result without a matching call is dropped",
+      "agent": "devin",
+      "cwd": "/work",
+      "session_id": "brisk-falcon",
+      "env": {
+        "HERDR_DEVIN_DATA_DIRS": "{home}/.local/share/devin/cli"
+      },
+      "files": [
+        {
+          "path": ".local/share/devin/cli/transcripts/brisk-falcon.json",
+          "jsonl_lines": [
+            "{\"schema_version\":\"ATIF-v1.7\",\"session_id\":\"brisk-falcon\",\"agent\":{\"name\":\"devin\"},\"steps\":[{\"step_id\":\"1\",\"timestamp\":\"2026-09-26T10:00:00Z\",\"source\":\"agent\",\"tool_calls\":[{\"tool_call_id\":\"call_x1\",\"function_name\":\"read\",\"arguments\":{\"file_path\":\"/work/main.rs\"}}],\"observation\":{\"results\":[{\"source_call_id\":\"call_x1\",\"content\":\"fn main() {}\",\"is_error\":false},{\"source_call_id\":\"call_orphan\",\"content\":\"dropped\"}]}},{\"step_id\":\"2\",\"timestamp\":\"2026-09-26T10:00:05Z\",\"source\":\"agent\",\"tool_calls\":[{\"tool_call_id\":\"call_x2\",\"function_name\":\"exec\",\"arguments\":{\"command\":\"false\"}}],\"observation\":{\"results\":[{\"source_call_id\":\"call_x2\",\"content\":\"exit 1\",\"is_error\":true}]}}]}"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "label": "full-read",
+          "available": true,
+          "total": 2,
+          "has_more": false,
+          "next_cursor": "1",
+          "expected_entries": [
+            {
+              "id": "1",
+              "timestamp": "2026-09-26T10:00:00Z",
+              "role": "assistant",
+              "tools": [
+                {
+                  "id": "call_x1",
+                  "name": "read",
+                  "input": "{\"file_path\":\"/work/main.rs\"}",
+                  "output": "fn main() {}"
+                }
+              ]
+            },
+            {
+              "id": "2",
+              "timestamp": "2026-09-26T10:00:05Z",
+              "role": "assistant",
+              "tools": [
+                {
+                  "id": "call_x2",
+                  "name": "exec",
+                  "input": "{\"command\":\"false\"}",
+                  "output": "exit 1",
+                  "error": true
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "missing-session",
+      "comment": "no transcript under the resolved roots",
+      "agent": "devin",
+      "cwd": "/work",
+      "session_id": "ghost-lark",
+      "env": {
+        "HERDR_DEVIN_DATA_DIRS": "{home}/.local/share/devin/cli"
+      },
+      "steps": [
+        {
+          "label": "unavailable",
+          "available": false,
+          "reason_code": "invalid_session",
+          "total": 0
+        }
+      ]
+    },
+    {
+      "name": "corrupt-document",
+      "comment": "the file exists but is mid-write/not JSON — reports source_corrupt, not an empty page",
+      "agent": "devin",
+      "cwd": "/work",
+      "session_id": "broken-elk",
+      "env": {
+        "HERDR_DEVIN_DATA_DIRS": "{home}/.local/share/devin/cli"
+      },
+      "files": [
+        {
+          "path": ".local/share/devin/cli/transcripts/broken-elk.json",
+          "jsonl_lines": ["{\"schema_version\":\"ATIF-v1.7\",\"steps\":[{\"step_id\":"]
+        }
+      ],
+      "steps": [
+        {
+          "label": "unavailable",
+          "available": false,
+          "reason_code": "source_corrupt",
+          "total": 0
+        }
+      ]
+    },
+    {
+      "name": "unsafe-session-id",
+      "comment": "path-unsafe ids are rejected before touching the filesystem",
+      "agent": "devin",
+      "cwd": "/work",
+      "session_id": "../secrets",
+      "env": {
+        "HERDR_DEVIN_DATA_DIRS": "{home}/.local/share/devin/cli"
+      },
+      "steps": [
+        {
+          "label": "unavailable",
+          "available": false,
+          "reason_code": "invalid_session",
+          "total": 0
+        }
+      ]
+    }
+  ]
+}

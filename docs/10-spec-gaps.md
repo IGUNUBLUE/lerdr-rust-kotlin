@@ -326,12 +326,17 @@ none block Phase 1 continuation.
   removed — it pushed the back stack once per pane switch and crowded
   the bar; pane switching happens from the Agents list.
 - **Conversation history lands** — `internal/conversation` port:
-  provider roots (claude/codex/qoder/pi/omp/omo/opencode/hermes),
-  bounded tail/JSONL/sqlite reads behind strict containment
-  (canonicalized root prefix + `O_NOFOLLOW`), `ConversationBrowser`
+  provider roots (claude/codex/qoder/pi/omp/omo/opencode/hermes/devin),
+  bounded tail/JSONL/sqlite/ATIF-document reads behind strict
+  containment (canonicalized root prefix + `O_NOFOLLOW`), `ConversationBrowser`
   behind a thin action adapter with the predecessor's
-  `sameConversationTuple` post-read recheck. Fixture-verified: 9
-  suites, 34 vectors, 52 steps. Deliberate deltas: raw entry-id
+  `sameConversationTuple` post-read recheck. Devin is the first
+  document-format provider: ATIF `steps[]` from
+  `<XDG_DATA_HOME>/devin/cli/transcripts/<session>.json`, `step_id` as
+  the entry id, tool calls wired from same-step
+  `observation.results[]` via `source_call_id`, `system` steps dropped,
+  unparseable documents report `source_corrupt`. Fixture-verified: 10
+  suites, 39 vectors, 59 steps. Deliberate deltas: raw entry-id
   cursors instead of signed `hb1.` envelopes, no prepare/snapshot
   jobs.
 - **Shadow determinism harness** — `lerdr-shadow` provides a scripted WS
