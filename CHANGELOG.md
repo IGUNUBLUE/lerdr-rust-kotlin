@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 Releases are **pre-release / beta** — no compatibility guarantees yet.
 
+## [0.2.1] — 2026-09-28
+
+### Fixed
+
+- **QR pairing crashed on release builds** — R8 stripped the ML Kit
+  `*Registrar` constructors that `ComponentDiscovery` instantiates
+  reflectively, so `BarcodeScanning.getClient()` produced a scanner with
+  a null delegate and the first analysed frame NPE'd. Keep rules now
+  cover `com.google.mlkit.**` + `com.google.firebase.components.**`.
+
 ## [0.2.0] — 2026-09-28
 
 ### Added
