@@ -214,6 +214,17 @@ impl HerdRouterFactory {
         });
     }
 
+    /// `hub.RemoveDevice` push-side cleanup — drops a revoked device's
+    /// subscription/queue/policy rows; `None` wipes every device row
+    /// (`reset_devices` orphaned them all). Called from the session's
+    /// `devices_pruned` hook in the lerdr-relay binary.
+    pub fn prune_push_devices(&self, device_id: Option<&str>) -> Result<(), &'static str> {
+        match device_id {
+            Some(id) => self.shared.push.remove_device(id),
+            None => self.shared.push.remove_all_devices(),
+        }
+    }
+
     /// `Manager.Run` — the Web Push delivery worker: VAPID load-or-generate
     /// under the push dir (fails startup on a bad key file like the
     /// retired implementation), then the wake/tick drain loop until `cancel`.
