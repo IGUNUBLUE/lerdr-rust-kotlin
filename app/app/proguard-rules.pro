@@ -15,3 +15,12 @@
 -keepclasseswithmembernames class com.github.luben.zstd.** {
     native <methods>;
 }
+
+# ML Kit barcode scanning — ComponentDiscovery instantiates the
+# *Registrar classes named in manifest metadata reflectively; without
+# their no-arg constructors the barcode scanner client is built with a
+# null internal delegate and the first analysed frame NPEs inside
+# CameraX's ImageAnalysisAbstractAnalyzer. Keep names + members for the
+# mlkit surface and the firebase components it dispatches through.
+-keep class com.google.mlkit.** { *; }
+-keep class com.google.firebase.components.** { *; }
