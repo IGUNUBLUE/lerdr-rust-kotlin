@@ -66,6 +66,9 @@ import lerdr.core.data.DeviceRole
 import lerdr.core.model.HerdrFeatureStatus
 import lerdr.core.model.HerdrStatus
 
+/** Paired rows rendered before the "Show all" expander kicks in. */
+private const val COLLAPSED_DEVICE_COUNT = 4
+
 /**
  * Devices settings section — the the corresponding screen port. Rendered once
  * per connected relay by the orchestrator; builds its own [DevicesViewModel]
@@ -132,6 +135,7 @@ fun DevicesContent(
     var inviteOpen by rememberSaveable { mutableStateOf(false) }
     var resetOpen by rememberSaveable { mutableStateOf(false) }
     var forgetOpen by rememberSaveable { mutableStateOf(false) }
+    var showAllDevices by rememberSaveable { mutableStateOf(false) }
 
     val dateFormat = remember {
         DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
@@ -161,7 +165,10 @@ fun DevicesContent(
                 Column(Modifier.weight(1f)) {
                     Text("Devices", style = MaterialTheme.typography.titleSmall)
                     Text(
-                        uiState.relayLabel,
+                        listOfNotNull(
+                            uiState.relayLabel.takeIf { it.isNotEmpty() },
+                            if (uiState.connected) "connected" else "offline",
+                        ).joinToString(" · "),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -309,7 +316,16 @@ fun DevicesContent(
                     )
                 }
                 else -> Column {
-                    uiState.devices.forEach { device ->
+                    // Cap the visible list — paired devices accumulate
+                    // stale rows over time, and a 20-item list swallows
+                    // the sections below. The expander keeps every row
+                    // reachable without a separate screen.
+                    val visible = if (showAllDevices) {
+                        uiState.devices
+                    } else {
+                        uiState.devices.take(COLLAPSED_DEVICE_COUNT)
+                    }
+                    visible.forEach { device ->
                         DeviceRow(
                             device = device,
                             isCurrent = device.current ||
@@ -320,6 +336,20 @@ fun DevicesContent(
                             onRename = { renameTarget = device },
                             onRevoke = { revokeTarget = device },
                         )
+                    }
+                    if (uiState.devices.size > COLLAPSED_DEVICE_COUNT) {
+                        TextButton(
+                            onClick = { showAllDevices = !showAllDevices },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                if (showAllDevices) {
+                                    "Show fewer"
+                                } else {
+                                    "Show all ${uiState.devices.size} devices"
+                                },
+                            )
+                        }
                     }
                 }
             }

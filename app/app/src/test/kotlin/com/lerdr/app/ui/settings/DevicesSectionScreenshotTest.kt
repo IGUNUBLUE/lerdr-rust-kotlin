@@ -1,10 +1,16 @@
 package com.lerdr.app.ui.settings
 
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.unit.dp
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
@@ -108,6 +114,82 @@ class DevicesSectionScreenshotTest {
                 ),
             ),
         )
+    }
+
+    @Test
+    fun devices_collapsed_expander() {
+        // More than COLLAPSED_DEVICE_COUNT paired rows collapse behind a
+        // "Show all" affordance — the stale-device buildup that made the
+        // section page-height long.
+        content(
+            DevicesUiState(
+                relayLabel = "workstation",
+                connected = true,
+                canAdminister = true,
+                canInvite = true,
+                fetched = true,
+                currentDeviceId = "dev-1",
+                devices = listOf(
+                    device(
+                        "dev-1", "Pixel 8",
+                        role = DeviceRole.CONTROLLER,
+                        lastSeenAt = 1_772_445_600_000L,
+                        current = true,
+                    ),
+                    device("dev-2", "Kitchen tablet", lastSeenAt = 1_772_532_000_000L),
+                    device("dev-3", "Laptop browser", lastSeenAt = 1_772_359_200_000L),
+                    device("dev-4", "Old phone", lastSeenAt = 1_772_186_400_000L),
+                    device("dev-5", "Old phone", lastSeenAt = 1_771_926_400_000L),
+                    device("dev-6", "Old phone"),
+                    device("dev-7", "Old phone"),
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun devices_expander_reveals_all_rows() {
+        // Behavior, not pixels: the Robolectric viewport clips at ~470px,
+        // so expanded rows live below the fold — assert the semantics
+        // tree instead of capturing.
+        val devices = (1..7).map { i -> device("dev-$i", "Device $i") }
+        composeRule.setContent {
+            LerdrTheme {
+                // Scrollable host — the expander sits below the fold.
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                DevicesContent(
+                    uiState = DevicesUiState(
+                        relayLabel = "workstation",
+                        connected = true,
+                        canAdminister = true,
+                        canInvite = true,
+                        fetched = true,
+                        currentDeviceId = "dev-1",
+                        devices = devices,
+                    ),
+                    onRefresh = {},
+                    onRename = { _, _ -> },
+                    onRevoke = {},
+                    onInvite = { _, _ -> },
+                    onForgetCurrent = {},
+                    onReset = {},
+                    onInvitationCopied = {},
+                    onInvitationCopyFailed = {},
+                    onDismissInvitation = {},
+                    onDismissStatus = {},
+                    onCheckUpdate = {},
+                    onInstallUpdate = {},
+                    modifier = Modifier.padding(12.dp),
+                )
+                }
+            }
+        }
+        composeRule.onNodeWithText("Device 7").assertDoesNotExist()
+        composeRule.onNodeWithText("Show all 7 devices").performScrollTo().performClick()
+        composeRule.onNodeWithText("Device 7").performScrollTo().assertExists()
+        composeRule.onNodeWithText("Show fewer").performScrollTo().performClick()
+        composeRule.onNodeWithText("Device 7").assertDoesNotExist()
+        composeRule.onNodeWithText("Show all 7 devices").performScrollTo().assertExists()
     }
 
     @Test

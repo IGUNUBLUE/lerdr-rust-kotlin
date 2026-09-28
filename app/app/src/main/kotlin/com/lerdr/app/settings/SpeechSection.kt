@@ -18,8 +18,10 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ExposedDropdownMenuAnchorType
 import androidx.compose.material3.OutlinedTextField
@@ -33,9 +35,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lerdr.app.speech.SPEECH_LANGUAGES
@@ -100,8 +103,46 @@ fun SpeechSectionContent(
     modifier: Modifier = Modifier,
 ) {
     val spacing = LerdrTheme.spacing
-    Column(modifier = modifier.fillMaxWidth()) {
-        SpeechSectionHeader()
+    // Same section card as Push notifications / Devices: icon header row,
+    // then the controls — keeps the relay detail page's hierarchy uniform.
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        ),
+        shape = MaterialTheme.shapes.medium,
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(vertical = spacing.medium)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = spacing.medium),
+        ) {
+            Icon(
+                Icons.Default.RecordVoiceOver,
+                contentDescription = null,
+                tint = if (uiState.connected) {
+                    LerdrTheme.extendedColors.live
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            Spacer(Modifier.width(spacing.small))
+            Column(Modifier.weight(1f)) {
+                Text("Speech", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    listOfNotNull(
+                        uiState.relayLabel.takeIf { it.isNotEmpty() },
+                        if (uiState.connected) "connected" else "offline",
+                    ).joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
 
         // Row-owned toggle: Role.Switch announces "on/off" once and the
         // whole row is the touch target; the Switch renders state only.
@@ -122,16 +163,10 @@ fun SpeechSectionContent(
                         "screen is off.",
                 )
             },
-            leadingContent = {
-                Icon(
-                    Icons.Default.RecordVoiceOver,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            },
             trailingContent = {
                 Switch(checked = uiState.enabled, onCheckedChange = null)
             },
+            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
         )
 
         LanguagePicker(
@@ -193,7 +228,9 @@ fun SpeechSectionContent(
         }
 
         if (uiState.showCatalog) {
-            VoiceCatalogCard(
+            Spacer(Modifier.height(spacing.extraSmall))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            VoiceCatalog(
                 relayLabel = uiState.relayLabel,
                 catalog = uiState.catalog ?: SpeechCatalogUi(),
                 onInstallVoice = onInstallVoice,
@@ -201,26 +238,7 @@ fun SpeechSectionContent(
                 modifier = Modifier.padding(horizontal = spacing.medium),
             )
         }
-    }
-}
-
-/** Same header treatment as Settings' `SectionHeader` (private there). */
-@Composable
-private fun SpeechSectionHeader() {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = LerdrTheme.spacing.medium)
-            .padding(top = LerdrTheme.spacing.small),
-    ) {
-        Text(
-            "SPEECH",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.weight(1f),
-        )
+        }
     }
 }
 
@@ -291,11 +309,12 @@ private fun SpeechHint(
 }
 
 /**
- * `speechVoiceRelays` card — every offered language with its install state
- * and a Download/Remove action; the engine-absent notice rides on top.
+ * `speechVoiceRelays` subsection — every offered language with its install
+ * state and a Download/Remove action; the engine-absent notice rides on
+ * top. Rendered flat inside the section card, under a divider.
  */
 @Composable
-private fun VoiceCatalogCard(
+private fun VoiceCatalog(
     relayLabel: String,
     catalog: SpeechCatalogUi,
     onInstallVoice: (String) -> Unit,
@@ -303,65 +322,57 @@ private fun VoiceCatalogCard(
     modifier: Modifier = Modifier,
 ) {
     val spacing = LerdrTheme.spacing
-    Card(
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-        ),
-        shape = MaterialTheme.shapes.medium,
-        modifier = modifier.fillMaxWidth(),
-    ) {
-        Column(modifier = Modifier.padding(spacing.medium)) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        Text(
+            "Voices on $relayLabel" +
+                if (catalog.cacheDir.isNotEmpty()) {
+                    ", cached in ${catalog.cacheDir}"
+                } else {
+                    ""
+                },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (!catalog.engineInstalled) {
+            Spacer(Modifier.height(spacing.extraSmall))
             Text(
-                "Voices on $relayLabel" +
-                    if (catalog.cacheDir.isNotEmpty()) {
-                        ", cached in ${catalog.cacheDir}"
-                    } else {
-                        ""
-                    },
+                "The speech engine is not installed on $relayLabel yet. " +
+                    "The first download installs it too.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            if (!catalog.engineInstalled) {
-                Spacer(Modifier.height(spacing.extraSmall))
-                Text(
-                    "The speech engine is not installed on $relayLabel yet. " +
-                        "The first download installs it too.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Spacer(Modifier.height(spacing.small))
-            catalog.rows.forEach { row ->
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(row.label, style = MaterialTheme.typography.titleSmall)
+        }
+        Spacer(Modifier.height(spacing.small))
+        catalog.rows.forEach { row ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(row.label, style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        row.stateLabel,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(spacing.small))
+                if (row.installed) {
+                    TextButton(
+                        onClick = { onRemoveVoice(row.language) },
+                        enabled = !row.busy,
+                    ) {
                         Text(
-                            row.stateLabel,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            if (row.busy) "Removing…" else "Remove",
+                            color = MaterialTheme.colorScheme.error,
                         )
                     }
-                    Spacer(Modifier.width(spacing.small))
-                    if (row.installed) {
-                        TextButton(
-                            onClick = { onRemoveVoice(row.language) },
-                            enabled = !row.busy,
-                        ) {
-                            Text(
-                                if (row.busy) "Removing…" else "Remove",
-                                color = MaterialTheme.colorScheme.error,
-                            )
-                        }
-                    } else {
-                        TextButton(
-                            onClick = { onInstallVoice(row.language) },
-                            enabled = !row.busy,
-                        ) {
-                            Text(if (row.busy) "Downloading…" else "Download")
-                        }
+                } else {
+                    TextButton(
+                        onClick = { onInstallVoice(row.language) },
+                        enabled = !row.busy,
+                    ) {
+                        Text(if (row.busy) "Downloading…" else "Download")
                     }
                 }
             }

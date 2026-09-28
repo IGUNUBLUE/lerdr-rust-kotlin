@@ -18,6 +18,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -32,6 +33,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -127,16 +129,19 @@ fun RelayDetailContent(
         ) {
             item(key = "status") {
                 LerdrSettingsGroup {
+                    // Status-first: the toolbar already carries the relay's
+                    // label, so the headline leads with the connection state.
                     ListItem(
-                        headlineContent = { Text(relay?.label ?: "Unknown relay") },
+                        headlineContent = {
+                            Text(
+                                relay?.statusLabel
+                                    ?.replaceFirstChar { it.uppercase() }
+                                    ?: "Unknown",
+                            )
+                        },
                         supportingContent = {
                             Column {
-                                Text(
-                                    listOfNotNull(
-                                        relay?.origin,
-                                        relay?.statusLabel,
-                                    ).joinToString(" · "),
-                                )
+                                relay?.origin?.let { Text(it) }
                                 relay?.detailLabel
                                     ?.takeIf(String::isNotEmpty)
                                     ?.let { Text(it) }
@@ -155,6 +160,9 @@ fun RelayDetailContent(
                                 },
                             )
                         },
+                        colors = ListItemDefaults.colors(
+                            containerColor = Color.Transparent,
+                        ),
                     )
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(spacing.small),
@@ -179,7 +187,12 @@ fun RelayDetailContent(
             }
 
             item(key = "sections") {
-                Column(verticalArrangement = Arrangement.spacedBy(spacing.small)) {
+                // Same horizontal inset as LerdrSettingsGroup's own
+                // `spacing.medium` margin so every card shares one edge.
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(spacing.small),
+                    modifier = Modifier.padding(horizontal = spacing.medium),
+                ) {
                     sections()
                 }
             }
