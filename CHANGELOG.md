@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 Releases are **pre-release / beta** — no compatibility guarantees yet.
 
+## [0.2.2] — 2026-09-28
+
+### Fixed
+
+- **Pairing retry wedged after a rejection** — an `AuthRejected` (or
+  `Closed`) session stayed in the session map with its dial loop already
+  exited, so every later Connect replayed the stale verdict instantly
+  (zero wire traffic) until the app was force-stopped. `connect()` now
+  recreates a terminal session only while a pending `RelayInvitation`
+  exists — re-pairing writes one, a revoked credential keeps its record
+  and must not redial forever — and the session factory reads auth
+  records straight from the store instead of a lagging mirror. Verified
+  on-device: consumed-token rejection, then a re-armed invite redeems on
+  plain retry with no restart.
+
 ## [0.2.1] — 2026-09-28
 
 ### Fixed
