@@ -550,7 +550,7 @@ fi
 # This repository alone publishes the canonical Lerdr releases. A configured
 # repository override is treated as a fork and checked independently.
 case "$RELEASE_REPOSITORY" in
-    IGUNUBLUE/lerdr|"") noncanonical_repository=false ;;
+    IGUNUBLUE/lerdr-rust-kotlin|"") noncanonical_repository=false ;;
     *) noncanonical_repository=true ;;
 esac
 if [ -z "$INSTALL_TOKEN" ] && [ "$noncanonical_repository" = true ]; then

@@ -67,7 +67,7 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 const PUSH_TTL_SECONDS: u32 = 300;
 /// `Options{Subscriber}` — the retired implementation's `sub` claim (already an
 /// `https:` URL so webpush-go uses it verbatim, no `mailto:`).
-const VAPID_SUBJECT: &str = "https://github.com/IGUNUBLUE/lerdr";
+const VAPID_SUBJECT: &str = "https://github.com/IGUNUBLUE/lerdr-rust-kotlin";
 /// webpush-go's JWT lifetime — `time.Now().Add(12 * time.Hour)`
 /// (note: the `VapidExpiration` option is ignored upstream).
 const VAPID_EXPIRY: Duration = Duration::from_secs(12 * 60 * 60);

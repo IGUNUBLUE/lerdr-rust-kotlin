@@ -250,8 +250,8 @@ struct ReleaseMetadata {
     revision: String,
 }
 
-const CANONICAL_API: &str = "https://api.github.com/repos/IGUNUBLUE/lerdr";
-const CANONICAL_WEB: &str = "https://github.com/IGUNUBLUE/lerdr";
+const CANONICAL_API: &str = "https://api.github.com/repos/IGUNUBLUE/lerdr-rust-kotlin";
+const CANONICAL_WEB: &str = "https://github.com/IGUNUBLUE/lerdr-rust-kotlin";
 /// `updateHTTPTimeout` — the Go client's 15 s request bound.
 const HTTP_TIMEOUT_SECS: &str = "15";
 /// `io.LimitReader(response.Body, 2*1024*1024)`.
