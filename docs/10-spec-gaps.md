@@ -365,6 +365,12 @@ none block Phase 1 continuation.
   decrypted `push.Payload` through the same notifier/reducer slot ids as
   socket-driven cards. Relay endpoint validation is structural (any
   `https:` host, 443-or-default port) so self-hosted distributors work.
+  Push coverage gates the keep-alive pin: `shouldPin` (in
+  `PushSubscriptionManager`) arms `RelaySyncService` only while a relay
+  is connected AND no endpoint can reach a dead process — a subscribed
+  distributor leaves the app permanently unpinned, and the service's
+  own collect re-evaluates the same predicate so a START_STICKY restart
+  can't zombie-pin.
 - **`speak_text` on Android plays relay-synthesized WAV** — no on-device
   TTS fallback when the relay lacks `speech_synthesis` (capability-gated
   section hides; contract conformance).

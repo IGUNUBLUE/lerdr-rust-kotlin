@@ -7,15 +7,20 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.lerdr.app.di.AppScope
 import com.lerdr.app.notify.LerdrNotifier
+import com.lerdr.app.notify.RelaySyncService
 import com.lerdr.app.session.SessionRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -66,7 +71,14 @@ data class PushUiState(
     /** Available distributors while [PushStage.NEEDS_PICK]. */
     val distributors: List<String> = emptyList(),
     val error: String? = null,
-)
+) {
+    /**
+     * A relay acked the live endpoint — a push can reach this process
+     * even while dead, so the socket keep-alive pin is dispensable.
+     */
+    val deliversWhileDead: Boolean
+        get() = stage == PushStage.SUBSCRIBED && subscribedRelays.isNotEmpty()
+}
 
 /**
  * UnifiedPush ↔ relay bridge — the missing half of the push path.
@@ -87,8 +99,15 @@ data class PushUiState(
  * - `onUnregistered` (distributor removed/reset) sends `push_unsubscribe`
  *   and clears the store; `push_viewed_pane` suppression stays on the
  *   socket path, untouched.
+ * - Owns the [com.lerdr.app.notify.RelaySyncService] pin policy: the
+ *   foreground-service pin is the *fallback* background channel, needed
+ *   only while push cannot reach a dead process. Once a relay acks the
+ *   live endpoint ([PushUiState.deliversWhileDead]) the pin stays off —
+ *   no permanent FGS, no battery-warning quota burn; if the distributor
+ *   or subscription drops, the pin returns.
  */
 @Singleton
+@OptIn(FlowPreview::class)
 class PushSubscriptionManager @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val sessions: SessionRepository,
@@ -117,6 +136,7 @@ class PushSubscriptionManager @Inject constructor(
         sessions.onRelayRemoving = ::unsubscribeRelay
         scope.launch { ensureRegistered() }
         scope.launch { observeConnections() }
+        scope.launch { observePinPolicy() }
         scope.launch { loadStoredSubscription() }
     }
 
@@ -279,6 +299,42 @@ class PushSubscriptionManager @Inject constructor(
         }
     }
 
+    // ── keep-alive pin policy ─────────────────────────────────────────
+
+    /**
+     * Drives [RelaySyncService]: pin iff a relay is connected AND push
+     * cannot reach a dead process yet.
+     *
+     * Arms settle briefly: `push_subscribed` typically lands ~a few
+     * hundred ms after CONNECTED, so a short hold-off skips the
+     * pin-then-release flicker on every (re)connect — including the
+     * push-wake reconnects, where a foreground start would be refused
+     * anyway. Releases settle longer so CONNECTED↔CLOSED flaps don't
+     * bounce the pin. `pinned` stops a never-started service from being
+     * "stopped" (which would boot it just to tear it down).
+     */
+    private suspend fun observePinPolicy() {
+        var pinned = false
+        combine(sessions.connections, uiState) { connections, push ->
+            shouldPin(
+                connected = connections.values.any { it.status == RelayStatus.CONNECTED },
+                deliversWhileDead = push.deliversWhileDead,
+            )
+        }
+            .distinctUntilChanged()
+            .debounce { pin -> if (pin) PIN_ARM_DEBOUNCE_MS else PIN_RELEASE_DEBOUNCE_MS }
+            .distinctUntilChanged()
+            .collect { pin ->
+                if (pin) {
+                    pinned = true
+                    RelaySyncService.start(context)
+                } else if (pinned) {
+                    pinned = false
+                    RelaySyncService.stop(context)
+                }
+            }
+    }
+
     private suspend fun subscribeAllConnected() {
         val prefs = dataStore.data.first()
         val endpoint = prefs[KEY_ENDPOINT] ?: return
@@ -415,6 +471,23 @@ class PushSubscriptionManager @Inject constructor(
 
         private const val UNSUBSCRIBE_TIMEOUT_MS = 3_000L
         private const val REGISTER_RETRY_MS = 30_000L
+
+        /**
+         * Hold-off before pinning — covers the connect→`push_subscribed`
+         * round-trip so a subscribed client never arms the FGS at all.
+         */
+        private const val PIN_ARM_DEBOUNCE_MS = 1_500L
+
+        /** Settle window before releasing the pin (matches the notifier's old flap window). */
+        private const val PIN_RELEASE_DEBOUNCE_MS = 3_000L
+
+        /**
+         * The whole pin decision in one pure check — unit-testable, and
+         * shared by the running service's own stop condition so a
+         * system-restarted pin can't outlive push coverage.
+         */
+        internal fun shouldPin(connected: Boolean, deliversWhileDead: Boolean): Boolean =
+            connected && !deliversWhileDead
 
         private val KEY_ENDPOINT = stringPreferencesKey("push_up_endpoint")
         private val KEY_P256DH = stringPreferencesKey("push_up_p256dh")

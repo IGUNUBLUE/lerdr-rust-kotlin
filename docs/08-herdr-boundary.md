@@ -175,8 +175,9 @@ module inventory and dependencies.
   and lazy lists use stable keys.
 - Tests use fakes in `:core:testing` and frozen fixtures for
   protocol/terminal/crypto behavior.
-- The foreground service owns the long-lived connection and presents its
-  required persistent notification.
+- The foreground service pins the long-lived connection only while push
+  cannot reach a dead process; with a subscribed distributor the socket
+  is free to die with the process.
 - Screen ViewModels own screen state; transport and synchronized store state
   survive configuration and navigation changes.
 

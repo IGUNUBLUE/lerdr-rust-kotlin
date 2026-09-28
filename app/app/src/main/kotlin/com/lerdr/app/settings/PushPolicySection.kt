@@ -287,11 +287,25 @@ private fun DeliveryRow(
             if (subscribedHere) "Active via $via" else "Subscribing via $via…"
         PushStage.FAILED -> "Unavailable — ${push.error ?: "registration failed"}"
     }
+    val keepAlive = when {
+        push.deliversWhileDead ->
+            "Keep-alive service off — push delivers while Lerdr is closed."
+        connected ->
+            "Keep-alive service on — sockets stay live in background until push is active."
+        else -> null
+    }
     ListItem(
         headlineContent = { Text("Delivery") },
         supportingContent = {
             Column {
                 Text(supporting)
+                keepAlive?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 if (push.stage == PushStage.NEEDS_PICK) {
                     Spacer(Modifier.height(LerdrTheme.spacing.extraSmall))
                     FlowRow(
