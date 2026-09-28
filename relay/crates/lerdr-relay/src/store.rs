@@ -596,6 +596,20 @@ impl AuthState {
         None
     }
 
+    /// Load-time heal — a revoked record must not retain a secret, and the
+    /// correct shape is unambiguous (the tombstone is already dead): scrub
+    /// it instead of refusing the whole store. Returns the count healed.
+    fn scrub_revoked_secrets(&mut self) -> usize {
+        let mut healed = 0;
+        for record in &mut self.credentials {
+            if record.credential.revoked && !record.secret.is_empty() {
+                record.secret.clear();
+                healed += 1;
+            }
+        }
+        healed
+    }
+
     /// Persisted-schema sanity (a light `validateState`): unique ids,
     /// non-zero versions, decodable secrets, revoked rows carry no secret.
     fn validate(&self) -> Result<(), StoreError> {
@@ -951,9 +965,17 @@ impl FileAuthStore {
                 if raw.len() as u64 > MAX_STORE_BYTES {
                     return Err(StoreError::Invalid("device store too large".to_owned()));
                 }
-                let state: AuthState = serde_json::from_slice(&raw).map_err(StoreError::Json)?;
+                let mut state: AuthState =
+                    serde_json::from_slice(&raw).map_err(StoreError::Json)?;
                 if state.schema_version != STORE_SCHEMA_VERSION {
                     return Err(StoreError::Schema(state.schema_version));
+                }
+                let healed = state.scrub_revoked_secrets();
+                if healed > 0 {
+                    tracing::warn!(
+                        healed,
+                        "device store: scrubbed secrets retained by revoked credentials"
+                    );
                 }
                 state.validate()?;
                 state

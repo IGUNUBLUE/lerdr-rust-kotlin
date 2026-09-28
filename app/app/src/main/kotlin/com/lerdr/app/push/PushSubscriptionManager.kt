@@ -125,6 +125,12 @@ class PushSubscriptionManager @Inject constructor(
     private val sentSubscribe = mutableMapOf<String, String>()
     private val inFlightSubscribe = mutableSetOf<String>()
 
+    /** relayId → consecutive subscribe failures — drives the retry backoff. */
+    private val subscribeFailures = mutableMapOf<String, Int>()
+
+    /** relayId → pending job that re-arms the subscribe send. */
+    private val subscribeRetries = mutableMapOf<String, kotlinx.coroutines.Job>()
+
     @Volatile
     private var started = false
 
@@ -186,7 +192,12 @@ class PushSubscriptionManager @Inject constructor(
                     error = null,
                 )
             }
-            synchronized(stateLock) { sentSubscribe.clear() }
+            synchronized(stateLock) {
+                sentSubscribe.clear()
+                subscribeFailures.clear()
+                subscribeRetries.values.forEach { it.cancel() }
+                subscribeRetries.clear()
+            }
             subscribeAllConnected()
         }
     }
@@ -216,6 +227,11 @@ class PushSubscriptionManager @Inject constructor(
                 )
             }
             if (old != null) unsubscribeAllConnected(old)
+            synchronized(stateLock) {
+                subscribeFailures.clear()
+                subscribeRetries.values.forEach { it.cancel() }
+                subscribeRetries.clear()
+            }
             ensureRegistered()
         }
     }
@@ -373,7 +389,11 @@ class PushSubscriptionManager @Inject constructor(
                     clientId = pushClientId(),
                 ),
             )
-            synchronized(stateLock) { sentSubscribe[relayId] = endpoint }
+            synchronized(stateLock) {
+                sentSubscribe[relayId] = endpoint
+                subscribeFailures.remove(relayId)
+                subscribeRetries.remove(relayId)?.cancel()
+            }
             if (replaceEndpoint != null && replaceEndpoint != endpoint) {
                 dataStore.edit { it.remove(KEY_PREV_ENDPOINT) }
             }
@@ -389,7 +409,10 @@ class PushSubscriptionManager @Inject constructor(
         } catch (failure: Exception) {
             // Mark as sent too — connections emits on every status/latency
             // tick, so an unmarked failure would spin into a retry storm.
-            // A disconnect edge clears the mark and re-arms the subscribe.
+            // The mark alone cannot be the only re-arm path, though: a
+            // subscribe lost on a socket that dies during reconnect churn
+            // leaves the next CONNECTED emission seeing a live relay with
+            // the mark still set — nothing ever retries. Schedule one.
             synchronized(stateLock) { sentSubscribe[relayId] = endpoint }
             _uiState.update {
                 it.copy(
@@ -397,8 +420,39 @@ class PushSubscriptionManager @Inject constructor(
                     error = "relay refused the subscription",
                 )
             }
+            scheduleSubscribeRetry(relayId, endpoint)
         } finally {
             inFlightSubscribe.remove(relayId)
+        }
+    }
+
+    /**
+     * Re-arms a refused/lost `push_subscribe` after a backoff. The send
+     * stays marked (storm guard) until the delay elapses, then the mark
+     * lifts and [subscribeAllConnected] drives the retry — a further
+     * failure re-schedules with a longer delay. Stale jobs are inert:
+     * a rotated endpoint or cleared mark makes the guard return early.
+     */
+    private fun scheduleSubscribeRetry(relayId: String, endpoint: String) {
+        synchronized(stateLock) {
+            val attempt = (subscribeFailures[relayId] ?: 0) + 1
+            subscribeFailures[relayId] = attempt
+            subscribeRetries[relayId]?.cancel()
+            subscribeRetries[relayId] = scope.launch {
+                delay(subscribeRetryDelayMs(attempt))
+                synchronized(stateLock) {
+                    if (sentSubscribe[relayId] != endpoint) return@launch
+                    sentSubscribe.remove(relayId)
+                }
+                subscribeAllConnected()
+            }
+        }
+    }
+
+    private fun clearSubscribeRetry(relayId: String) {
+        synchronized(stateLock) {
+            subscribeFailures.remove(relayId)
+            subscribeRetries.remove(relayId)?.cancel()
         }
     }
 
@@ -421,6 +475,7 @@ class PushSubscriptionManager @Inject constructor(
             )
         }
         synchronized(stateLock) { sentSubscribe.remove(relayId) }
+        clearSubscribeRetry(relayId)
         _uiState.update { it.copy(subscribedRelays = it.subscribedRelays - relayId) }
     }
 
@@ -441,6 +496,7 @@ class PushSubscriptionManager @Inject constructor(
                     )
                 }
                 synchronized(stateLock) { sentSubscribe.remove(relayId) }
+                clearSubscribeRetry(relayId)
             }
         _uiState.update { it.copy(subscribedRelays = emptySet()) }
     }
@@ -471,6 +527,8 @@ class PushSubscriptionManager @Inject constructor(
 
         private const val UNSUBSCRIBE_TIMEOUT_MS = 3_000L
         private const val REGISTER_RETRY_MS = 30_000L
+        private const val SUBSCRIBE_RETRY_BASE_MS = 5_000L
+        private const val SUBSCRIBE_RETRY_MAX_MS = 300_000L
 
         /**
          * Hold-off before pinning — covers the connect→`push_subscribed`
@@ -488,6 +546,17 @@ class PushSubscriptionManager @Inject constructor(
          */
         internal fun shouldPin(connected: Boolean, deliversWhileDead: Boolean): Boolean =
             connected && !deliversWhileDead
+
+        /**
+         * Backoff for a refused/lost `push_subscribe`: 5 s doubling to a
+         * 5 min ceiling — fast enough to cover reconnect-churn losses,
+         * slow enough that a persistently refused endpoint costs a frame
+         * every few minutes until a disconnect edge or endpoint rotation
+         * clears it.
+         */
+        internal fun subscribeRetryDelayMs(attempt: Int): Long =
+            (SUBSCRIBE_RETRY_BASE_MS shl (attempt - 1).coerceIn(0, 6))
+                .coerceAtMost(SUBSCRIBE_RETRY_MAX_MS)
 
         private val KEY_ENDPOINT = stringPreferencesKey("push_up_endpoint")
         private val KEY_P256DH = stringPreferencesKey("push_up_p256dh")
