@@ -1,10 +1,9 @@
 # herdr-plugin.toml registers Lerdr with herdr as a plugin.
-# Install it with `herdr plugin install IGUNUBLUE/lerdr` once this repository
-# carries the release stream (herdr clones the repo, runs the [[build]]
-# pre-warm below after confirmation, and registers the entry points). While
-# the manifest lives under plugin/ use the subdirectory form:
-#   herdr plugin install <owner>/<repo>/plugin
-# or `herdr plugin link plugin/` from a local checkout.
+# Install it with the subdirectory form (the manifest lives under plugin/):
+#   herdr plugin install IGUNUBLUE/lerdr-rust-kotlin/plugin
+# (herdr clones the repo, runs the [[build]] pre-warm below after
+# confirmation, and registers the entry points), or use
+# `herdr plugin link plugin/` from a local checkout.
 #
 # Every install and upgrade schedules the Setup action after the build finishes,
 # so Tailscale status is visible immediately. Invoke it explicitly as a

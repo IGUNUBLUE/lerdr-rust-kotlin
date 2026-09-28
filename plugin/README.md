@@ -10,12 +10,11 @@ The manifest lives in this subdirectory, so install with the subdirectory
 form:
 
 ```sh
-herdr plugin install <owner>/<repo>/plugin
+herdr plugin install IGUNUBLUE/lerdr-rust-kotlin/plugin
 ```
 
-Once this repository becomes the canonical `lerdr` release stream this is
-simply `herdr plugin install IGUNUBLUE/lerdr` with the manifest at repo root —
-the doc 09 hard requirement. `plugin install` clones the repo, shows a
+This repository is the canonical Lerdr release stream. `plugin install`
+clones the repo, shows a
 preview, runs the `[[build]]` hook (`scripts/plugin-build.sh`), and registers
 the actions/panes/hooks. The build hook never compiles Rust: it resolves the
 manifest's `version` to tag `v<version>` on the release repository, downloads

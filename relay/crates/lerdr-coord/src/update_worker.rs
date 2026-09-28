@@ -52,11 +52,14 @@ const WORKER_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const PROCESS_TERM_GRACE: Duration = Duration::from_secs(2);
 /// `processWaitDelay` — post-KILL bound on `Wait` returning.
 const PROCESS_WAIT_DELAY: Duration = Duration::from_secs(4);
-/// `updateRepository` — the Herdr plugin id the worker installs.
-const UPDATE_REPOSITORY: &str = "IGUNUBLUE/lerdr";
+/// `updateRepository` — the Herdr plugin id the worker installs. The
+/// manifest lives under `plugin/`, hence the subdirectory install form
+/// (docs/09-plugin-distribution.md).
+const UPDATE_REPOSITORY: &str = "IGUNUBLUE/lerdr-rust-kotlin/plugin";
 
 /// `canonicalReleaseAssets`.
-const CANONICAL_RELEASE_ASSETS: &str = "https://github.com/IGUNUBLUE/lerdr/releases/download";
+const CANONICAL_RELEASE_ASSETS: &str =
+    "https://github.com/IGUNUBLUE/lerdr-rust-kotlin/releases/download";
 /// `maxChecksumBytes`.
 const MAX_CHECKSUM_BYTES: usize = 1024 * 1024;
 /// `maxArchiveBytes`.
@@ -652,8 +655,8 @@ fn sha256_file(path: &Path) -> String {
 
 // ── installPlugin + process control ─────────────────────────────────────
 
-/// `installPlugin` — `herdr plugin install IGUNUBLUE/lerdr --ref
-/// <lowercase revision> --yes` with both no-auto-setup spellings. Herdr
+/// `installPlugin` — `herdr plugin install IGUNUBLUE/lerdr-rust-kotlin/plugin
+/// --ref <lowercase revision> --yes` with both no-auto-setup spellings. Herdr
 /// performs the actual binary swap + restart.
 fn install_plugin(job: &UpdateJob, deadline: Instant) -> Result<(), String> {
     let mut command = Command::new(&job.herdr_bin);
@@ -1248,8 +1251,9 @@ mod tests {
     }
 
     /// `TestInstallPluginPinsExactCommitAndSuppressesSetup` — argv is
-    /// `plugin install IGUNUBLUE/lerdr --ref <lowercase revision> --yes`
-    /// and `LERDR_NO_AUTO_SETUP=1` lands in the child's environment.
+    /// `plugin install IGUNUBLUE/lerdr-rust-kotlin/plugin --ref
+    /// <lowercase revision> --yes` and `LERDR_NO_AUTO_SETUP=1` lands in the
+    /// child's environment.
     #[test]
     fn install_plugin_pins_exact_commit_and_suppresses_setup() {
         let root = tempfile::tempdir().unwrap();
@@ -1280,7 +1284,9 @@ mod tests {
         let args = std::fs::read_to_string(&args_path).unwrap();
         assert_eq!(
             args,
-            format!("plugin\ninstall\nIGUNUBLUE/lerdr\n--ref\n{NEXT_REVISION}\n--yes\n")
+            format!(
+                "plugin\ninstall\nIGUNUBLUE/lerdr-rust-kotlin/plugin\n--ref\n{NEXT_REVISION}\n--yes\n"
+            )
         );
         assert_eq!(std::fs::read_to_string(&env_path).unwrap(), "1\n");
         std::env::remove_var("LERDR_TEST_ARGS");
