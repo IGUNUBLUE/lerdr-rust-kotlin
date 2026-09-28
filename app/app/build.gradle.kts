@@ -88,6 +88,9 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.androidx.profileinstaller)
+    // UnifiedPush — distributor-agnostic Web Push transport (ntfy & co.);
+    // the connector owns RFC8291 decryption, the relay owns VAPID.
+    implementation("org.unifiedpush.android:connector:3.3.5")
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
 

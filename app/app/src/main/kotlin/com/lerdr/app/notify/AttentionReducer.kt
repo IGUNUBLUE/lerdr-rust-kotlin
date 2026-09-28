@@ -87,6 +87,9 @@ object NotifyIds {
     /** The "new Lerdr release available / downloaded" card. */
     const val APP_UPDATE = 40_002
 
+    /** Push "Send test" deliveries — one slot, latest wins. */
+    const val PUSH_TEST = 40_003
+
     private const val SPAN = 900_000
     private const val ATTENTION_BASE = 41_000_000
     private const val FINISHED_BASE = 42_000_000

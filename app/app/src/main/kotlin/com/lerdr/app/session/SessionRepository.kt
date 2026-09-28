@@ -1924,8 +1924,20 @@ class SessionRepository @Inject constructor(
         sessionFor(relayId)?.sendRaw("{\"type\":\"get_activity\",\"limit\":$ACTIVITY_LIMIT}")
     }
 
+    /**
+     * Best-effort seam before a relay is forgotten — set by
+     * `PushSubscriptionManager` to send `push_unsubscribe` while the
+     * socket still lives. Invoked inside [removeRelay]; failures are
+     * swallowed so a wedged session never blocks the unpair.
+     */
+    var onRelayRemoving: (suspend (String) -> Unit)? = null
+
     /** `removeRelay` — config + credentials + live session teardown. */
     suspend fun removeRelay(relayId: String) {
+        try {
+            onRelayRemoving?.invoke(relayId)
+        } catch (_: Exception) {
+        }
         relayRegistry.remove(relayId)
         credentialStore.remove(relayId)
     }

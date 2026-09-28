@@ -66,5 +66,16 @@
             android:name=".notify.RelaySyncService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- UnifiedPush endpoint — the connector's internal receiver binds
+             here to deliver endpoints/messages; never exported, the lib
+             enforces same-uid binding. -->
+        <service
+            android:name=".push.LerdrPushService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.PUSH_EVENT" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

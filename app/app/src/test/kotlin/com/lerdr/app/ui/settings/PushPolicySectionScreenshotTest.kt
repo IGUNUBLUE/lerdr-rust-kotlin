@@ -10,6 +10,8 @@ import androidx.compose.ui.test.onRoot
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.lerdr.app.TestApp
+import com.lerdr.app.push.PushStage
+import com.lerdr.app.push.PushUiState
 import com.lerdr.app.settings.PushPolicyContent
 import com.lerdr.app.settings.PushPolicyUi
 import com.lerdr.app.settings.PushPolicyUiState
@@ -42,13 +44,23 @@ class PushPolicySectionScreenshotTest {
         compareOptions = RoborazziOptions.CompareOptions(changeThreshold = 0.02f),
     )
 
-    private fun capture(state: PushPolicyUiState) {
+    private fun capture(
+        state: PushPolicyUiState,
+        push: PushUiState = PushUiState(
+            stage = PushStage.SUBSCRIBED,
+            distributor = "io.heckel.ntfy",
+            endpointHost = "ntfy.sh",
+            subscribedRelays = setOf("r1"),
+        ),
+    ) {
         composeRule.setContent {
             LerdrTheme {
                 Surface {
                     Column(modifier = Modifier.padding(LerdrTheme.spacing.medium)) {
                         PushPolicyContent(
                             uiState = state,
+                            push = push,
+                            onPickDistributor = {},
                             onCategoryChange = { _, _ -> },
                             onSettleMs = {},
                             onCooldownMs = {},
@@ -113,6 +125,39 @@ class PushPolicySectionScreenshotTest {
                 policyError =
                     "The relay did not save this notification policy (push_invalid_duration).",
                 test = PushTestUi.Rejected("rate_limited"),
+            ),
+        )
+    }
+
+    @Test
+    fun pushPolicy_noDistributor() {
+        capture(
+            PushPolicyUiState(
+                relayId = "r1",
+                relayLabel = "workstation",
+                connected = true,
+                capabilitiesKnown = true,
+                supported = true,
+                policy = PushPolicyUi(deviceId = "dev-1"),
+            ),
+            push = PushUiState(stage = PushStage.NO_DISTRIBUTOR),
+        )
+    }
+
+    @Test
+    fun pushPolicy_distributorPick() {
+        capture(
+            PushPolicyUiState(
+                relayId = "r1",
+                relayLabel = "workstation",
+                connected = true,
+                capabilitiesKnown = true,
+                supported = true,
+                policy = PushPolicyUi(deviceId = "dev-1"),
+            ),
+            push = PushUiState(
+                stage = PushStage.NEEDS_PICK,
+                distributors = listOf("io.heckel.ntfy", "org.unifiedpush.example"),
             ),
         )
     }

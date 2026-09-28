@@ -38,6 +38,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.PreviewLightDark
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.lerdr.app.push.PushStage
+import com.lerdr.app.push.PushUiState
 import com.lerdr.core.designsystem.components.liveRegionPolite
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import dagger.hilt.android.EntryPointAccessors
@@ -60,17 +62,21 @@ fun PushPolicySection(
     modifier: Modifier = Modifier,
 ) {
     val appContext = LocalContext.current.applicationContext
+    val entryPoint = EntryPointAccessors.fromApplication(
+        appContext,
+        SettingsEntryPoint::class.java,
+    )
     val viewModel: PushPolicyViewModel = viewModel(key = "push-policy:$relayId") {
-        val entryPoint = EntryPointAccessors.fromApplication(
-            appContext,
-            SettingsEntryPoint::class.java,
-        )
         PushPolicyViewModel(entryPoint.sessionRepository())
     }
     LaunchedEffect(relayId) { viewModel.bind(relayId) }
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val pushState by entryPoint.pushSubscriptionManager()
+        .uiState.collectAsStateWithLifecycle()
     PushPolicyContent(
         uiState = uiState,
+        push = pushState,
+        onPickDistributor = entryPoint.pushSubscriptionManager()::pickDistributor,
         onCategoryChange = viewModel::setCategory,
         onSettleMs = viewModel::setSettleMs,
         onCooldownMs = viewModel::setCooldownMs,
@@ -121,6 +127,8 @@ private val SNOOZE_DURATIONS = listOf(
 @Composable
 fun PushPolicyContent(
     uiState: PushPolicyUiState,
+    push: PushUiState,
+    onPickDistributor: (String) -> Unit,
     onCategoryChange: (String, Boolean) -> Unit,
     onSettleMs: (Long) -> Unit,
     onCooldownMs: (Long) -> Unit,
@@ -183,6 +191,13 @@ fun PushPolicyContent(
                 }
             }
 
+            DeliveryRow(
+                push = push,
+                relayId = uiState.relayId,
+                connected = uiState.connected,
+                onPickDistributor = onPickDistributor,
+            )
+
             val policy = uiState.policy
             val controlsEnabled = uiState.connected && uiState.supported && !uiState.saving
             when {
@@ -237,6 +252,65 @@ fun PushPolicyContent(
             }
         }
     }
+}
+
+/**
+ * UnifiedPush delivery state — one honest line per observed stage plus a
+ * distributor picker when the OS found several. Copy names the stage
+ * reached ("endpoint ready" ≠ "relay subscribed") so the row never
+ * overclaims delivery.
+ */
+@Composable
+private fun DeliveryRow(
+    push: PushUiState,
+    relayId: String,
+    connected: Boolean,
+    onPickDistributor: (String) -> Unit,
+) {
+    val via = listOfNotNull(
+        push.distributor?.substringAfterLast('.'),
+        push.endpointHost,
+    ).joinToString(" · ").ifEmpty { "distributor" }
+    val subscribedHere = relayId.isNotEmpty() && relayId in push.subscribedRelays
+    val supporting = when (push.stage) {
+        PushStage.NO_DISTRIBUTOR ->
+            "Off — install a UnifiedPush distributor (e.g. ntfy) for " +
+                "notifications while Lerdr is closed."
+        PushStage.NEEDS_PICK -> "Off — pick a push distributor below."
+        PushStage.REGISTERING -> "Registering with $via…"
+        PushStage.ENDPOINT_READY -> when {
+            subscribedHere -> "Active via $via"
+            connected -> "Endpoint via $via — subscribing…"
+            else -> "Endpoint via $via — subscribes when this relay connects"
+        }
+        PushStage.SUBSCRIBED ->
+            if (subscribedHere) "Active via $via" else "Subscribing via $via…"
+        PushStage.FAILED -> "Unavailable — ${push.error ?: "registration failed"}"
+    }
+    ListItem(
+        headlineContent = { Text("Delivery") },
+        supportingContent = {
+            Column {
+                Text(supporting)
+                if (push.stage == PushStage.NEEDS_PICK) {
+                    Spacer(Modifier.height(LerdrTheme.spacing.extraSmall))
+                    FlowRow(
+                        horizontalArrangement =
+                            Arrangement.spacedBy(LerdrTheme.spacing.small),
+                    ) {
+                        push.distributors.forEach { distributor ->
+                            FilterChip(
+                                selected = false,
+                                onClick = { onPickDistributor(distributor) },
+                                label = { Text(distributor.substringAfterLast('.')) },
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        colors = cardItemColors(),
+    )
 }
 
 /** The editable policy — categories, timings, snooze, updates, and the test row. */
@@ -499,6 +573,13 @@ private fun PushPolicyContentPreview() {
     LerdrTheme {
         Column(modifier = Modifier.padding(LerdrTheme.spacing.medium)) {
             PushPolicyContent(
+                push = PushUiState(
+                    stage = PushStage.SUBSCRIBED,
+                    distributor = "io.heckel.ntfy",
+                    endpointHost = "ntfy.sh",
+                    subscribedRelays = setOf("r1"),
+                ),
+                onPickDistributor = {},
                 uiState = PushPolicyUiState(
                     relayId = "r1",
                     relayLabel = "workstation",

@@ -2,6 +2,7 @@ package com.lerdr.app
 
 import android.app.Application
 import com.lerdr.app.di.AppScope
+import com.lerdr.app.push.PushSubscriptionManager
 import com.lerdr.app.security.LockState
 import com.lerdr.app.session.SessionRepository
 import com.lerdr.app.update.AppUpdateManager
@@ -26,8 +27,15 @@ class LerdrApp : Application() {
     @Inject
     lateinit var updates: AppUpdateManager
 
+    @Inject
+    lateinit var pushSubscriptions: PushSubscriptionManager
+
     override fun onCreate() {
         super.onCreate()
+        // UnifiedPush registration + relay subscribe-on-connect — no
+        // relay socket involved, so it runs even while the lock gate
+        // holds `sessions.start()` back.
+        pushSubscriptions.start()
         // Lerdr verifies before it connects at open: when the app
         // lock is armed, no relay socket opens until one verification
         // succeeds. With the setting off the gate opens immediately.
