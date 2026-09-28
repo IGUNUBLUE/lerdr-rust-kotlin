@@ -39,6 +39,12 @@ questions; record unspecified behavior in `docs/10-spec-gaps.md`.
   (`platforms;android-37.2`), minSdk 28, targetSdk 36.
 - Fixture consumers: `com.lerdr.core.testing.Fixtures` (Kotlin),
   `lerdr-fixture` crate (Rust).
+- Release minification: debug builds never exercise R8 — reflection-only
+  paths (manifest-metadata registrars like ML Kit's, dynamite loaders)
+  can crash exclusively in the signed/minified APK. Before tagging a
+  release, smoke-test `:app:assembleRelease` on a device for those flows
+  (QR scan is the known one; `mapping.txt` + `retrace` decode obfuscated
+  stack traces).
 - Emulator hygiene: always shut down any emulator you launched when the
   work is done (`adb -s <serial> emu kill`) — QEMU burns CPU/RAM on the
   shared box even when idle.
