@@ -851,6 +851,34 @@ async fn run(args: ServeArgs) -> Result<(), BoxError> {
         devices_of,
     );
     let factory = router_factory.clone().into_factory();
+    // Boot reconcile — push rows owned by a `device_id` with no live
+    // credential are orphaned state (a hand-edited tombstone or a crash
+    // between the revoke commit and the `devices_pruned` hook bypasses
+    // the runtime prune). Drop them before any session can subscribe.
+    {
+        let live: std::collections::HashSet<String> = store
+            .credentials()
+            .iter()
+            .filter(|c| !c.revoked)
+            .map(|c| c.device_id.clone())
+            .collect();
+        let pruned = router_factory.reconcile_push_devices(&live);
+        if !pruned.is_empty() {
+            tracing::warn!(?pruned, "pruned push state for dead devices");
+        }
+    }
+    // …and the same liveness probe lets a live device's `push_subscribe`
+    // inherit an endpoint whose registered owner died — endpoints are
+    // per app+distributor, so a re-paired device presents the same one.
+    router_factory.set_push_device_liveness({
+        let store = store.clone();
+        Arc::new(move |device_id: &str| {
+            store
+                .credentials()
+                .iter()
+                .any(|c| c.device_id == device_id && !c.revoked)
+        })
+    });
     let topology_for_snapshot = topology.clone();
     let topology_for_health = topology.clone();
     // `s.cfg.InstanceID` + `s.state.InventoryStatus` — the probe reads the
