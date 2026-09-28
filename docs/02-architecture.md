@@ -102,9 +102,12 @@ local notifications over Tailscale/LAN. This is self-hosted and needs no
 third-party notification provider; its cost is a persistent-service
 notification and OEM battery-management UX.
 
-**Decision: foreground service is the primary channel.** An FCM or
-UnifiedPush adapter remains a future opt-in product decision, not a required
-or currently shipped client path.
+**Decision: foreground service is the primary channel.** UnifiedPush is
+the shipped secondary channel — the app registers with whatever
+distributor the user installs (ntfy, NextPush, self-hosted), sends the
+issued endpoint/keys via `push_subscribe`, and the connector decrypts
+RFC8291 records on delivery. FCM remains a possible opt-in adapter for
+environments where it is acceptable.
 
 ## The seam strategy
 

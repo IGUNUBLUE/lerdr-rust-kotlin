@@ -264,10 +264,12 @@ none block Phase 1 continuation.
   for `push_test_device`/`push_viewed_pane` uses the session's credential
   device as the stand-in. Thread the enrolled device id through the
   session handshake when multi-device-per-credential matters.
-- **Web Push delivery is not implemented** — `push.rs` does policy,
-  subscription validation, signed refs, snooze, and queue bookkeeping;
-  actual webpush/vapid fan-out is absent (the app uses FCM/dataSync,
-  making this dormant unless a web client appears).
+- **Web Push delivery is live** — `push.rs`/`push_delivery.rs` own policy,
+  subscription validation, signed refs, snooze, queue bookkeeping, and
+  the VAPID + aes128gcm fan-out. The Android app subscribes through a
+  UnifiedPush distributor (ntfy & co.) and renders delivered records
+  locally; the FGS socket remains the primary channel while the app is
+  alive.
 - **Upload audit logging** — uploads require secret-aware attempt and result
   audit rows; this was completed in the later durable-audit work.
 - **Speech voice updates** — catalog changes must fan out to every active
@@ -356,9 +358,13 @@ none block Phase 1 continuation.
   event-hook`/`startup-hook` → verified UDP datagrams. Still unproven:
   `plugin-build.sh` end-to-end (needs a published GitHub release —
   Phase-4 release pipeline).
-- **App never sends a web-push subscription** — Android notifications
-  ride the socket + local notifier; `push_subscribe` UI is intentionally
-  absent. The relay path exists for future web/desktop clients.
+- **App sends a web-push subscription via UnifiedPush** — the UP
+  connector (vendored `org.unifiedpush.android:connector`) owns
+  endpoint+key generation and RFC8291 decryption; the app sends
+  `push_subscribe` on every relay CONNECTED edge and renders the
+  decrypted `push.Payload` through the same notifier/reducer slot ids as
+  socket-driven cards. Relay endpoint validation is structural (any
+  `https:` host, 443-or-default port) so self-hosted distributors work.
 - **`speak_text` on Android plays relay-synthesized WAV** — no on-device
   TTS fallback when the relay lacks `speech_synthesis` (capability-gated
   section hides; contract conformance).
