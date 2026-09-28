@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 Releases are **pre-release / beta** — no compatibility guarantees yet.
 
+## [0.2.0] — 2026-09-28
+
+### Added
+
+- **Real push delivery via UnifiedPush** — the app registers with any
+  installed UnifiedPush distributor (tested with ntfy), sends the
+  endpoint + Web Push keys to each relay via `push_subscribe`, and the
+  relay delivers RFC 8291-encrypted pushes signed with its VAPID key.
+  Pushes render through the same notification ids as socket events (no
+  duplicates), deep-link into the app (`lerdr://settings`,
+  `lerdr://agent`), and revive a dead process — delivery is verified to
+  survive `force-stop`. Settings shows the real subscription state per
+  stage and a "Send test" action.
+
+### Changed
+
+- **Keep-alive service is now the fallback, not the primary** — the
+  `dataSync` foreground service only pins while push cannot cover
+  dead-process delivery (no distributor, registration incomplete, or no
+  relay subscription acked). Once a relay acks the current endpoint the
+  pin is released, ending the persistent-foreground battery warning and
+  the Android 15+ `dataSync` quota exposure. Pin activation/release is
+  debounced (1.5s/3s) and a system-restarted service self-stops when
+  push already covers. Settings reports the keep-alive state honestly.
+- **Relay: push endpoint validation is structural** — any `https` host
+  on port 443/default is accepted (no userinfo, no fragment) instead of
+  a five-host allowlist, matching the UnifiedPush model where the user
+  picks the distributor.
+
 ## [0.0.5] — 2026-09-24
 
 ### Added
