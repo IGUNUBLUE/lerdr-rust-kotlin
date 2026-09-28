@@ -179,6 +179,58 @@ class SessionRepositoryTest {
     }
 
     @Test
+    fun `auth-rejected session resurrects when a fresh invitation lands`() = runTest {
+        val h = Harness(this, tmp.root)
+        // First pairing attempt: the relay rejects → terminal AuthRejected.
+        h.credentials.seed("r1", lerdr.core.data.RelayInvitation(ByteArray(32)))
+        h.repository.connect(h.endpoint)
+        val first = h.handle()
+        first.rejectAuth()
+        h.pump()
+
+        // Re-pair writes a fresh invitation before connect() — the dead
+        // session must be replaced, not replay the stale verdict.
+        h.credentials.seed("r1", lerdr.core.data.RelayInvitation(ByteArray(32) { (it + 1).toByte() }))
+        h.repository.connect(h.endpoint)
+
+        val second = h.handle()
+        assertThat(first.closed).isTrue()
+        assertThat(second).isNotSameInstanceAs(first)
+        assertThat(second.state.value)
+            .isNotInstanceOf(
+                lerdr.core.transport.RelaySession.SessionState.AuthRejected::class.java,
+            )
+    }
+
+    @Test
+    fun `auth-rejected session stays parked while only a credential record exists`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.credentials.seed(
+            "r1",
+            lerdr.core.data.RelayDeviceCredential(
+                id = "cred-1",
+                version = 1,
+                secret = java.util.Base64.getUrlEncoder().withoutPadding()
+                    .encodeToString(ByteArray(32) { it.toByte() }),
+                deviceId = "dev-1",
+                role = lerdr.core.data.DeviceRole.CONTROLLER,
+                locale = "en",
+                issuedAtEpochMs = 1_000L,
+            ),
+        )
+        h.repository.connect(h.endpoint)
+        val first = h.handle()
+        first.rejectAuth()
+        h.pump()
+
+        // Registry churn / stray connect must not redial a revoked
+        // credential forever — no resurrection without a pending invitation.
+        h.repository.connect(h.endpoint)
+        assertThat(h.handle()).isSameInstanceAs(first)
+        assertThat(first.closed).isFalse()
+    }
+
+    @Test
     fun `agents snapshot lands in AgentStore after inventory ready`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectReady()

@@ -38,6 +38,7 @@ import lerdr.core.data.DeviceRole
 import lerdr.core.data.RelayDeviceAuth
 import lerdr.core.data.RelayDeviceCredential
 import lerdr.core.data.RelayEndpoint
+import lerdr.core.data.RelayInvitation
 import lerdr.core.data.RelayRegistry
 import lerdr.core.data.fromFinish
 import lerdr.core.model.ActionReceiptMessage
@@ -527,12 +528,32 @@ class SessionRepository @Inject constructor(
      */
     fun connect(endpoint: RelayEndpoint) {
         synchronized(lock) {
-            if (sessions.containsKey(endpoint.id)) return
+            val existing = sessions[endpoint.id]
+            if (existing != null) {
+                // Terminal sessions (rejected auth, closed) never recover on
+                // their own — the dial loop already exited. One escape: a
+                // fresh pending invitation. Re-pairing writes it before
+                // connect(); a revoked credential keeps its record and must
+                // not redial forever.
+                val terminal = when (existing.handle.state.value) {
+                    is RelaySession.SessionState.AuthRejected,
+                    RelaySession.SessionState.Closed -> true
+                    else -> false
+                }
+                if (!terminal ||
+                    credentialStore.records.value[endpoint.id] !is RelayInvitation) {
+                    return
+                }
+                sessions.remove(endpoint.id)
+                teardown(existing)
+            }
             connectionStore.connect(endpoint.id, endpoint.label)
             val handle = sessionFactory.create(
                 url = socketUrl(endpoint),
                 scope = scope,
-                getAuthentication = { authByRelay[endpoint.id]?.toAuthentication() },
+                getAuthentication = {
+                    credentialStore.records.value[endpoint.id]?.toAuthentication()
+                },
                 onEnrolled = { auth, finish -> commitEnrollment(endpoint.id, auth, finish) },
             )
             val runtime = SessionRuntime(endpoint, handle)
