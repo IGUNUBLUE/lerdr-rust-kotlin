@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 Releases are **pre-release / beta** — no compatibility guarantees yet.
 
+## [0.2.3] — 2026-09-28
+
+### Fixed
+
+- **`push_subscribe` wedged after a failure during reconnect churn** —
+  a refused or lost subscribe marked the endpoint as sent, and only a
+  disconnect edge cleared the mark; a request dying on a socket
+  mid-reconnect left every later CONNECTED emission seeing a live relay
+  with the mark still set, so the subscription never retried until
+  process restart (observed live: the phone stayed "relay refused" with
+  the keep-alive FGS pinned after a relay restart). Failed sends now
+  re-arm on an exponential backoff (5 s doubling, 5 min ceiling);
+  success, endpoint rotation, unregistration and unsubscribe paths
+  cancel pending retries.
+- **Orphaned push state fenced re-paired devices** — an endpoint row
+  whose owning credential died outside the wire path (hand-edited
+  tombstone, crash between revoke commit and prune hook) kept the
+  endpoint bound to a dead device id, and UnifiedPush endpoints are
+  per app+distributor so the re-paired device inherited the fenced
+  endpoint and ate `push_subscription_device_mismatch`. The relay now
+  reconciles device-keyed push state against live credentials at boot
+  and rebinds dead-owned endpoints on subscribe; a live owner still
+  fences.
+- **Hand-edited revoked tombstones crash-looped the relay** — a revoked
+  record retaining a secret hard-failed store validation; since the
+  tombstone is already dead the correct shape is unambiguous, so load
+  now scrubs the secret, warns, and persists instead of refusing to
+  boot. Other violations stay fatal.
+
 ## [0.2.2] — 2026-09-28
 
 ### Fixed
