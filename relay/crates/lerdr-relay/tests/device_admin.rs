@@ -22,6 +22,7 @@ use lerdr_relay::session::{
 };
 use lerdr_relay::store::{
     FileAuthStore, Invitation, MemoryAuthStore, BOOTSTRAP_INVITATION_ID, INVITATION_LIFETIME_MS,
+    STORE_FILENAME,
 };
 use support::*;
 use tokio_util::sync::CancellationToken;
@@ -882,4 +883,47 @@ fn store_reset_wipes_and_rearms_bootstrap() {
     DeviceAuthStore::reset_devices(&plain, None, "en").expect("wipe-only reset");
     assert!(plain.credentials().is_empty());
     assert!(plain.invitation().is_none());
+}
+
+#[test]
+fn store_open_heals_revoked_rows_retaining_secrets() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = FileAuthStore::open(dir.path()).expect("open store");
+    store
+        .add_credential(
+            credential("device-1", "cred-1", Role::Controller),
+            b64().encode([7u8; 32]),
+        )
+        .unwrap();
+    store
+        .add_credential(
+            credential("device-2", "cred-2", Role::Reader),
+            b64().encode([9u8; 32]),
+        )
+        .unwrap();
+    store.revoke_device("cred-2").expect("revoke");
+    drop(store);
+
+    // A hand-edited tombstone that kept its secret — the shape that used to
+    // wedge `open` into a start-up crash loop.
+    let path = dir.path().join(STORE_FILENAME);
+    let mut doc: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    doc["credentials"][1]["secret"] = serde_json::Value::String(b64().encode([9u8; 32]));
+    std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+
+    let reopened = FileAuthStore::open(dir.path()).expect("healed reopen");
+    let creds = reopened.credentials();
+    assert_eq!(creds.len(), 2);
+    assert!(
+        creds
+            .iter()
+            .find(|c| c.credential_id == "cred-2")
+            .unwrap()
+            .revoked
+    );
+
+    // The heal persisted — the on-disk tombstone no longer carries a secret.
+    let healed: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(healed["credentials"][1].get("secret").is_none());
 }
