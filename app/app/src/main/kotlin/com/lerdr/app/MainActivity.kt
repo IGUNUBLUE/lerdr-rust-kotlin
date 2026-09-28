@@ -5,8 +5,13 @@ import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.fragment.app.FragmentActivity
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
 import androidx.navigation3.runtime.EntryProviderScope
 import com.lerdr.app.activity.ActivityScreen
 import com.lerdr.app.computers.ComputersScreen
@@ -73,8 +78,18 @@ class MainActivity : FragmentActivity() {
                 // App-lock gate — Lerdr "verifies before it will
                 // connect at open"; locked content is never composed.
                 LockGate {
-                    LerdrNavDisplay(navigator = navigator) {
-                        lerdrEntries(navigator)
+                    // Opaque backdrop behind NavDisplay: the tab-switch
+                    // fade-through and shared-axis specs briefly leave both
+                    // scenes translucent, so without this the dip lands on
+                    // the window's black background and reads as a flash.
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.background),
+                    ) {
+                        LerdrNavDisplay(navigator = navigator) {
+                            lerdrEntries(navigator)
+                        }
                     }
                 }
             }
