@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
 import androidx.core.app.ServiceCompat
+import com.lerdr.app.push.PushSubscriptionManager
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
@@ -27,13 +28,16 @@ import lerdr.core.store.RelayStatus
  * sync work of its own, it only keeps the process eligible to keep the
  * websockets connected while the app is backgrounded).
  *
- * Lifecycle contract (driven by [AgentAttentionNotifier]):
- * started when the first relay reports [RelayStatus.CONNECTED], stopped
- * when none are connected. The ongoing notification is a one-line
- * `N relays · M agents` rollup on the low `service` channel.
+ * Lifecycle contract (driven by `PushSubscriptionManager`'s pin policy):
+ * started when a relay is CONNECTED **and** no push endpoint can reach a
+ * dead process yet — the pin is the fallback channel, not the default.
+ * A subscribed UnifiedPush endpoint makes the process free to die:
+ * distributor push wakes it back up. The ongoing notification is a
+ * one-line `N relays · M agents` rollup on the low `service` channel.
  *
- * `onTaskRemoved` re-arms the pin: swiping the task away kills the task,
- * not the process, and sessions keep running — so the pin must too.
+ * `onTaskRemoved` re-arms the pin — but only while push can't cover
+ * dead-process delivery; a subscribed push channel means task removal
+ * should leave the process (and the pin) free to die.
  */
 @AndroidEntryPoint
 class RelaySyncService : Service() {
@@ -46,6 +50,9 @@ class RelaySyncService : Service() {
 
     @Inject
     lateinit var notifier: LerdrNotifier
+
+    @Inject
+    lateinit var pushSubscriptions: PushSubscriptionManager
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -73,21 +80,34 @@ class RelaySyncService : Service() {
             stopSelf()
             return
         }
-        // Keep the rollup honest as sessions gain/lose agents and relays.
+        // Keep the rollup honest — and re-evaluate the pin predicate
+        // continuously: a system-restarted service (START_STICKY) must
+        // not outlive push coverage just because the policy collector
+        // in this fresh process never started it.
         serviceScope.launch {
-            combine(agentStore.agents, connectionStore.connections) { agents, connections ->
-                agents.size to connections.values.count {
-                    it.status == RelayStatus.CONNECTED
-                }
+            combine(
+                agentStore.agents,
+                connectionStore.connections,
+                pushSubscriptions.uiState,
+            ) { agents, connections, push ->
+                Triple(
+                    agents.size,
+                    connections.values.count { it.status == RelayStatus.CONNECTED },
+                    push.deliversWhileDead,
+                )
             }
                 .distinctUntilChanged()
-                // A zero must settle before it can self-stop — the notifier
-                // debounces the same flap window before sending ACTION_STOP.
-                .debounce { (_, connected) -> if (connected == 0) STOP_DEBOUNCE_MS else 0L }
-                .collect { (agentCount, connected) ->
-                    if (connected == 0) {
-                        // Safety net — the notifier also stops us, but a
-                        // stale pin must never outlive its last session.
+                // A stop must settle before it can self-stop — the pin
+                // policy debounces the same flap window on its side.
+                .debounce { (_, connected, delivers) ->
+                    if (PushSubscriptionManager.shouldPin(connected > 0, delivers)) {
+                        0L
+                    } else {
+                        STOP_DEBOUNCE_MS
+                    }
+                }
+                .collect { (agentCount, connected, delivers) ->
+                    if (!PushSubscriptionManager.shouldPin(connected > 0, delivers)) {
                         stopSelf()
                     } else {
                         notifier.updateServiceNotification(agentCount, connected)
@@ -109,7 +129,10 @@ class RelaySyncService : Service() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        start(this)
+        // Push covers dead-process delivery — the user's swipe should
+        // leave us unpinned (the pin-policy collector stops or never
+        // started us); without it, sessions keep running so re-arm.
+        if (!pushSubscriptions.uiState.value.deliversWhileDead) start(this)
     }
 
     override fun onDestroy() {

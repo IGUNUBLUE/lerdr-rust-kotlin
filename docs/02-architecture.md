@@ -97,17 +97,20 @@ app/
 
 ## Push notifications on a native app — decision
 
-The Android app uses a foreground service holding the E2EE socket to raise
-local notifications over Tailscale/LAN. This is self-hosted and needs no
-third-party notification provider; its cost is a persistent-service
-notification and OEM battery-management UX.
+The Android app holds the E2EE socket while the process lives and raises
+local notifications over Tailscale/LAN — self-hosted, no third-party
+provider. For dead-process delivery the app ships UnifiedPush: it
+registers with whatever distributor the user installs (ntfy, NextPush,
+self-hosted), sends the issued endpoint/keys via `push_subscribe`, and
+the connector decrypts RFC8291 records on delivery.
 
-**Decision: foreground service is the primary channel.** UnifiedPush is
-the shipped secondary channel — the app registers with whatever
-distributor the user installs (ntfy, NextPush, self-hosted), sends the
-issued endpoint/keys via `push_subscribe`, and the connector decrypts
-RFC8291 records on delivery. FCM remains a possible opt-in adapter for
-environments where it is acceptable.
+**Decision: UnifiedPush is the background channel; the foreground
+service is the fallback.** Once a relay acks the live endpoint, push
+reaches a dead process — so the `dataSync` pin stays off entirely (no
+persistent-service notification, no battery-warning quota). Before the
+first ack, or with no distributor installed, the pin still runs so the
+socket keeps carrying attention. FCM remains a possible opt-in adapter
+for environments where it is acceptable.
 
 ## The seam strategy
 
