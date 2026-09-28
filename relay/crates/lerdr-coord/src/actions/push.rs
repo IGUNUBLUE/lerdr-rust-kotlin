@@ -778,8 +778,11 @@ struct FileSubscriptionInner {
     keys: SubscriptionKeys,
 }
 
-/// `validPushEndpoint` — the allowlist of Web Push service hosts.
-/// HTTPS only, no userinfo, no fragment, no non-443 port.
+/// `validPushEndpoint` — structural endpoint validation. HTTPS only,
+/// non-empty host, no userinfo, no fragment, no non-443 port. Any host
+/// is allowed: the endpoint comes from an authenticated paired device
+/// and the relay only POSTs opaque aes128gcm records to it, so
+/// UnifiedPush/self-hosted distributors (ntfy & co.) work.
 fn valid_push_endpoint(raw: &str) -> bool {
     let Ok(endpoint) = url::Url::parse(raw) else {
         return false;
@@ -810,15 +813,7 @@ fn valid_push_endpoint(raw: &str) -> bool {
     if endpoint.port().is_some_and(|p| p != 443) {
         return false;
     }
-    let host = host.trim_end_matches('.').to_lowercase();
-    match host.as_str() {
-        "fcm.googleapis.com"
-        | "android.googleapis.com"
-        | "updates.push.services.mozilla.com"
-        | "push.services.mozilla.com"
-        | "web.push.apple.com" => true,
-        _ => host == "notify.windows.com" || host.ends_with(".notify.windows.com"),
-    }
+    true
 }
 
 /// `push.PushEvent` — one queued notification; serializes into
@@ -3438,12 +3433,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn subscribe_accepts_arbitrary_https_endpoint() {
+        // UnifiedPush distributors and self-hosted push services: any
+        // https host is valid — only the URL structure is enforced.
+        let push = Push::default();
+        let ctx = test_context(push.clone(), "client-1");
+        let frames = subscribe(
+            ctx,
+            "r",
+            "a",
+            &inbound(serde_json::json!({
+                "subscription": valid_sub("https://ntfy.example.test/upTOKEN"),
+            })),
+        )
+        .await;
+        let Some(Outbound::PushSubscribed(m)) = frames.first() else {
+            panic!("expected push_subscribed");
+        };
+        assert_eq!(m.ok, Some(true));
+        assert_eq!(push.subscriptions().len(), 1);
+    }
+
+    #[tokio::test]
     async fn subscribe_rejects_disallowed_and_malformed() {
         let ctx = test_context(Push::default(), "client-1");
         for sub in [
             serde_json::json!("not-an-object"),
-            serde_json::json!({"endpoint": "https://internal.example.test/push"}),
-            serde_json::json!({"endpoint": "https://fcm.googleapis.com/x"}), // no keys
+            serde_json::json!({"endpoint": "https://push.example.test/x"}), // no keys
+            // Structural rejections — the endpoint may live on any host,
+            // but the URL itself must be clean.
+            valid_sub("http://push.example.test/x"),
+            valid_sub("https://push.example.test:8443/x"),
+            valid_sub("https://user@push.example.test/x"),
+            valid_sub("https://push.example.test/x#frag"),
+            valid_sub("not-a-url"),
         ] {
             let frames = subscribe(
                 ctx.clone(),
