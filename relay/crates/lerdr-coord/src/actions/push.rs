@@ -61,7 +61,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
@@ -1269,10 +1269,16 @@ impl State {
 /// policy, subscriptions, snooze, viewed-pane ledger, reference
 /// signer, delivery queue bookkeeping). `wake` is `m.wake` — the
 /// buffered (single-permit) signal that kicks the delivery worker.
+/// `device_id` liveness probe — the binary wires it to the credential
+/// store once at startup; unset (tests, `Push::default`) keeps the
+/// strict endpoint/device-mismatch refusal.
+type DeviceLive = dyn Fn(&str) -> bool + Send + Sync;
+
 #[derive(Clone)]
 pub(crate) struct Push {
     inner: Arc<Mutex<State>>,
     wake: Arc<Notify>,
+    device_live: Arc<OnceLock<Arc<DeviceLive>>>,
 }
 
 impl Default for Push {
@@ -1282,6 +1288,7 @@ impl Default for Push {
         Push {
             inner: Arc::new(Mutex::new(State::in_memory())),
             wake: Arc::new(Notify::new()),
+            device_live: Arc::new(OnceLock::new()),
         }
     }
 }
@@ -1327,6 +1334,7 @@ impl Push {
         Ok(Push {
             inner: Arc::new(Mutex::new(state)),
             wake: Arc::new(Notify::new()),
+            device_live: Arc::new(OnceLock::new()),
         })
     }
 
@@ -1342,6 +1350,71 @@ impl Push {
     #[allow(dead_code)] // read by tests; the delivery worker port uses it
     pub(crate) fn subscriptions(&self) -> Vec<Subscription> {
         self.lock().subscriptions.clone()
+    }
+
+    /// Wire the credential-liveness probe once at startup — the auth
+    /// store reports whether `device_id` still holds a live credential.
+    pub(crate) fn set_device_liveness(&self, probe: Arc<DeviceLive>) {
+        let _ = self.device_live.set(probe);
+    }
+
+    /// The endpoint's registered owner only fences the row while it is
+    /// alive: with a probe wired, a dead owner (revoked or absent from
+    /// the credential store) yields to the subscribing device.
+    fn owner_rebindable(&self, device_id: &str) -> bool {
+        self.device_live
+            .get()
+            .is_some_and(|probe| !probe(device_id))
+    }
+
+    /// Boot-time reconcile — every device-keyed row whose `device_id`
+    /// has no live credential is orphaned state (a hand-edited tombstone
+    /// or a crash between the revoke commit and the `devices_pruned`
+    /// hook bypasses the runtime prune). Returns the pruned ids for the
+    /// startup log.
+    pub(crate) fn reconcile_devices(&self, live: &HashSet<String>) -> Vec<String> {
+        let orphans: Vec<String> = {
+            let state = self.lock();
+            let mut ids: HashSet<&str> = HashSet::new();
+            ids.extend(state.subscriptions.iter().map(|s| s.device_id.as_str()));
+            ids.extend(state.policies.keys().map(String::as_str));
+            ids.extend(state.viewed_panes.keys().map(String::as_str));
+            ids.extend(state.test_last.keys().map(String::as_str));
+            ids.extend(
+                state
+                    .entries
+                    .values()
+                    .map(|e| e.subscription.device_id.as_str()),
+            );
+            ids.extend(
+                state
+                    .delivered
+                    .values()
+                    .map(|r| r.subscription.device_id.as_str()),
+            );
+            ids.extend(state.active.iter().map(|k| k.device_id.as_str()));
+            ids.extend(state.retracting.iter().map(|k| k.device_id.as_str()));
+            ids.extend(
+                state
+                    .last_accepted
+                    .keys()
+                    .map(|slot| slot.split('\x00').next().unwrap_or_default()),
+            );
+            ids.into_iter()
+                .filter(|id| !live.contains(*id))
+                .map(str::to_owned)
+                .collect()
+        };
+        let mut pruned = Vec::new();
+        for id in orphans {
+            match self.remove_device(&id) {
+                Ok(()) => pruned.push(id),
+                Err(code) => {
+                    tracing::warn!(device_id = %id, code, "push reconcile prune failed")
+                }
+            }
+        }
+        pruned
     }
 
     /// `Manager.Policy` — stored policy or the default, with an
@@ -1435,6 +1508,23 @@ impl Push {
             return Err("push_subscription_endpoint_not_allowed");
         }
         let mut state = self.lock();
+        // An endpoint row owned by a dead device is orphaned state — a
+        // manual tombstone or a crash between the revoke commit and the
+        // prune hook leaves it behind, and endpoints are per
+        // app+distributor (UnifiedPush), so a re-paired device
+        // legitimately inherits the endpoint. Evict the dead owner's
+        // rows wholesale, then subscribe.
+        let dead_owner = state
+            .subscriptions
+            .iter()
+            .find(|s| s.endpoint == sub.endpoint && s.device_id != sub.device_id)
+            .filter(|s| self.owner_rebindable(&s.device_id))
+            .map(|s| s.device_id.clone());
+        if let Some(dead) = dead_owner {
+            drop(state);
+            self.remove_device(&dead)?;
+            state = self.lock();
+        }
         let replace: HashSet<&str> = replace_endpoints
             .iter()
             .filter(|e| !e.is_empty())
@@ -1558,6 +1648,7 @@ impl Push {
         }
         state.viewed_panes.remove(device_id);
         state.policies.remove(device_id);
+        state.test_last.remove(device_id);
         let prefix = format!("{device_id}\x00");
         state
             .last_accepted
@@ -1587,6 +1678,7 @@ impl Push {
         }
         state.viewed_panes.clear();
         state.policies.clear();
+        state.test_last.clear();
         state.last_accepted.clear();
         persist_policies(&state)
     }
@@ -3606,6 +3698,98 @@ mod tests {
         assert!(push.lock().entries.is_empty());
         assert!(push.lock().delivered.is_empty());
         assert!(push.lock().policies.is_empty());
+    }
+
+    #[tokio::test]
+    async fn subscribe_rebinds_endpoint_from_dead_device() {
+        // The liveness probe wires `subscribe` to the credential store:
+        // a row owned by a device with no live credential is orphaned
+        // state — the new device inherits the endpoint (UnifiedPush
+        // endpoints are per app+distributor, so a re-pair presents the
+        // same one) instead of eating `push_subscription_device_mismatch`.
+        let push = Push::default();
+        push.set_device_liveness(Arc::new(|id| id != "dead-device"));
+        let mut dead = test_context(push.clone(), "client-1");
+        dead.device_id = "dead-device".to_owned();
+        let frames = subscribe(
+            dead,
+            "r",
+            "a",
+            &inbound(serde_json::json!({
+                "subscription": valid_sub("https://push.example.test/up"),
+            })),
+        )
+        .await;
+        assert!(matches!(frames.first(), Some(Outbound::PushSubscribed(m)) if m.ok == Some(true)));
+
+        let mut live = test_context(push.clone(), "client-2");
+        live.device_id = "live-device".to_owned();
+        let frames = subscribe(
+            live,
+            "r",
+            "a",
+            &inbound(serde_json::json!({
+                "subscription": valid_sub("https://push.example.test/up"),
+            })),
+        )
+        .await;
+        assert!(matches!(frames.first(), Some(Outbound::PushSubscribed(m)) if m.ok == Some(true)));
+        let subs = push.subscriptions();
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0].device_id, "live-device");
+
+        // A *live* owner still fences — a third device cannot steal the
+        // row the rebind just created.
+        let mut third = test_context(push.clone(), "client-3");
+        third.device_id = "third-device".to_owned();
+        let frames = subscribe(
+            third,
+            "r",
+            "a",
+            &inbound(serde_json::json!({
+                "subscription": valid_sub("https://push.example.test/up"),
+            })),
+        )
+        .await;
+        assert!(matches!(frames.first(), Some(Outbound::PushSubscribed(m)) if m.ok == Some(false)));
+        assert_eq!(push.subscriptions()[0].device_id, "live-device");
+    }
+
+    #[tokio::test]
+    async fn reconcile_devices_prunes_orphaned_rows() {
+        // Boot reconcile — rows owned by devices with no live credential
+        // (manual tombstones, crash-mid-revoke) are pruned; live-device
+        // rows survive.
+        let push = Push::default();
+        for (client, endpoint) in [
+            ("orphan-1", "https://push.example.test/one"),
+            ("orphan-2", "https://push.example.test/two"),
+            ("live", "https://push.example.test/three"),
+        ] {
+            let mut ctx = test_context(push.clone(), client);
+            ctx.device_id = client.to_owned();
+            let frames = subscribe(
+                ctx,
+                "r",
+                "a",
+                &inbound(serde_json::json!({ "subscription": valid_sub(endpoint) })),
+            )
+            .await;
+            assert!(
+                matches!(frames.first(), Some(Outbound::PushSubscribed(m)) if m.ok == Some(true))
+            );
+        }
+
+        let live: HashSet<String> = ["live".to_owned()].into_iter().collect();
+        let mut pruned = push.reconcile_devices(&live);
+        pruned.sort();
+        assert_eq!(pruned, ["orphan-1", "orphan-2"]);
+        let subs = push.subscriptions();
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0].device_id, "live");
+
+        // Idempotent — a second pass finds nothing.
+        assert!(push.reconcile_devices(&live).is_empty());
     }
 
     #[tokio::test]

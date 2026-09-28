@@ -225,6 +225,20 @@ impl HerdRouterFactory {
         }
     }
 
+    /// Boot reconcile — prune push rows whose `device_id` isn't in
+    /// `live` (the session prune hook misses manual tombstones and
+    /// crash-mid-revoke orphans). Returns the pruned ids.
+    pub fn reconcile_push_devices(&self, live: &std::collections::HashSet<String>) -> Vec<String> {
+        self.shared.push.reconcile_devices(live)
+    }
+
+    /// Wire the credential-liveness probe into `push_subscribe` — a live
+    /// device's subscribe inherits an endpoint whose registered owner
+    /// died instead of refusing `push_subscription_device_mismatch`.
+    pub fn set_push_device_liveness(&self, probe: Arc<dyn Fn(&str) -> bool + Send + Sync>) {
+        self.shared.push.set_device_liveness(probe);
+    }
+
     /// `Manager.Run` — the Web Push delivery worker: VAPID load-or-generate
     /// under the push dir (fails startup on a bad key file like the
     /// retired implementation), then the wake/tick drain loop until `cancel`.
