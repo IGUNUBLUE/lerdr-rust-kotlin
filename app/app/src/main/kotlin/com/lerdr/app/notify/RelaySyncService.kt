@@ -53,15 +53,26 @@ class RelaySyncService : Service() {
     override fun onCreate() {
         super.onCreate()
         notifier.ensureChannels()
-        ServiceCompat.startForeground(
-            this,
-            NotifyIds.SERVICE,
-            notifier.serviceNotification(
-                agentCount = agentStore.agents.value.size,
-                relayCount = connectedRelays(),
-            ),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
-        )
+        try {
+            ServiceCompat.startForeground(
+                this,
+                NotifyIds.SERVICE,
+                notifier.serviceNotification(
+                    agentCount = agentStore.agents.value.size,
+                    relayCount = connectedRelays(),
+                ),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+            )
+        } catch (_: IllegalStateException) {
+            // API 31+ ForegroundServiceStartNotAllowedException lands HERE,
+            // not at the caller: `startForegroundService` is accepted while
+            // the exemption still holds, then expires before onCreate runs
+            // (app slipped to background mid-start). Uncaught it crashes the
+            // process in handleCreateService — seen live in v0.0.15. Degrade
+            // to no pin: stop before the FGS-start watchdog can ANR us.
+            stopSelf()
+            return
+        }
         // Keep the rollup honest as sessions gain/lose agents and relays.
         serviceScope.launch {
             combine(agentStore.agents, connectionStore.connections) { agents, connections ->
