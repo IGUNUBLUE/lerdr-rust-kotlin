@@ -132,6 +132,12 @@ pub struct SessionConfig {
     ///
     /// [`Relay`]: crate::server::Relay
     pub clients_changed: Option<ClientsChangedHook>,
+    /// Push-state prune reach — after `revoke_device`/`reset_devices`
+    /// commits, the session reports the destroyed device scope here so
+    /// the push manager drops their subscription/queue/policy rows
+    /// (`hub.RemoveDevice` cleanup in the retired implementation).
+    /// `None` leaves the device's push rows orphaned on disk.
+    pub devices_pruned: Option<DevicesPrunedHook>,
 }
 
 /// The write-audit hook — `Arc`-wrapped so `SessionConfig` stays
@@ -238,6 +244,36 @@ impl ClientsChangedHook {
     }
 }
 
+/// Which device rows a committed device-admin action destroyed — the
+/// payload handed to [`SessionConfig::devices_pruned`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DevicePrune {
+    /// `revoke_device` — one device's rows.
+    Device(String),
+    /// `reset_devices` — the credential store was wiped; every push row
+    /// is orphaned, including rows for devices no longer listed.
+    All,
+}
+
+/// The push-prune observer — fired once per successful
+/// `revoke_device`/`reset_devices`. Wraps `Arc<dyn Fn>` so
+/// `SessionConfig` stays `Clone + Debug`.
+#[derive(Clone)]
+pub struct DevicesPrunedHook(pub std::sync::Arc<dyn Fn(DevicePrune) + Send + Sync>);
+
+impl std::fmt::Debug for DevicesPrunedHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DevicesPrunedHook(..)")
+    }
+}
+
+impl DevicesPrunedHook {
+    /// Report the destroyed device scope.
+    pub fn prune(&self, prune: DevicePrune) {
+        (self.0)(prune)
+    }
+}
+
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
@@ -253,6 +289,7 @@ impl Default for SessionConfig {
             disconnect_credentials: None,
             audit: None,
             clients_changed: None,
+            devices_pruned: None,
         }
     }
 }
@@ -1335,6 +1372,9 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
             Ok(None) => AdminOutcome::failed("Device credential was not found"),
             Ok(Some(credential_id)) => match self.auth.revoke_device(&credential_id) {
                 Ok(credential) => {
+                    if let Some(hook) = &self.config.devices_pruned {
+                        hook.prune(DevicePrune::Device(credential.device_id.clone()));
+                    }
                     let self_disconnect = credential.credential_id == self.identity.credential_id;
                     let mut outcome = AdminOutcome::ok(DeviceData {
                         device: device_wire(&credential, false),
@@ -1367,6 +1407,9 @@ impl<A: DeviceAuthStore + ?Sized, R: ActionRouter> Actor<'_, A, R> {
             .reset_devices(self.config.reset_bootstrap.as_ref(), &self.identity.locale)
         {
             Ok(()) => {
+                if let Some(hook) = &self.config.devices_pruned {
+                    hook.prune(DevicePrune::All);
+                }
                 let mut outcome = AdminOutcome::ok_empty().disconnecting();
                 outcome.disconnects = active
                     .into_iter()

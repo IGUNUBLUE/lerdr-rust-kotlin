@@ -17,7 +17,9 @@ use base64::Engine;
 use lerdr_e2ee::handshake::{AuthKind, AuthSelector, SECRET_BYTES};
 use lerdr_relay::auth::{BootstrapRearm, Credential, DeviceAuthStore, Role};
 use lerdr_relay::frame::{FrameRead, ReadError};
-use lerdr_relay::session::{ConnectionEnd, EvictReason, SessionConfig};
+use lerdr_relay::session::{
+    ConnectionEnd, DevicePrune, DevicesPrunedHook, EvictReason, SessionConfig,
+};
 use lerdr_relay::store::{
     FileAuthStore, Invitation, MemoryAuthStore, BOOTSTRAP_INVITATION_ID, INVITATION_LIFETIME_MS,
 };
@@ -368,6 +370,81 @@ async fn revoke_other_device_keeps_caller_session() {
 
     drop(client);
     server.await.expect("server joins");
+}
+
+/// `devices_pruned` hook — `revoke_device` reports the revoked device so
+/// the push manager can drop its subscription/queue/policy rows.
+#[tokio::test]
+async fn revoke_device_fires_push_prune_hook() {
+    let store = Arc::new(MemoryAuthStore::new());
+    let pruned = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let config = SessionConfig {
+        devices_pruned: Some(DevicesPrunedHook(Arc::new({
+            let pruned = Arc::clone(&pruned);
+            move |p| pruned.lock().expect("pruned poisoned").push(p)
+        }))),
+        ..test_config()
+    };
+    let (mut client, mut session, server, _sink_rx) = establish(&store, config).await;
+    seed_extra(&store, "device-2", "cred-2", Role::Controller);
+
+    let (result, _) = action_roundtrip(
+        &mut client,
+        &mut session,
+        br#"{"type":"revoke_device","protocol":3,"request_id":"req-20","device_id":"device-2"}"#,
+    )
+    .await;
+    assert_eq!(result["ok"], true);
+    assert_eq!(
+        pruned.lock().expect("pruned poisoned").as_slice(),
+        &[DevicePrune::Device("device-2".to_owned())]
+    );
+
+    drop(client);
+    server.await.expect("server joins");
+}
+
+/// `devices_pruned` on `reset_devices` reports the wholesale wipe —
+/// every push row is orphaned, not just the listed devices'.
+#[tokio::test]
+async fn reset_devices_fires_push_prune_all() {
+    let store = Arc::new(MemoryAuthStore::new());
+    let pruned = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let config = SessionConfig {
+        devices_pruned: Some(DevicesPrunedHook(Arc::new({
+            let pruned = Arc::clone(&pruned);
+            move |p| pruned.lock().expect("pruned poisoned").push(p)
+        }))),
+        ..test_config()
+    };
+    let (mut client, mut session, server, _sink_rx) = establish(&store, config).await;
+
+    let (result, _) = action_roundtrip(
+        &mut client,
+        &mut session,
+        br#"{"type":"reset_devices","protocol":3,"request_id":"req-21"}"#,
+    )
+    .await;
+    assert_eq!(result["ok"], true);
+    assert_eq!(
+        pruned.lock().expect("pruned poisoned").as_slice(),
+        &[DevicePrune::All]
+    );
+
+    // Reset still closes the caller's own connection on the deferral.
+    let err = client.reader.read_frame().await.expect_err("closed");
+    assert!(matches!(
+        err,
+        ReadError::Closed {
+            code: Some(1001),
+            ..
+        }
+    ));
+    let end = server.await.expect("server joins");
+    assert!(matches!(
+        end,
+        ConnectionEnd::Evicted(EvictReason::CredentialRevoked)
+    ));
 }
 
 #[tokio::test]

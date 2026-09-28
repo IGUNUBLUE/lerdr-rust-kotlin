@@ -1526,7 +1526,6 @@ impl Push {
     /// `Manager.RemoveDevice` — credential revocation cleanup:
     /// subscriptions, queued + delivered entries, active/retracting
     /// keys, policy, cooldown slots, viewed marker.
-    #[allow(dead_code)] // called once credential revocation is ported
     pub(crate) fn remove_device(&self, device_id: &str) -> Result<(), &'static str> {
         if device_id.trim().is_empty() {
             return Err("push_device_required");
@@ -1563,6 +1562,32 @@ impl Push {
         state
             .last_accepted
             .retain(|slot, _| !slot.starts_with(&prefix));
+        persist_policies(&state)
+    }
+
+    /// `reset_devices` cleanup — the whole credential store died in the
+    /// swap, so every push row is orphaned regardless of which devices
+    /// were listed. Same persist ordering as [`remove_device`]:
+    /// subscriptions, then queue (restored on failure), then the
+    /// in-memory auxiliaries + policy file.
+    pub(crate) fn remove_all_devices(&self) -> Result<(), &'static str> {
+        let mut state = self.lock();
+        persist_subscriptions(&state.dir, &[])?;
+        state.subscriptions.clear();
+        state.active.clear();
+        state.retracting.clear();
+        let previous_entries = state.entries.clone();
+        let previous_delivered = state.delivered.clone();
+        state.entries.clear();
+        state.delivered.clear();
+        if let Err(code) = persist_queue_locked(&mut state) {
+            state.entries = previous_entries;
+            state.delivered = previous_delivered;
+            return Err(code);
+        }
+        state.viewed_panes.clear();
+        state.policies.clear();
+        state.last_accepted.clear();
         persist_policies(&state)
     }
 
@@ -3510,6 +3535,77 @@ mod tests {
         assert_eq!(m.ok, Some(true));
         // Client id match removed the subscription.
         assert!(push.subscriptions().is_empty());
+    }
+
+    #[tokio::test]
+    async fn remove_device_prunes_only_that_devices_rows() {
+        // `revoke_device` cleanup: the revoked device's subscription and
+        // policy die; another device's rows survive untouched.
+        let push = Push::default();
+        let ctx1 = test_context(push.clone(), "client-1");
+        let frames = subscribe(
+            ctx1,
+            "r",
+            "a",
+            &inbound(serde_json::json!({
+                "subscription": valid_sub("https://push.example.test/one"),
+            })),
+        )
+        .await;
+        assert!(matches!(frames.first(), Some(Outbound::PushSubscribed(m)) if m.ok == Some(true)));
+        let mut ctx2 = test_context(push.clone(), "client-2");
+        ctx2.device_id = "device-2".to_owned();
+        let frames = subscribe(
+            ctx2,
+            "r",
+            "a",
+            &inbound(serde_json::json!({
+                "subscription": valid_sub("https://push.example.test/two"),
+            })),
+        )
+        .await;
+        assert!(matches!(frames.first(), Some(Outbound::PushSubscribed(m)) if m.ok == Some(true)));
+        assert_eq!(push.subscriptions().len(), 2);
+
+        push.remove_device("device-2").expect("prune device-2");
+        let remaining = push.subscriptions();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].device_id, "test-device");
+        // Idempotent — pruning a device with no rows is a no-op.
+        push.remove_device("device-2").expect("re-prune");
+        assert_eq!(push.subscriptions().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn remove_all_devices_wipes_every_row() {
+        // `reset_devices` wipes the credential store wholesale — every
+        // subscription is orphaned, including rows whose device was
+        // already gone from the active set.
+        let push = Push::default();
+        for (client, endpoint) in [
+            ("client-1", "https://push.example.test/one"),
+            ("client-2", "https://push.example.test/two"),
+        ] {
+            let mut ctx = test_context(push.clone(), client);
+            ctx.device_id = client.to_owned();
+            let frames = subscribe(
+                ctx,
+                "r",
+                "a",
+                &inbound(serde_json::json!({ "subscription": valid_sub(endpoint) })),
+            )
+            .await;
+            assert!(
+                matches!(frames.first(), Some(Outbound::PushSubscribed(m)) if m.ok == Some(true))
+            );
+        }
+        assert_eq!(push.subscriptions().len(), 2);
+
+        push.remove_all_devices().expect("wipe");
+        assert!(push.subscriptions().is_empty());
+        assert!(push.lock().entries.is_empty());
+        assert!(push.lock().delivered.is_empty());
+        assert!(push.lock().policies.is_empty());
     }
 
     #[tokio::test]

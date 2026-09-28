@@ -22,7 +22,8 @@ use lerdr_herdr::Client;
 use lerdr_relay::auth::BootstrapRearm;
 use lerdr_relay::server::{HealthProbe, InventoryProbeFn};
 use lerdr_relay::session::{
-    AttributionFn, AuditHook, ClientsChangedHook, SessionConfig, SnapshotFn,
+    AttributionFn, AuditHook, ClientsChangedHook, DevicePrune, DevicesPrunedHook, SessionConfig,
+    SnapshotFn,
 };
 use lerdr_relay::store::FileAuthStore;
 use lerdr_relay::Relay;
@@ -898,6 +899,20 @@ async fn run(args: ServeArgs) -> Result<(), BoxError> {
                     tokio::spawn(async move {
                         lerdr_coord::update_window_title(&client, count).await;
                     });
+                }
+            }))),
+            // `hub.RemoveDevice` — a revoked/reset credential's push rows
+            // (subscriptions, queue, policy) die with it.
+            devices_pruned: Some(DevicesPrunedHook(Arc::new({
+                let factory = router_factory.clone();
+                move |prune| {
+                    let device_id = match &prune {
+                        DevicePrune::Device(id) => Some(id.as_str()),
+                        DevicePrune::All => None,
+                    };
+                    if let Err(code) = factory.prune_push_devices(device_id) {
+                        tracing::warn!(?prune, code, "push state prune failed");
+                    }
                 }
             }))),
             ..SessionConfig::default()
