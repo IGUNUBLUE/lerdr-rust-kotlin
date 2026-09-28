@@ -1,0 +1,16 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application>
+        <!-- The generated app component is exercised via intents; the test
+             process itself does not need androidx.startup initialization. -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="com.lerdr.baselineprofile.androidx-startup"
+            tools:node="remove" />
+    </application>
+
+    <instrumentation
+        android:name="androidx.test.runner.AndroidJUnitRunner"
+        android:targetPackage="com.lerdr.baselineprofile" />
+</manifest>
