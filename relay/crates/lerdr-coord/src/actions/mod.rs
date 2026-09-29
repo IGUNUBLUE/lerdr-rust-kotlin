@@ -632,6 +632,7 @@ pub(crate) fn refusal_message(code: &str) -> &'static str {
     match code {
         "server_not_running" => "Herdr server is not running",
         "agent_pane_busy" => "Agent pane is still starting",
+        "agent_blocked" => "Agent is waiting at a question or approval",
         "protocol_mismatch" => "Herdr server protocol is incompatible with this relay",
         "workspace_group_close_required" => "Close the workspace group explicitly",
         "workspace_group_changed" => "Workspace group changed; review it before closing",
