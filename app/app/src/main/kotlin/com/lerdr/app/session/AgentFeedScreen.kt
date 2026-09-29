@@ -2,9 +2,7 @@ package com.lerdr.app.session
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.VisibilityThreshold
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -83,7 +81,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.PreviewLightDark
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -672,12 +669,11 @@ fun AgentFeedContent(
                                 }
                             }
                         },
-                        modifier = Modifier.animateItem(
-                            placementSpec = spring(
-                                stiffness = Spring.StiffnessMediumLow,
-                                visibilityThreshold = IntOffset.VisibilityThreshold,
-                            ),
-                        ),
+                        // No placementSpec: a streaming feed repositions
+                        // items on every growth/insert, and sliding them
+                        // under the tail-pin's instant re-snaps paints
+                        // overlapping rows until the stream settles.
+                        modifier = Modifier.animateItem(placementSpec = null),
                     )
                 }
                 if (searching && visibleEntries.isEmpty() && uiState.entries.isNotEmpty()) {
@@ -702,12 +698,7 @@ fun AgentFeedContent(
                             onPreviousQuestion = { onNavigateQuestion("previous") },
                             onClarifyQuestion = onClarifyQuestion,
                             onOpenTerminal = onOpenTerminal,
-                            modifier = Modifier.animateItem(
-                                placementSpec = spring(
-                                    stiffness = Spring.StiffnessMediumLow,
-                                    visibilityThreshold = IntOffset.VisibilityThreshold,
-                                ),
-                            ),
+                            modifier = Modifier.animateItem(placementSpec = null),
                         )
                     }
                 }
