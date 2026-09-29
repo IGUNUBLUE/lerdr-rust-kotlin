@@ -470,6 +470,7 @@ fun AgentFeedContent(
                     ),
                 ),
                 tabsPaneId = tabsPaneId,
+                onSessionClosed = onBack,
             )
         },
         bottomBar = {

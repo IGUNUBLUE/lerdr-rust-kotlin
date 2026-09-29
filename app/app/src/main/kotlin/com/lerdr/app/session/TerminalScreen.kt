@@ -320,6 +320,7 @@ fun TerminalContent(
                 provider = uiState.provider,
                 active = uiState.connected,
                 tabsPaneId = tabsPaneId,
+                onSessionClosed = onBack,
                 actions = listOf(
                     SessionBarAction(
                         label = "Find in terminal",
