@@ -223,6 +223,35 @@ runtime schema is the capability-discovery input.
   `health_check` capabilities). Phase-2 investigation: the Kotlin app may
   consume client-shell projections directly.
 - **`notification.show`**: desktop toasts for phone-originated actions.
+- **`pane.report_agent` / `pane.release_agent` / `pane.report_agent_session`**:
+  any source may claim a pane under a `source` that does not start with
+  `herdr:` — `agent` is the identity users see, `state`
+  (`idle`/`working`/`blocked`) drives waits, notifications, and rollups,
+  and `seq` must increase per source or the report is dropped (a
+  timestamp works). The optional `resume_argv` array (0.9.2+; older
+  Herdr ignores it) makes Herdr re-launch that command in the pane's cwd
+  after a server restart. `resume_argv` is validated strictly — plain
+  PATH command first, ≤64 elements, ≤8 KiB, no apostrophes or control
+  characters; a bad value refuses the whole report with
+  `invalid_resume_argv` — and requires the source to hold the pane
+  (`resume_not_accepted`), which a `pane.report_agent` carrying the
+  field satisfies in one call. The command is kept only while the same
+  `source`+`agent` holds the pane; `pane.release_agent` clears it, and
+  Herdr's safety net clears a stale claim once the pane returns to an
+  idle shell prompt. Lerdr uses this on the argv `agent_start` path: a
+  custom command Herdr never detects gets a `lerdr`-sourced claim once
+  the detection deadline runs out, instead of staying a nameless shell
+  pane. Profiles Herdr detects natively keep their vendor integration —
+  dual claims are just multiple sources reporting on one identity. A
+  Herdr without agent reporting refuses the method and the outcome
+  degrades to the prior dispatched-unknown result.
+- **`terminal session control`** is NOT a socket RPC — it is a raw
+  terminal-stream takeover surface for bridge clients that own the
+  terminal UI (it accepts `terminal.mouse` events upstream of 0.9.2).
+  The relay's one-request-per-connection client cannot host it, and
+  injecting mouse escape sequences into a pane the user is watching is
+  out of bounds; remote terminal-input surfaces must not pretend to be
+  this channel.
 - **`plugin.pane.open` placements**: `overlay|popup|split|tab|zoomed`;
   popup supports `width`/`height` — setup pickers become modals.
 - **Socket paths**: `~/.config/herdr/herdr.sock` or
