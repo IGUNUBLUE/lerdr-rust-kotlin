@@ -25,9 +25,14 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AccountTree
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -71,6 +76,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lerdr.app.session.manage.ManageSheet
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import dagger.hilt.android.EntryPointAccessors
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 
 /** Agent-session render modes (docs/04 §Agent session). */
@@ -151,6 +157,8 @@ fun SessionTopBar(
      * menu gains the worktrees + manage entries.
      */
     tabsPaneId: String? = null,
+    /** Leaves the session after a confirmed `workspace_close`. */
+    onSessionClosed: () -> Unit = {},
     /** Chip variant — derived from [statusLabel] by default. */
     statusVariant: SessionStatusVariant = statusVariantOf(statusLabel),
 ) {
@@ -184,7 +192,11 @@ fun SessionTopBar(
                 }
             },
             actions = {
-                SessionOverflowMenu(paneId = tabsPaneId, actions = actions)
+                SessionOverflowMenu(
+                    paneId = tabsPaneId,
+                    actions = actions,
+                    onSessionClosed = onSessionClosed,
+                )
                 StatusChip(
                     label = statusLabel,
                     color = statusColor,
@@ -421,6 +433,8 @@ fun SessionTitleEditor(
  * (`agent_rename` / `agent_restart` / `agent_clear` / `agent_stop` /
  * `copy_agent_response` + pane metadata). The sheet hides mutations for
  * readers itself, so the entry renders for every role.
+ * "Close workspace" sends `workspace_close` for the pane's workspace —
+ * controller-only and gated on the `workspace_management` capability.
  *
  * Renders nothing when there is no pane and no caller action.
  */
@@ -428,12 +442,19 @@ fun SessionTitleEditor(
 private fun SessionOverflowMenu(
     paneId: String?,
     actions: List<SessionBarAction>,
+    onSessionClosed: () -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     var showManage by remember { mutableStateOf(false) }
     var showWorktrees by remember { mutableStateOf(false) }
+    var showCloseWorkspace by remember { mutableStateOf(false) }
+    var showStopAgent by remember { mutableStateOf(false) }
 
-    val worktreesTarget = if (paneId != null) {
+    var repository: SessionRepository? = null
+    var paneAgent: lerdr.core.store.Agent? = null
+    var canCloseWorkspace = false
+    var canStopAgent = false
+    if (paneId != null) {
         val appContext = LocalContext.current.applicationContext
         val entryPoint = remember(appContext) {
             EntryPointAccessors.fromApplication(
@@ -441,15 +462,27 @@ private fun SessionOverflowMenu(
                 WorktreesEntryPoint::class.java,
             )
         }
-        val agent by entryPoint.sessionRepository().agent(paneId)
+        val repo = entryPoint.sessionRepository()
+        repository = repo
+        val agent by repo.agent(paneId)
             .collectAsStateWithLifecycle(initialValue = null)
-        agent?.let {
-            val workspaceId = it.workspaceId.takeIf(String::isNotEmpty)
-            val relayId = it.relayId.takeIf(String::isNotEmpty)
-            if (workspaceId != null && relayId != null) relayId to workspaceId else null
+        paneAgent = agent
+        val relayId = agent?.relayId?.takeIf(String::isNotEmpty)
+        val connectionFlow = remember(relayId) {
+            relayId?.let { repo.connection(it) } ?: flowOf(null)
         }
-    } else {
-        null
+        val connection by connectionFlow.collectAsStateWithLifecycle(initialValue = null)
+        val canControl = relayId != null && repo.canControl(relayId)
+        canStopAgent = canControl
+        canCloseWorkspace = canControl &&
+            connection?.capabilities?.contains(
+                SessionRepository.WORKSPACE_MANAGEMENT_CAPABILITY,
+            ) == true
+    }
+    val worktreesTarget = paneAgent?.let {
+        val relayId = it.relayId.takeIf(String::isNotEmpty)
+        val workspaceId = it.workspaceId.takeIf(String::isNotEmpty)
+        if (workspaceId != null && relayId != null) relayId to workspaceId else null
     }
 
     if (actions.isEmpty() && paneId == null) return
@@ -506,10 +539,94 @@ private fun SessionOverflowMenu(
                 },
                 modifier = Modifier.testTag("session-bar:manage"),
             )
+            if (canStopAgent || (canCloseWorkspace && worktreesTarget != null)) {
+                HorizontalDivider()
+                if (canStopAgent) {
+                    DropdownMenuItem(
+                        text = { Text("Stop session") },
+                        leadingIcon = {
+                            Icon(Icons.Default.Stop, contentDescription = null)
+                        },
+                        onClick = {
+                            menuOpen = false
+                            showStopAgent = true
+                        },
+                        modifier = Modifier.testTag("session-bar:stop"),
+                    )
+                }
+                if (canCloseWorkspace && worktreesTarget != null) {
+                    DropdownMenuItem(
+                        text = { Text("Close workspace") },
+                        leadingIcon = {
+                            Icon(Icons.Default.Close, contentDescription = null)
+                        },
+                        onClick = {
+                            menuOpen = false
+                            showCloseWorkspace = true
+                        },
+                        modifier = Modifier.testTag("session-bar:close-workspace"),
+                    )
+                }
+            }
         }
     }
     if (showManage && paneId != null) {
         ManageSheet(paneId = paneId, onDismiss = { showManage = false })
+    }
+    if (showStopAgent && paneId != null && repository != null) {
+        val repo = repository ?: return
+        val scope = rememberCoroutineScope()
+        var stopBusy by remember { mutableStateOf(false) }
+        var stopError by remember { mutableStateOf<String?>(null) }
+        val title = paneAgent?.let { it.name ?: it.agent }?.takeIf { it.isNotEmpty() }
+            ?: paneId.substringAfter("::")
+        AlertDialog(
+            onDismissRequest = { if (!stopBusy) showStopAgent = false },
+            title = { Text("Stop session") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(LerdrTheme.spacing.small)) {
+                    Text("Stop \"$title\"? Its pane closes on the computer.")
+                    stopError?.let {
+                        Text(it, color = LerdrTheme.extendedColors.danger)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        stopBusy = true
+                        stopError = null
+                        scope.launch {
+                            try {
+                                repo.stopAgent(paneId)
+                                showStopAgent = false
+                                onSessionClosed()
+                            } catch (failure: Exception) {
+                                stopBusy = false
+                                stopError = failure.message
+                                    ?: "The session could not be stopped"
+                            }
+                        }
+                    },
+                    enabled = !stopBusy,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = LerdrTheme.extendedColors.danger,
+                        contentColor = LerdrTheme.extendedColors.onDanger,
+                    ),
+                    modifier = Modifier.testTag("session-bar:stop-confirm"),
+                ) {
+                    Text("Confirm stop")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showStopAgent = false },
+                    enabled = !stopBusy,
+                ) {
+                    Text("Cancel")
+                }
+            },
+        )
     }
     worktreesTarget?.let { (relayId, workspaceId) ->
         if (showWorktrees) {
@@ -517,6 +634,17 @@ private fun SessionOverflowMenu(
                 relayId = relayId,
                 workspaceId = workspaceId,
                 onDismiss = { showWorktrees = false },
+            )
+        }
+        if (showCloseWorkspace) {
+            CloseWorkspaceSheet(
+                relayId = relayId,
+                workspaceId = workspaceId,
+                onClosed = {
+                    showCloseWorkspace = false
+                    onSessionClosed()
+                },
+                onDismiss = { showCloseWorkspace = false },
             )
         }
     }
