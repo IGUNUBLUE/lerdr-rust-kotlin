@@ -1138,3 +1138,24 @@ negotiated, and exercised end-to-end on both sides.
   unused but harmless, and `herdr-hybrid-v2` is intentionally absent —
   the hybrid/WebRTC transport is out of scope for the Tailscale-only
   deployment.
+
+## Round 22 — live app verification (2026)
+
+- **Warm-start deep links to an already-open `Pairing` key do not
+  re-seed.** `MainActivity.onNewIntent` → `deepLinks` channel →
+  `navigator.navigate(LerdrKey.Pairing(setupLink))` is wired correctly,
+  but pushing a key that is already the back-stack top does not re-run
+  the entry — the delivered `setupLink` is silently dropped and the
+  screen keeps showing whatever it held. Observed live during the
+  v0.2.5 smoke: `am start … lerdr://pair#…` while sitting on Pairing
+  never populated the preview card; the cold-start path (seeded back
+  stack) works. Applies to `agent`/`agents`/`settings` keys too when
+  they match the current top. Fix belongs to the navigator (dedup or
+  replace-on-same-key), not to matching.
+- **`PairingScreen` never auto-connects a deep-linked `setupLink`.**
+  The key's link only *prefills* the confirmation card — `connect`
+  fires exclusively from the Connect button. That is the documented
+  design (the link is sensitive; a silent auto-pair on an unsolicited
+  intent would be worse), recorded here so the distinction is explicit:
+  "deep link opens prefilled pairing" is intended; "deep link dropped
+  entirely on warm start" (above) is not.
