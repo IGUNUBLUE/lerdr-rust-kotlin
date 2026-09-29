@@ -588,4 +588,75 @@ class SessionRepositoryTest {
         assertThat(caught.await()).hasMessageThat().contains("upstream moved")
         assertThat(h.connections.connectionNow("r1")?.update?.state).isEqualTo("blocked")
     }
+
+    // ── removeRelay self-revoke (revoke_device) ──────────────────────
+
+    private suspend fun seedCredential(h: Harness) {
+        h.credentials.seed(
+            "r1",
+            lerdr.core.data.RelayDeviceCredential(
+                id = "cred-1",
+                version = 1,
+                secret = java.util.Base64.getUrlEncoder().withoutPadding()
+                    .encodeToString(ByteArray(32)),
+                deviceId = "dev-1",
+                role = lerdr.core.data.DeviceRole.CONTROLLER,
+                locale = "en",
+                issuedAtEpochMs = 1L,
+                invitationId = "inv1",
+            ),
+        )
+    }
+
+    private suspend fun answerRevoke(h: Harness, ok: Boolean) {
+        val frame = sentFrames(h.handle())
+            .single { it["type"]?.jsonPrimitive?.content == "revoke_device" }
+        val requestId = frame["request_id"]!!.jsonPrimitive.content
+        h.handle().emit(
+            json(
+                """{"type":"command_result","request_id":"$requestId","action":"revoke_device","ok":$ok,"phase":"completed","data":{}}""",
+            ),
+        )
+    }
+
+    @Test
+    fun `removeRelay self-revokes our credential while the session is live`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        seedCredential(h)
+        val pending = backgroundScope.async { h.repository.removeRelay("r1") }
+        h.pump()
+        val sent = sentFrames(h.handle())
+            .single { it["type"]?.jsonPrimitive?.content == "revoke_device" }
+        assertThat(sent["device_id"]!!.jsonPrimitive.content).isEqualTo("dev-1")
+        answerRevoke(h, ok = true)
+        pending.await()
+        assertThat(h.registry.relays.value).isEmpty()
+        assertThat(h.credentials.records.value).isEmpty()
+    }
+
+    @Test
+    fun `removeRelay still unpairs when the self-revoke is refused`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        val pending = backgroundScope.async { h.repository.removeRelay("r1") }
+        h.pump()
+        answerRevoke(h, ok = false)
+        pending.await()
+        assertThat(h.registry.relays.value).isEmpty()
+        assertThat(h.credentials.records.value).isEmpty()
+    }
+
+    @Test
+    fun `removeRelay skips the revoke when the session is not connected`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        seedCredential(h)
+        h.handle().disconnect()
+        h.pump()
+        h.repository.removeRelay("r1")
+        assertThat(sentTypes(h.handle())).doesNotContain("revoke_device")
+        assertThat(h.registry.relays.value).isEmpty()
+        assertThat(h.credentials.records.value).isEmpty()
+    }
 }

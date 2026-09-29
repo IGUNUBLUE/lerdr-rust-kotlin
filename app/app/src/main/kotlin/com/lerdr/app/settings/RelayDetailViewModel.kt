@@ -25,8 +25,10 @@ data class RelayDetailUiState(
  * - [reconnect] — no session yet → `connect(endpoint)` creates and dials
  *   it; a live session → `revalidateAll()` redials/probes it (mirrors the
  *   Lerdr's per-relay probe, which has no narrower wire command).
- * - [forget] — `removeRelay`: registry entry + credential drop; the
- *   registry diff tears the session down itself, then the screen pops.
+ * - [forget] — `removeRelay`: best-effort `revoke_device` on our own
+ *   credential while the socket lives, then registry entry + credential
+ *   drop; the registry diff tears the session down itself, then the
+ *   screen pops.
  */
 class RelayDetailViewModel(
     private val relayId: String,
