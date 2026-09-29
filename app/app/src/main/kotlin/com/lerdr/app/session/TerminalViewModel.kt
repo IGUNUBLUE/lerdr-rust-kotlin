@@ -121,21 +121,34 @@ class TerminalViewModel(
     private var parsedRows: List<TerminalRowUi> = emptyList()
     private var parsedCursor: TerminalCursorUi? = null
 
+    /**
+     * Last committed frame outside `resize_settling` — a lease-driven
+     * `stty` makes the TUI repaint mid-frame, so settling frames carry
+     * stale cells mixed into the new layout. They still commit to
+     * [PaneSurface] (the delta chain and acks must not skip); only the
+     * display holds the previous settled frame until the flag clears.
+     */
+    private var settledSnapshot: PaneSurface.Snapshot? = null
+
     val uiState: StateFlow<TerminalUiState> = combine(
         sessions.paneSnapshot(paneId),
         sessions.agent(paneId),
         sessions.connection(relayId),
         lastError,
     ) { snapshot, agent, connection, error ->
-        val content = snapshot?.content
-        val format = snapshot?.format.orEmpty()
+        if (snapshot != null && !snapshot.resizeSettling) settledSnapshot = snapshot
+        val display = snapshot?.let {
+            if (it.resizeSettling) settledSnapshot ?: it else it
+        }
+        val content = display?.content
+        val format = display?.format.orEmpty()
         if (content != parsedContent || format != parsedFormat) {
             parsedContent = content
             parsedFormat = format
-            parsedRows = if (snapshot == null) {
+            parsedRows = if (display == null) {
                 emptyList()
             } else {
-                parseTerminalRows(snapshot.lines, format)
+                parseTerminalRows(display.lines, format)
             }
             parsedCursor = terminalCursor(parsedRows)
         }
@@ -144,26 +157,26 @@ class TerminalViewModel(
             title = agent?.name ?: agent?.agent ?: paneId.substringAfter("::"),
             provider = agent?.agent?.takeIf { it.isNotEmpty() },
             breadcrumb = breadcrumbOf(agent),
-            statusLabel = if (snapshot != null && snapshot.columns > 0) {
-                if (snapshot.rows > 0) {
-                    "lease ${snapshot.columns}×${snapshot.rows}"
+            statusLabel = if (display != null && display.columns > 0) {
+                if (display.rows > 0) {
+                    "lease ${display.columns}×${display.rows}"
                 } else {
-                    "lease ${snapshot.columns} cols"
+                    "lease ${display.columns} cols"
                 }
             } else {
                 agent?.status ?: ""
             },
             connected = connection?.status == RelayStatus.CONNECTED,
-            waitingForContent = snapshot == null,
-            lines = snapshot?.lines.orEmpty(),
+            waitingForContent = display == null,
+            lines = display?.lines.orEmpty(),
             rows = parsedRows,
             cursor = parsedCursor,
-            revision = snapshot?.revision ?: 0,
-            truncated = snapshot?.truncated == true,
-            noEcho = snapshot?.noEcho == true,
-            noEchoPrompt = snapshot?.noEchoPrompt,
-            leaseColumns = snapshot?.columns ?: 0,
-            leaseRows = snapshot?.rows ?: 0,
+            revision = display?.revision ?: 0,
+            truncated = display?.truncated == true,
+            noEcho = display?.noEcho == true,
+            noEchoPrompt = display?.noEchoPrompt,
+            leaseColumns = display?.columns ?: 0,
+            leaseRows = display?.rows ?: 0,
             canControl = sessions.canControl(relayId),
             secretInputSupported = connection?.capabilities
                 ?.contains(SessionRepository.SECRET_CAPABILITY) == true,
