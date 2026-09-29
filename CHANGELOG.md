@@ -6,6 +6,42 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 Releases are **pre-release / beta** — no compatibility guarantees yet.
+## [0.2.5] — 2026-09-29
+
+### Added
+
+- **`agent_blocked` rejections carry a public message** — refusing a
+  `submit_prompt` while a question or approval owns the pane now maps
+  to "Agent is waiting at a question or approval" in `refusal_message`,
+  so clients render the real cause instead of the generic fallback.
+- **Custom-argv agents claim their pane after detection expiry** —
+  when an argv-profile start outlives the detection deadline, the relay
+  now claims the pane via `pane.report_agent` (`resume_argv` validated
+  against Herdr's rules) instead of leaving it dispatched-unknown.
+
+### Fixed
+
+- **Composer accepted sends while a question owned the pane** — Herdr
+  rejects `submit_prompt` with `agent_blocked` while a question or
+  approval dialog is pending, and the app surfaced the relay's generic
+  fallback ("Herdr rejected the command before it was sent"). Send is
+  now disabled while the agent is `blocked` — the same rule the
+  terminal's `inputLocked` already applied — with a placeholder that
+  points to the terminal for the pending interaction. A defensive
+  `sendPrompt` guard preserves the draft on races, and
+  `command_result` now carries `data.code` into `CommandException` so
+  late rejections map to a real message.
+- **Terminal rendered mid-repaint frames after a resize** — the
+  phone's terminal lease resizes the real agent TTY; during the
+  repaint window the pane grid mixes stale cells from the previous
+  geometry ("letters over letters"). `resize_settling` frames now hold
+  the last settled frame for display while delta continuity and acks
+  continue underneath — per spec, those frames are not committed to
+  history.
+- **Shadow diff compared run-scoped `health_check` output** — the
+  `herdr_status` comparison dropped the always-differing
+  `health_check` field from shadow-diff evaluation.
+
 
 ## [0.2.4] — 2026-09-29
 
