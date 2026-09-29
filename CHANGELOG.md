@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 Releases are **pre-release / beta** — no compatibility guarantees yet.
 
+## [0.2.4] — 2026-09-29
+
+### Added
+
+- **Stop session + Close workspace in the session overflow** — both
+  destructive actions now sit in the session ⋮ menu under a danger
+  divider: *Stop session* runs `agent_stop` (pane close) after
+  confirmation, and *Close workspace* opens a sheet that mirrors the
+  relay's workspace semantics — single close for lone workspaces,
+  group-only close for primaries with linked worktrees, and both paths
+  for linked worktrees (close this one, or the whole group via the
+  primary). Stale group snapshots escalate into a re-confirmation with
+  the relay's authoritative `workspace_ids`; a workspace closed by
+  another client dismisses the sheet.
+
+### Fixed
+
+- **Feed rows overlapped during streaming** — `animateItem`'s spring
+  placement animation fought the tail-pin's instant `scrollToItem`
+  re-asserts: while an agent streamed, placement springs restarted
+  faster than they converged and items painted at stale animated
+  offsets. Placement now applies atomically (insertion fade kept).
+- **Forget left a live credential on the relay** — `removeRelay`
+  dropped the registry row and local credential but never told the
+  relay, so a forgotten pairing could still authenticate until another
+  controller revoked it by hand. `removeRelay` now sends a best-effort
+  `revoke_device` with our caller `device_id` while the socket is up
+  (5 s bound, failure still unpairs locally).
+
 ## [0.2.3] — 2026-09-28
 
 ### Fixed
