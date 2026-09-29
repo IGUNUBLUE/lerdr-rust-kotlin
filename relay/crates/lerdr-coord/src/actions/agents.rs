@@ -26,7 +26,8 @@
 //! replacement already exists.
 
 use std::path::Path;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use lerdr_core::protocol::Inbound;
 use lerdr_herdr::{AgentInfo, HerdrError, WorkspaceInfo};
@@ -48,6 +49,11 @@ const CUSTOM_AGENT_POLL: Duration = Duration::from_millis(250);
 /// `agentStartRetryInitial` / `agentStartRetryMax`.
 const RETRY_INITIAL: Duration = Duration::from_millis(50);
 const RETRY_MAX: Duration = Duration::from_millis(1500);
+/// `pane.report_agent` claim for undetected argv profiles — the source
+/// that owns the pane hold (must not start with `herdr:`), plus the
+/// claim call's own timeout since it runs past the start deadline.
+const REPORT_SOURCE: &str = "lerdr";
+const REPORT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Serialize)]
 struct TabCreateParams<'a> {
@@ -95,6 +101,17 @@ struct PaneRunInput<'a> {
 #[derive(Serialize)]
 struct PaneCloseParams<'a> {
     pane_id: &'a str,
+}
+
+#[derive(Serialize)]
+struct ReportAgentParams<'a> {
+    pane_id: &'a str,
+    source: &'a str,
+    agent: &'a str,
+    state: &'a str,
+    seq: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resume_argv: Option<&'a [String]>,
 }
 
 /// `handleAgentStart`.
@@ -669,14 +686,89 @@ async fn start_in_target(
             Err(_) => {}
         }
         if Instant::now() >= deadline {
-            // `pane.send_input` succeeded — the command was dispatched even
-            // though its eventual agent state is unknown.
-            return Err(StartErrorKind::Herdr(HerdrError::dispatched_msg(
-                "wait for custom agent timed out",
-            )));
+            // Herdr never detected the custom command — claim the pane
+            // ourselves so it carries a named agent identity and a
+            // resume command (upstream "add Herdr support" contract;
+            // `resume_argv` needs 0.9.2+ and older versions ignore it).
+            // A Herdr without `pane.report_agent` at all degrades to the
+            // prior dispatched-unknown result.
+            return claim_custom_agent(ctx, name, pane_id, &profile.argv).await;
         }
         tokio::time::sleep(CUSTOM_AGENT_POLL).await;
     }
+}
+
+/// `pane.report_agent` for argv profiles Herdr doesn't detect natively:
+/// claiming the pane under the `lerdr` source gives it an agent
+/// identity, and a valid `resume_argv` makes Herdr re-launch the
+/// profile command after a server restart.
+async fn claim_custom_agent(
+    ctx: &ActionContext,
+    name: &str,
+    pane_id: &str,
+    argv: &[String],
+) -> Result<(), StartErrorKind> {
+    let resume_argv = valid_resume_argv(argv).then_some(argv);
+    let result = ctx
+        .client
+        .call_with_timeout(
+            "pane.report_agent",
+            &ReportAgentParams {
+                pane_id,
+                source: REPORT_SOURCE,
+                agent: name,
+                state: "idle",
+                seq: report_seq(),
+                resume_argv,
+            },
+            Some(REPORT_TIMEOUT),
+        )
+        .await;
+    match result {
+        Ok(_) => Ok(()),
+        // `pane.send_input` succeeded — the command was dispatched even
+        // though its eventual agent state is unknown.
+        Err(_) => Err(StartErrorKind::Herdr(HerdrError::dispatched_msg(
+            "wait for custom agent timed out",
+        ))),
+    }
+}
+
+/// Upstream `resume_argv` rules — a plain PATH command name first, ≤64
+/// elements, ≤8 KiB total, no apostrophes or control characters. A
+/// violating argv drops the resume field rather than failing the whole
+/// claim (`invalid_resume_argv` refuses the report). Older Herdr
+/// ignores the field, so the identity claim still lands there.
+fn valid_resume_argv(argv: &[String]) -> bool {
+    let Some(command) = argv.first() else {
+        return false;
+    };
+    if command.is_empty() || command.contains('/') {
+        return false;
+    }
+    argv.len() <= 64
+        && argv.iter().map(String::len).sum::<usize>() <= 8 * 1024
+        && argv
+            .iter()
+            .all(|arg| !arg.contains('\'') && arg.chars().all(|c| !c.is_control()))
+}
+
+/// `--seq` must increase per source — Herdr drops reports that do not
+/// beat the last accepted number. A wall-clock timestamp survives
+/// restarts; the process counter keeps simultaneous claims on distinct
+/// panes from colliding in the same millisecond.
+static REPORT_SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn report_seq() -> u64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or_default();
+    let seq = |prev: u64| now.max(prev).saturating_add(1);
+    REPORT_SEQ
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |prev| Some(seq(prev)))
+        .map(seq)
+        .unwrap_or(now)
 }
 
 /// `startKindAgent` — retry while Herdr's `agent_pane_busy` (the fresh pane
@@ -867,9 +959,10 @@ mod tests {
     }
 
     /// Per-method FIFO replies; a drained or unscripted method answers
-    /// `{"type":"ok"}`.
+    /// `{"type":"ok"}`. Every request line is recorded in `sent`.
     struct ScriptTransport {
         replies: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<Step>>>>,
+        sent: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
     }
 
     impl ScriptTransport {
@@ -883,7 +976,13 @@ mod tests {
             }
             ScriptTransport {
                 replies: std::sync::Arc::new(std::sync::Mutex::new(replies)),
+                sent: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             }
+        }
+
+        /// Every request the client wrote, in order.
+        fn requests(&self) -> Vec<serde_json::Value> {
+            self.sent.lock().unwrap().clone()
         }
     }
 
@@ -894,6 +993,7 @@ mod tests {
             Box<dyn std::future::Future<Output = std::io::Result<lerdr_herdr::BoxIo>> + Send>,
         > {
             let replies = self.replies.clone();
+            let sent = self.sent.clone();
             Box::pin(async move {
                 let (client_end, mut server_end) = tokio::io::duplex(8192);
                 tokio::spawn(async move {
@@ -909,6 +1009,7 @@ mod tests {
                             let line: Vec<u8> = buf.drain(..=pos).collect();
                             let request: serde_json::Value =
                                 serde_json::from_slice(&line).unwrap_or_default();
+                            sent.lock().unwrap().push(request.clone());
                             let method = request["method"].as_str().unwrap_or_default().to_owned();
                             let step = replies
                                 .lock()
@@ -1148,5 +1249,107 @@ mod tests {
         let result = command_result(&frames);
         assert_eq!(result.phase.as_deref(), Some("failed"), "{frames:?}");
         assert_eq!(handle.topology.borrow().generation_of("wE:p1"), 0);
+    }
+
+    fn argv_profile(argv: &[&str]) -> Profile {
+        Profile {
+            id: "myagent".to_owned(),
+            label: "My Agent".to_owned(),
+            kind: String::new(),
+            argv: argv.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// `agent.get` replies that never satisfy the detection check, so the
+    /// argv path runs the deadline out and falls through to the claim.
+    async fn run_argv_start(
+        steps: Vec<(&'static str, Step)>,
+        argv: &[&str],
+    ) -> (Result<(), StartErrorKind>, Vec<serde_json::Value>) {
+        let transport = std::sync::Arc::new(ScriptTransport::new(steps));
+        let client =
+            lerdr_herdr::Client::new(transport.clone(), lerdr_herdr::ClientConfig::default());
+        let config_home = tempfile::tempdir().expect("config tempdir");
+        let ctx = test_context(
+            client,
+            crate::topology::Topology::default(),
+            config_home.path(),
+        );
+        let result = start_in_target(
+            &ctx,
+            &argv_profile(argv),
+            "myagent",
+            "wE:p9",
+            Instant::now() + Duration::from_millis(400),
+        )
+        .await;
+        (result, transport.requests())
+    }
+
+    #[tokio::test]
+    async fn argv_start_claims_undetected_pane_with_resume() {
+        // Herdr never detects the custom command — the deadline claim
+        // gives the pane a `lerdr`-sourced agent identity and a resume
+        // command rebuilt from the profile argv.
+        let (result, requests) = run_argv_start(vec![], &["myagent-cli", "--fast"]).await;
+        assert!(result.is_ok(), "claim should succeed");
+
+        let claim = requests
+            .iter()
+            .find(|r| r["method"] == "pane.report_agent")
+            .expect("no pane.report_agent request");
+        let params = &claim["params"];
+        assert_eq!(params["pane_id"], "wE:p9");
+        assert_eq!(params["source"], "lerdr");
+        assert_eq!(params["agent"], "myagent");
+        assert_eq!(params["state"], "idle");
+        assert_eq!(
+            params["resume_argv"],
+            serde_json::json!(["myagent-cli", "--fast"])
+        );
+        assert!(params["seq"].as_u64().unwrap_or_default() > 0);
+    }
+
+    #[tokio::test]
+    async fn argv_start_claim_refusal_keeps_dispatched_unknown() {
+        // Pre-0.9.2 Herdr has no `pane.report_agent` — the refusal keeps
+        // the prior dispatched-unknown outcome, not a claimed success.
+        let (result, _) = run_argv_start(
+            vec![(
+                "pane.report_agent",
+                Step::Refuse("unknown_method", "no such method"),
+            )],
+            &["myagent-cli"],
+        )
+        .await;
+        let Err(StartErrorKind::Herdr(err)) = result else {
+            panic!("expected dispatched-unknown Herdr error");
+        };
+        assert_eq!(err.phase(), lerdr_herdr::DispatchPhase::DispatchedUnknown);
+    }
+
+    #[test]
+    fn report_seq_increases_strictly() {
+        let a = report_seq();
+        let b = report_seq();
+        assert!(b > a, "seq must increase per source: {a} then {b}");
+        assert!(a > 0);
+    }
+
+    #[test]
+    fn resume_argv_validation_mirrors_upstream_rules() {
+        assert!(valid_resume_argv(&["cmd".to_owned(), "--flag".to_owned()]));
+        // First element must be a plain command name, not a path.
+        assert!(!valid_resume_argv(&["/usr/bin/cmd".to_owned()]));
+        assert!(!valid_resume_argv(&[]));
+        // No apostrophes or control characters in any element.
+        assert!(!valid_resume_argv(&["cmd".to_owned(), "it's".to_owned()]));
+        assert!(!valid_resume_argv(&["cmd".to_owned(), "a\u{7}".to_owned()]));
+        // ≤64 elements, ≤8 KiB total.
+        assert!(!valid_resume_argv(&vec!["cmd".to_owned(); 65]));
+        assert!(!valid_resume_argv(&[
+            "cmd".to_owned(),
+            "x".repeat(8 * 1024)
+        ]));
     }
 }
