@@ -294,6 +294,39 @@ class RelaySessionTest {
     }
 
     @Test
+    fun refusedCommandResultSurfacesTheWireCode() = runBlocking {
+        upgrade(handshakeListener(onPostHandshake = { ws, session, parsed ->
+            if (parsed["type"]?.jsonPrimitive?.content != "submit_prompt") return@handshakeListener
+            val requestId = parsed["request_id"]?.jsonPrimitive?.content.orEmpty()
+            ws.send(
+                String(
+                    session.seal(
+                        """{"type":"command_result","request_id":"$requestId","action":"submit_prompt","ok":false,"phase":"not_started","error":"Herdr rejected the command before it was sent","data":{"code":"agent_blocked"}}"""
+                            .toByteArray(Charsets.UTF_8),
+                    ),
+                ),
+            )
+        }))
+        val session = newSession(this)
+        try {
+            session.start()
+            withTimeout(5_000) {
+                session.state.filterIsInstance<RelaySession.SessionState.Connected>().first()
+            }
+            try {
+                session.request(Inbound(type = "submit_prompt"))
+                error("request should have failed")
+            } catch (expected: CommandException) {
+                assertThat(expected.code).isEqualTo("agent_blocked")
+                assertThat(expected.message)
+                    .isEqualTo("Herdr rejected the command before it was sent")
+            }
+        } finally {
+            session.close()
+        }
+    }
+
+    @Test
     fun requestTimesOutAsDispatchedUnknown() = runBlocking {
         // The server handshakes but never answers commands.
         upgrade(handshakeListener())

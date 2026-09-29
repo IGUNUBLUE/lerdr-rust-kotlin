@@ -25,6 +25,7 @@ import lerdr.core.store.AgentStore
 import lerdr.core.store.ConnectionStore
 import lerdr.core.store.WorkspaceStore
 import lerdr.core.store.clientPaneId
+import lerdr.core.transport.CommandException
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
@@ -321,6 +322,70 @@ class FeedViewModelBehaviorTest {
         h.pump()
         assertThat(h.rawFramesOf("answer_question")).isEmpty()
         assertThat(vm.uiState.value.lastError).isEqualTo("Complete the question first.")
+    }
+
+    // ── blocked composer send ─────────────────────────────────────────
+
+    @Test
+    fun `sendPrompt is refused locally while the agent waits at a question`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.credentials.seed("r1", credential(DeviceRole.CONTROLLER))
+        h.repository.start()
+        h.pump()
+        h.connectReady(capabilities = listOf("attention_classification"))
+        h.emitBlockedQuestion()
+        val vm = h.viewModel()
+        backgroundScope.launch { vm.uiState.collect { } }
+        h.pump()
+        h.settleDraft()
+
+        vm.onDraftChange("answer from feed")
+        vm.sendPrompt()
+        h.pump()
+
+        // `submit_prompt` is refused upstream (`agent_blocked`) — the wire
+        // call never happens and the draft survives for after the unblock.
+        assertThat(h.handle().requests.any { it.type == "submit_prompt" }).isFalse()
+        assertThat(vm.uiState.value.lastError)
+            .isEqualTo("The agent is waiting at a question — answer it in the terminal")
+        assertThat(vm.uiState.value.composerDraft).isEqualTo("answer from feed")
+    }
+
+    @Test
+    fun `a mid-flight agent_blocked refusal surfaces the waiting explanation`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.credentials.seed("r1", credential(DeviceRole.CONTROLLER))
+        h.repository.start()
+        h.pump()
+        h.connectReady()
+        val vm = h.viewModel()
+        backgroundScope.launch { vm.uiState.collect { } }
+        h.pump()
+        h.settleDraft()
+
+        // Agent still reads idle at guard time; the block lands on the wire.
+        h.handle().responder = { message ->
+            if (message.type == "submit_prompt") {
+                throw CommandException(
+                    message = "Herdr rejected the command before it was sent",
+                    code = "agent_blocked",
+                )
+            }
+            lerdr.core.model.CommandResultMessage(
+                action = message.type,
+                ok = true,
+                phase = lerdr.core.model.CommandResultMessage.PHASE_COMPLETED,
+                requestId = message.requestId,
+            )
+        }
+        vm.onDraftChange("queued while blocked")
+        vm.sendPrompt()
+        h.pump()
+
+        assertThat(h.handle().requests.any { it.type == "submit_prompt" }).isTrue()
+        assertThat(vm.uiState.value.lastError)
+            .isEqualTo("The agent is waiting at a question — answer it in the terminal")
+        assertThat(vm.uiState.value.composerDraft).isEqualTo("queued while blocked")
     }
 
     // ── copy response ─────────────────────────────────────────────────

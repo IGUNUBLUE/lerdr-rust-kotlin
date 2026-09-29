@@ -22,6 +22,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import lerdr.core.model.ActionReceiptMessage
 import lerdr.core.model.ActionReceiptPhase
@@ -547,8 +549,14 @@ class RelaySession(
             pending.deferred.completeExceptionally(
                 CommandException(
                     message = result.error ?: "Command failed",
+                    // Refusals carry the wire code inside `data` (e.g.
+                    // `{"code":"agent_blocked"}`) — surface it so callers
+                    // can map known codes instead of parsing the message.
+                    code = (result.data as? JsonObject)
+                        ?.get("code")?.jsonPrimitive?.contentOrNull,
                     phase = result.phase,
                     dispatchedUnknown = result.phase == "dispatched_unknown",
+                    data = result.data,
                 ),
             )
         }
