@@ -110,6 +110,7 @@ import kotlinx.coroutines.launch
 import lerdr.core.conversation.ConversationBrowseState
 import lerdr.core.conversation.ConversationEntry
 import lerdr.core.conversation.ConversationRole
+import lerdr.core.store.rawBlocked
 
 /** Gap past which the pin drops — a deliberate scroll-away, not sub-pixel noise. */
 private val PIN_BOTTOM_GAP = 48.dp
@@ -499,6 +500,10 @@ fun AgentFeedContent(
                     draft = uiState.composerDraft,
                     sending = uiState.responding,
                     canControl = uiState.canControl,
+                    // Raw `blocked` status — `submit_prompt` stays refused
+                    // while the agent row reads blocked even after the
+                    // question card self-hides on a resolved interaction.
+                    blocked = rawBlocked(uiState.statusLabel),
                     slashMenuOpen = slashMenuOpen,
                     onSlashKey = { key ->
                         when (key) {
@@ -821,6 +826,7 @@ private fun Composer(
     draft: String,
     sending: Boolean,
     canControl: Boolean,
+    blocked: Boolean,
     slashMenuOpen: Boolean,
     onSlashKey: (Key) -> Boolean,
     canAttach: Boolean,
@@ -881,10 +887,10 @@ private fun Composer(
                     onValueChange = onDraftChange,
                     placeholder = {
                         Text(
-                            if (canControl) {
-                                "Message $agentLabel…"
-                            } else {
-                                "Read-only — this device cannot reply"
+                            when {
+                                !canControl -> "Read-only — this device cannot reply"
+                                blocked -> "Waiting at a question — answer it in the terminal"
+                                else -> "Message $agentLabel…"
                             },
                         )
                     },
@@ -914,7 +920,10 @@ private fun Composer(
                     attachments.items.any { it.state == AttachmentItemState.SELECTED }
                 IconButton(
                     onClick = onSend,
-                    enabled = canControl && !controlsLocked && sendable,
+                    // Lerdr `inputLocked` — `submit_prompt` is refused
+                    // (`agent_blocked`) while a question/approval owns the
+                    // pane; the draft stays editable for after the unblock.
+                    enabled = canControl && !controlsLocked && sendable && !blocked,
                 ) {
                     Icon(
                         Icons.AutoMirrored.Filled.Send,

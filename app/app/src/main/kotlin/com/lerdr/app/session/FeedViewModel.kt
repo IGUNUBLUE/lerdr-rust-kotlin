@@ -55,6 +55,7 @@ import lerdr.core.store.Agent
 import lerdr.core.store.AgentStatusGroup
 import lerdr.core.store.RelayConnection
 import lerdr.core.store.RelayStatus
+import lerdr.core.transport.CommandException
 import lerdr.core.store.agentStatusGroup
 import lerdr.core.store.attentionKind
 import lerdr.core.store.clientPaneId
@@ -941,6 +942,16 @@ class FeedViewModel(
         }
         val text = local.value.draft.trim()
         if ((text.isEmpty() && !pendingSelection) || local.value.sending) return
+        // Herdr refuses `submit_prompt` (`agent_blocked`) while a question or
+        // approval dialog owns the pane — the answer paths are the question
+        // card and raw terminal input, never a new prompt. The composer send
+        // is already disabled on `blocked`; this guard covers the draft that
+        // was typed before the block landed.
+        val agent = sessions.agents.value.firstOrNull { it.paneId == paneId }
+        if (rawBlocked(agent)) {
+            local.value = local.value.copy(lastError = BLOCKED_PROMPT_MESSAGE)
+            return
+        }
         val generation = ++attachmentGeneration
         attachmentCancelRequested = false
         viewModelScope.launch {
@@ -976,8 +987,16 @@ class FeedViewModel(
                     uploadError = true,
                 )
             } catch (failure: Exception) {
+                // The block can land between the guard and the wire call —
+                // translate the wire code instead of the generic refusal text.
+                val refusal = (failure as? CommandException)
+                    ?.let { it.code ?: it.apiError?.code }
                 local.value = local.value.copy(
-                    lastError = failure.message ?: "Prompt failed",
+                    lastError = if (refusal == "agent_blocked") {
+                        BLOCKED_PROMPT_MESSAGE
+                    } else {
+                        failure.message ?: "Prompt failed"
+                    },
                 )
             } finally {
                 local.value = local.value.copy(sending = false)
@@ -1378,6 +1397,14 @@ class FeedViewModel(
         const val SLASH_TIMEOUT_MS = 10_000L
         /** The controller's client-side stall code — `recoverHistory` routes it to Continue. */
         const val PREPARATION_STALLED_CODE = "preparation_stalled"
+
+        /**
+         * Blocked-pane `submit_prompt` refusal — shown for both the
+         * pre-dispatch guard and a `agent_blocked` wire code arriving on a
+         * stale race.
+         */
+        const val BLOCKED_PROMPT_MESSAGE =
+            "The agent is waiting at a question — answer it in the terminal"
     }
 }
 
