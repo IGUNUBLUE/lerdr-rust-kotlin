@@ -184,6 +184,61 @@ class TerminalViewModelTest {
     }
 
     @Test
+    fun `resize_settling frames hold the last settled display`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
+        backgroundScope.launch { viewModel.uiState.collect { } }
+        h.pump()
+
+        h.emitPaneContent("settled\n$ ")
+        val settled = viewModel.uiState.value
+        assertThat(settled.lines).containsExactly("settled", "$ ").inOrder()
+
+        // A settling frame still commits to the surface — the delta chain
+        // and `pane_applied` acks must not skip — but the display keeps
+        // the last settled content instead of the mid-repaint mix.
+        h.handle().emit(
+            json(
+                """{"type":"pane_content","pane_id":"%1","content":"mid repaint\n$ ","content_fingerprint":"fp-2","format":"ansi","resize_settling":true}""",
+            ),
+        )
+        h.pump()
+
+        val held = viewModel.uiState.value
+        assertThat(held.lines).containsExactly("settled", "$ ").inOrder()
+        assertThat(held.revision).isEqualTo(settled.revision)
+
+        // Once the flag clears, the newest frame lands.
+        h.emitPaneContent("settled again\n$ ", fingerprint = "fp-3")
+        val cleared = viewModel.uiState.value
+        assertThat(cleared.lines).containsExactly("settled again", "$ ").inOrder()
+        assertThat(cleared.revision).isGreaterThan(held.revision)
+    }
+
+    @Test
+    fun `a settling first frame still renders`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
+        backgroundScope.launch { viewModel.uiState.collect { } }
+        h.pump()
+
+        // No settled frame exists yet — a lease resize landing before the
+        // first read still shows the settling content rather than a blank.
+        h.handle().emit(
+            json(
+                """{"type":"pane_content","pane_id":"%1","content":"first\n$ ","content_fingerprint":"fp-1","format":"ansi","resize_settling":true}""",
+            ),
+        )
+        h.pump()
+
+        val state = viewModel.uiState.value
+        assertThat(state.waitingForContent).isFalse()
+        assertThat(state.lines).containsExactly("first", "$ ").inOrder()
+    }
+
+    @Test
     fun `metadata-only delta reuses the parsed row list`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectReady()
