@@ -75,6 +75,7 @@
       "herdr_status": [
         "features",
         "generation",
+        "health_check",
         "surface_interest",
         "capabilities"
       ],

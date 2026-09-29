@@ -72,6 +72,7 @@
       "herdr_status": [
         "features",
         "generation",
+        "health_check",
         "surface_interest",
         "capabilities"
       ],
@@ -111,7 +112,7 @@
       "inventory_status compares the full six-key projection (state/error_code/message/stale + both timestamps); last_attempt_at/last_success_at are wall-clock volatile.",
       "push_config compares {type,protocol} only; capability, update, inventory, and speech blocks are run-scoped.",
       "agents/workspaces compare the shared projection core plus server_session_id, activity_seq, project, raw_pane_id, and tab fields. pane_revision is a commit-epoch counter; tokens, state_labels, cwd, and worktree are not part of this local projection.",
-      "herdr_status compares health_check/server_protocol/server_version; probe feature maps and generation counters are run-scoped.",
+      "herdr_status compares server_protocol/server_version; health_check is probe-timing run-scoped like the feature maps and generation counters.",
       "pane_content compares the full semantic projection: attention_kind/prompt/command/options/no_echo land from the shared classify+noecho pass.",
       "The null activity_history startup form is excluded by drop_matches.",
       "Startup pushes are scheduler-ordered; unordered_types absorbs their interleaving."
