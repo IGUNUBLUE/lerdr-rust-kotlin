@@ -1959,8 +1959,32 @@ class SessionRepository @Inject constructor(
             onRelayRemoving?.invoke(relayId)
         } catch (_: Exception) {
         }
+        revokeOwnCredential(relayId)
         relayRegistry.remove(relayId)
         credentialStore.remove(relayId)
+    }
+
+    /**
+     * Self-revoke before the local drop — `revoke_device` carrying our
+     * caller `device_id` tombstones the credential server-side, so a
+     * forgotten pairing can never authenticate again (the relay sweeps
+     * this session right after answering). Best-effort like
+     * [onRelayRemoving]: a wedged or absent session still unpairs
+     * locally — the orphan stays live on the relay until another
+     * controller revokes it.
+     */
+    private suspend fun revokeOwnCredential(relayId: String) {
+        val finish = sessionState(relayId)?.value
+            as? RelaySession.SessionState.Connected ?: return
+        if (finish.finish.deviceId.isEmpty()) return
+        try {
+            request(
+                relayId,
+                Inbound(type = "revoke_device", deviceId = finish.finish.deviceId),
+                timeoutMs = SELF_REVOKE_TIMEOUT_MS,
+            )
+        } catch (_: Exception) {
+        }
     }
 
     // ── read seams for screens ────────────────────────────────────────
@@ -2267,6 +2291,8 @@ class SessionRepository @Inject constructor(
         const val PANE_LEASE_HIDDEN_GRACE_MS = 5 * 60_000L
         const val WORKSPACE_CLOSE_TIMEOUT_MS = 30_000L
         const val SELF_UPDATE_CAPABILITY = "self_update"
+        /** Best-effort `revoke_device` inside `removeRelay` — never wedges an unpair. */
+        const val SELF_REVOKE_TIMEOUT_MS = 5_000L
         const val UPDATE_COMMAND_TIMEOUT_MS = 30_000L
         const val COPY_RESPONSE_TIMEOUT_MS = 15_000L
         const val LIST_DIRECTORIES_TIMEOUT_MS = 10_000L
