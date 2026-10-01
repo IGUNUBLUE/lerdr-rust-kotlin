@@ -722,6 +722,19 @@ impl Topology {
         self.generations.get(pane_id).copied().unwrap_or(0)
     }
 
+    /// The pane's live cell geometry `(cols, rows)` from the committed
+    /// `layouts[]` — the observe stream renders the pane onto a surface
+    /// of exactly this size, so a stale or missing layout rect drops
+    /// pane cells off the wire.
+    pub(crate) fn pane_cell_size(&self, pane_id: &str) -> Option<(u16, u16)> {
+        self.snapshot
+            .layouts
+            .iter()
+            .flat_map(|layout| layout.panes.iter())
+            .find(|pane| pane.pane_id == pane_id)
+            .map(|pane| (pane.rect.width, pane.rect.height))
+    }
+
     /// `State.PaneSession` (state.go:290-295) — the epoch plus whether
     /// the pane is live in the snapshot.
     pub(crate) fn pane_session(&self, pane_id: &str) -> (i64, bool) {
@@ -1236,6 +1249,47 @@ mod tests {
         assert!(agents[0].focused);
         // The initial snapshot stamps updated_at = 0 (state.go:507).
         assert_eq!(agents[0].updated_at, 0);
+    }
+
+    /// `pane_cell_size` reads the committed `layouts[]` rect — the
+    /// geometry the observe stream must render the pane at.
+    #[test]
+    fn pane_cell_size_reads_layout_rect() {
+        let mut t = Topology::default();
+        assert_eq!(t.pane_cell_size("w8:pJ"), None);
+        t.accept(SessionSnapshot {
+            layouts: vec![lerdr_herdr::PaneLayoutSnapshot {
+                workspace_id: "w8".into(),
+                tab_id: "w8:t1".into(),
+                panes: vec![
+                    lerdr_herdr::PaneLayoutPane {
+                        pane_id: "w8:pJ".into(),
+                        focused: true,
+                        rect: lerdr_herdr::PaneLayoutRect {
+                            x: 0,
+                            y: 0,
+                            width: 168,
+                            height: 52,
+                        },
+                    },
+                    lerdr_herdr::PaneLayoutPane {
+                        pane_id: "w8:pK".into(),
+                        focused: false,
+                        rect: lerdr_herdr::PaneLayoutRect {
+                            x: 0,
+                            y: 52,
+                            width: 168,
+                            height: 30,
+                        },
+                    },
+                ],
+                ..lerdr_herdr::PaneLayoutSnapshot::default()
+            }],
+            ..SessionSnapshot::default()
+        });
+        assert_eq!(t.pane_cell_size("w8:pJ"), Some((168, 52)));
+        assert_eq!(t.pane_cell_size("w8:pK"), Some((168, 30)));
+        assert_eq!(t.pane_cell_size("w8:nope"), None);
     }
 
     #[test]

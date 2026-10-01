@@ -51,6 +51,9 @@ pub(crate) struct PaneStream {
     /// `None` parser until the first frame lands (geometry arrives on the
     /// frame, not the spawn).
     emu: PaneEmulator,
+    /// The `(cols, rows)` the observer was spawned with — `None` took
+    /// Herdr's fixed default surface.
+    size: Option<(u16, u16)>,
 }
 
 /// The stream's next meaningful outcome.
@@ -65,19 +68,37 @@ pub(crate) enum StreamOutcome {
 }
 
 impl PaneStream {
-    /// Spawn the observer; `None` when the CLI/socket aren't reachable or
-    /// the stream is env-disabled. `client` supplies the resolved `herdr`
+    /// Spawn the observer at `size` `(cols, rows)` — the pane's real
+    /// cell geometry. `None` when the CLI/socket aren't reachable or the
+    /// stream is env-disabled. `client` supplies the resolved `herdr`
     /// binary and the transport's socket path.
-    pub(crate) fn spawn(client: &lerdr_herdr::Client, pane_id: &str) -> Option<Self> {
+    ///
+    /// An undersized surface silently drops pane cells: Herdr renders
+    /// the pane's terminal onto the requested geometry and rows beyond
+    /// it never reach the wire (`None` takes Herdr's fixed default
+    /// surface — smaller than a full-size pane).
+    pub(crate) fn spawn(
+        client: &lerdr_herdr::Client,
+        pane_id: &str,
+        size: Option<(u16, u16)>,
+    ) -> Option<Self> {
         if !streams_enabled() {
             return None;
         }
         let socket_path = client.socket_path_hint()?;
         let bin = client.resolved_herdr_bin();
+        let (cols, rows) = size.unzip();
         Some(PaneStream {
-            stream: ObserveStream::spawn(&bin, pane_id, &socket_path)?,
+            stream: ObserveStream::spawn_sized(&bin, pane_id, &socket_path, cols, rows)?,
             emu: PaneEmulator::new(),
+            size,
         })
+    }
+
+    /// The surface geometry this stream was spawned with — the watch
+    /// respawns when the pane's real size drifts from it.
+    pub(crate) fn size(&self) -> Option<(u16, u16)> {
+        self.size
     }
 
     /// Next stream event — frames fold into the emulator; `Closed` tells
