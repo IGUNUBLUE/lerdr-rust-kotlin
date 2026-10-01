@@ -347,7 +347,7 @@ fn run_vector(vector: &Value) -> Result<(), String> {
                 .filter_map(Value::as_str)
                 .map(str::to_string)
                 .collect();
-            run_sqlite(database, &statements).map_err(&fail)?;
+            run_sqlite(database, &statements).map_err(fail)?;
         }
 
         let before = match step.get("before_step").and_then(Value::as_u64) {

@@ -759,6 +759,10 @@ fn valid_resume_argv(argv: &[String]) -> bool {
 /// panes from colliding in the same millisecond.
 static REPORT_SEQ: AtomicU64 = AtomicU64::new(0);
 
+// `try_update` (the 1.99 deprecation rename) is only stable since 1.95 —
+// the workspace MSRV floor is 1.88, so the old spelling stays until the
+// floor moves.
+#[allow(deprecated)]
 fn report_seq() -> u64 {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
