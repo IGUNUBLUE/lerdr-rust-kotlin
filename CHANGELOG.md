@@ -6,6 +6,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 Releases are **pre-release / beta** — no compatibility guarantees yet.
+## [0.2.7] — 2026-10-01
+
+### Added
+
+- **Fit width for wide terminals** — the session ⋯ menu gains a
+  "Fit width" action that scales the widest committed row edge-to-edge,
+  so a native-size omp TUI (≥160 columns) is fully visible in one
+  viewport instead of three horizontal swipes away. Once fitted the
+  entry flips to "Actual size" for the way back. Pinch and fit share
+  the same bounds, now 0.25–2.5× so wide TUIs are actually reachable.
+
+### Fixed
+
+- **Pane tail missing on oversized panes** — the observe stream
+  rendered onto a fixed 120×40 surface when no geometry was supplied,
+  so panes taller than 40 rows lost their bottom rows entirely: omp's
+  fixed-position chrome (TODO panel, activity line, statusline, box
+  border) never entered the emulator that backs watch/read content.
+  The relay now resolves each pane's real geometry — lease dims while
+  a size lease is held, else the committed layout rect — and respawns
+  the observer when it drifts.
+
 ## [0.2.6] — 2026-10-01
 
 ### Fixed
