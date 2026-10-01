@@ -637,8 +637,14 @@ async fn watch_loop(
     // Attach the live `terminal session observe` stream up front — until
     // its first frame lands (and forever if it never does) every read
     // below falls through to `pane.read`, so spawn failure costs nothing.
+    // The surface is spawned at the pane's real cell geometry: an
+    // undersized surface silently drops pane cells off the wire.
     let mut slot = StreamSlot {
-        stream: PaneStream::spawn(&deps.handle.client, &pane_id),
+        stream: PaneStream::spawn(
+            &deps.handle.client,
+            &pane_id,
+            resolve_stream_size(&deps, &pane_id).await,
+        ),
         ..StreamSlot::default()
     };
     slot.failed = slot.stream.is_none();
@@ -933,6 +939,55 @@ pub(crate) async fn pane_read_fresh(
     unreachable!("loop returns or iterates twice")
 }
 
+/// Per-dimension merge for the observe surface: the lease ledger wins
+/// (its dims are what the pane's tty was stty'd to), the committed
+/// `layouts[]` rect supplies whatever the lease leaves alone. `None`
+/// for an unresolvable dimension ⇒ the caller spawns unsized.
+fn merge_stream_size(
+    lease_cols: Option<i64>,
+    lease_rows: Option<i64>,
+    topo_size: Option<(u16, u16)>,
+) -> Option<(u16, u16)> {
+    let dim = |lease: Option<i64>, topo: u16| {
+        lease
+            .and_then(|v| u16::try_from(v).ok().filter(|v| *v > 0))
+            .or(if topo > 0 { Some(topo) } else { None })
+    };
+    let (topo_cols, topo_rows) = topo_size.unwrap_or_default();
+    Some((dim(lease_cols, topo_cols)?, dim(lease_rows, topo_rows)?))
+}
+
+/// The surface geometry the observer should run at — lease dims when a
+/// size lease owns the pane's tty, else the committed layout rect.
+/// Everything is in-memory state (topology borrow + lease locks), so
+/// this is cheap enough to re-resolve every poll.
+async fn resolve_stream_size(deps: &WatchDeps, pane_id: &str) -> Option<(u16, u16)> {
+    let topo = deps.handle.topology.borrow().pane_cell_size(pane_id);
+    let lease_cols = deps.leases.active_columns(pane_id).await;
+    let lease_rows = deps.leases.active_rows(pane_id).await;
+    merge_stream_size(lease_cols, lease_rows, topo)
+}
+
+/// The observe surface is a fixed size chosen at spawn — it does not
+/// follow the pane through lease applies/releases or layout changes
+/// (splits, resizes). Re-resolve the target each poll and respawn when
+/// it drifts: a stale surface silently drops the pane's bottom/right
+/// cells off the wire (the emulator's `render_rows` trims the missing
+/// tail as blanks). A dead stream stays dead — revival owns `None`.
+async fn sync_stream_geometry(pane_id: &str, deps: &WatchDeps, slot: &mut StreamSlot) {
+    let Some(stream) = slot.stream.as_ref() else {
+        return;
+    };
+    let target = resolve_stream_size(deps, pane_id).await;
+    if stream.size() == target {
+        return;
+    }
+    debug!(pane_id, "pane geometry drifted — re-attaching observer");
+    slot.stream = PaneStream::spawn(&deps.handle.client, pane_id, target);
+    slot.failed = slot.stream.is_none();
+    slot.dirty = false;
+}
+
 /// `pollPaneWatch` (pane_watch.go:165-223) — the tick: a cheap
 /// `visible`-source probe first (`HandleProbePane`), a full
 /// `HandleReadPane` read only when `paneWatchNeedsFrameRead` says the
@@ -945,6 +1000,7 @@ async fn poll(
     state: &mut WatchState,
     slot: &mut StreamSlot,
 ) {
+    sync_stream_geometry(pane_id, deps, slot).await;
     // While the observer is attached and has rendered, the emulator is
     // the read — no `pane.read` at all, so no scroll harvesting and no
     // probe/read two-tier.
@@ -991,7 +1047,11 @@ async fn poll(
     // dropped the stream with the old terminal, and a missing stream is
     // retried only here — not on every tick.
     if state.gone && !slot.failed && slot.stream.is_none() {
-        slot.stream = PaneStream::spawn(&deps.handle.client, pane_id);
+        slot.stream = PaneStream::spawn(
+            &deps.handle.client,
+            pane_id,
+            resolve_stream_size(deps, pane_id).await,
+        );
         slot.failed = slot.stream.is_none();
     }
     state.gone = false;
@@ -1640,6 +1700,38 @@ mod tests {
     use std::sync::atomic::Ordering;
     use std::time::Duration;
     use tokio::sync::broadcast;
+
+    /// `merge_stream_size` — lease dims (the tty's real size while a
+    /// size lease is held) win per-dimension over the committed layout
+    /// rect; unsized only when neither knows a dimension.
+    #[test]
+    fn stream_size_merges_lease_over_layout() {
+        // Lease owns both dims — layout irrelevant.
+        assert_eq!(
+            merge_stream_size(Some(57), Some(36), Some((168, 52))),
+            Some((57, 36))
+        );
+        // Cols-only lease: layout supplies rows.
+        assert_eq!(
+            merge_stream_size(Some(57), None, Some((168, 52))),
+            Some((57, 52))
+        );
+        // Unleased: the layout rect is the surface.
+        assert_eq!(
+            merge_stream_size(None, None, Some((168, 52))),
+            Some((168, 52))
+        );
+        // No layout either → unsized spawn (Herdr's default surface).
+        assert_eq!(merge_stream_size(None, None, None), None);
+        // Garbage lease values fall through to the layout rect.
+        assert_eq!(
+            merge_stream_size(Some(0), Some(-1), Some((168, 52))),
+            Some((168, 52))
+        );
+        // A single unresolvable dimension drops the whole size — spawn
+        // unsized rather than assert a half-known surface.
+        assert_eq!(merge_stream_size(Some(0), None, None), None);
+    }
 
     /// `requestedPaneWatchInterval`: the whitelist passes through,
     /// everything else — absent, non-integral, out-of-set — is the

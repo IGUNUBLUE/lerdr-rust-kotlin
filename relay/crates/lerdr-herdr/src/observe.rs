@@ -1,7 +1,9 @@
 //! `terminal session observe` — the live ANSI frame stream behind the
 //! read-only attach. Herdr renders the pane's terminal onto a surface of the
-//! requested geometry (default: the pane's real size — the host pane is
-//! never touched either way) and pushes NDJSON `terminal.frame` records:
+//! requested geometry (default: a fixed 120×40 — pass `--cols`/`--rows`
+//! matching the pane's real layout rect or pane cells beyond it never
+//! reach the wire; the host pane is never touched either way) and pushes
+//! NDJSON `terminal.frame` records:
 //! `seq` monotonic, `full` marks a complete re-render, `bytes` is
 //! base64-encoded ANSI, `width`/`height` the surface geometry. Pane exit
 //! arrives as a `terminal.closed` record; a stalled consumer may be dropped
@@ -84,8 +86,8 @@ impl ObserveStream {
         Self::spawn_sized(bin, pane_id, socket_path, None, None)
     }
 
-    /// `observe --cols --rows` — a virtual re-render at phone geometry, or
-    /// the pane's real geometry when both are `None`.
+    /// `observe --cols --rows` — a virtual re-render at the given
+    /// geometry, or Herdr's fixed default surface when both are `None`.
     pub fn spawn_sized(
         bin: &std::path::Path,
         pane_id: &str,
