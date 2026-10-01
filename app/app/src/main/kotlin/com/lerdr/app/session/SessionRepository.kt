@@ -1827,6 +1827,12 @@ class SessionRepository @Inject constructor(
             throw CommandException("Relay lacks pane-size lease support")
         }
         sendToAgent(agent, Inbound(type = "release_pane_size"))
+        val runtime = synchronized(lock) { panes[paneId] }
+        if (runtime != null) {
+            runtime.mutex.withLock {
+                runtime.surface.resize(0, 0)?.let { runtime.snapshots.value = it }
+            }
+        }
     }
 
     // ── workspace inspection (Files mode) ────────────────────────────

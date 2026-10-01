@@ -117,6 +117,16 @@ class TerminalViewModelTest {
             pump()
         }
 
+        /** `agents` upsert — flips the pane's provider mid-session. */
+        suspend fun emitAgent(agent: String, status: String = "working") {
+            handle().emit(
+                json(
+                    """{"type":"agents","agents":[{"pane_id":"%1","raw_pane_id":"%1","terminal_id":"t1","server_session_id":"ss1","generation":3,"agent":"$agent","name":"$agent","status":"$status","cwd":"/home/u/lerdr","project":"lerdr","workspace_id":"w1","updated_at":100}]}""",
+                ),
+            )
+            pump()
+        }
+
         suspend fun emitPaneContent(content: String, fingerprint: String = "fp-1") {
             handle().emit(
                 buildJsonObject {
@@ -347,6 +357,102 @@ class TerminalViewModelTest {
         assertThat(state.leaseColumns).isEqualTo(92)
         assertThat(state.leaseRows).isEqualTo(42)
         assertThat(state.statusLabel).isEqualTo("lease 92×42")
+    }
+
+    @Test
+    fun `omp viewport measurement keeps the native pane size`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        h.emitAgent("omp")
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
+        backgroundScope.launch { viewModel.uiState.collect { } }
+        h.pump()
+        h.emitPaneContent("prompt$ ")
+
+        viewModel.onViewportMeasured(columns = 92, rows = 42)
+        h.pump()
+
+        // omp's status strip spans the host width — a phone-sized stty
+        // would truncate it, so no lease is negotiated at all.
+        assertThat(h.handle().requests.map { it.type }).doesNotContain("lease_pane_size")
+        assertThat(h.handle().requests.map { it.type }).doesNotContain("release_pane_size")
+        val state = viewModel.uiState.value
+        assertThat(state.leaseColumns).isEqualTo(0)
+        assertThat(state.statusLabel).isEqualTo("working")
+    }
+
+    @Test
+    fun `a provider resolving to omp releases the held lease`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        h.handle().responder = { message ->
+            lerdr.core.model.CommandResultMessage(
+                action = message.type,
+                ok = true,
+                phase = lerdr.core.model.CommandResultMessage.PHASE_COMPLETED,
+                requestId = message.requestId,
+                data = buildJsonObject {
+                    put("columns", message.columns)
+                    put("rows", message.rows)
+                },
+            )
+        }
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
+        backgroundScope.launch { viewModel.uiState.collect { } }
+        h.pump()
+        h.emitPaneContent("prompt$ ")
+
+        viewModel.onViewportMeasured(columns = 92, rows = 42)
+        h.pump()
+        assertThat(viewModel.uiState.value.leaseColumns).isEqualTo(92)
+
+        // The agent row re-announces as omp — the just-acquired lease is
+        // dropped so the pane snaps back to its native grid.
+        h.emitAgent("omp", status = "idle")
+        h.pump()
+
+        assertThat(h.handle().requests.map { it.type }).contains("release_pane_size")
+        val state = viewModel.uiState.value
+        assertThat(state.leaseColumns).isEqualTo(0)
+        assertThat(state.leaseRows).isEqualTo(0)
+        assertThat(state.statusLabel).isEqualTo("idle")
+    }
+
+    @Test
+    fun `a provider resolving away from omp arms the measured lease`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        h.emitAgent("omp")
+        h.handle().responder = { message ->
+            lerdr.core.model.CommandResultMessage(
+                action = message.type,
+                ok = true,
+                phase = lerdr.core.model.CommandResultMessage.PHASE_COMPLETED,
+                requestId = message.requestId,
+                data = buildJsonObject {
+                    put("columns", message.columns)
+                    put("rows", message.rows)
+                },
+            )
+        }
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
+        backgroundScope.launch { viewModel.uiState.collect { } }
+        h.pump()
+        h.emitPaneContent("prompt$ ")
+
+        viewModel.onViewportMeasured(columns = 92, rows = 42)
+        h.pump()
+        assertThat(h.handle().requests.map { it.type }).doesNotContain("lease_pane_size")
+
+        // Mis-classified rows heal: a re-announcement to a leased provider
+        // negotiates the grid the view already measured.
+        h.emitAgent("pi")
+        h.pump()
+
+        val lease = h.handle().requests.single { it.type == "lease_pane_size" }
+        assertThat(lease.columns).isEqualTo(92)
+        assertThat(lease.rows).isEqualTo(42)
+        assertThat(viewModel.uiState.value.leaseColumns).isEqualTo(92)
     }
 
     @Test
