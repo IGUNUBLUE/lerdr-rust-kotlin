@@ -60,4 +60,27 @@ class TerminalZoomTest {
         val (state, _) = state()
         assertEquals(1f, state.fitWidthScale, 0.0001f)
     }
+
+    @Test
+    fun `widthFitted tracks a sub-1 fit application`() {
+        val (state, _) = state()
+        assertEquals(false, state.widthFitted)
+
+        state.applyFontScale(0.35f, fit = true)
+        assertEquals(true, state.widthFitted)
+
+        // Actual-size restore and pinch both clear the flag.
+        state.applyFontScale(1f)
+        assertEquals(false, state.widthFitted)
+        state.applyFontScale(0.35f, fit = true)
+        state.zoomBy(1.2f)
+        assertEquals(false, state.widthFitted)
+    }
+
+    @Test
+    fun `widthFitted stays clear when the fit is already actual size`() {
+        val (state, _) = state()
+        state.applyFontScale(1f, fit = true)
+        assertEquals(false, state.widthFitted)
+    }
 }

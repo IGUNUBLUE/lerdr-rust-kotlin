@@ -880,15 +880,28 @@ class TerminalSurfaceState internal constructor(
         internal set
 
     /**
+     * Held while the last applied scale was the fit-width value — the
+     * toolbar flips to "Actual size" on it. Explicit rather than
+     * inferred from `fontScale == fitWidthScale`: cell metrics do not
+     * rescale perfectly linearly, so a fitted surface may recompute a
+     * few percent off the applied scale.
+     */
+    var widthFitted by mutableStateOf(false)
+        internal set
+
+    /**
      * Explicit scale — pinch ([zoomBy]) and the fit-width toolbar action
      * share this path so both land in the same bounds and persist alike.
+     * [fit] marks a width-fit application for [widthFitted]; any other
+     * scale change clears it.
      */
-    internal fun applyFontScale(scale: Float) {
+    internal fun applyFontScale(scale: Float, fit: Boolean = false) {
         val next = scale.coerceIn(MIN_FONT_SCALE, MAX_FONT_SCALE)
         if (next != fontScale) {
             fontScale = next
             onFontScaleChanged(next)
         }
+        widthFitted = fit && next < 1f
     }
 
     internal fun zoomBy(factor: Float) {

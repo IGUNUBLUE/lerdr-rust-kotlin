@@ -97,7 +97,6 @@ import com.lerdr.app.ui.terminal.wrapFindIndex
 import com.lerdr.core.designsystem.theme.LerdrTextStyles
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import dagger.hilt.android.EntryPointAccessors
-import kotlin.math.abs
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import lerdr.core.model.PaneLinkActivatedResult
@@ -329,8 +328,7 @@ fun TerminalContent(
                     // host geometry) can be several viewports wide; fitting
                     // scales it edge-to-edge, and once fitted the action
                     // offers the way back to actual size.
-                    val fitted = surfaceState.fitWidthScale < 1f &&
-                        abs(surfaceState.fontScale - surfaceState.fitWidthScale) < 0.02f
+                    val fitted = surfaceState.widthFitted
                     listOf(
                         SessionBarAction(
                             label = "Find in terminal",
@@ -343,6 +341,7 @@ fun TerminalContent(
                             onClick = {
                                 surfaceState.applyFontScale(
                                     if (fitted) 1f else surfaceState.fitWidthScale,
+                                    fit = !fitted,
                                 )
                             },
                         ),
