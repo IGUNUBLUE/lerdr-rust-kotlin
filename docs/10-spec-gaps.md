@@ -528,8 +528,12 @@ only (no `adb input` equivalent).
 - **Long-press context menu** — row hit-test by Y (blank rows omit
   "Copy line"); copy line / copy transcript / share transcript; per-URL
   open-link / copy-link from linkified `href` spans.
-- **Pinch-to-zoom** — `fontScale` 0.6–2.5× on the surface state; cell
-  metrics re-probe → `lease_pane_size` re-leases automatically.
+- **Pinch-to-zoom** — `fontScale` 0.25–2.5× on the surface state; cell
+  metrics re-probe → `lease_pane_size` re-leases automatically (native-size
+  providers like omp skip the lease). **Fit width** in the ⋯ menu applies
+  the scale that draws the widest committed row edge-to-edge — floor 0.25
+  exists so ~200-col TUIs can be fully visible on a phone viewport; the
+  toggle flips to "Actual size" (1.0×) once fitted.
 - **Real RTT** — `refresh_agents` keepalive round-trip measures `rttMs`
   (`-1` = unmeasured, reset on disconnect); relay chips render
   `sd · direct · 9ms`, settings detail `… · protocol 3 · 9ms`.

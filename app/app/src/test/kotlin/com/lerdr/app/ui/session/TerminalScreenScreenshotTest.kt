@@ -67,7 +67,7 @@ class TerminalScreenScreenshotTest {
         revision = 1,
     )
 
-    private fun show(uiState: TerminalUiState) {
+    private fun show(uiState: TerminalUiState, fontScale: Float = 1f) {
         composeRule.setContent {
             LerdrTheme {
                 TerminalContent(
@@ -80,6 +80,7 @@ class TerminalScreenScreenshotTest {
                     onSendSecret = {},
                     onViewportMeasured = { _, _ -> },
                     onRefresh = {},
+                    terminalFontScale = fontScale,
                 )
             }
         }
@@ -179,6 +180,39 @@ class TerminalScreenScreenshotTest {
             ),
         )
         composeRule.onNodeWithText("Waiting for relay…").assertExists()
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    /**
+     * Native-size omp TUI at the fit-width scale — the ⋯ menu's
+     * "Fit width" action lands a ~160-col pane edge-to-edge instead of
+     * requiring several horizontal swipes.
+     */
+    @Test
+    fun terminal_wideTuiFit() {
+        val pad = "─".repeat(158)
+        val wideRows = parseTerminalRows(
+            listOf(
+                "╭$pad╮",
+                "│ π back-orchestrator — freddys-backend" +
+                    " ".repeat(118) + "│",
+                "│ ⠹ Working…  *2 subagents  ·  w1D timing  ·  w1E report" +
+                    " ".repeat(103) + "│",
+                "╰$pad╯",
+                "$ ",
+            ),
+            TERMINAL_FORMAT_ANSI,
+        )
+        show(
+            baseState().copy(
+                provider = "omp",
+                statusLabel = "idle",
+                leaseColumns = 0,
+                leaseRows = 0,
+                rows = wideRows,
+            ),
+            fontScale = 0.35f,
+        )
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
 }

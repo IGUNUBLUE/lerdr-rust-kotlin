@@ -26,6 +26,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.FitScreen
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -33,6 +34,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -95,6 +97,7 @@ import com.lerdr.app.ui.terminal.wrapFindIndex
 import com.lerdr.core.designsystem.theme.LerdrTextStyles
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import dagger.hilt.android.EntryPointAccessors
+import kotlin.math.abs
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import lerdr.core.model.PaneLinkActivatedResult
@@ -321,18 +324,35 @@ fun TerminalContent(
                 active = uiState.connected,
                 tabsPaneId = tabsPaneId,
                 onSessionClosed = onBack,
-                actions = listOf(
-                    SessionBarAction(
-                        label = "Find in terminal",
-                        icon = Icons.Default.Search,
-                        onClick = { findOpen = true },
-                    ),
-                    SessionBarAction(
-                        label = "Refresh",
-                        icon = Icons.Default.Refresh,
-                        onClick = onRefresh,
-                    ),
-                ),
+                actions = run {
+                    // Fit-width toggle — a native-size TUI (omp keeps its
+                    // host geometry) can be several viewports wide; fitting
+                    // scales it edge-to-edge, and once fitted the action
+                    // offers the way back to actual size.
+                    val fitted = surfaceState.fitWidthScale < 1f &&
+                        abs(surfaceState.fontScale - surfaceState.fitWidthScale) < 0.02f
+                    listOf(
+                        SessionBarAction(
+                            label = "Find in terminal",
+                            icon = Icons.Default.Search,
+                            onClick = { findOpen = true },
+                        ),
+                        SessionBarAction(
+                            label = if (fitted) "Actual size" else "Fit width",
+                            icon = if (fitted) Icons.Default.ZoomIn else Icons.Default.FitScreen,
+                            onClick = {
+                                surfaceState.applyFontScale(
+                                    if (fitted) 1f else surfaceState.fitWidthScale,
+                                )
+                            },
+                        ),
+                        SessionBarAction(
+                            label = "Refresh",
+                            icon = Icons.Default.Refresh,
+                            onClick = onRefresh,
+                        ),
+                    )
+                },
             )
         },
         bottomBar = {

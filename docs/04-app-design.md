@@ -103,7 +103,11 @@ Data: `get_conversation_history` pages + `question`/attention events +
   `adjustResize` shrinks the grid and re-leases rows — pane reflows like a
   real terminal resize. Release on background/hide.
 - Pinch-to-zoom adjusts font → re-leases columns. Two-finger only —
-  single-finger drags stay with scroll; scale is clamped 0.6–2.5×.
+  single-finger drags stay with scroll; scale is clamped 0.25–2.5×.
+- **Fit width** (⋯ menu) scales the widest committed row edge-to-edge —
+  the answer for native-size TUIs (omp panes keep host geometry) that
+  run several viewports wide; tapping again restores actual size.
+  Horizontal scroll + pinch remain for panning.
 - Scrollback stays readable while live: pause-follow button ("scroll to
   live" pill, Telegram-style) when scrolled up; deltas still apply.
 - Long-press a row → context menu at the touch point: copy line / copy
