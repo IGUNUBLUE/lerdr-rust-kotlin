@@ -25,6 +25,7 @@ import lerdr.core.model.PaneLinkActivatedResult
 import lerdr.core.model.PaneSearchResult
 import lerdr.core.store.Agent
 import lerdr.core.store.RelayStatus
+import lerdr.core.store.orchestratingStatus
 import lerdr.core.terminal.PaneSurface
 import lerdr.core.transport.CommandException
 
@@ -149,8 +150,9 @@ class TerminalViewModel(
         sessions.paneSnapshot(paneId),
         sessions.agent(paneId),
         sessions.connection(relayId),
+        sessions.cohortBusy(paneId),
         lastError,
-    ) { snapshot, agent, connection, error ->
+    ) { snapshot, agent, connection, cohortBusy, error ->
         if (snapshot != null && !snapshot.resizeSettling) settledSnapshot = snapshot
         val display = snapshot?.let {
             if (it.resizeSettling) settledSnapshot ?: it else it
@@ -179,7 +181,7 @@ class TerminalViewModel(
                     "lease ${display.columns} cols"
                 }
             } else {
-                agent?.status ?: ""
+                agent.orchestratingStatus(cohortBusy) ?: agent?.status ?: ""
             },
             connected = connection?.status == RelayStatus.CONNECTED,
             waitingForContent = display == null,
