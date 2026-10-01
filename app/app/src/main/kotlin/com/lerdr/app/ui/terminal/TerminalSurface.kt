@@ -265,6 +265,20 @@ fun TerminalSurface(
             onViewportMeasured(gridColumns, gridRows)
         }
 
+        // Fit-width affordance — the scale that would put the widest
+        // committed row edge-to-edge in this viewport (metrics are at
+        // the current fontScale, so the ratio rescales it). Fitting
+        // never enlarges a pane that already fits — the cap is 1.0.
+        val widestRowCells = renderRows.maxOfOrNull { it.cells } ?: 0
+        SideEffect {
+            state.fitWidthScale = if (widestRowCells > 0 && metrics.cellWidth > 0f) {
+                (state.fontScale * viewportWidth / (widestRowCells * metrics.cellWidth))
+                    .coerceIn(MIN_FONT_SCALE, 1f)
+            } else {
+                1f
+            }
+        }
+
         // Follow-live: each commit keeps the write edge in view while the
         // pin holds — a find reveal or a scroll into history releases it.
         LaunchedEffect(revision) {
@@ -856,12 +870,42 @@ class TerminalSurfaceState internal constructor(
     var fontScale by mutableFloatStateOf(1f)
         internal set
 
-    internal fun zoomBy(factor: Float) {
-        val next = (fontScale * factor).coerceIn(MIN_FONT_SCALE, MAX_FONT_SCALE)
+    /**
+     * The scale that would draw the widest committed row edge-to-edge in
+     * the current viewport — the surface recomputes it each frame and
+     * the toolbar's fit-width action applies it. A ~200-col TUI needs
+     * well under 1.0 to be fully visible on a phone.
+     */
+    var fitWidthScale by mutableFloatStateOf(1f)
+        internal set
+
+    /**
+     * Held while the last applied scale was the fit-width value — the
+     * toolbar flips to "Actual size" on it. Explicit rather than
+     * inferred from `fontScale == fitWidthScale`: cell metrics do not
+     * rescale perfectly linearly, so a fitted surface may recompute a
+     * few percent off the applied scale.
+     */
+    var widthFitted by mutableStateOf(false)
+        internal set
+
+    /**
+     * Explicit scale — pinch ([zoomBy]) and the fit-width toolbar action
+     * share this path so both land in the same bounds and persist alike.
+     * [fit] marks a width-fit application for [widthFitted]; any other
+     * scale change clears it.
+     */
+    internal fun applyFontScale(scale: Float, fit: Boolean = false) {
+        val next = scale.coerceIn(MIN_FONT_SCALE, MAX_FONT_SCALE)
         if (next != fontScale) {
             fontScale = next
             onFontScaleChanged(next)
         }
+        widthFitted = fit && next < 1f
+    }
+
+    internal fun zoomBy(factor: Float) {
+        applyFontScale(fontScale * factor)
     }
 
     /**
@@ -951,8 +995,9 @@ private const val STICK_THRESHOLD_DP = 48
 private const val CURSOR_ALPHA = 0.35f
 private const val CURSOR_BLINK_MS = 530L
 
-/** Pinch-zoom bounds — enough range to matter without degenerate cells. */
-private const val MIN_FONT_SCALE = 0.6f
+/** Zoom bounds — the floor reaches fit-width territory: a ~200-col TUI
+ *  on a phone viewport scales near 0.3 to show its full width. */
+private const val MIN_FONT_SCALE = 0.25f
 private const val MAX_FONT_SCALE = 2.5f
 
 /** Bound on cached row layouts — a scrollback walk touches at most the
