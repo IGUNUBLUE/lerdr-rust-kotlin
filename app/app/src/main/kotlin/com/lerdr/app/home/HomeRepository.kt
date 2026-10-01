@@ -25,6 +25,8 @@ import lerdr.core.store.agentNeedsResponse
 import lerdr.core.store.agentStatusGroup
 import lerdr.core.store.attentionKind
 import lerdr.core.store.clientPaneId
+import lerdr.core.store.cohortBusyCount
+import lerdr.core.store.orchestratingStatus
 import lerdr.core.store.sortedAgents
 
 /**
@@ -102,6 +104,19 @@ class RealHomeRepository @Inject constructor(
             .groupBy { clientPaneId(it.relayId, it.entry.paneId) }
             .mapValues { (_, items) -> items.first().entry }
 
+        // Cohort derivation — a hook-less pane in a repo-root workspace
+        // surfaces its busy linked-worktree children as "orchestrating";
+        // Herdr's `default_known_agent_idle_fallback` can't see them.
+        val cohortBusy = sorted.associate { agent ->
+            agent.paneId to cohortBusyCount(agent, sorted, workspaces)
+        }
+        val orchestrating = HashSet<String>()
+        for (agent in sorted) {
+            if (agent.orchestratingStatus(cohortBusy[agent.paneId] ?: 0) != null) {
+                orchestrating.add(agent.paneId)
+            }
+        }
+
         return HomeUiState(
             live = connections.values.any { it.status == RelayStatus.CONNECTED },
             relaySummary = relaySummary(relays, connections),
@@ -109,14 +124,27 @@ class RealHomeRepository @Inject constructor(
                 .filter { agentNeedsResponse(it) || agentNeedsInspection(it) }
                 .map { it.toAttentionCard(at, responding) },
             working = sorted
-                .filter { agentStatusGroup(it) == AgentStatusGroup.WORKING }
+                .filter {
+                    agentStatusGroup(it) == AgentStatusGroup.WORKING ||
+                        it.paneId in orchestrating
+                }
                 .toGroups(workspaces) {
-                    it.toListItem(working = true, at = at, activity = lastActivity[it.paneId])
+                    it.toListItem(
+                        working = true,
+                        at = at,
+                        activity = lastActivity[it.paneId],
+                        cohortLabel = if (it.paneId in orchestrating) {
+                            "orchestrating · ${cohortBusy[it.paneId]}"
+                        } else {
+                            null
+                        },
+                    )
                 },
             idle = sorted
                 .filter {
                     !agentNeedsResponse(it) && !agentNeedsInspection(it) &&
-                        agentStatusGroup(it) != AgentStatusGroup.WORKING
+                        agentStatusGroup(it) != AgentStatusGroup.WORKING &&
+                        it.paneId !in orchestrating
                 }
                 .toGroups(workspaces) {
                     it.toListItem(working = false, at = at, activity = lastActivity[it.paneId])
@@ -267,6 +295,7 @@ class RealHomeRepository @Inject constructor(
         working: Boolean,
         at: Long,
         activity: lerdr.core.model.ActivityEntry?,
+        cohortLabel: String? = null,
     ): AgentListItemUi {
         val statusText = status?.takeIf { it.isNotEmpty() } ?: "unknown"
         val watching = tokens?.containsKey(WATCHING_TOKEN) == true
@@ -277,8 +306,8 @@ class RealHomeRepository @Inject constructor(
                 relayId = relayId,
                 title = displayLabel(),
                 statusLine = activity?.summary?.takeIf { it.isNotEmpty() }
-                    ?: prompt ?: command ?: statusText,
-                activityLabel = statusText,
+                    ?: prompt ?: command ?: cohortLabel ?: statusText,
+                activityLabel = cohortLabel ?: statusText,
                 elapsedLabel = elapsedLabel(at - (lastActiveAt ?: updatedAt)),
                 working = true,
                 controllable = sessions.canControl(relayId),

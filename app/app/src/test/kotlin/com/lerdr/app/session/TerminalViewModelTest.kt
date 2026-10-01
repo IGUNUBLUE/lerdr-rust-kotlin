@@ -127,6 +127,30 @@ class TerminalViewModelTest {
             pump()
         }
 
+        /**
+         * `workspaces` snapshot — a repo-root workspace plus a linked
+         * worktree child sharing its `repo_root`, the shape Herdr reports
+         * for an orchestrated cohort.
+         */
+        suspend fun emitWorktreeCohort() {
+            handle().emit(
+                json(
+                    """{"type":"workspaces","workspaces":[{"workspace_id":"w1","label":"app","worktree":{"repo_root":"/repo/app","checkout_path":"/repo/app","is_linked_worktree":false}},{"workspace_id":"w9","label":"app-fix","worktree":{"repo_root":"/repo/app","checkout_path":"/repo/app-wt/fix","is_linked_worktree":true}}]}""",
+                ),
+            )
+            pump()
+        }
+
+        /** `agents` snapshot — the orchestrator plus a busy cohort child. */
+        suspend fun emitOrchestratorCohort() {
+            handle().emit(
+                json(
+                    """{"type":"agents","agents":[{"pane_id":"%1","raw_pane_id":"%1","agent":"omp","name":"omp","status":"idle","workspace_id":"w1","updated_at":100},{"pane_id":"%9","raw_pane_id":"%9","agent":"omp","name":"child","status":"working","workspace_id":"w9","agent_session_id":"s-9","updated_at":100}]}""",
+                ),
+            )
+            pump()
+        }
+
         suspend fun emitPaneContent(content: String, fingerprint: String = "fp-1") {
             handle().emit(
                 buildJsonObject {
@@ -453,6 +477,28 @@ class TerminalViewModelTest {
         assertThat(lease.columns).isEqualTo(92)
         assertThat(lease.rows).isEqualTo(42)
         assertThat(viewModel.uiState.value.leaseColumns).isEqualTo(92)
+    }
+
+    @Test
+    fun `hook-less orchestrator with a busy worktree cohort reads orchestrating`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        h.emitWorktreeCohort()
+        h.emitOrchestratorCohort()
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
+        backgroundScope.launch { viewModel.uiState.collect { } }
+        h.pump()
+        h.emitPaneContent("prompt$ ")
+
+        // omp keeps native size → unleased chip falls back to the display
+        // status, which derives "orchestrating" from the busy cohort while
+        // Herdr's wire status stays `idle` for hook-less panes.
+        viewModel.onViewportMeasured(columns = 92, rows = 42)
+        h.pump()
+
+        val state = viewModel.uiState.value
+        assertThat(state.leaseColumns).isEqualTo(0)
+        assertThat(state.statusLabel).isEqualTo("orchestrating")
     }
 
     @Test

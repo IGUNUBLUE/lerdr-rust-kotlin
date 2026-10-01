@@ -59,6 +59,7 @@ import lerdr.core.transport.CommandException
 import lerdr.core.store.agentStatusGroup
 import lerdr.core.store.attentionKind
 import lerdr.core.store.clientPaneId
+import lerdr.core.store.orchestratingStatus
 import lerdr.core.store.rawBlocked
 
 /** Everything Feed mode renders — conversation page, blocker card, composer. */
@@ -243,12 +244,12 @@ class FeedViewModel(
     private val slashFailed = mutableSetOf<String>()
 
     val uiState: StateFlow<FeedUiState> = combine(
-        sessions.agent(paneId),
+        combine(sessions.agent(paneId), sessions.cohortBusy(paneId), ::Pair),
         sessions.connection(relayId),
         sessions.responding,
         uploads.state(paneId),
         local,
-    ) { agent, connection, responding, attachments, local ->
+    ) { (agent, cohortBusy), connection, responding, attachments, local ->
         val canControl = sessions.canControl(relayId)
         val blockedAgent = agent?.takeIf { rawBlocked(it) }
         val interaction = effectiveInteraction(blockedAgent, local)
@@ -257,13 +258,18 @@ class FeedViewModel(
         val questionHidden = blockedAgent != null &&
             attentionKind(blockedAgent) == BlockedMessage.ATTENTION_QUESTION &&
             interaction == null
+        // Cohort display status — a hook-less orchestrator in a repo-root
+        // workspace reads "orchestrating" while linked worktrees churn;
+        // Herdr's wire status falls back to idle for these panes.
+        val orchestrating = agent.orchestratingStatus(cohortBusy)
         FeedUiState(
             paneId = paneId,
             title = agent?.name ?: agent?.agent ?: paneId.substringAfter("::"),
             provider = agent?.agent?.takeIf { it.isNotEmpty() },
             breadcrumb = breadcrumbOf(agent),
-            statusLabel = agent?.status ?: "",
-            working = agentStatusGroup(agent) == AgentStatusGroup.WORKING,
+            statusLabel = orchestrating ?: agent?.status ?: "",
+            working = agentStatusGroup(agent) == AgentStatusGroup.WORKING ||
+                orchestrating != null,
             connected = connection?.status == RelayStatus.CONNECTED,
             historyAvailable = agent?.conversationHistoryAvailable == true,
             entries = local.entries,

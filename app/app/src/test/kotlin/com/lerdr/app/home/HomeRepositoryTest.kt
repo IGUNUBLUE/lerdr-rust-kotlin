@@ -352,6 +352,74 @@ class HomeRepositoryTest {
     }
 
     @Test
+    fun `hook-less orchestrator with busy worktree cohort lands in working`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.online()
+        h.workspaces(
+            WorkspaceInfo(
+                workspaceId = "wA",
+                label = "app",
+                worktree = lerdr.core.model.WorkspaceWorktree(
+                    repoRoot = "/repo/app",
+                    checkoutPath = "/repo/app",
+                    isLinkedWorktree = false,
+                ),
+            ),
+            WorkspaceInfo(
+                workspaceId = "w1",
+                label = "app-fix-1",
+                worktree = lerdr.core.model.WorkspaceWorktree(
+                    repoRoot = "/repo/app",
+                    checkoutPath = "/repo/app-wt/fix-1",
+                    isLinkedWorktree = true,
+                ),
+            ),
+        )
+        h.agent("%A", "idle") { copy(workspaceId = "wA", project = "app") }
+        h.agent("%1", "working") { copy(workspaceId = "w1", agentSessionId = "s-1") }
+        val state = h.repository.uiState.first()
+        val row = state.working.flatMap { it.agents }.single {
+            it.paneId == clientPaneId("r1", "%A")
+        }
+        assertThat(row.activityLabel).isEqualTo("orchestrating · 1")
+        assertThat(row.working).isTrue()
+        assertThat(state.idle.flatMap { it.agents }.map { it.paneId })
+            .doesNotContain(clientPaneId("r1", "%A"))
+    }
+
+    @Test
+    fun `orchestrator with idle cohort stays in idle`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.online()
+        h.workspaces(
+            WorkspaceInfo(
+                workspaceId = "wA",
+                label = "app",
+                worktree = lerdr.core.model.WorkspaceWorktree(
+                    repoRoot = "/repo/app",
+                    checkoutPath = "/repo/app",
+                    isLinkedWorktree = false,
+                ),
+            ),
+            WorkspaceInfo(
+                workspaceId = "w1",
+                label = "app-fix-1",
+                worktree = lerdr.core.model.WorkspaceWorktree(
+                    repoRoot = "/repo/app",
+                    checkoutPath = "/repo/app-wt/fix-1",
+                    isLinkedWorktree = true,
+                ),
+            ),
+        )
+        h.agent("%A", "idle") { copy(workspaceId = "wA") }
+        h.agent("%1", "idle") { copy(workspaceId = "w1") }
+        val state = h.repository.uiState.first()
+        assertThat(state.working.flatMap { it.agents }).isEmpty()
+        assertThat(state.idle.flatMap { it.agents }.map { it.paneId })
+            .contains(clientPaneId("r1", "%A"))
+    }
+
+    @Test
     fun `connected relay carries its measured rtt onto the card`() = runTest {
         val h = Harness(this, tmp.root)
         h.online()

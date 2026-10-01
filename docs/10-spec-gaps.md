@@ -1159,3 +1159,29 @@ negotiated, and exercised end-to-end on both sides.
   intent would be worse), recorded here so the distinction is explicit:
   "deep link opens prefilled pairing" is intended; "deep link dropped
   entirely on warm start" (above) is not.
+
+## Round 23 — orchestration cohort visibility (2026)
+
+- **The gap**: an agent pane started outside `agent start` (the omp
+  orchestrator shape) carries no `agent_session_id`, so Herdr's
+  classifier resolves `default_known_agent_idle_fallback` and reports
+  `idle` even while the pane's TUI visibly coordinates work
+  (`Working…`, spinner, per-task rows). The home list parked these
+  panes under IDLE and session chips echoed the fallback, so a busy
+  cohort read as dead sessions.
+- **The derivation** (client-side, display-only): `workspaces` already
+  carry `worktree { repo_root, is_linked_worktree }` — the root
+  checkout hosts the orchestrator pane and linked worktrees host its
+  dispatched children. A hook-less pane in a non-linked workspace whose
+  same-`repo_root` linked siblings hold busy agents
+  (working/blocked/attention) renders `orchestrating · N` in the
+  working section, `orchestrating` on the unleased terminal chip, and
+  the working accent in the feed. Hook-bound panes (which report real
+  status) and worktree members (children, not orchestrators) never
+  derive.
+- **Boundary kept**: nothing is asserted into pane state — no
+  `pane.report_agent` on foreign panes and no `ws_key` coupling (that
+  field is owned by the radar projection, not the wire). Real lifecycle
+  for these panes is upstream: omp self-reporting via the documented
+  agent-support contract (`HERDR_PANE_ID`/`HERDR_SOCKET_PATH` are
+  already inherited by every pane process).

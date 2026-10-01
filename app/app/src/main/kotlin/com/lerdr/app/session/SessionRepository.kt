@@ -17,6 +17,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
@@ -85,6 +87,7 @@ import lerdr.core.store.TransportStatus
 import lerdr.core.store.TransportStatusDetail
 import lerdr.core.store.WorkspaceStore
 import lerdr.core.store.clientPaneId
+import lerdr.core.store.cohortBusyCount
 import lerdr.core.terminal.AckGate
 import lerdr.core.terminal.PaneSurface
 import lerdr.core.transport.CommandException
@@ -1999,6 +2002,19 @@ class SessionRepository @Inject constructor(
     fun agentNow(paneId: String): Agent? = agentStore.agentNow(paneId)
     fun connection(relayId: String): Flow<RelayConnection?> = connectionStore.connection(relayId)
     fun connectionNow(relayId: String): RelayConnection? = connectionStore.connectionNow(relayId)
+
+    /**
+     * Busy children in this pane's orchestration cohort — linked-worktree
+     * sibling workspaces of its repo-root workspace ([cohortBusyCount]).
+     * Drives the "orchestrating" display status for hook-less panes.
+     */
+    fun cohortBusy(paneId: String): Flow<Int> = combine(
+        agentStore.agent(paneId),
+        agentStore.agents,
+        workspaceStore.workspaces,
+    ) { agent, agents, workspaces ->
+        cohortBusyCount(agent, agents, workspaces)
+    }.distinctUntilChanged()
 
     /** Session state for the pairing flow's outcome await. */
     fun sessionState(relayId: String): StateFlow<RelaySession.SessionState>? =
