@@ -113,6 +113,21 @@ class TerminalViewModel(
     @Volatile
     private var leasedRows = 0
 
+    /** The last grid the view measured — a late provider resolution re-leases. */
+    @Volatile
+    private var measuredColumns = 0
+
+    @Volatile
+    private var measuredRows = 0
+
+    /**
+     * The current provider keeps its native pane size — leasing is skipped
+     * or dropped ([keepsNativeSize]). Volatile for the same reason as
+     * [leasedColumns]: set on viewModelScope, honored by the appScope jobs.
+     */
+    @Volatile
+    private var leaseBlockedByProvider = false
+
     // Parse cache keyed on the committed content — a metadata-only delta
     // bumps revision without touching `lines`, so the row list survives
     // unchanged and the renderer keeps its measured draw state.
@@ -254,6 +269,24 @@ class TerminalViewModel(
                 appPreferences.setTerminalFontScale(it)
             }
         }
+        // Provider late-resolution: the agent row can land after the view
+        // measured — drop or arm the lease to match the provider's policy.
+        // A null row carries no information: the block state stays as-is,
+        // so a reconnect's empty snapshot doesn't lease an omp pane.
+        viewModelScope.launch {
+            sessions.agent(paneId).collect { agent ->
+                when {
+                    agent.keepsNativeSize() -> {
+                        leaseBlockedByProvider = true
+                        releaseLease()
+                    }
+                    agent != null && leaseBlockedByProvider && measuredColumns > 0 -> {
+                        leaseBlockedByProvider = false
+                        acquireLease(measuredColumns, measuredRows)
+                    }
+                }
+            }
+        }
     }
 
     override fun onCleared() {
@@ -273,17 +306,46 @@ class TerminalViewModel(
         }
     }
 
-    /** The view measured its grid — negotiate the lease with the relay. */
+    /**
+     * The view measured its grid — negotiate the lease with the relay.
+     * Providers in [keepsNativeSize] draw fixed-width chrome (omp's status
+     * strip carries its spinner/task indicators at the right edge) — a
+     * phone-sized `stty` truncates exactly that region, so their pane is
+     * rendered at native size and scrolled/zoomed instead.
+     */
     fun onViewportMeasured(columns: Int, rows: Int) {
         if (columns <= 0) return
+        measuredColumns = columns
+        measuredRows = rows
         viewModelScope.launch {
-            try {
-                val (appliedColumns, appliedRows) = sessions.leasePaneSize(paneId, columns, rows)
-                leasedColumns = appliedColumns
-                leasedRows = appliedRows
-            } catch (failure: Exception) {
-                lastError.value = failure.message
+            val blocked = sessions.agentNow(paneId).keepsNativeSize()
+            leaseBlockedByProvider = blocked
+            if (blocked) {
+                releaseLease()
+            } else {
+                acquireLease(columns, rows)
             }
+        }
+    }
+
+    private suspend fun acquireLease(columns: Int, rows: Int) {
+        try {
+            val (appliedColumns, appliedRows) = sessions.leasePaneSize(paneId, columns, rows)
+            leasedColumns = appliedColumns
+            leasedRows = appliedRows
+        } catch (failure: Exception) {
+            lastError.value = failure.message
+        }
+    }
+
+    private suspend fun releaseLease() {
+        if (leasedColumns <= 0) return
+        leasedColumns = 0
+        leasedRows = 0
+        try {
+            sessions.releasePaneSize(paneId)
+        } catch (_: Exception) {
+            // The TTL lapses the lease either way — a dropped release is cosmetic.
         }
     }
 
@@ -395,6 +457,17 @@ class TerminalViewModel(
         viewModelScope.launch { sessions.refreshPane(paneId) }
     }
 
+    /**
+     * Providers whose pane is served at its native size — no size lease.
+     * omp's TUI draws a persistent status strip spanning the full host
+     * width (spinner, task/subagent counters, model, context gauge); a
+     * lease-driven `stty` to phone dimensions truncates exactly those
+     * indicators and squashes the desktop terminal the pane lives in.
+     * Scrolled and pinch-zoomed instead.
+     */
+    private fun Agent?.keepsNativeSize(): Boolean =
+        this?.agent?.lowercase() in NATIVE_SIZE_PROVIDERS
+
     private fun breadcrumbOf(agent: Agent?): String {
         if (agent == null) return ""
         val project = agent.project ?: agent.cwd?.substringAfterLast('/')
@@ -411,5 +484,8 @@ class TerminalViewModel(
 
         /** Settle window before a pinch-zoom value lands in preferences. */
         const val FONT_SCALE_PERSIST_MS = 400L
+
+        /** Providers rendered at native size — see [keepsNativeSize]. */
+        val NATIVE_SIZE_PROVIDERS = setOf("omp")
     }
 }

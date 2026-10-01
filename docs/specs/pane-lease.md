@@ -165,6 +165,11 @@ flagged for 3 s.
 - Acquire `lease_pane_size{pane_id, columns, rows}` when the terminal view is
   visible and focused; renew every 10 s; release on stop (but expect the 10 s
   grace, not an instant snap-back).
+- Provider exception: panes whose agent draws fixed-width chrome (currently
+  `omp` — its status strip spans the host's full width) are rendered at the
+  native size and scrolled/zoomed instead; the app neither acquires nor
+  renews a lease for them and drops a held lease if the provider resolves
+  to one after measurement.
 - `rows: 0` unless the connection advertised `pane_size_lease_rows`
   (`TerminalView.svelte:1725`).
 - Hidden tab: stop watch traffic, keep renewing while a bounded grace allows —
