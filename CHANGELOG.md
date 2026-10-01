@@ -6,6 +6,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 Releases are **pre-release / beta** — no compatibility guarantees yet.
+## [0.2.6] — 2026-10-01
+
+### Fixed
+
+- **omp panes keep their native TTY size** — the phone's pane-size lease
+  no longer runs `stty` on omp sessions, so the full-width TUI (status
+  strip, spinner, task and subagent indicators) renders intact on both
+  the desktop and the handset. The terminal view scrolls horizontally
+  and pinch-zooms to inspect the native-width content; a provider that
+  resolves to omp after the viewport was measured drops any lease it
+  took, and resolving to a different provider acquires one.
+- **Orchestrated cohorts are visible again** — hook-less orchestrator
+  panes (omp launched outside `agent start`) were reported `idle` by
+  Herdr's `default_known_agent_idle_fallback` even while their TUI
+  visibly coordinated work. The app now derives `orchestrating` from
+  the wire's own worktree data: a hook-less pane in a repo-root
+  workspace whose linked-worktree siblings hold busy agents shows
+  `orchestrating · N` in the working section and `orchestrating` on
+  the terminal chip and feed header. Display-only — no pane state is
+  claimed and no radar-owned fields are read; real lifecycle for these
+  panes remains an upstream (omp self-reporting) concern.
+
 ## [0.2.5] — 2026-09-29
 
 ### Added
