@@ -6,6 +6,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 Releases are **pre-release / beta** — no compatibility guarantees yet.
+
+## [Unreleased]
+
+### Fixed
+
+- **Uploads survive pane session replacement** — validate the current
+  pane generation and normalized session ID from the agent inventory
+  instead of requiring generation zero; stale targets remain rejected.
+
 ## [0.2.7] — 2026-10-01
 
 ### Added
