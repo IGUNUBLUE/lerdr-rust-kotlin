@@ -245,6 +245,18 @@ runtime schema is the capability-discovery input.
   dual claims are just multiple sources reporting on one identity. A
   Herdr without agent reporting refuses the method and the outcome
   degrades to the prior dispatched-unknown result.
+- **`pane.agent_status_changed` is the authoritative status stream, not a
+  watch nudge**: its payload carries the new `agent_status` (plus `agent`,
+  `display_agent`, `title`, `state_labels`), ordered and reliable. The
+  relay subscribes it on the topology stream (gated like
+  `workspace.reordered` — older builds may reject the name, the
+  handshake drops it per refusal) and commits the carried status into
+  the committed row — running the transition pipeline so a `working`
+  burst too short for a `session.snapshot` sample still produces the
+  working→idle `done`+unseen arc. Snapshot commits remain
+  status-preserving on the Event path; the `agent_event` UDP datagram
+  stays as a wake but now also commits its carried `status`/`pane_id`
+  instead of being reduced to a sampling poke.
 - **`terminal session control`** is NOT a socket RPC — it is a raw
   terminal-stream takeover surface for bridge clients that own the
   terminal UI (it accepts `terminal.mouse` events upstream of 0.9.2).

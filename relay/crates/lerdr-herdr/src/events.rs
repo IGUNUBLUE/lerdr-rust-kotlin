@@ -97,6 +97,26 @@ pub fn wire_event_name(name: &str) -> &str {
     }
 }
 
+/// `pane.agent_status_changed` payload (`PaneAgentStatusChangedEvent` in
+/// the schema) — the authoritative status transition stream: ordered and
+/// reliable, and it carries the new status itself, so committing it
+/// captures transitions a status-sampling refresh would read past.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PaneAgentStatusChangedData {
+    pub pane_id: String,
+    #[serde(default)]
+    pub workspace_id: String,
+    pub agent_status: AgentStatus,
+    #[serde(default)]
+    pub agent: Option<String>,
+    #[serde(default)]
+    pub display_agent: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub state_labels: std::collections::BTreeMap<String, String>,
+}
+
 /// One event from the subscription stream. `name` is always the canonical
 /// (dotted) form; `data` is the event's raw payload object (e.g.
 /// `{"pane": {…}}` for `pane.updated`).
@@ -255,16 +275,18 @@ impl Serialize for Subscription {
 }
 
 /// The relay's topology subscription set — the Go client's
-/// `topologySubscriptions` (20 lifecycle events) plus two gated optional
+/// `topologySubscriptions` (20 lifecycle events) plus three gated optional
 /// entries: `workspace.reordered` (older Herdr builds reject the whole
-/// `events.subscribe` when the name is present) and `pane.output_changed`
+/// `events.subscribe` when the name is present), `pane.output_changed`
 /// (only present on builds whose schema exposes the subscription variant —
 /// 0.9.1 lists the `pane_output_changed` event payload but ships no
 /// `pane.output_changed` subscription, so the capability consult keeps it
-/// off the wire there).
+/// off the wire there), and `pane.agent_status_changed` — the ordered,
+/// reliable agent lifecycle stream the topology commits statuses from.
 pub fn topology_subscriptions(
     include_workspace_reordered: bool,
     include_pane_output_changed: bool,
+    include_pane_agent_status_changed: bool,
 ) -> Vec<Subscription> {
     const NAMES: &[&str] = &[
         "pane.created",
@@ -294,6 +316,9 @@ pub fn topology_subscriptions(
     }
     if include_pane_output_changed {
         subs.push(Subscription::Named("pane.output_changed"));
+    }
+    if include_pane_agent_status_changed {
+        subs.push(Subscription::Named("pane.agent_status_changed"));
     }
     subs
 }
@@ -919,8 +944,8 @@ mod tests {
 
     #[test]
     fn topology_subscriptions_reordered_gate() {
-        let with = topology_subscriptions(true, false);
-        let without = topology_subscriptions(false, false);
+        let with = topology_subscriptions(true, false, false);
+        let without = topology_subscriptions(false, false, false);
         assert_eq!(with.len(), without.len() + 1);
         assert!(with
             .iter()
@@ -934,8 +959,8 @@ mod tests {
     /// `workspace.reordered` — gated independently, absent by default.
     #[test]
     fn topology_subscriptions_output_changed_gate() {
-        let with = topology_subscriptions(false, true);
-        let without = topology_subscriptions(false, false);
+        let with = topology_subscriptions(false, true, false);
+        let without = topology_subscriptions(false, false, false);
         assert_eq!(with.len(), without.len() + 1);
         assert!(with
             .iter()
@@ -943,8 +968,50 @@ mod tests {
         assert!(!without
             .iter()
             .any(|s| matches!(s, Subscription::Named("pane.output_changed"))));
-        // Both optionals together extend the 20-name base by two.
-        assert_eq!(topology_subscriptions(true, true).len(), without.len() + 2);
+        // All optionals together extend the 20-name base by three.
+        assert_eq!(
+            topology_subscriptions(true, true, true).len(),
+            without.len() + 3
+        );
+    }
+
+    /// `pane.agent_status_changed` — gated the same way; its payload is
+    /// the ordered status stream the topology commits from.
+    #[test]
+    fn topology_subscriptions_agent_status_changed_gate() {
+        let with = topology_subscriptions(false, false, true);
+        let without = topology_subscriptions(false, false, false);
+        assert_eq!(with.len(), without.len() + 1);
+        assert!(with
+            .iter()
+            .any(|s| matches!(s, Subscription::Named("pane.agent_status_changed"))));
+        assert!(!without
+            .iter()
+            .any(|s| matches!(s, Subscription::Named("pane.agent_status_changed"))));
+    }
+
+    /// The status payload decodes the documented event shape.
+    #[test]
+    fn agent_status_changed_payload_decodes() {
+        let event = Event {
+            name: "pane.agent_status_changed".into(),
+            data: serde_json::json!({
+                "pane_id": "w8:pJ",
+                "workspace_id": "w8",
+                "agent_status": "working",
+                "agent": "omp",
+                "display_agent": "OMP",
+                "title": "orch",
+                "state_labels": {"phase": "build"}
+            }),
+        };
+        let payload: PaneAgentStatusChangedData = event.data_as().expect("payload decodes");
+        assert_eq!(payload.pane_id, "w8:pJ");
+        assert_eq!(payload.agent_status, AgentStatus::Working);
+        assert_eq!(payload.agent.as_deref(), Some("omp"));
+        assert_eq!(payload.display_agent.as_deref(), Some("OMP"));
+        assert_eq!(payload.title.as_deref(), Some("orch"));
+        assert_eq!(payload.state_labels["phase"], "build");
     }
 
     #[tokio::test]

@@ -109,6 +109,7 @@ const SUBSCRIPTION_UNSUPPORTED: u8 = 2;
 struct SubscriptionAttempt {
     workspace_reordered: bool,
     pane_output_changed: bool,
+    pane_agent_status_changed: bool,
 }
 
 impl SubscriptionAttempt {
@@ -124,6 +125,10 @@ impl SubscriptionAttempt {
             self.pane_output_changed = false;
             return true;
         }
+        if variant == features::PANE_AGENT_STATUS_CHANGED && self.pane_agent_status_changed {
+            self.pane_agent_status_changed = false;
+            return true;
+        }
         false
     }
 }
@@ -137,6 +142,7 @@ struct ClientInner {
     flights: Singleflight,
     workspace_reordered: AtomicU8,
     pane_output_changed: AtomicU8,
+    pane_agent_status_changed: AtomicU8,
     /// The capability ledger — last published report plus observed notes.
     /// `std::sync::Mutex`: mutations are short map writes, never held across
     /// an `.await`.
@@ -167,6 +173,7 @@ impl Client {
                 flights: Singleflight::default(),
                 workspace_reordered: AtomicU8::new(SUBSCRIPTION_UNKNOWN),
                 pane_output_changed: AtomicU8::new(SUBSCRIPTION_UNKNOWN),
+                pane_agent_status_changed: AtomicU8::new(SUBSCRIPTION_UNKNOWN),
                 capabilities: std::sync::Mutex::new(CapabilityLedger::default()),
                 capability_refresh: tokio::sync::Mutex::new(()),
             }),
@@ -1211,6 +1218,7 @@ impl Client {
         let mut attempt = SubscriptionAttempt {
             workspace_reordered: self.should_attempt_workspace_reordered(),
             pane_output_changed: self.should_attempt_pane_output_changed(),
+            pane_agent_status_changed: self.should_attempt_pane_agent_status_changed(),
         };
         // `None`/`Some(_)` from the `*_supported` accessors describes this
         // bootstrap's probe — a skipped attempt probed nothing.
@@ -1220,11 +1228,15 @@ impl Client {
         self.inner
             .pane_output_changed
             .store(SUBSCRIPTION_UNKNOWN, Ordering::Relaxed);
+        self.inner
+            .pane_agent_status_changed
+            .store(SUBSCRIPTION_UNKNOWN, Ordering::Relaxed);
         loop {
             match self
                 .subscribe_events(&topology_subscriptions(
                     attempt.workspace_reordered,
                     attempt.pane_output_changed,
+                    attempt.pane_agent_status_changed,
                 ))
                 .await
             {
@@ -1249,6 +1261,16 @@ impl Client {
                             "subscription_acknowledged",
                         );
                     }
+                    if attempt.pane_agent_status_changed {
+                        self.inner
+                            .pane_agent_status_changed
+                            .store(SUBSCRIPTION_SUPPORTED, Ordering::Relaxed);
+                        self.note_feature(
+                            features::PANE_AGENT_STATUS_CHANGED,
+                            FeatureState::Supported,
+                            "subscription_acknowledged",
+                        );
+                    }
                     return Ok(stream);
                 }
                 Err(err) => {
@@ -1264,6 +1286,8 @@ impl Client {
                     }
                     let flag = if variant == features::WORKSPACE_REORDERED {
                         &self.inner.workspace_reordered
+                    } else if variant == features::PANE_AGENT_STATUS_CHANGED {
+                        &self.inner.pane_agent_status_changed
                     } else {
                         &self.inner.pane_output_changed
                     };
@@ -1353,6 +1377,17 @@ impl Client {
         }
     }
 
+    /// Whether `pane.agent_status_changed` was confirmed (Some(true)),
+    /// rejected (Some(false)), or not yet probed (None) by the last
+    /// topology subscription.
+    pub fn pane_agent_status_changed_supported(&self) -> Option<bool> {
+        match self.inner.pane_agent_status_changed.load(Ordering::Relaxed) {
+            SUBSCRIPTION_SUPPORTED => Some(true),
+            SUBSCRIPTION_UNSUPPORTED => Some(false),
+            _ => None,
+        }
+    }
+
     // -- capability ledger (`herdrCapabilities.go`) -------------------------
 
     /// Recompute the capability report: introspect `herdr api schema --json`
@@ -1392,6 +1427,12 @@ impl Client {
     /// attempt entirely, so the doomed round-trip is never paid.
     pub fn should_attempt_pane_output_changed(&self) -> bool {
         self.feature(features::PANE_OUTPUT_CHANGED).state != FeatureState::Unsupported
+    }
+
+    /// Same consult for `pane.agent_status_changed` — attempt unless
+    /// known-unsupported.
+    pub fn should_attempt_pane_agent_status_changed(&self) -> bool {
+        self.feature(features::PANE_AGENT_STATUS_CHANGED).state != FeatureState::Unsupported
     }
 
     /// `InvalidateLiveCapabilities` — run at the top of every bootstrap.

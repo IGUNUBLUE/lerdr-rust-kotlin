@@ -149,13 +149,13 @@ async fn subscribe_refused_output_changed_variant() {
     drop(stream);
 }
 
-/// Both optional entries unknown — the handshake degrades one named
+/// All three optional entries unknown — the handshake degrades one named
 /// variant per round-trip until the bare lifecycle set lands.
 #[tokio::test]
 async fn subscribe_both_optionals_rejected() {
     // `Action::Custom` is a plain `fn`, so each rejection is its own
-    // non-capturing closure — the retry order is `workspace.reordered`
-    // first (declared first in `topology_subscriptions`).
+    // non-capturing closure — the retry order follows the optional
+    // entries' append order in `topology_subscriptions`.
     let server = FakeHerdr::start(Action::Stream(vec![subscription_started_line()])).await;
     server.push(Action::Custom(|conn, _req| {
         Box::pin(async move {
@@ -183,14 +183,28 @@ async fn subscribe_both_optionals_rejected() {
                 .await;
         })
     }));
+    server.push(Action::Custom(|conn, _req| {
+        Box::pin(async move {
+            use tokio::io::AsyncWriteExt;
+            let mut conn = conn;
+            let _ = conn
+                .write_all(
+                    br#"{"id":"","error":{"code":"invalid_request","message":"invalid request: unknown variant `pane.agent_status_changed`"}}
+"#
+                    .as_slice(),
+                )
+                .await;
+        })
+    }));
     let client = client_for(&server);
     let stream = client.subscribe_topology().await.unwrap();
-    assert_eq!(server.accept_count(), 3, "two drop-and-retry rounds");
+    assert_eq!(server.accept_count(), 4, "three drop-and-retry rounds");
     assert_eq!(client.workspace_reordered_supported(), Some(false));
     assert_eq!(client.pane_output_changed_supported(), Some(false));
+    assert_eq!(client.pane_agent_status_changed_supported(), Some(false));
     // The final request is the bare 20-name lifecycle set.
     let reqs = server.requests();
-    let landed = subscription_types(&reqs[2]);
+    let landed = subscription_types(&reqs[3]);
     assert_eq!(landed.len(), 20);
     drop(stream);
 }

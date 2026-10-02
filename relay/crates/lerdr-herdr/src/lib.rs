@@ -52,8 +52,8 @@ pub use error::{
 };
 pub use events::{
     canonical_event_name, topology_subscriptions, wire_event_name, Backoff, Bootstrap, Event,
-    EventStream, EventSupervisor, Subscription, SupervisorSignal, SupervisorStream,
-    EVENTS_REQUEST_ID,
+    EventStream, EventSupervisor, PaneAgentStatusChangedData, Subscription, SupervisorSignal,
+    SupervisorStream, EVENTS_REQUEST_ID,
 };
 pub use schema::{SchemaError, SchemaRegistry, SchemaSource};
 pub use transport::{default_socket_path, BoxIo, Io, Transport, UnixTransport};

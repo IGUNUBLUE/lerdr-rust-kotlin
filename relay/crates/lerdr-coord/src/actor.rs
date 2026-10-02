@@ -116,6 +116,11 @@ enum TopologyCommand {
     /// session; advance its epoch and republish so stale exact targets
     /// stop validating.
     BumpGeneration(String),
+    /// The plugin `agent_event` datagram's status half — the payload is
+    /// the transition itself, so it commits like the socket event rather
+    /// than merely waking a sampling refresh (the refresh still runs —
+    /// it reconciles every other field).
+    StatusChanged(lerdr_herdr::PaneAgentStatusChangedData),
     /// Internal lane: a spawned post-sync capability collect finished;
     /// install its report (`set_herdr_status` dedupes).
     CapabilitiesReady(CapabilityReport),
@@ -143,6 +148,15 @@ impl TopologyHandle {
     pub fn try_refresh(&self) {
         // Full inbox = a refresh is already queued; dropping is correct.
         let _ = self.commands.try_send(TopologyCommand::Refresh);
+    }
+
+    /// Plugin `agent_event` datagram — commit the carried status
+    /// transition (`try_send`: a full inbox means a refresh is already
+    /// queued, which reconciles the same state).
+    pub fn report_agent_status(&self, payload: lerdr_herdr::PaneAgentStatusChangedData) {
+        let _ = self
+            .commands
+            .try_send(TopologyCommand::StatusChanged(payload));
     }
 
     /// `state.SetOnTransition` — install the channel each committed
@@ -358,6 +372,32 @@ impl TopologyActor {
                                     }
                                 }
                                 SupervisorSignal::Invalidated { event, .. } => {
+                                    // `pane.agent_status_changed` is the
+                                    // authoritative transition stream —
+                                    // its payload carries the status, so
+                                    // the commit is the payload, not a
+                                    // snapshot sample (a short `working`
+                                    // burst a refresh would read past
+                                    // lands here instead). The pane-class
+                                    // invalidation below still goes out —
+                                    // watchers re-read the content.
+                                    if event.name == "pane.agent_status_changed" {
+                                        if let Ok(payload) = event
+                                            .data_as::<lerdr_herdr::PaneAgentStatusChangedData>(
+                                        ) {
+                                            if let Some(outcome) =
+                                                state.commit_agent_status(&payload)
+                                            {
+                                                publish(
+                                                    &state,
+                                                    &mut published,
+                                                    &topology_tx,
+                                                );
+                                                forward_outcome(&transitions, outcome)
+                                                    .await;
+                                            }
+                                        }
+                                    }
                                     // Pane lifecycle events mutate the
                                     // retired implementation's `SessionCache` (events.go:
                                     // `Apply` — pane.{created,updated,
@@ -477,6 +517,17 @@ impl TopologyActor {
                                 Some(TopologyCommand::BumpGeneration(pane_id)) => {
                                     state.bump_generation(&pane_id);
                                     publish(&state, &mut published, &topology_tx);
+                                }
+                                Some(TopologyCommand::StatusChanged(payload)) => {
+                                    // The UDP `agent_event`'s own
+                                    // transition — commit the carried
+                                    // status like the socket event does.
+                                    if let Some(outcome) =
+                                        state.commit_agent_status(&payload)
+                                    {
+                                        publish(&state, &mut published, &topology_tx);
+                                        forward_outcome(&transitions, outcome).await;
+                                    }
                                 }
                                 Some(TopologyCommand::CapabilitiesReady(report)) => {
                                     // Unchanged evidence carries unchanged

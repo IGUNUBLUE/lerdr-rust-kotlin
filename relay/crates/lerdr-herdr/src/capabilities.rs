@@ -56,6 +56,11 @@ pub mod features {
     /// `Subscription` variant, so only the subscription table counts as
     /// evidence the server will accept it.
     pub const PANE_OUTPUT_CHANGED: &str = "pane.output_changed";
+    /// `pane.agent_status_changed` subscription variant — the real-time
+    /// agent lifecycle stream the relay commits statuses from; without it
+    /// status moves only on polls/UDP wakes and short `working` bursts
+    /// collapse before a sample can see them.
+    pub const PANE_AGENT_STATUS_CHANGED: &str = "pane.agent_status_changed";
     /// `pane.read` method.
     pub const PANE_READ: &str = "pane.read";
     /// `tab.move` method.
@@ -896,6 +901,26 @@ pub(crate) async fn collect_capabilities(client: &Client) -> CapabilityReport {
             };
             next.features
                 .insert(features::PANE_OUTPUT_CHANGED.to_owned(), output_changed);
+            // `pane.agent_status_changed` — subscription table only,
+            // same adjudication shape as `pane.output_changed`.
+            let status_changed =
+                if registry.supports_subscription(features::PANE_AGENT_STATUS_CHANGED) {
+                    FeatureEvidence {
+                        state: FeatureState::Supported,
+                        reason: "schema_advertised".to_owned(),
+                        generation: 0,
+                    }
+                } else {
+                    FeatureEvidence {
+                        state: FeatureState::Unsupported,
+                        reason: "schema_absent".to_owned(),
+                        generation: 0,
+                    }
+                };
+            next.features.insert(
+                features::PANE_AGENT_STATUS_CHANGED.to_owned(),
+                status_changed,
+            );
         }
         None => {
             // Probe fallback — schema absent or untrusted. Reusable

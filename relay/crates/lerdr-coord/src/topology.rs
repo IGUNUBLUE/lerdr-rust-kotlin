@@ -11,7 +11,11 @@
 //! signals, never payloads** — a topology event triggers a fresh
 //! `session.snapshot` rather than a partial apply. A future event→state table
 //! can replace this without changing the published shape; snapshot-refresh is
-//! correct (if chattier) for every topology event kind.
+//! correct (if chattier) for every topology event kind. The one exception is
+//! `pane.agent_status_changed`: its payload *is* the authoritative transition
+//! (a sample commits whatever the status happens to be at read time and can
+//! read past a short `working` burst), so it commits the carried status
+//! directly via [`commit_agent_status`](Topology::commit_agent_status).
 //!
 //! The semantic half — committed classifications, blocked event ids, the
 //! unseen/ack/done bookkeeping, and the revision counters the fences read —
@@ -608,6 +612,155 @@ impl Topology {
         self.inventory_error_code.clear();
         self.inventory_message.clear();
         outcome
+    }
+
+    /// `pane.agent_status_changed` commit — the authoritative status
+    /// transition stream applied to the committed row. Snapshot commits
+    /// are *samples*: a `working` burst that flips back before the next
+    /// `session.snapshot` never enters the committed stream, so the
+    /// working→idle transition (and its `done`+unseen projection) would
+    /// be lost — that is the gap this commit closes. The event payload
+    /// carries the transition itself; the row is mutated in place and
+    /// the same per-pane pipeline as [`accept_enriched`](Self::accept_enriched)
+    /// runs on it (same-fields bookkeeping, blocked-cycle sync, content
+    /// revision, `registerTransition`, completion sync, the
+    /// blocked→blocked refire), minus what a status event cannot carry
+    /// (no session-replacement check — identity fields are untouched —
+    /// and no enrich pass, matching the Event commit kind).
+    ///
+    /// `None` when the event duplicates the committed row or names a
+    /// pane the snapshot does not know yet — a fresh pane's row lands
+    /// with its sampled status on the next topology commit.
+    pub(crate) fn commit_agent_status(
+        &mut self,
+        payload: &lerdr_herdr::PaneAgentStatusChangedData,
+    ) -> Option<AcceptOutcome> {
+        let pane_id = payload.pane_id.as_str();
+        let index = self
+            .snapshot
+            .agents
+            .iter()
+            .position(|agent| agent.pane_id == pane_id)?;
+        let status = payload.agent_status.to_string();
+        // Dedupe refires: the transition plus every carried metadata
+        // field already committed means nothing observable moved — no
+        // revision bump, no downstream wake.
+        let prev_agent = {
+            let committed = &self.snapshot.agents[index];
+            let unchanged = committed.agent_status == payload.agent_status
+                && payload
+                    .agent
+                    .as_deref()
+                    .is_none_or(|v| committed.agent.as_deref() == Some(v))
+                && payload
+                    .display_agent
+                    .as_deref()
+                    .is_none_or(|v| committed.display_agent.as_deref() == Some(v))
+                && payload
+                    .title
+                    .as_deref()
+                    .is_none_or(|v| committed.title.as_deref() == Some(v))
+                && (payload.state_labels.is_empty()
+                    || committed.state_labels == payload.state_labels);
+            if unchanged {
+                return None;
+            }
+            committed.agent.clone()
+        };
+        self.revision += 1;
+        let epoch = self.revision as i64;
+        let now = now_millis();
+        // The scroll half of the same-fields tuple lives on `panes` —
+        // unchanged by a status event.
+        let scroll_max_offset = self
+            .snapshot
+            .panes
+            .iter()
+            .find(|pane| pane.pane_id == pane_id)
+            .and_then(|pane| pane.scroll)
+            .map(|scroll| scroll.max_offset_from_bottom)
+            .unwrap_or_default();
+
+        let mut ledger = self.attention.lock().expect("attention ledger poisoned");
+        let cell = ledger.cell_mut(pane_id);
+        let prev_status = cell.prev_status.clone();
+        let previous_attention = cell.blocked.kind;
+
+        let incoming = &mut self.snapshot.agents[index];
+        incoming.agent_status = payload.agent_status;
+        if let Some(agent) = &payload.agent {
+            incoming.agent = Some(agent.clone());
+        }
+        if let Some(display_agent) = &payload.display_agent {
+            incoming.display_agent = Some(display_agent.clone());
+        }
+        if let Some(title) = &payload.title {
+            incoming.title = Some(title.clone());
+        }
+        if !payload.state_labels.is_empty() {
+            incoming.state_labels.clone_from(&payload.state_labels);
+        }
+        let agent = incoming.agent.clone().unwrap_or_default();
+        let project = project_of(incoming.cwd.as_deref().unwrap_or_default());
+        let change_key = ChangeKey::of(incoming, scroll_max_offset);
+        // `name`/`cwd` are event-blind fields — a status commit moves the
+        // same-fields tuple only through `status` or an adopted `agent`.
+        let tuple_moved = prev_status != status || incoming.agent != prev_agent;
+
+        let times = self.agent_times.entry(pane_id.to_owned()).or_default();
+        if !times.seen || times.change_key != change_key {
+            times.change_key = change_key;
+            times.updated_at = now;
+            times.seen = true;
+        }
+        // `activityAdvanced` — the status leg moved; `updated_at` already
+        // advanced, so `last_active_at` follows.
+        if times.updated_at > times.last_active_at {
+            times.last_active_at = times.updated_at;
+        }
+
+        let mut outcome = AcceptOutcome::default();
+        let attention_changed = cell.sync_cycle(&status, &mut mint_blocked_event_id);
+        if tuple_moved || attention_changed {
+            cell.content_rev += 1;
+        }
+        if attention_changed {
+            cell.attention_rev += 1;
+        }
+        cell.state_rev = epoch;
+        cell.prev_status.clone_from(&status);
+        if let Some(transition) = cell.register_transition(
+            pane_id,
+            &agent,
+            &project,
+            &prev_status,
+            &status,
+            previous_attention,
+            epoch,
+        ) {
+            outcome.transitions.push(transition);
+        }
+        if !preserves_chat_completion(&prev_status, &status, previous_attention) {
+            cell.sync_attention_completion(previous_attention, cell.blocked.kind, epoch);
+        }
+        // The blocked→blocked refire (state.go:558-563) — same leg as the
+        // accept loop.
+        if prev_status == "blocked"
+            && status == "blocked"
+            && (previous_attention != cell.blocked.kind
+                || (attention_changed && cell.blocked.kind == Some(AttentionKind::Approval)))
+        {
+            outcome.transitions.push(PaneTransition {
+                pane_id: pane_id.to_owned(),
+                agent,
+                project,
+                status,
+                revision: epoch,
+                observed_at: now,
+            });
+        }
+        drop(ledger);
+        Some(outcome)
     }
 
     /// `resolveAgentSessionName`'s resolver call (server.go:529) run for
@@ -1573,6 +1726,112 @@ mod tests {
         let (_, after, _) = t.acknowledge("wE:p1").expect("live pane");
         assert_eq!(after, "idle");
         assert_eq!(t.agents()[0].status, "idle");
+    }
+
+    /// `pane.agent_status_changed` — the event path a sampled commit
+    /// cannot lose: each transition commits in stream order, so a
+    /// `working` burst too short for a snapshot sample still produces
+    /// the working transition + the `done`+unseen projection on `idle`.
+    #[test]
+    fn status_event_commits_short_working_burst() {
+        fn status_event(
+            pane_id: &str,
+            status: lerdr_herdr::AgentStatus,
+        ) -> lerdr_herdr::PaneAgentStatusChangedData {
+            lerdr_herdr::PaneAgentStatusChangedData {
+                pane_id: pane_id.into(),
+                workspace_id: "wE".into(),
+                agent_status: status,
+                agent: Some("omp".into()),
+                display_agent: None,
+                title: None,
+                state_labels: Default::default(),
+            }
+        }
+        let mut t = Topology::default();
+        t.accept(SessionSnapshot {
+            agents: vec![agent("wE:p1", lerdr_herdr::AgentStatus::Idle)],
+            ..SessionSnapshot::default()
+        });
+        let rev = t.revision;
+
+        // working lands — a transition record + the committed row.
+        let outcome = t
+            .commit_agent_status(&status_event("wE:p1", lerdr_herdr::AgentStatus::Working))
+            .expect("transition commits");
+        assert_eq!(outcome.transitions.len(), 1);
+        assert_eq!(outcome.transitions[0].status, "working");
+        assert_eq!(t.agents()[0].status, "working");
+        assert!(t.revision > rev);
+
+        // idle lands — the done+unseen projection, same as a sampled
+        // working→idle accept produces.
+        let outcome = t
+            .commit_agent_status(&status_event("wE:p1", lerdr_herdr::AgentStatus::Idle))
+            .expect("transition commits");
+        assert_eq!(outcome.transitions.len(), 1);
+        assert_eq!(outcome.transitions[0].status, "idle");
+        assert_eq!(t.agents()[0].status, "done");
+    }
+
+    /// A refire carrying nothing new is dropped — no revision bump, no
+    /// downstream wake.
+    #[test]
+    fn status_event_dedupes_unchanged() {
+        let mut t = Topology::default();
+        t.accept(SessionSnapshot {
+            agents: vec![agent("wE:p1", lerdr_herdr::AgentStatus::Idle)],
+            ..SessionSnapshot::default()
+        });
+        let rev = t.revision;
+        let payload = lerdr_herdr::PaneAgentStatusChangedData {
+            pane_id: "wE:p1".into(),
+            workspace_id: "wE".into(),
+            agent_status: lerdr_herdr::AgentStatus::Idle,
+            agent: None,
+            display_agent: None,
+            title: None,
+            state_labels: Default::default(),
+        };
+        assert!(t.commit_agent_status(&payload).is_none());
+        assert_eq!(t.revision, rev);
+        // An unknown pane never commits — its row lands with the next
+        // snapshot instead.
+        assert!(t
+            .commit_agent_status(&lerdr_herdr::PaneAgentStatusChangedData {
+                pane_id: "wE:nope".into(),
+                ..payload
+            })
+            .is_none());
+    }
+
+    /// Carried metadata adopts onto the committed row — a status event
+    /// is also the freshest agent/title/labels report.
+    #[test]
+    fn status_event_adopts_carried_fields() {
+        let mut t = Topology::default();
+        t.accept(SessionSnapshot {
+            agents: vec![agent("wE:p1", lerdr_herdr::AgentStatus::Idle)],
+            ..SessionSnapshot::default()
+        });
+        let outcome = t.commit_agent_status(&lerdr_herdr::PaneAgentStatusChangedData {
+            pane_id: "wE:p1".into(),
+            workspace_id: "wE".into(),
+            agent_status: lerdr_herdr::AgentStatus::Blocked,
+            agent: Some("omp".into()),
+            display_agent: Some("OMP".into()),
+            title: Some("orch".into()),
+            state_labels: [("phase".into(), "build".into())].into_iter().collect(),
+        });
+        assert!(outcome.is_some());
+        let committed = &t.snapshot.agents[0];
+        assert_eq!(committed.agent_status, lerdr_herdr::AgentStatus::Blocked);
+        assert_eq!(committed.agent.as_deref(), Some("omp"));
+        assert_eq!(committed.display_agent.as_deref(), Some("OMP"));
+        assert_eq!(committed.title.as_deref(), Some("orch"));
+        assert_eq!(committed.state_labels["phase"], "build");
+        // Blocked-entry mints the attention cycle like a sampled commit.
+        assert!(!t.attention_cell("wE:p1").blocked.event_id.is_empty());
     }
 
     #[test]

@@ -411,9 +411,10 @@ async fn subscribe_skips_reordered_when_ledger_knows_unsupported() {
         !types.contains(&"workspace.reordered"),
         "known-unsupported variant must not be re-offered: {types:?}"
     );
-    // The other optional entry is unjudged — it still rides.
+    // The other optional entries are unjudged — they still ride.
     assert!(types.contains(&"pane.output_changed"));
-    assert_eq!(types.len(), 21);
+    assert!(types.contains(&"pane.agent_status_changed"));
+    assert_eq!(types.len(), 22);
     // The variant was skipped on the ledger's verdict, not rejected by
     // this bootstrap — the probe atomic stays "not probed" while the
     // published verdict keeps the observed evidence.
@@ -423,6 +424,7 @@ async fn subscribe_skips_reordered_when_ledger_knows_unsupported() {
         FeatureState::Unsupported
     );
     assert_eq!(client.pane_output_changed_supported(), Some(true));
+    assert_eq!(client.pane_agent_status_changed_supported(), Some(true));
 }
 
 #[tokio::test]
