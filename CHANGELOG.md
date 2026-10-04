@@ -5,15 +5,225 @@ All notable changes to this project will be documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-Releases are **pre-release / beta** — no compatibility guarantees yet.
+The `protocol v3` / `herdr-e2ee-v2` wire contract remains frozen.
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-10-04
+
+### Known limits
+
+- Release authorization is separate from full app audit acceptance. Remaining
+  checks require genuine capability-omitting peers, a provider supporting
+  native question clarification, and complete audio-observed TalkBack coverage.
+- Workspace rename, camera attachment and diagnostics UI entry points are
+  not exposed; directory fallback and bounded Activity checks retain their
+  documented capability boundaries.
+- Official signed app upgrade and isolated managed relay upgrade/rollback
+  have separate passing evidence. Current app update trust/staging and the
+  native managed relay updater still need verification against newer matching
+  published artifacts; the obsolete published installer hook is fixed here.
+
 ### Fixed
+
+- **Visible Terminal output is accessible to TalkBack** — expose the drawn
+  viewport without composing every row or reading hidden scrollback.
+- **Large-text notification settings remain readable** — move the system
+  settings action below the status instead of squeezing the heading.
+  Unpaired Settings guidance now points to Computers.
+- **Large-text theme choices retain complete labels** — use measured label
+  widths to switch narrow Settings controls to full-width radio rows,
+  preserving exclusive selection and 48dp targets.
+- **Relay update details keep their width** — put Update and Check below the
+  status instead of squeezing version, revision and failure text between them.
+- **File-preview Back has a full 48dp container** — its native clickable
+  rectangle no longer relies on fractional expansion of a smaller icon button.
+- **Large-text session modes stay complete** — when measured labels cannot
+  fit the segmented row, use a single-height mode menu with explicit current
+  selection. Feed, Terminal and Files remain complete; ordinary segments stay.
+
+- **Rust release installation accepts its verified manifest** — stop requiring
+  a nonexistent frontend web hash in the plugin installer. Installation and
+  rollback still check the exact version and revision reported by the relay;
+  the binary verifier retains manifest file-hash validation.
+
+- **Long Feed responses stay where the reader scrolled** — an offscreen end
+  inside the final turn no longer counts as near-bottom. Passive updates do not
+  yank scrollback to the tail; ordinary pinned live following is preserved.
+
+- **Older Feed pages retain the visible expanded turn** — anchor to the first
+  visible entry when the exhausted pagination header disappears, including its
+  pixel offset. Removed transcript rows no longer leave animation drawings over
+  historical turns or the fixed mode controls; the viewport is explicitly clipped.
+
+- **Cold restored Terminals resume live content** — re-arm the pending initial
+  read after authoritative agent inventory arrives, without a mode toggle,
+  manual refresh, or re-pairing. Rendered, closed and hidden panes stay untouched.
+
+- **Pane membership preserves queued status invalidations** — forward the
+  remaining bootstrap gap and already queued live events before replacing
+  per-pane Herdr subscriptions. Continuous traffic cannot starve the refresh.
+
+- **Viewed sessions do not interrupt with duplicate alerts** — Feed now
+  publishes its visible pane, and local notifications retract or suppress that
+  pane while it is visible and unlocked. Other-agent alerts remain active;
+  background and locked-app deliveries are preserved.
+
+- **New push distributors work on return** — discover a freshly installed
+  UnifiedPush distributor when Lerdr returns to the foreground, without
+  requiring an app restart or replacing an already active registration.
+
+- **Approval choices retain their policy and permission scope** — show complete
+  multiline labels in Home and Feed instead of clipping them to indistinguishable
+  prefixes. Preserve Codex's wrapped scope text without weakening approval
+  recognition or stale-menu guards.
+
+- **Terminal draft restoration keeps the caret** — save plain input as full
+  text-and-selection state instead of restoring a string at the start.
+  Secret input remains memory-only and is never saved for restoration.
+
+- **Invitation clipboard previews hide the enrollment secret** — mark copied
+  one-use links as sensitive so Android masks its clipboard preview. Native
+  paste and the explicit pairing preview remain available.
+
+- **Large-text navigation stays on one line** — ellipsize destination labels
+  instead of splitting words and enlarging the whole bottom bar at 200% text.
+  Icons retain the full accessible destination names; text scaling is unchanged.
+
+- **Rightward tab reordering moves the tab** — send Herdr's insertion boundary
+  past the next tab, accounting for removal of the source. The previous index
+  was a confirmed no-op that left the app waiting for an order change.
+
+- **Session management remains usable after renaming** — consume handled
+  dismissal results before closing the sheet, so reopening does not immediately
+  close again. Rename text, selection and IME composition update synchronously;
+  delayed inventory changes cannot corrupt an edited name.
+
+- **Warm re-pairing waits for the new enrollment** — replace the previous
+  transport before awaiting the invitation handshake, instead of reporting
+  failure from the old connection's already-connected state.
+
+- **Feed typing preserves uploaded references and the caret** — update text,
+  selection and IME composition synchronously instead of feeding editor text
+  back through asynchronous screen-state flows. Draft persistence, replacement
+  targets and edits made during submission retain their existing guards.
+
+- **Generic Feed attention is not a question** — keep approval and question
+  headings tied to their actual kinds; unknown blockers show "Attention needed"
+  and retain the terminal inspection path.
+
+- **Unknown agent timestamps do not invent ages** — omit elapsed time when
+  the relay has not observed activity yet. Known activity and update times
+  retain their existing precedence and age formatting.
+
+- **Background terminals return their viewport to the desktop** — release
+  the size lease when the app hides instead of renewing it for five minutes.
+  Hidden grid callbacks cannot re-acquire it; resume re-watches and restores
+  the latest measured grid immediately.
+
+- **Wrapped native Codex questions stay inline** — accept navigation and cancel
+  hints wrapped below the live submit footer instead of dropping the form.
+  Later transcript output still prevents historical questions from reopening.
+
+- **Native OMP ASCII questions stay inline** — recognize `+- Ask` frames and
+  their ASCII borders instead of falling back to terminal-only interaction.
+  Completed Ask output without a live footer remains history, not a new question.
+
+- **Feed search names its conversation scope** — show "Find in conversation"
+  in the Feed field instead of the terminal-specific label. Terminal search
+  keeps "Find in terminal".
+
+- **Restart and clear follow their replacement pane** — keep the management
+  sheet open while the old agent disappears, then update Feed, Terminal and
+  Files routes to the returned pane without leaving closed-pane Back targets.
+  Both actions use the relay's 45-second replacement window; Restart no
+  longer times out at the generic 15-second deadline.
 
 - **Uploads survive pane session replacement** — validate the current
   pane generation and normalized session ID from the agent inventory
   instead of requiring generation zero; stale targets remain rejected.
+- **Terminal headers retain agent lifecycle** — pane dimensions no longer
+  replace `working`, `blocked`, or `idle` with a lease label. Geometry
+  remains in the terminal metadata row; the header keeps working and
+  waiting accents independently of the viewport.
+- **Omp lifecycle setup covers named profiles** — document installation
+  into the active profile and reloading already-open sessions. The
+  worktree-based orchestration fallback cannot detect subagents inside
+  the same omp process; Herdr's omp integration supplies that lifecycle.
+- **Short agent status transitions no longer drop** — the relay
+  subscribes to `pane.agent_status_changed` for each concrete pane and rebuilds
+  coverage as panes enter, leave or move. Live events commit their carried
+  status, so a `working`→`idle` burst inside one poll window produces its
+  transition and done/unseen projection. Resync snapshots adopt current state;
+  buffered status events trigger reads, not stale replay. Optional-subscription
+  fallback handles Herdr decoder refusals with either empty or echoed request
+  IDs. The plugin's `agent_event` datagram still commits its payload on older
+  Herdr versions that refuse lifecycle subscriptions.
+- **Warm deep links do not duplicate destinations** — repeated settings or
+  agents intents keep one destination; a new pairing link refreshes the
+  existing form without silently connecting.
+- **App update permission handoff waits for its result** — the Allow action
+  opens the app-specific unknown-source settings page instead of clearing
+  its gate during composition. Returning denied does not start a download.
+- **Downloaded updates are privately staged and verified** — reject absent
+  archives, a different package, non-newer version codes, and incompatible
+  signing identities before sharing read-only bytes with the installer.
+  Background completion opens update review, never an unsolicited installer.
+- **Feed drafts retain the current local edit** — restore saved text once per
+  identity, ignore delayed reads after typing, and keep queued writes alive
+  when the screen closes instead of replaying older persisted prefixes.
+- **Raw command replies stay scoped to their relay and session** — foreign
+  results cannot complete another relay's request; disconnect ends pending
+  work with an unknown dispatch outcome rather than waiting for a timeout.
+- **Native OMP questions recognize glyph key hints** — detect the current
+  `⏎ select` / `⏎ submit` dialog footer instead of losing structured choices;
+  completed Ask output without a live footer remains ordinary history.
+- **OMP multi-select follows native key controls** — reconcile checked
+  options with Space, confirm with Enter, and finish custom answers after
+  the native text editor returns. Legacy menu controls stay unchanged.
+- **Live JSONL tool results replace earlier call rows** — a late output or
+  error updates an existing tool card even when its raw-record id is unchanged.
+- **Reader Home omits creation actions** — agent/workspace launch menus
+  require a paired controller; reader-only and unknown-role inventories
+  no longer offer an unusable launch button.
+- **Reader speech catalogs remain read-only** — keep voice status and
+  encrypted playback available, but omit install/remove controls and
+  reject stale voice-management actions locally without sending them.
+- **Sent drafts cannot be restored by older queued writes** — serialize
+  application-lifetime persistence and clear only the submitted snapshot;
+  edits made during submission remain unsent drafts.
+- **Reopened sessions survive stale screen cleanup** — local view ownership
+  keeps an old Feed or Terminal from removing its successor's subscription,
+  watch, size lease, or viewed signal. New connections inherit hidden state.
+- **Cancelled app downloads release update state** — a removed download row
+  fails visibly and clears pending bookkeeping instead of polling forever
+  or resuming the dead download after process restart.
+- **Directory browsers refresh when reopened** — newly created project
+  folders become selectable without reconnecting or restarting the app.
+- **Raw agent launch waits for native registration** — an accepted start
+  command can precede Herdr's agent record. Wait within the existing bound
+  without launching twice, and preserve the already-dispatched boundary if
+  later detection or naming fails instead of reporting a safe-to-retry refusal.
+- **Custom raw launches retain their requested identity** — name the admitted
+  native agent after `pane.report_agent`, within the existing response budget,
+  so the app header and name-based lifecycle target the same agent. A later
+  naming refusal cannot turn the already-launched command into a safe retry.
+- **Early connections receive the launch catalog** — resolve bounded native
+  and local profile discovery before accepting clients. A first-handshake
+  catalog can no longer remain empty while slower inventory/capability probes
+  finish later; frozen v3 messages and fixtures are unchanged.
+- **Chosen launch names survive directory changes** — retain explicit name
+  edits when directory results arrive or the suggested profile name changes,
+  including an edit equal to the current suggestion. Fresh forms and relay
+  selection still reset the name.
+- **Phone terminal leases no longer crop native output** — size the read-only
+  observer from Herdr's native grid rather than the smaller process TTY lease.
+  Live tail rows and hidden-password prompts remain visible after the phone
+  keyboard shrinks its viewport; wire fields and size-lease behavior are unchanged.
+- **Terminal searches retain zero coordinates** — serialize required copy-engine
+  row/column fields and range endpoints even at the origin. Full-scrollback
+  searches and first-row/column requests no longer fail because a valid point
+  became an empty or incomplete object.
 
 ## [0.2.7] — 2026-10-01
 

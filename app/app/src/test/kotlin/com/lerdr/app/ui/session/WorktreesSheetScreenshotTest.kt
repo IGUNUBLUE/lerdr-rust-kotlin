@@ -76,6 +76,7 @@ class WorktreesSheetScreenshotTest {
         workspacePath = "/home/u/worktrees/fix-14",
         linkedWorktree = true,
         managementAvailable = true,
+        canControl = true,
         loading = false,
         listing = listing,
     )

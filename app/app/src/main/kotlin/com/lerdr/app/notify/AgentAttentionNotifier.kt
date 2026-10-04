@@ -6,6 +6,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import lerdr.core.store.Agent
 import lerdr.core.store.AgentStore
@@ -14,10 +16,10 @@ import lerdr.core.store.AgentStore
  * Notification coordinator — the seam between the session snapshot stream
  * and the shade.
  *
- * Collects [AgentStore.agents] (the same flow [SessionRepository] republishes)
- * and diffs each snapshot against the previous through [AttentionReducer] —
- * the whole post/cancel policy lives there, pure-JVM testable. The resulting
- * [NotificationCommand]s go to [LerdrNotifier].
+ * Combines [AgentStore.agents] with the repository's visible viewed pane and
+ * diffs each snapshot against the previous through [AttentionReducer]. The
+ * post/cancel policy stays pure-JVM testable; [NotificationCommand]s go to
+ * [LerdrNotifier].
  *
  * The [RelaySyncService] pin policy lives in
  * [com.lerdr.app.push.PushSubscriptionManager]: push reachability decides
@@ -40,14 +42,16 @@ class AgentAttentionNotifier @Inject constructor(
     private val started = AtomicBoolean(false)
 
     /** Boots the collectors. Idempotent — called once per process by DI. */
-    fun start() {
+    fun start(visibleViewedPane: StateFlow<String?>) {
         if (!started.compareAndSet(false, true)) return
         notifier.ensureChannels()
         scope.launch {
             var previous = emptyList<Agent>()
-            agentStore.agents.collect { current ->
-                val commands = AttentionReducer.reduce(previous, current)
+            agentStore.agents.combine(visibleViewedPane) { current, viewedPane ->
+                val commands = AttentionReducer.reduce(previous, current, viewedPane)
                 previous = current
+                commands
+            }.collect { commands ->
                 if (commands.isNotEmpty()) notifier.execute(commands)
             }
         }

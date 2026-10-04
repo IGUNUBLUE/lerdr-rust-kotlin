@@ -1,11 +1,16 @@
 package lerdr.core.data
 
+import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.Preferences
 import app.cash.turbine.test
 import com.google.common.truth.Truth.assertThat
 import java.io.File
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import lerdr.core.model.AgentState
@@ -81,6 +86,59 @@ class DraftStoreTest {
         store.save("pane-1", "wip")
         store.clear("pane-1")
         assertThat(store.current("pane-1")).isNull()
+    }
+
+    @Test
+    fun `a delayed save cannot overtake a newer save or sent clear`() = runTest {
+        val delegate = PreferenceDataStoreFactory.create(scope = backgroundScope) {
+            File(tmp.root, "ordered.preferences_pb")
+        }
+        val started = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        var firstWrite = true
+        val store = DraftStore(object : DataStore<Preferences> {
+            override val data = delegate.data
+
+            override suspend fun updateData(
+                transform: suspend (Preferences) -> Preferences,
+            ): Preferences {
+                if (firstWrite) {
+                    firstWrite = false
+                    started.complete(Unit)
+                    release.await()
+                }
+                return delegate.updateData(transform)
+            }
+        }, { now })
+        val older = async(start = CoroutineStart.UNDISPATCHED) {
+            store.save("pane-1", "old prefix")
+        }
+        started.await()
+        val newer = async(start = CoroutineStart.UNDISPATCHED) {
+            store.save("pane-1", "sent prompt")
+        }
+        val clear = async(start = CoroutineStart.UNDISPATCHED) {
+            store.clearIfMatches("pane-1", "sent prompt")
+        }
+        release.complete(Unit)
+        older.await()
+        newer.await()
+        clear.await()
+
+        assertThat(store.current("pane-1")).isNull()
+    }
+
+    @Test
+    fun `sent snapshot clear preserves later edits and other identities`() = runTest {
+        val store = store()
+        store.save("pane-1", "submitted text")
+        store.save("pane-2", "other terminal")
+        store.save("pane-1", "next prompt")
+
+        store.clearIfMatches("pane-1", "submitted text")
+
+        assertThat(store.current("pane-1")!!.text).isEqualTo("next prompt")
+        assertThat(store.current("pane-2")!!.text).isEqualTo("other terminal")
     }
 
     // ── TTL & eviction ───────────────────────────────────────────────

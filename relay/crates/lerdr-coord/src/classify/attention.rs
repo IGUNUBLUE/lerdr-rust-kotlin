@@ -226,11 +226,31 @@ pub(crate) fn live_approval_details(
     }
 
     let mut options = Vec::with_capacity(rows.len());
-    for row in &rows {
-        options.push(row.label.clone());
-        if !is_hermes && row.focus {
-            focus = options.len() - 1;
+    let is_codex = normalized.contains("codex");
+    let mut rows = rows.into_iter().peekable();
+    while let Some(mut row) = rows.next() {
+        // Retain Codex's displayed permission scope, including hanging wraps.
+        // Never absorb the final row's tail: the newer-output guard owns it.
+        if is_codex {
+            if let Some(next) = rows.peek() {
+                let mut remaining = 500 - row.label.chars().count();
+                for line in &menu_lines[row.line + 1..next.line] {
+                    if remaining < 2 || line.trim().is_empty() || !line.starts_with(' ') {
+                        break;
+                    }
+                    row.label.push('\n');
+                    remaining -= 1;
+                    for ch in line.trim().chars().take(remaining) {
+                        row.label.push(ch);
+                        remaining -= 1;
+                    }
+                }
+            }
         }
+        if !is_hermes && row.focus {
+            focus = options.len();
+        }
+        options.push(row.label);
     }
     Some((options, focus, String::new()))
 }
@@ -916,5 +936,48 @@ pub(crate) fn approval_command(lines: &[String]) -> String {
         command
     } else {
         fallback
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::live_approval_details;
+
+    #[test]
+    fn codex_approval_keeps_wrapped_permission_scope() {
+        // Captured genuine Codex 0.160.0 approval, including its hanging wraps.
+        let frame = "\
+  Would you like to run the following command?
+
+  Environment: local
+
+  Reason: May I read the isolated audit note?
+
+  $ cat --
+  /home/l/.local/state/lerdr-audit/physical-ixsij1wu
+  /providers/work/lerdr-audit-owned-note.txt
+
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for commands that start
+     with `cat -- /home/l/.local/state/lerdr-audit/
+     physical-ixsij1wu/providers/work/lerdr-audit-
+     owned-note.txt` (p)
+  3. No, and tell Codex what to do differently (esc)
+
+  Press enter to confirm or esc to cancel";
+        let (options, focus, _) = live_approval_details(frame, "codex").unwrap();
+        assert_eq!(focus, 0);
+        assert_eq!(
+            options[1],
+            "Yes, and don't ask again for commands that start\n\
+with `cat -- /home/l/.local/state/lerdr-audit/\n\
+physical-ixsij1wu/providers/work/lerdr-audit-\n\
+owned-note.txt` (p)"
+        );
+        assert_eq!(
+            options[2],
+            "No, and tell Codex what to do differently (esc)"
+        );
+        assert!(live_approval_details(&format!("{frame}\nNew tool output"), "codex").is_none());
     }
 }

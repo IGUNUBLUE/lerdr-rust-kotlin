@@ -215,6 +215,14 @@ pub(crate) fn codex_footer(line: &str) -> bool {
             || lower.contains("tab or esc to clear notes"))
 }
 
+/// Codex's navigation/cancel hints can wrap below its submit-hint row.
+pub(crate) fn codex_footer_tail(line: &str) -> bool {
+    line.split('|').all(|hint| {
+        let hint = hint.trim();
+        eq_fold(hint, "←/→ to navigate questions") || eq_fold(hint, "esc to interrupt")
+    })
+}
+
 /// `qoderHeader` — the Qoder "Asking User" header line.
 pub(crate) fn qoder_header(line: &str) -> bool {
     if eq_fold(line.trim(), "Asking User") {
@@ -362,16 +370,14 @@ pub(crate) fn raw_has_sgr48_truecolor(raw: &str, r: &str, g: &str, b: &str) -> b
     false
 }
 
-/// `ompAskHeaderPattern` = `(?i)^╭[─━═_—\s]*Ask(?:[─━═_—\s]|$)`.
+/// Unicode and ASCII Ask frame headers; plain transcript text is not a header.
 pub(crate) fn omp_ask_header(line: &str) -> bool {
-    let Some(rest) = line.strip_prefix('╭') else {
+    let Some(rest) = line.strip_prefix('╭').or_else(|| line.strip_prefix("+-")) else {
         return false;
     };
-    let frame: String = rest
-        .chars()
-        .take_while(|c| matches!(c, '─' | '━' | '═' | '_' | '—') || c.is_whitespace())
-        .collect();
-    let rest = &rest[frame.len()..];
+    let rest = rest.trim_start_matches(|c: char| {
+        matches!(c, '─' | '━' | '═' | '_' | '—' | '-') || c.is_whitespace()
+    });
     let Some(rest) = strip_prefix_fold(rest, "ask") else {
         return false;
     };
@@ -379,7 +385,7 @@ pub(crate) fn omp_ask_header(line: &str) -> bool {
         || rest
             .chars()
             .next()
-            .is_some_and(|c| matches!(c, '─' | '━' | '═' | '_' | '—') || c.is_whitespace())
+            .is_some_and(|c| matches!(c, '─' | '━' | '═' | '_' | '—' | '-') || c.is_whitespace())
 }
 
 /// `ompOptionPattern` = `^\s*([❯›>]?)\s*(☑|☐|◉|○|||||\[[xX ]\]|\([oO ]\))\s+(.+?)\s*$`
@@ -1218,6 +1224,8 @@ pub(crate) fn omp_border_line(line: &str) -> bool {
                     | '—'
                     | '│'
                     | '|'
+                    | '+'
+                    | '-'
                     | '├'
                     | '┤'
                     | '╭'

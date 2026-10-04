@@ -50,6 +50,17 @@
             </intent-filter>
         </activity>
 
+        <!-- Only validated, privately staged update APKs are shared. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updates"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/update_file_paths" />
+        </provider>
+
         <!-- Fires the install hand-off when a release-APK download
              completes while the app process is dead. -->
         <receiver

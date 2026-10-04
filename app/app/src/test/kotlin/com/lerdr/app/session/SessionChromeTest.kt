@@ -7,13 +7,6 @@ import org.junit.Test
 class SessionChromeTest {
 
     @Test
-    fun `terminal lease labels map to the amber lease variant`() {
-        assertThat(statusVariantOf("lease 92×42")).isEqualTo(SessionStatusVariant.LEASE)
-        assertThat(statusVariantOf("lease 80 cols")).isEqualTo(SessionStatusVariant.LEASE)
-        assertThat(statusVariantOf("Lease 24x80")).isEqualTo(SessionStatusVariant.LEASE)
-    }
-
-    @Test
     fun `blocked and waiting labels map to the waiting variant`() {
         assertThat(statusVariantOf("blocked")).isEqualTo(SessionStatusVariant.WAITING)
         assertThat(statusVariantOf("Waiting for approval"))

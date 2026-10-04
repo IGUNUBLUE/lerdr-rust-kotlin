@@ -118,7 +118,7 @@ pub(crate) fn layout_hint(text: &str) -> bool {
         return false;
     }
     for line in &lines[last_control as usize + 1..] {
-        if has_codex_header && eq_fold(line.trim(), "esc to interrupt") {
+        if has_codex_header && codex_footer_tail(line) {
             continue;
         }
         if !line.is_empty()
@@ -160,8 +160,7 @@ pub(crate) fn omp_layout_hint(text: &str) -> bool {
         if review && omp_review_submit_match(line) {
             review_submit = true;
         }
-        let lower = line.to_lowercase();
-        if lower.contains("enter select") || lower.contains("enter submit") {
+        if omp_footer_match(line) {
             footer = index as i64;
         }
     }
@@ -174,6 +173,23 @@ pub(crate) fn omp_layout_hint(text: &str) -> bool {
         }
     }
     true
+}
+
+fn omp_footer_match(line: &str) -> bool {
+    [
+        "enter select",
+        "enter submit",
+        "enter next",
+        "⏎ select",
+        "⏎ submit",
+        "⏎ next",
+    ]
+    .iter()
+    .any(|hint| {
+        line.as_bytes()
+            .windows(hint.len())
+            .any(|part| part.eq_ignore_ascii_case(hint.as_bytes()))
+    })
 }
 
 /// `openCodeLayoutHint` — footer hint present and the tail below it blank.
@@ -334,6 +350,7 @@ pub(crate) fn parse_claude(text: &str) -> Option<Interaction> {
             all_option_count: all_count,
             agent: "claude".to_owned(),
             notes_active: false,
+            omp_space_toggle: false,
         });
     }
 
@@ -424,6 +441,7 @@ pub(crate) fn parse_claude(text: &str) -> Option<Interaction> {
         all_option_count: rows.len(),
         agent: "claude".to_owned(),
         notes_active: false,
+        omp_space_toggle: false,
     };
     // Leftover typed text only marks the custom answer as chosen while no
     // option row carries the confirmed selection; otherwise a stale note
@@ -553,6 +571,7 @@ pub(crate) fn parse_claude_review(text: &str, lines: &[String]) -> Option<Intera
         all_option_count: 2,
         agent: "claude".to_owned(),
         notes_active: false,
+        omp_space_toggle: false,
     })
 }
 
@@ -783,6 +802,7 @@ pub(crate) fn parse_codex(text: &str) -> Option<Interaction> {
         all_option_count: all_count,
         agent: "codex".to_owned(),
         notes_active,
+        omp_space_toggle: false,
     })
 }
 
@@ -1066,6 +1086,7 @@ pub(crate) fn parse_qoder(text: &str) -> Option<Interaction> {
         all_option_count: option_count + 1,
         agent: "qoder".to_owned(),
         notes_active,
+        omp_space_toggle: false,
     };
     if current == total {
         interaction.submit_label = "Submit".to_owned();
@@ -1182,6 +1203,7 @@ pub(crate) fn parse_qoder_review(
         all_option_count: 2,
         agent: "qoder".to_owned(),
         notes_active: false,
+        omp_space_toggle: false,
     })
 }
 
@@ -1354,6 +1376,7 @@ pub(crate) fn parse_opencode(text: &str) -> Option<Interaction> {
         all_option_count: all_count,
         agent: "opencode".to_owned(),
         notes_active,
+        omp_space_toggle: false,
     })
 }
 
@@ -1416,6 +1439,7 @@ pub(crate) fn parse_opencode_review(
         all_option_count: 1,
         agent: "opencode".to_owned(),
         notes_active: false,
+        omp_space_toggle: false,
     })
 }
 
@@ -1506,8 +1530,7 @@ pub(crate) fn parse_omp(text: &str) -> Option<Interaction> {
     let start = start as usize;
     let mut end = lines.len();
     for (index, line) in lines.iter().enumerate().skip(start + 1) {
-        let lower = line.to_lowercase();
-        if lower.contains("enter select") || lower.contains("enter submit") {
+        if omp_footer_match(line) {
             end = index;
             break;
         }
@@ -1638,6 +1661,13 @@ pub(crate) fn finish_omp(
         all_option_count: all_options,
         agent: "omp".to_owned(),
         notes_active: false,
+        omp_space_toggle: lines.get(end).is_some_and(|footer| {
+            footer.contains("␣ toggle")
+                || footer
+                    .as_bytes()
+                    .windows(b"space toggle".len())
+                    .any(|part| part.eq_ignore_ascii_case(b"space toggle"))
+        }),
     })
 }
 
@@ -1699,6 +1729,7 @@ pub(crate) fn parse_omp_review(lines: &[String], start: usize, end: usize) -> Op
         all_option_count: 1,
         agent: "omp".to_owned(),
         notes_active: false,
+        omp_space_toggle: false,
     })
 }
 
@@ -1718,8 +1749,7 @@ pub(crate) fn omp_question(lines: &[String], start: usize, first_option: usize) 
 pub(crate) fn omp_description(lines: &[String], start: usize, end: usize) -> String {
     let mut parts = Vec::new();
     for line in &lines[start + 1..end] {
-        if line.is_empty() || omp_border_line(line) || line.to_lowercase().contains("enter select")
-        {
+        if line.is_empty() || omp_border_line(line) || omp_footer_match(line) {
             continue;
         }
         parts.push(line.trim_start_matches('↳').trim().to_owned());
@@ -1934,5 +1964,118 @@ pub(crate) fn split_summary_entry(line: &str) -> SummaryEntry {
     SummaryEntry {
         question: line.to_owned(),
         answer: String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_wrapped_navigation_footer_retains_live_question() {
+        let text = concat!(
+            "Question 1/2 (2 unanswered)\n",
+            "Choose a marker.\n",
+            "› 1. Alpha              Select Alpha.\n",
+            "  2. Beta               Select Beta.\n",
+            "  3. None of the above  Optionally, add details in notes (tab)\n",
+            "tab to add notes | enter to submit answer\n",
+            "←/→ to navigate questions | esc to interrupt",
+        );
+        let interaction = parse_question(text, "codex").expect("live wrapped Codex footer");
+        assert_eq!(interaction.question, "Choose a marker.");
+        assert_eq!(interaction.question_index, 1);
+        assert_eq!(interaction.question_total, 2);
+        assert_eq!(interaction.options[0].label, "Alpha");
+        assert_eq!(interaction.options[1].label, "Beta");
+        assert_eq!(interaction.focus.index, 0);
+    }
+
+    #[test]
+    fn codex_footer_followed_by_response_is_not_a_live_question() {
+        let text = concat!(
+            "Question 1/2 (2 unanswered)\n",
+            "Choose a marker.\n",
+            "› 1. Alpha              Select Alpha.\n",
+            "  2. Beta               Select Beta.\n",
+            "  3. None of the above  Optionally, add details in notes (tab)\n",
+            "tab to add notes | enter to submit answer\n",
+            "←/→ to navigate questions | esc to interrupt\n",
+            "Beta selected. Continue the plan.",
+        );
+        assert!(parse_question(text, "codex").is_none());
+    }
+
+    #[test]
+    fn omp_ascii_frame_exposes_native_question_without_border_text() {
+        let text = concat!(
+            "+--- Ask 1 questions ---+\n",
+            "+--- [marker] · options:2 ---+\n",
+            "|Choose a marker.|\n",
+            "|( ) Alpha|\n",
+            "|( ) Beta|\n",
+            "+-----------------------+\n",
+            "Esc Choose a marker\n",
+            "+- Ask -----------------+\n",
+            "|Choose a marker.|\n",
+            "+-----------------------+\n",
+            "|> ( ) Alpha|\n",
+            "|( ) Beta|\n",
+            "|( ) Other (type your own)|\n",
+            "||\n",
+            "+-----------------------+\n",
+            "|Enter select · n note · Up/Down move · Esc cancel|\n",
+            "+-----------------------+",
+        );
+        let interaction = parse_question(text, "omp").expect("live native ASCII Ask frame");
+        assert_eq!(interaction.kind, "single_select");
+        assert_eq!(interaction.question, "Choose a marker.");
+        assert_eq!(interaction.options[0].label, "Alpha");
+        assert_eq!(interaction.options[1].label, "Beta");
+        assert!(interaction
+            .options
+            .iter()
+            .all(|option| option.description.is_empty()));
+        assert!(!interaction.other.hidden);
+        assert!(interaction.other.text.is_empty());
+        assert_eq!(interaction.focus.index, 0);
+    }
+
+    #[test]
+    fn completed_ascii_ask_output_is_not_a_live_question() {
+        let text = "+- Ask ---+\n|Choose a marker.|\n|(o) Alpha|\n|( ) Beta|\n+---------+\nOMP_QUESTION_ACCEPTED Alpha";
+        assert!(parse_question(text, "omp").is_none());
+    }
+
+    #[test]
+    fn omp_18_glyph_select_footer_exposes_single_select_question() {
+        let text = "╭── Ask ──╮\n│ PHONE_OMP_CHOICE │\n│ ❯ ◉ Alpha │\n│   ○ Beta │\n│ ⏎ select · n note · ^/v move · ⎋ cancel │\n╰──────────╯";
+        let interaction = parse_question(text, "omp").expect("live OMP question");
+        assert_eq!(interaction.kind, "single_select");
+        assert_eq!(interaction.question, "PHONE_OMP_CHOICE");
+        assert_eq!(interaction.options[0].label, "Alpha");
+        assert!(interaction.options[0].selected);
+        assert_eq!(interaction.options[1].label, "Beta");
+        assert!(interaction.options[1].description.is_empty());
+        assert_eq!(interaction.focus.index, 0);
+    }
+
+    #[test]
+    fn omp_18_glyph_submit_footer_exposes_multi_select_question() {
+        let text = "╭── Ask ──╮\n│ Choose audit options │\n│ ❯ ☑ Alpha │\n│   ☐ Beta │\n│ ⏎ submit · space toggle · ⎋ cancel │\n╰──────────╯";
+        let interaction = parse_question(text, "omp").expect("live OMP multi-select");
+        assert_eq!(interaction.kind, "multi_select");
+        assert_eq!(interaction.options[0].label, "Alpha");
+        assert!(interaction.options[0].selected);
+        assert_eq!(interaction.options[1].label, "Beta");
+        assert!(!interaction.options[1].selected);
+        assert!(interaction.options[1].description.is_empty());
+        assert_eq!(interaction.submit_label, "Submit");
+    }
+
+    #[test]
+    fn completed_omp_question_without_live_footer_does_not_reopen() {
+        let text = "╭── Ask ──╮\n│ PHONE_OMP_CHOICE │\n│ ◉ Alpha │\n│ ○ Beta │\n╰──────────╯\nPHONE_OMP_SELECTED Alpha";
+        assert!(parse_question(text, "omp").is_none());
     }
 }

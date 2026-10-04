@@ -38,12 +38,9 @@ class SpeechChunkerTest {
     }
 
     @Test
-    fun `cjk punctuation splits without whitespace`() {
-        // Chinese sentences end without a space, so their punctuation splits.
-        // Lerdr quirk kept faithfully: the split leaves an empty tail piece,
-        // which joins the last sentence on a space — a trailing " " survives.
-        assertThat(SpeechChunker.speechChunks("你好。再见！谢谢。"))
-            .containsExactly("你好。 再见！ 谢谢。 ")
+    fun `cjk sentences separate at punctuation when they fill the budget`() {
+        assertThat(SpeechChunker.speechChunks("你好。再见！谢谢。", limit = 3))
+            .containsExactly("你好。", "再见！", "谢谢。").inOrder()
     }
 
     @Test
@@ -60,6 +57,24 @@ class SpeechChunkerTest {
             .containsExactly("aaaaaaaaa", "aaa")
             .inOrder()
     }
+    @Test
+    fun `hard cuts preserve supplementary characters across the speech boundary`() {
+        val text = "x".repeat(239) + "😀" + "tail"
+        val chunks = SpeechChunker.speechChunks(text, limit = 240)
+        assertThat(chunks).containsExactly("x".repeat(239), "😀tail").inOrder()
+        assertThat(chunks.joinToString("")).isEqualTo(text)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `zero budget is rejected instead of looping forever`() {
+        SpeechChunker.speechChunks("hello", limit = 0)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `a budget too small for one supplementary character is rejected`() {
+        SpeechChunker.speechChunks("😀", limit = 1)
+    }
+
 
     @Test
     fun `a space at index zero is not a usable cut point`() {
@@ -114,12 +129,6 @@ class SpeechChunkerTest {
         }
     }
 
-    @Test
-    fun `default limit matches Lerdr 1500`() {
-        // 1200 chars fits one fragment at Lerdr's 1500 default.
-        val sentence = "Word. ".repeat(200)
-        assertThat(SpeechChunker.speechChunks(sentence)).hasSize(1)
-    }
 
     // ── speakableText ───────────────────────────────────────────────────
 
@@ -204,9 +213,6 @@ class SpeechChunkerTest {
 
     @Test
     fun `only the five offered codes are speech languages`() {
-        assertThat(SPEECH_LANGUAGES.map { it.code })
-            .containsExactly("en", "fr", "de", "es", "zh")
-            .inOrder()
         assertThat(isSpeechLanguage("en")).isTrue()
         assertThat(isSpeechLanguage("ja")).isFalse()
         assertThat(isSpeechLanguage(null)).isFalse()

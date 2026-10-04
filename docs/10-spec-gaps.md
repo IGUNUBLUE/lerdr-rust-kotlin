@@ -608,14 +608,13 @@ Critical correctness/security pass ahead of the feature wave:
   single `null` forever, and reconnect-side runtime replacement went
   unseen. Now a `paneGeneration` counter (bumped on every `panes`
   insert/remove) drives `flatMapLatest` re-resolution.
-- **Pane-size lease lifecycle** — `TerminalViewModel` renews the lease on
-  the predecessor's 10 s cadence (`PANE_SIZE_LEASE_REFRESH_MS`), gates on the
-  predecessor's 5 min hidden grace (`paneLeaseRenewalAllowed` /
-  `PANE_LEASE_HIDDEN_GRACE_MS`), re-leases instantly on the
-  resume edge (`sessions.hidden` collector), and releases before unwatch
-  in `onCleared`. The renewal loop rides `appScope` — a repeating `delay`
-  on `viewModelScope`/Dispatchers.Main spins `runTest`'s scheduler
-  forever.
+- **Pane-size lease lifecycle** — `TerminalViewModel` renews on a 10 s
+  cadence only while visible. Background/hide unwatches the pane and
+  releases its size claim under the same ownership mutex. Hidden grid
+  callbacks cannot acquire a lease; resume re-arms the latest measured grid
+  immediately. The former five-minute hidden renewal grace is removed.
+  The renewal loop rides `appScope`; `onCleared` cancels it and closes the
+  owner so an obsolete screen cannot release its successor's lease.
 - **Hidden watch parity** — `SessionRepository.setHidden` now unwatches
   open panes on background and re-arms read+watch on resume
   (`visibilitychange` parity); `resyncPanes` skips watch traffic while
@@ -1166,13 +1165,11 @@ negotiated, and exercised end-to-end on both sides.
 
 ## Round 23 — orchestration cohort visibility (2026)
 
-- **The gap**: an agent pane started outside `agent start` (the omp
-  orchestrator shape) carries no `agent_session_id`, so Herdr's
-  classifier resolves `default_known_agent_idle_fallback` and reports
-  `idle` even while the pane's TUI visibly coordinates work
-  (`Working…`, spinner, per-task rows). The home list parked these
-  panes under IDLE and session chips echoed the fallback, so a busy
-  cohort read as dead sessions.
+- **The gap**: the observed omp orchestrator panes had no
+  `agent_session_id`; Herdr resolved `default_known_agent_idle_fallback`
+  and reported `idle` while the TUI visibly coordinated work. Starting
+  outside `agent start` is not itself the cause: an integrated omp
+  process reports lifecycle regardless of how it was launched.
 - **The derivation** (client-side, display-only): `workspaces` already
   carry `worktree { repo_root, is_linked_worktree }` — the root
   checkout hosts the orchestrator pane and linked worktrees host its
@@ -1186,6 +1183,518 @@ negotiated, and exercised end-to-end on both sides.
 - **Boundary kept**: nothing is asserted into pane state — no
   `pane.report_agent` on foreign panes and no `ws_key` coupling (that
   field is owned by the radar projection, not the wire). Real lifecycle
-  for these panes is upstream: omp self-reporting via the documented
-  agent-support contract (`HERDR_PANE_ID`/`HERDR_SOCKET_PATH` are
-  already inherited by every pane process).
+  comes from Herdr's supported omp integration in the active profile;
+  no new upstream self-reporting implementation is required.
+
+## Round 24 — session lifecycle visibility (2026)
+
+- **Terminal header precedence**: a pane snapshot with positive columns
+  replaced the agent's status with `lease N×M`, hiding both working and
+  blocked transitions. The header now projects lifecycle independently of
+  geometry; dimensions remain in the pane metadata row. Working uses the
+  working accent, blocked uses the existing waiting variant, and idle
+  stays neutral. The obsolete lease-header variant is removed.
+- **Profile-scoped omp integration**: the global extension existed but
+  the live `sundevs-work` profile had no extension. Installing it in the
+  active profile produces native `herdr:omp` session identity and
+  working/completion events. Existing omp sessions must `/reload` or
+  restart to load a newly installed extension; installation alone does
+  not alter a running process. See [plugin setup](../plugin/README.md#omp-lifecycle-status).
+- **Cohort fallback limit**: worktree derivation cannot observe subagents
+  inside the same omp process. It remains a display-only fallback for
+  separate child panes, not a substitute for the lifecycle integration.
+- **Relay short-transition loss**: `pane.agent_status_changed` was absent
+  from the topology subscription set, so `agent_status` only moved on
+  poll commits (15 s reconcile plus wake refreshes), and the plugin's
+  `agent_event` datagram discarded its own `status`/`pane_id` payload to
+  trigger a sampling `refresh()`. A `working`→`idle` burst that settled
+  before the sample never committed: no transition, no `done`+`unseen`,
+  no `content_rev`. The relay now subscribes to the event (gated like
+  `workspace.reordered`, dropped on handshake refusal) and commits the
+  carried status through the full accept pipeline; the UDP datagram
+  commits its own payload the same way, keeping real transitions on
+  older Herdr versions that refuse the subscription.
+- **Lifecycle subscription scope**: Herdr 0.9.3 requires `pane_id` on every
+  `pane.agent_status_changed` entry. A global named entry rejected the entire
+  subscription, leaving the app idle during observed native working. Discover
+  all current panes, subscribe each one, then reconcile an authoritative
+  snapshot. Rebuild coverage after membership changes, including changes between
+  discovery and bootstrap. Buffered status events only invalidate a fresh read;
+  a resync snapshot adopts current lifecycle rather than preserving stale status.
+- **Echoed decoder refusals**: the live Herdr 0.9.3 handshake rejected
+  `pane.output_changed` with `invalid_request` and an echoed request ID. Treat
+  that initial decoder refusal as pre-dispatch within subscription setup so the
+  named optional variant is removed; other RPC dispatch semantics stay unchanged.
+  The same live topology subscription then succeeded. The unchanged minified
+  API35 app showed a genuine Codex working header and live Working row.
+
+## Round 25 — Android audit boundaries (2026)
+
+- **Warm navigation**: same-destination intents do not add duplicate stack
+  entries. A changed setup link re-seeds an already-open pairing form;
+  pairing still requires the explicit Connect action. On the rebuilt
+  minified physical APK, two warm settings intents followed by one Back
+  returned to Agents.
+- **Warm enrollment ownership**: pairing starts and awaits a fresh transport
+  under the repository's session lock. Ordinary registry reconciliation remains
+  idempotent. A pending invitation must not reuse the old connection's
+  `Connected` verdict while its credential is still being replaced. The real
+  owned Reader app showed `Pairing failed` even though the relay redeemed its
+  invitation. The stale-verdict regression failed before correction; all six
+  pairing tests and full Gradle tests passed afterward, along with debug/release
+  builds. A HOT same-endpoint invitation on the signed minified API35 Reader
+  then returned to live Home and retained the read-only reply gate. Conversation
+  history acceptance is separate: the resumed native Codex had not reported its
+  conversation session, and Feed correctly displayed that limitation.
+- **Update permission**: only the activity-result callback resumes a
+  pending update after the app-specific unknown-source settings page.
+  Entering the Allow phase must not simulate returning from that page.
+  Physical verification reached Android's audit-labeled `SpaActivity`;
+  returning denied restored the Update action without downloading.
+- **Update trust boundary**: copy the download into private storage, verify
+  package identity, a strictly newer version code, and signing compatibility,
+  then revalidate the staged bytes before granting a read-only installer URI.
+  Single-signer rotation requires the candidate's history to contain the
+  installed current signer; multisigner updates require the exact signer set.
+  A process-death completion notification routes to review, not the installer.
+  A successful newer, compatible signed update remains a separate live gate;
+  an isolated application ID or different smoke signer cannot prove it.
+- **Native lifecycle evidence**: the isolated OpenCode 2 TUI loaded the
+  installed Herdr integration from its directory entrypoint, not its JS file.
+  A real assistant turn then produced working/completion events. Cached
+  readiness and API-created forms are not inference or model-question proof.
+  Original credentials and global integration configuration were unchanged.
+- **Draft authority**: persisted text hydrates each identity once; a local
+  edit wins over a delayed initial read or an earlier queued save. Saves use
+  application lifetime so leaving the screen does not cancel its last edit.
+  Both delayed-read regressions failed before the fix; exact rapid-input
+  prompts reached real OpenCode and OMP turns on the minified physical app.
+- **Raw request ownership**: correlation also requires the current relay,
+  session handle and connected epoch. Disconnect fails pending work as
+  `dispatched_unknown`; cancellation removes its pending reply and timer.
+- **Native OMP footer spelling**: the installed Ask dialog renders glyph
+  Enter hints, not the older ASCII `enter select` / `enter submit` text.
+  The classifier accepts both without adding wire fields. A genuine model
+  question on the minified physical app accepted phone-selected Beta, wrote
+  the native Beta tool result and assistant reply, then returned to done.
+- **Native OMP multi-select controls**: current footers advertise Space-toggle
+  and Enter-confirm, while older menus use Enter-toggle. A private, non-wire
+  control flag is derived from the live footer; custom input returns to the
+  question before confirmation. Physical Alpha + Gamma + a custom answer
+  reached the exact native result and assistant response.
+- **OpenCode free-provider question evidence**: the isolated native Big
+  Pickle model generated a real single-select question; phone-selected Beta
+  reached its native accepted-answer response, completed tool card and done
+  header. This resolves that family's question gate without repeating the
+  Fledge-only malformed Chat deltas or Responses HTTP500, changing global
+  authentication, or switching to a paid model.
+- **Mutable JSONL projection**: a tool-result record updates its earlier call
+  entry without changing that entry's content-derived id. Live subscriptions
+  compare tool-bearing entry digests as well as SQLite row digests; immutable
+  text-only JSONL rows need no second hash. The same physical Feed changed
+  the real OMP call from called to completed after its result, without reload.
+- **Reader launch admission**: Home exposes agent/workspace creation only
+  when at least one paired relay has a proven controller role. Reader-only
+  and unknown-role inventories keep navigation and live agent status,
+  without a launch menu or empty-state instruction to use it.
+- **Reader speech boundary**: voice listing, synthesis and cancellation are
+  read-only actions; voice installation/removal are mutations. Readers keep
+  the catalog and playback controls, without download/remove actions; the
+  ViewModel also rejects stale mutation callbacks before dispatch. Genuine
+  Reader enrollment on a separate minified physical APK verified both
+  omissions and real Android playback/cancellation without replacing the
+  existing controller credential.
+- **Draft write order**: application-lifetime saves enter the shared mutation
+  queue before yielding. A confirmed send clears only its submitted snapshot;
+  later edits and drafts for other identities survive. Cleanup of an expired
+  read cannot delete a newer record written while that read was pending.
+  The minified physical app restored exact independent unsent drafts after a
+  cold signed reinstall; the apparent empty first draft was a Terminal input
+  field, not the Feed composer. Owned probes were cleared without submission.
+- **Screen lifetime ownership**: pane watches, conversation subscriptions,
+  viewport leases and viewed signals use explicit local owner tokens. Acquire
+  and teardown serialize through the receipt boundary; old cleanup cannot
+  stop a reopened screen. New session handles inherit current visibility.
+  These tokens never enter protocol payloads.
+  The minified physical app repeatedly reopened Feed and Terminal while a
+  genuine OpenCode question remained pending; the phone-selected answer
+  still produced a live completed tool card and assistant result in Feed.
+  This does not replace the stale-owner interleaving regressions.
+- **Cancelled update downloads**: a missing DownloadManager row is terminal,
+  like a failed download. Clear pending staging before exposing the failure;
+  a cold start must not restore the dead download's poller.
+- **Directory reopen**: opening the browser refreshes its selected folder
+  unless a load is already pending. The minified physical APK discovered a
+  project directory created while the browser was closed, without reconnect.
+- **Raw start registration boundary**: a successful `pane.send_input` may
+  precede `agent.get` registration. Only that detection loop treats
+  `agent_not_found` as pending within its existing deadline, without repeating
+  the launch. Other detection or naming failures preserve `dispatched_unknown`
+  because the aggregate action already sent the command. The physical failure
+  created a real Codex pane despite a refusal receipt; the corrected isolated
+  relay and minified API35 app started a differently named owned case with
+  corroborated native name and cwd. No protocol fields or global transient
+  refusal set changed.
+- **Custom raw claim identity**: `pane.report_agent.agent` does not populate
+  `AgentInfo.name`; the admission API has no name parameter. Rename the claimed
+  pane before returning success, sharing the existing five-second response
+  reserve with admission. Preserve the aggregate dispatched boundary on a
+  later refusal. The dedicated minified API35 app started a real non-LLM raw
+  fixture once; native `agent.get` and the app header both retained its requested
+  name and owned cwd. This is lifecycle identity proof, not model acceptance.
+- **Initial launch catalog readiness**: profile rows are handshake-only state;
+  resolving them after an early client receives `agent_profiles: null` leaves
+  that session's picker empty. A live Settings Reconnect is a health ping, not
+  necessarily a new handshake. Initialize the bounded existing catalog before
+  accepting clients, including its existing unavailable-Herdr local fallback.
+  Do not add a mid-session message or repeat `push_config` and its reset effects.
+  The dedicated minified API35 app stayed running across the isolated relay
+  cutover, auto-connected 3.43 seconds after listen, and offered both owned raw
+  profiles without a cold restart or re-enrollment. A stalled-inventory consumer
+  regression failed before initialization and passed after it.
+- **Explicit launch name ownership**: automatic cwd/profile suggestions apply
+  only until a name edit occurs, including an edit equal to the suggestion.
+  Late directory results must not overwrite that choice; fresh agent forms,
+  relay selection and accepted submit reset the provenance. The updated
+  same-signer minified API35 APK retained a chosen name through the real cwd
+  browser, after both overwrite regressions failed before and passed after.
+- **Observer geometry versus TTY lease**: `stty` changes the process window
+  size, not Herdr's native VT grid. A phone-sized read-only observer crops that
+  grid rather than reflowing it. The committed native layout must therefore
+  determine each known observer dimension; lease dimensions are only a fallback
+  when layout geometry is unavailable. The dedicated API35 audit reproduced a
+  real `Password:` tail missing from the leased 54×10 observer but present on a
+  covering surface; native layout remained 129×42. No secret was submitted
+  through the stale generic composer. This changes read geometry, not wire fields.
+  The bottom/right prompt regression failed before the geometry correction and
+  passed after it. The unchanged minified app then showed the same waiting native
+  prompt; one masked audit-only answer was consumed without echo, cleared its
+  composer and remained absent from the isolated activity/write-audit logs.
+- **Copy-engine zero coordinates**: the frozen point shape requires both `row`
+  and `col`, including the origin and first-row/column boundaries. Default-value
+  omission produces `{}` or a partial point, which the relay correctly refuses.
+  Range endpoints are likewise required even when they equal the origin. The
+  API35 audit found no served-search annotation while native read-only search
+  returned 111 real marker hits; shared model serialization must retain these
+  fields, without weakening native validation or changing the wire contract.
+  The origin/axis/range wire regression failed before the model annotations
+  and passed after them. A separately signed minified audit package was genuinely
+  enrolled without replacing the earlier audit app; its actual Find field showed
+  `111 in scrollback` for the same unchanged native history. Actual first-column
+  drag/copy selection was also exercised without inspecting clipboard contents.
+  That UI reads frozen local rows; `paneSelectionRead` currently has no UI caller.
+  A separate real native read-only zero-column selection returned the known marker,
+  so no server-selection request from the Android gesture is inferred.
+- **Managed pane replacement**: `agent_restart` and `agent_clear` return a new
+  raw `data.pane_id`; neither action respawns the old pane in place. Keep the
+  management sheet alive while the action is pending even if the old agent
+  disappears. Qualify the returned ID with its enrolled relay and replace all
+  matching Feed, Terminal and Files Back-stack entries without changing mode.
+  Both actions share the existing 45-second replacement deadline. The generic
+  15-second Restart timeout can discard a successful late replacement reply.
+  A delayed-disappearance regression failed before deadline alignment and
+  passed after it. The same-signer minified API35 app followed an actual owned
+  raw fixture through Restart in Terminal and Clear in Files; Back returned
+  Home rather than either closed pane. Fixture output is not model acceptance.
+- **OMP ASCII Ask frames**: native OMP can render `+- Ask` headers with `|`
+  edges and `+`/`-` borders. Recognize those headers and discard structural
+  border rows when extracting the question and option descriptions. Keep the
+  existing live-footer requirement so completed tool output cannot reopen an
+  interaction. A genuine GPT-6-Luna Ask reproduced terminal-only fallback;
+  its regression failed before the decoder correction. After the correction,
+  the unchanged minified API35 app answered that same pending question inline
+  with Beta, and both native OMP and Feed showed `OMP_QUESTION_ACCEPTED Beta`
+  with the Ask tool completed. All 506 coordinator tests and warning-denying
+  all-targets Clippy passed; no protocol fields or frozen vectors changed.
+- **Wrapped Codex question footers**: navigation and cancel hints may wrap
+  below the live submit row. Accept only those recognized footer controls;
+  later response text still rejects a historical question. A genuine native
+  Codex two-question form reverted to terminal fallback in the minified API35
+  app. After the relay correction, that same pending form accepted Beta,
+  Previous/Next navigation retained Beta, and the second answer was Two.
+  Native Codex and Feed both showed
+  `CODEX_TWO_ACCEPTED — Marker: Beta; Number: Two`. The wrapped-footer
+  regression failed before the correction; all 508 coordinator tests and
+  warning-denying all-targets Clippy passed afterward.
+- **Background viewport release proof**: an owned minified API35 Controller
+  held the actual OpenCode TTY at 54 columns × 34 rows. Backgrounding it
+  restored the native desktop baseline, 129 × 42, after the relay's release
+  grace (10.76 s observed); foreground resume restored 54 × 34. A new real
+  terminal prompt then produced `EMU_OPENCODE_TERMINAL_BETA` in native
+  OpenCode and the live phone surface. The visibility regression failed
+  before correction. Full Gradle tests, debug and release builds, and the
+  signed minified audit clone build passed afterward.
+- **Unknown Home activity times**: a fresh native inventory can intentionally
+  carry `updated_at = 0` and no `last_active_at`. Zero means unobserved, not
+  Unix epoch; show the lifecycle/attention label without an invented age.
+  Positive last activity still takes precedence over a known update time.
+  Cold-launching the old minified audit clone rendered genuine owned Codex
+  and OpenCode rows as `497517h ago`; the corrected signed minified clone
+  showed `idle` and `done`, while known rows retained their real ages.
+  The missing-time regression failed before correction; Home tests, recorded
+  and verified Roborazzi coverage, full Gradle tests, and debug/release builds
+  passed afterward. The relay timestamps and frozen wire contract are unchanged.
+- **Feed editor ownership**: `FeedViewModel.composerValue` is synchronous
+  Compose snapshot state containing text, selection and IME composition.
+  `FeedUiState` no longer carries an asynchronous copy of the draft. Native
+  input updates the editor immediately; only text changes enter the existing
+  persistence queue and advance the edit generation. Programmatic replacements
+  place the caret at the end. Restoration and successful-send clearing retain
+  identity/edit guards, so late reads and completions cannot erase newer input.
+  The owned API35 minified app corrupted an uploaded reference during rapid
+  ADB typing; Android DocumentsUI retained the same reference with identical
+  input. After correction, the same Feed input retained the full reference,
+  multiline prose and a verified midtext insertion/deletion. Genuine Codex
+  read the uploaded file and returned its first-line marker in native output
+  and live Feed; the submitted composer cleared. Existing regression tests
+  cover delayed-store composition/selection and newer edits during submission.
+  Full Gradle tests, Feed Roborazzi verification and debug/release builds passed.
+  This is emulator evidence, not new physical-device or API28 acceptance.
+- **Tab insertion boundaries**: `tab_order` is a one-based ordinal, while
+  Herdr's `insert_index` selects a zero-based boundary in the original strip
+  before the source is removed. A right move uses `position + 1`; a left move
+  uses `position - 2`. The real two-tab audit workspace confirmed a no-op for
+  the old right boundary `1`, leaving the app waiting indefinitely. The same
+  native API moved the source right with boundary `2`. A behavioral regression
+  failed before correction and passed afterward; obsolete request-index pins
+  were removed rather than re-pinned. After correction, the signed/minified
+  API35 app moved right to position 2 and left back to position 1, with real
+  host order checked and no added timeout or synthetic topology. Tab-order
+  UI verification passed after recording its previously missing refusal
+  screenshot baseline. Frozen wire fields and vectors are unchanged.
+- **Large-text bottom navigation**: keep destination labels on one line with
+  ellipsis; do not reduce the user's font scale. At 200% system text on the
+  owned API35 emulator, `Computers` split into `Compute` / `rs` and enlarged
+  the whole bar. The signed/minified correction keeps a single-line label,
+  retains the full accessible icon name, and opens the actual Computers screen
+  through that name. Enlarged navigation targets measured 80dp high at 420dpi.
+  A Home text-layout regression failed before the fix; its new Roborazzi
+  golden and all existing Home screenshot checks passed afterward. Original
+  emulator font scale was restored. This does not claim a TalkBack audit.
+- **Invitation clipboard privacy**: one-use setup links carry enrollment
+  secrets, so copied links set `ClipDescription.EXTRA_IS_SENSITIVE` before
+  reaching the clipboard. This follows Android's
+  [sensitive-content guidance](https://developer.android.com/develop/ui/views/touch-and-input/copy-paste#SensitiveContent).
+  On the owned API35 emulator, the previous minified APK's system clipboard
+  overlay contained the actual invitation URI. The corrected minified APK
+  showed only masked dots in that overlay; native paste still populated the
+  real invitation and its endpoint preview. Connect was not pressed and the
+  preview was cancelled, retaining the original Controller. Authentication
+  links are redacted in the generated private UI evidence. Clipboard
+  metadata does not replace expiry, single-use redemption, or revocation.
+- **Warm push-distributor discovery**: returning from installing a distributor
+  rechecks discovery only while the app reports no distributor. Reuse the
+  repository's existing visibility flow; do not re-register active endpoints.
+  The actual official signed ntfy installation was discoverable by Android,
+  but the old minified app stayed Off until a cold restart. The corrected
+  minified app changed from Off to Active on warm return with the same PID,
+  unchanged enrollment, and no app-data clearing. A later ordinary resume
+  retained the active endpoint. The JVM regression covers available choices;
+  real SDK registration needs AndroidKeyStore and was exercised on the device.
+- **Viewed local notifications and Feed ownership**: Feed publishes its viewed
+  pane for its composition lifetime, using the repository's existing owner
+  guard so stale disposal cannot clear a newer screen. Local notification
+  reduction excludes the visible unlocked pane, retracts its standing card,
+  and preserves other panes and summary collapse. The DI binding passes the
+  repository's observable view to the notifier after construction; neither
+  constructor depends on the other. A genuine pending Codex question produced
+  an alert while already open before correction. The corrected minified app
+  retracted that same alert, kept a fresh viewed question and completion quiet,
+  and still notified an unviewed OMP completion. A new background question
+  notified until the actual Feed returned. Another real question arrived
+  behind native PIN authentication and was retracted after unlock and entry.
+  Original app-lock and owned emulator credential settings were restored.
+- **Membership refresh and queued status invalidations**: a pane membership
+  event previously restarted the supervisor immediately, discarding later
+  bootstrap-gap and already queued live events. Forward the whole gap and a
+  fixed count of live queued events before replacing subscriptions; do not
+  wait for future traffic or replay gap statuses over a newer snapshot.
+  The Unix-socket regression failed before correction and now forwards
+  `pane.moved`, `working`, and `idle` before the next bootstrap. A separate
+  client using the changed supervisor against real Herdr observed native
+  pane movement and tab closure before resync, then genuine OMP working and
+  completion. This native trace does not claim both statuses preceded resync.
+- **Cold restored Terminal and initial target inventory**: a saved Terminal
+  may open before its relay session and agent target exist. The Connected
+  resync then cannot encode the read. After an accepted authoritative agent
+  snapshot, re-arm only open foreground panes still waiting for first content;
+  desired-watch state alone does not prove the initial read was sent.
+  The consumer regression failed with a null snapshot and passes after the
+  correction; closing the owner before later inventory cannot reopen it.
+  On the current minified candidate, an actually STOPPED saved task survived
+  exact owned-process SIGKILL and a COLD launcher return. Its original Terminal,
+  plain draft and midtext caret returned with genuine native OMP content,
+  without mode switching or manual Refresh. Only the unsent probe was cleared,
+  and temporary root on the owned emulator was restored. Synthetic crash trials
+  that removed the Android task are not saved-task acceptance.
+- **Feed pagination anchor and drawing ownership**: stable entry keys cannot
+  retain a `load-older` header that disappears after the final older page.
+  Capture its first visible real entry and measured offset before loading,
+  then request that entry's new index after the page settles. Other prepend
+  anchors remain key-driven. The Compose regression failed with the previous
+  expanded row absent and now retains its exact offset and expansion state.
+  The current signed/minified app repeated the genuine 201-call OMP history:
+  native line-16 Input stayed at `[84,825][870,1062]` after actual Load older
+  turns exhausted the cursor. Real bitmap inspection also exposed stale recent
+  tail graphics over historical rows and fixed tabs. Transcript and blocker
+  rows no longer retain exit-animation layers; clip the list viewport. The same
+  native history and expanded row then rendered cleanly before and after prepend.
+- **Tall final turn and passive updates**: `viewportEnd - itemEnd` is negative
+  when the final turn continues below the visible viewport. Only a gap within
+  the existing two-pixel rounding slop and 48dp near-bottom threshold can re-pin;
+  an arbitrarily negative gap cannot. Initial manual scroll appeared stable,
+  but the old retained pin yanked the view on subsequent real output.
+  The streaming-growth Compose regression failed before and passes after.
+  Genuine native 64-row arithmetic still followed to completion while pinned.
+  After actual manual scrollback into a new 64-row final answer, an external
+  native arithmetic update completed while every visible row and exact pixel
+  bound stayed unchanged and the new reply remained offscreen.
+- **Approval choice readability and scope**: Home and Feed keep original
+  approval labels in full-width multiline buttons. Rounded rectangular shapes
+  prevent long labels from clipping against oversized pill corners. Home's
+  general chip-label truncator is not applied to permission choices.
+  A genuine Codex `0.160.0` dialog exposed two losses: the app displayed
+  `Yes,` / `Yes, and` / `No, and`, and the relay omitted hanging continuation
+  lines containing the persistent choice's command prefix. After validating
+  the existing menu/header/freshness gates, Codex projection retains those
+  established between-row lines with their displayed breaks and the existing
+  500-character bound. It does not absorb the final option's tail or relax
+  rejection of newer output. The same pending native read showed all three
+  policies and its owned-file scope in the signed/minified Home and Feed.
+  Only the one-time choice was selected; no persistent permission was granted.
+- **Terminal editor restoration**: plain input uses `TextFieldValue.Saver` so
+  restored text retains its selection; secret text is still memory-only.
+  The component regression previously inserted `beta` at the start after
+  restoring `alpha omega`; it now inserts at the saved middle caret. A
+  separate regression confirms secret text is absent after restoration.
+  The owned minified emulator accepted an exact 358-character native Terminal
+  task before real Codex submission. Partial long synthetic input was traced
+  to Android `InputDispatcher` stale-event drops, not editor corruption;
+  fresh bounded batches retained the full task without added typing delays.
+  A controlled native font-scale roundtrip retained the actual `w1T:p2`
+  Terminal route and `alpha omega` draft. The existing canvas-to-IME action
+  refocused the editor without moving its caret; typing `beta ` then produced
+  `alpha beta omega`. The original system scale was restored and the unsent
+  probe cleared. An earlier Home observation was not reproduced by this
+  controlled sequence; no navigator or minifier-rule change was justified.
+  A subsequent actual portrait-to-landscape configuration change on the owned
+  emulator retained `w1T:p1` Terminal, the same draft and midtext caret. Native
+  insertion produced `alpha beta omega`; the unsent probe and original rotation
+  settings were restored. This is separate from the earlier font-scale check.
+- **Management editor and dismissal ownership**: rename input is synchronous
+  `TextFieldValue` state, following the Feed editor convention. Inventory may
+  seed an untouched field, but cannot replace an edited name or its selection
+  and composition. Saving reads the immediate value. Handled dismissal and
+  replacement results are consumed before closing the sheet, so a retained
+  ViewModel does not immediately close its next opening. The owned API35
+  minified app changed `codex-audit-ixsij1wu-reopen` into
+  `codex-auit-ixsij1wu-reopend` before correction. After correction, fast input
+  retained the exact name; a midtext insertion could be deleted without
+  corruption. Two successful native renames each allowed management to reopen,
+  and the original owned tab label was restored and verified in Herdr. The
+  management regression suite and unchanged Roborazzi goldens passed.
+  Batched synthetic Left events did not land at the assumed offset; their
+  exact repeat count is not accepted by this check. No new physical-device or
+  API28 acceptance is claimed.
+- **Feed blocker kind headings**: label only actual `approval` and `question`
+  kinds as those actions. Other blockers use `ATTENTION NEEDED`, matching
+  Home's existing generic attention semantics. A genuine owned OpenCode
+  request returned the provider's `Rate limit exceeded` failure; Home correctly
+  displayed `attention`, but Feed labeled the same unknown blocker `QUESTION`.
+  The corrected signed minified app kept the provider failure and terminal
+  inspection path visible under `ATTENTION NEEDED`. This is a renderer fix,
+  not a new classifier rule or acceptance of an OpenCode question. Full Gradle
+  tests and debug/release builds passed; the provider limit remains external.
+- **Find scope labels**: the shared find bar takes its placeholder from the
+  owning screen: Feed uses `Find in conversation`; Terminal keeps
+  `Find in terminal`. A minified API35 Reader session opened Feed search and
+  displayed the corrected field, alongside its read-only reply notice.
+  This session had no conversation log, so this proof covers the label and
+  role controls, not matching or pagination. Existing genuine conversation
+  search acceptance remains separate.
+- **Emulator continuation**: after explicit physical-device disconnection,
+  remaining audit coverage runs on a dedicated API35 AVD. Keep its proof
+  separate from physical acceptance. The historical owned API28 environment
+  failed in SystemUI/telephony with a missing WifiManager; its startup was not
+  visual acceptance. A new isolated AOSP API28 AVD subsequently cold-started the
+  corrected minified cold-restored artifact, exercised real native PIN challenge,
+  cancellation and unlock, restored the temporary lock state, and shut down.
+- **Conditional runtime acceptance**: manual cwd fallback is reachable only
+  without `directory_browser`; the current Rust relay advertises it
+  unconditionally. A genuine authenticated peer omitting/revoking that
+  capability is required for the missing runtime case; synthetic capability
+  frames are not proof. Workspace rename has no production UI caller.
+  Document/image attachment selection passed through the native document
+  picker; there is no attachment-camera launcher to exercise.
+- **Question and Activity limits**: the genuine Codex multi-question form
+  exercised next/back and explicit answer submission, but does not expose
+  `can_chat`; clarification needs a supporting native provider form.
+  Activity refresh and filtering passed against real relay data. It pulls
+  at most 500 entries, with no UI paging or clear-history control. Response
+  copy is naturally omitted by the current relay; Activity omission still
+  requires a genuine peer without that capability.
+- **Trusted app upgrade boundary**: the official signed app upgraded from
+  0.2.6 to 0.2.7 through canonical download and Android PackageInstaller on
+  an empty owned device. Its published permission gate needed the ordinary
+  app-specific Settings grant; current source already handles activity-result
+  return. No newer matching trusted published artifact exists for the
+  unreleased audit package, so current private staging/signing checks have
+  no end-to-end runtime acceptance. Changing package identity, signing key
+  or version to manufacture eligibility is not verification.
+- **Visible Terminal accessibility**: expose the drawn viewport as text, not
+  hidden scrollback, and defer scroll reads to semantics. The existing canvas
+  and measured rows remain the render path. A genuine enrolled Reader on the
+  signed/minified API35 APK focused visible `FRAME_DELTA_NATIVE_TAU 171`;
+  scrolling back exposed `FRAME_DELTA_NATIVE_SIGMA 136` and omitted the
+  offscreen newer reply. Native TalkBack hardware focus captures were taken
+  after stopping hierarchy instrumentation. Audible speech and full-app
+  accessibility acceptance are not inferred.
+- **Settings notification readability**: place the system-settings action
+  below the notification status rather than narrowing its headline with a
+  trailing button. The signed/minified guest screen at 200% font on a
+  393dp phone displayed the full Notifications heading and action. Its
+  unpaired guidance now points to the implemented Computers pairing entry.
+  Roborazzi large-font coverage checks the headline remains on one line.
+- **Adaptive theme and file-preview targets**: measure theme labels with the
+  current typography and density. If equal segments cannot fit, show full-width
+  selectable radio rows. The signed/minified 393dp/200% native screen displayed
+  complete System, Light and Dark labels, with one checked native parent after
+  each transition and System restored. The Files preview Back container is
+  explicitly 48dp; its genuine owned-file clickable ancestor measured
+  132×132px at 440dpi (48×48dp), and returned to the file list.
+- **Relay update status layout**: keep status text full-width with actions below
+  it. The same signed/minified 393dp/200% native screen displayed the genuine
+  available 0.2.7 version and revision on complete lines. The old peer did not
+  retain its worker's failed state on this final screen; this is not native
+  failed-state acceptance. Large-font Roborazzi coverage checks the available
+  heading and revision without relying on blank paragraph overflow flags.
+- **Managed relay upgrade boundaries**: a separately established, genuinely
+  installer-owned canonical 0.2.6 service upgraded through the unchanged current
+  hook to canonical 0.2.7. Its real systemd invocation/PID changed, health became
+  ready, and the nonroot relay retained zero capabilities. A missing standard
+  WorkingDirectory first caused a safe refusal and successful real rollback;
+  the distinct unit prerequisite was corrected before success. This does not
+  accept the original unclaimed configuration or immutable published worker.
+  That native worker stopped before activation because the plugin was locally
+  linked. A genuine pinned GitHub install then stopped at the published hook's
+  obsolete WEB_HASH identity gate. A corrected published hook is required for
+  native end-to-end managed-update acceptance; no release or replay was made.
+- **Last-controller cleanup guard**: native Forget confirmation alone is not
+  revocation evidence. The isolated old peer retained its sole controller;
+  a separate genuine credential-authenticated revoke returned
+  `cannot revoke the last controller`. Its private retained credential remains
+  inactive after owned service/container shutdown. The original native receipt
+  was not captured, so the separate rejection is not attributed to that frame.
+- **Adaptive session modes**: measure the widest label against Material's inner
+  padding and checked-content width, not the theme selector's more conservative
+  allowance. An oversized allowance unnecessarily replaced healthy normal-font
+  controls; the corrected decision preserved full-screen screenshot goldens.
+  At 393dp/200% the genuine owned OMP Terminal label previously split into
+  `Termina` / `l`. The final signed/minified APK now shows a single-height mode
+  button and complete Feed, Terminal and Files menu labels with exactly one
+  checked native option. Native selections reached the real Files listing,
+  Feed and live Terminal routes; returning to 100% restored ordinary segments.
+  Large-font Roborazzi covers label lines, targets and selection transitions.
+- **Contract unchanged**: protocol v3, E2EE v2 and committed vectors remain
+  frozen. Audit observations do not authorize new wire fields or fallback
+  session identities.

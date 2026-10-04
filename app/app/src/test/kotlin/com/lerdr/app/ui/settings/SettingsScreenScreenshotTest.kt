@@ -2,7 +2,22 @@ package com.lerdr.app.ui.settings
 
 import androidx.activity.ComponentActivity
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertHeightIsAtLeast
+import androidx.compose.ui.test.assertIsNotSelected
+import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -16,6 +31,8 @@ import com.lerdr.app.settings.SettingsContent
 import com.lerdr.app.settings.SettingsUiState
 import com.lerdr.app.settings.ThemeMode
 import com.lerdr.core.designsystem.theme.LerdrTheme
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -115,6 +132,98 @@ class SettingsScreenScreenshotTest {
     }
 
     @Test
+    fun settings_notificationsLargeTextKeepsHeadingReadable() {
+        composeRule.setContent {
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density, 2f)) {
+                LerdrTheme {
+                    SettingsContent(
+                        uiState = SettingsUiState(),
+                        appVersion = "0.1.0",
+                        notificationsEnabled = false,
+                        appLockReady = true,
+                        snackbarHostState = SnackbarHostState(),
+                        onSelectTopLevel = {},
+                        onOpenRelay = {},
+                        onRevalidateAll = {},
+                        onThemeMode = {},
+                        onAppLockChange = {},
+                        onOpenNotificationSettings = {},
+                        onCheckUpdate = {},
+                        onUpdateAction = {},
+                    )
+                }
+            }
+        }
+        composeRule.onNode(hasScrollAction()).performScrollToNode(hasText("System settings"))
+        val layouts = mutableListOf<TextLayoutResult>()
+        composeRule.onNodeWithText("Notifications").performSemanticsAction(
+            SemanticsActions.GetTextLayoutResult,
+        ) { it(layouts) }
+        assertEquals(1, layouts.single().lineCount)
+        composeRule.onNodeWithText("System settings").assertIsDisplayed()
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    @Config(qualifiers = "w393dp-h851dp")
+    fun settings_themeLargeTextKeepsCompleteLabelsAndSelection() {
+        val choices = listOf(
+            ThemeMode.SYSTEM to "System",
+            ThemeMode.LIGHT to "Light",
+            ThemeMode.DARK to "Dark",
+        )
+        composeRule.setContent {
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density, 2f)) {
+                var themeMode by remember { mutableStateOf(ThemeMode.SYSTEM) }
+                LerdrTheme {
+                    SettingsContent(
+                        uiState = SettingsUiState(themeMode = themeMode),
+                        appVersion = "0.1.0",
+                        notificationsEnabled = true,
+                        appLockReady = true,
+                        snackbarHostState = SnackbarHostState(),
+                        onSelectTopLevel = {},
+                        onOpenRelay = {},
+                        onRevalidateAll = {},
+                        onThemeMode = {
+                            themeMode = it
+                        },
+                        onAppLockChange = {},
+                        onOpenNotificationSettings = {},
+                        onCheckUpdate = {},
+                        onUpdateAction = {},
+                    )
+                }
+            }
+        }
+        composeRule.onNode(hasScrollAction()).performScrollToNode(hasText("Dark"))
+        choices.forEach { (_, label) ->
+            composeRule.onNodeWithText(label)
+                .assertIsDisplayed()
+                .assertHeightIsAtLeast(48.dp)
+            val layouts = mutableListOf<TextLayoutResult>()
+            composeRule.onNodeWithText(label, useUnmergedTree = true)
+                .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+            assertEquals(1, layouts.single().lineCount)
+            assertFalse(layouts.single().hasVisualOverflow)
+        }
+        composeRule.onNodeWithText("System").assertIsSelected()
+        composeRule.onNodeWithText("Light").assertIsNotSelected()
+        composeRule.onNodeWithText("Dark").assertIsNotSelected()
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+
+        listOf(ThemeMode.LIGHT, ThemeMode.DARK, ThemeMode.SYSTEM).forEach { selected ->
+            composeRule.onNodeWithText(choices.first { it.first == selected }.second).performClick()
+            choices.forEach { (mode, label) ->
+                val choice = composeRule.onNodeWithText(label)
+                if (mode == selected) choice.assertIsSelected() else choice.assertIsNotSelected()
+            }
+        }
+    }
+
+    @Test
     fun settings_about() {
         composeRule.setContent {
             LerdrTheme {
@@ -137,7 +246,6 @@ class SettingsScreenScreenshotTest {
         }
         composeRule.onNode(hasScrollAction()).performScrollToNode(hasText("Protocol"))
         composeRule.onNodeWithText("Protocol").assertIsDisplayed()
-        composeRule.onNodeWithText("Reference implementation").assertDoesNotExist()
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
 }

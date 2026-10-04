@@ -45,6 +45,7 @@ import lerdr.core.data.RelayRegistry
 import lerdr.core.data.fromFinish
 import lerdr.core.model.ActionReceiptMessage
 import lerdr.core.model.ActionReceiptPhase
+import lerdr.core.model.AgentsMessage
 import lerdr.core.model.ActivityEntry
 import lerdr.core.model.ActivityHistoryMessage
 import lerdr.core.model.ActivityMessage
@@ -162,8 +163,21 @@ class SessionRepository @Inject constructor(
     private val sessions = LinkedHashMap<String, SessionRuntime>()
     private val panes = LinkedHashMap<String, PaneRuntime>()
 
-    /** Panes the UI has open — watched intent, survives session recreation. */
-    private val openPanes = LinkedHashSet<String>()
+    /** Local view owners survive session recreation; none of this goes on the wire. */
+    private class PaneOwnership {
+        val terminalMutex = Mutex()
+        val conversationMutex = Mutex()
+        val conversationOwners = LinkedHashSet<Any>()
+        var leaseOwner: Any? = null
+    }
+
+    // Gates stay stable across close/reopen so queued operations cannot lock
+    // different mutexes for the same pane.
+    private val paneOwnership = LinkedHashMap<String, PaneOwnership>()
+    private val openPanes = LinkedHashMap<String, LinkedHashSet<Any>>()
+
+    private fun ownership(paneId: String): PaneOwnership =
+        synchronized(lock) { paneOwnership.getOrPut(paneId) { PaneOwnership() } }
 
     /** Bumped on every `panes` insert/remove so `paneSnapshot` re-resolves. */
     private val paneGeneration = MutableStateFlow(0L)
@@ -224,23 +238,45 @@ class SessionRepository @Inject constructor(
      * resuming re-arms watch and read.
      */
     fun setHidden(hidden: Boolean) {
-        synchronized(lock) { sessions.values.toList() }
-            .forEach { it.handle.setHidden(hidden) }
-        if (_hidden.value == hidden) return
-        _hidden.value = hidden
-        synchronized(lock) { hiddenSince = if (hidden) System.currentTimeMillis() else 0L }
+        val changed = synchronized(lock) {
+            sessions.values.forEach { it.handle.setHidden(hidden) }
+            if (_hidden.value == hidden) {
+                false
+            } else {
+                _hidden.value = hidden
+                true
+            }
+        }
+        if (!changed) return
         repushViewedPane()
         scope.launch {
-            val paneIds = synchronized(lock) { openPanes.toList() }
+            val paneIds = synchronized(lock) { openPanes.keys.toList() }
             for (paneId in paneIds) {
-                val runtime = synchronized(lock) { panes[paneId] } ?: continue
-                runtime.mutex.withLock {
-                    val intents = if (hidden) {
-                        runtime.surface.unwatch()
+                val paneOwnership = ownership(paneId)
+                paneOwnership.terminalMutex.withLock {
+                    if (synchronized(lock) { paneId !in openPanes }) return@withLock
+                    val runtime = if (_hidden.value) {
+                        synchronized(lock) { panes[paneId] }
                     } else {
-                        runtime.surface.requestRead() + runtime.surface.watch()
+                        paneRuntime(paneId)
+                    } ?: return@withLock
+                    runtime.mutex.withLock {
+                        val intents = if (_hidden.value) {
+                            runtime.surface.unwatch()
+                        } else {
+                            runtime.surface.requestRead() + runtime.surface.watch()
+                        }
+                        dispatchIntents(runtime, intents)
                     }
-                    dispatchIntents(runtime, intents)
+                    if (_hidden.value && paneOwnership.leaseOwner != null) {
+                        try {
+                            releasePaneSizeLocked(paneId, paneOwnership)
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            // A disconnected relay restores its baseline when the lease expires.
+                        }
+                    }
                 }
             }
         }
@@ -249,20 +285,6 @@ class SessionRepository @Inject constructor(
     /** App visibility — the terminal's lease renewal gates on it. */
     val hidden: StateFlow<Boolean> get() = _hidden
     private val _hidden = MutableStateFlow(false)
-
-    /** `hiddenAt` — when the app last went hidden; 0 while visible. */
-    @Volatile
-    private var hiddenSince = 0L
-
-    /**
-     * `paneLeaseRenewalAllowed` — a hidden app renews only within the 5 min
-     * grace; after it the relay TTL hands the pane's size back to the desktop.
-     */
-    fun paneLeaseRenewalAllowed(): Boolean {
-        if (!_hidden.value) return true
-        val since = synchronized(lock) { hiddenSince }
-        return since > 0 && System.currentTimeMillis() - since < PANE_LEASE_HIDDEN_GRACE_MS
-    }
 
     /**
      * This device's enrolled role on the relay — Lerdr's
@@ -278,6 +300,19 @@ class SessionRepository @Inject constructor(
      */
     fun canControl(relayId: String): Boolean = deviceRole(relayId) == DeviceRole.CONTROLLER
 
+    /** Resolves push ownership from disk even before session reconciliation starts. */
+    suspend fun enrolledRelayForPushDevice(deviceId: String): String? {
+        if (deviceId.isEmpty()) return null
+        var matchedRelayId: String? = null
+        for (relay in relayRegistry.snapshot()) {
+            val credential = credentialStore.get(relay.id) as? RelayDeviceCredential ?: continue
+            if (credential.deviceId != deviceId) continue
+            if (matchedRelayId != null) return null
+            matchedRelayId = relay.id
+        }
+        return matchedRelayId
+    }
+
     // ── viewed pane (push_viewed_pane) ─────────────────────────────
 
     private val _locked = MutableStateFlow(false)
@@ -285,6 +320,12 @@ class SessionRepository @Inject constructor(
     /** The pane the UI is showing; [repushViewedPane] derives the wire state. */
     @Volatile
     private var viewedPaneId: String? = null
+    private var viewedPaneOwner: Any? = null
+
+    private val _visibleViewedPane = MutableStateFlow<String?>(null)
+
+    /** Local notification suppression; hidden and locked screens are not viewed. */
+    val visibleViewedPane: StateFlow<String?> = _visibleViewedPane.asStateFlow()
 
     @Volatile
     private var viewedRelayId: String? = null
@@ -311,9 +352,13 @@ class SessionRepository @Inject constructor(
      * publishing the new one. Session screens call this on enter/leave;
      * agent regeneration, reconnect, lock, and hide re-push reactively.
      */
-    fun setViewedPane(paneId: String?) {
-        viewedPaneId = paneId
-        repushViewedPane()
+    fun setViewedPane(paneId: String?, owner: Any) {
+        synchronized(lock) {
+            if (paneId == null && viewedPaneOwner !== owner) return
+            viewedPaneOwner = if (paneId != null) owner else null
+            viewedPaneId = paneId
+            repushViewedPane()
+        }
     }
 
     /**
@@ -323,6 +368,8 @@ class SessionRepository @Inject constructor(
      */
     private fun repushViewedPane() {
         synchronized(lock) {
+            _visibleViewedPane.value =
+                viewedPaneId.takeUnless { _hidden.value || _locked.value }
             val agent = viewedPaneId?.let { id ->
                 agents.value.firstOrNull { it.paneId == id }
             }
@@ -559,15 +606,35 @@ class SessionRepository @Inject constructor(
                 },
                 onEnrolled = { auth, finish -> commitEnrollment(endpoint.id, auth, finish) },
             )
+            handle.setHidden(_hidden.value)
             val runtime = SessionRuntime(endpoint, handle)
-            runtime.jobs += scope.launch { handle.state.collect { onSessionState(endpoint, it) } }
-            runtime.jobs += scope.launch { handle.incoming.collect { demux(endpoint.id, it) } }
+            sessions[endpoint.id] = runtime
+            runtime.jobs += scope.launch {
+                handle.state.collect { state ->
+                    if (sessionFor(endpoint.id) === handle && handle.state.value === state) {
+                        onSessionState(endpoint, state)
+                    }
+                }
+            }
+            runtime.jobs += scope.launch {
+                handle.incoming.collect { raw ->
+                    if (sessionFor(endpoint.id) === handle) demux(endpoint.id, raw)
+                }
+            }
             runtime.jobs += scope.launch {
                 handle.rttMs.collect { connectionStore.noteRtt(endpoint.id, it) }
             }
-            sessions[endpoint.id] = runtime
         }
     }
+
+    /** Enrollment must await a fresh transport, never a previous connection's terminal verdict. */
+    fun connectForPairing(endpoint: RelayEndpoint): StateFlow<RelaySession.SessionState> =
+        synchronized(lock) {
+            val previous = sessions.remove(endpoint.id)
+            if (previous != null) teardown(previous)
+            connect(endpoint)
+            checkNotNull(sessions[endpoint.id]).handle.state
+        }
 
     private fun reconcileSessions(endpoints: List<RelayEndpoint>) {
         val wanted = endpoints.associateBy { it.id }
@@ -587,6 +654,7 @@ class SessionRepository @Inject constructor(
         runtime.jobs.forEach { it.cancel() }
         runtime.handle.close()
         rejectUploads(runtime.endpoint.id, "Relay disconnected")
+        rejectRaw(runtime.endpoint.id, "Relay disconnected")
         connectionStore.disconnect(runtime.endpoint.id)
         agentStore.removeRelay(runtime.endpoint.id)
         synchronized(lock) {
@@ -643,8 +711,10 @@ class SessionRepository @Inject constructor(
                 resyncPanes(endpoint.id)
                 requestActivities(endpoint.id)
             }
-            is RelaySession.SessionState.Connecting ->
+            is RelaySession.SessionState.Connecting -> {
+                rejectRaw(endpoint.id, "Relay disconnected")
                 connectionStore.onTransportStatus(endpoint.id, TransportStatus.CONNECTING)
+            }
             is RelaySession.SessionState.Disconnected -> {
                 connectionStore.onTransportStatus(
                     endpoint.id,
@@ -656,6 +726,7 @@ class SessionRepository @Inject constructor(
                     ),
                 )
                 rejectUploads(endpoint.id, state.reason?.reason ?: "Relay disconnected")
+                rejectRaw(endpoint.id, state.reason?.reason ?: "Relay disconnected")
                 disconnectPanes(endpoint.id)
             }
             is RelaySession.SessionState.AuthRejected -> {
@@ -669,10 +740,12 @@ class SessionRepository @Inject constructor(
                     ),
                 )
                 rejectUploads(endpoint.id, state.reason.reason)
+                rejectRaw(endpoint.id, state.reason.reason)
             }
             RelaySession.SessionState.Closed -> {
                 connectionStore.disconnect(endpoint.id)
                 rejectUploads(endpoint.id, "Relay disconnected")
+                rejectRaw(endpoint.id, "Relay disconnected")
             }
             RelaySession.SessionState.Idle -> Unit
         }
@@ -694,6 +767,10 @@ class SessionRepository @Inject constructor(
             UnknownServerMessage(type = type, fields = raw)
         }
         reducer.handle(relayId, message)
+        // A restored terminal can open before the first agent target exists.
+        if (message is AgentsMessage && connectionStore.acceptsInventorySnapshots(relayId)) {
+            resyncPanes(relayId, onlyWaitingForContent = true)
+        }
         _frames.tryEmit(RelayFrame(relayId, message))
 
         // Pane frames — raw JsonObject into the surface (presence semantics).
@@ -704,9 +781,9 @@ class SessionRepository @Inject constructor(
 
         // Raw-command correlation for extras-bearing sends.
         when (message) {
-            is CommandResultMessage -> resolveCommandResult(message)
-            is ActionReceiptMessage -> resolveActionReceipt(message)
-            is ErrorMessage -> resolveError(message)
+            is CommandResultMessage -> resolveCommandResult(relayId, message)
+            is ActionReceiptMessage -> resolveActionReceipt(relayId, message)
+            is ErrorMessage -> resolveError(relayId, message)
             is UploadBeginResultMessage -> resolveUploadResult(relayId, message)
             is UploadChunkResultMessage -> resolveUploadResult(relayId, message)
             is UploadFinishResultMessage -> resolveUploadResult(relayId, message)
@@ -768,25 +845,53 @@ class SessionRepository @Inject constructor(
     // ── pane lifecycle (UI-facing) ────────────────────────────────────
 
     /** `watchPane` + `readPane` — the terminal view opened this pane. */
-    suspend fun openPane(paneId: String) {
-        synchronized(lock) { openPanes.add(paneId) }
-        val runtime = paneRuntime(paneId) ?: return
-        runtime.mutex.withLock {
-            dispatchIntents(runtime, runtime.surface.watch() + runtime.surface.requestRead())
+    suspend fun openPane(paneId: String, owner: Any) {
+        val ownership = ownership(paneId)
+        ownership.terminalMutex.withLock {
+            synchronized(lock) { openPanes.getOrPut(paneId) { LinkedHashSet() }.add(owner) }
+            // A reopened terminal takes responsibility for the existing size
+            // until its own measured grid replaces it.
+            if (ownership.leaseOwner != null) ownership.leaseOwner = owner
+            val runtime = paneRuntime(paneId) ?: return@withLock
+            if (!_hidden.value) runtime.mutex.withLock {
+                dispatchIntents(runtime, runtime.surface.watch() + runtime.surface.requestRead())
+            }
         }
     }
 
-    /** `unwatchPane` — the terminal view left this pane. */
-    suspend fun closePane(paneId: String) {
-        synchronized(lock) { openPanes.remove(paneId) }
-        val runtime = synchronized(lock) {
-            panes.remove(paneId)?.also { paneGeneration.value += 1 }
-        } ?: return
-        runtime.mutex.withLock {
-            dispatchIntents(runtime, runtime.surface.unwatch())
-            runtime.surface.reset()
+    /** Only the last local terminal owner releases the lease and watch. */
+    suspend fun closePane(paneId: String, owner: Any) {
+        val ownership = ownership(paneId)
+        ownership.terminalMutex.withLock {
+            val lastOwner = synchronized(lock) {
+                val owners = openPanes[paneId] ?: return@withLock
+                if (!owners.remove(owner)) return@withLock
+                if (owners.isNotEmpty()) false else {
+                    openPanes.remove(paneId)
+                    true
+                }
+            }
+            if (!lastOwner) return@withLock
+            try {
+                if (ownership.leaseOwner != null) releasePaneSizeLocked(paneId, ownership)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // Best effort on disconnect; the relay's size TTL still expires.
+            } finally {
+                ownership.leaseOwner = null
+                val runtime = synchronized(lock) {
+                    panes.remove(paneId)?.also { paneGeneration.value += 1 }
+                }
+                if (runtime != null) {
+                    runtime.mutex.withLock {
+                        dispatchIntents(runtime, runtime.surface.unwatch())
+                        runtime.surface.reset()
+                    }
+                    runtime.snapshots.value = null
+                }
+            }
         }
-        runtime.snapshots.value = null
     }
 
     /** Manual refresh — throttled by the gate's 35 s coalescing window. */
@@ -834,22 +939,23 @@ class SessionRepository @Inject constructor(
      * covers panes opened before the session existed (runtime is created
      * lazily here once the relay row can serve them).
      */
-    private suspend fun resyncPanes(relayId: String) {
+    private suspend fun resyncPanes(relayId: String, onlyWaitingForContent: Boolean = false) {
         val paneIds = synchronized(lock) {
-            openPanes.filter { it.startsWith("$relayId::") }
+            openPanes.keys.filter { it.startsWith("$relayId::") }
         }
         for (paneId in paneIds) {
-            // A hidden app stays unwatched — `setHidden(false)` re-arms on
-            // resume; resyncing here would leak watch traffic in background.
-            if (_hidden.value) return
-            val runtime = paneRuntime(paneId) ?: continue
-            runtime.mutex.withLock {
-                val intents = if (runtime.surface.watching) {
-                    runtime.surface.requestRead()
-                } else {
-                    runtime.surface.watch() + runtime.surface.requestRead()
+            ownership(paneId).terminalMutex.withLock {
+                if (_hidden.value || synchronized(lock) { paneId !in openPanes }) return@withLock
+                val runtime = paneRuntime(paneId) ?: return@withLock
+                runtime.mutex.withLock surface@{
+                    if (onlyWaitingForContent && runtime.snapshots.value != null) return@surface
+                    val intents = if (runtime.surface.watching) {
+                        runtime.surface.requestRead()
+                    } else {
+                        runtime.surface.watch() + runtime.surface.requestRead()
+                    }
+                    dispatchIntents(runtime, intents)
                 }
-                dispatchIntents(runtime, intents)
             }
         }
     }
@@ -1224,10 +1330,16 @@ class SessionRepository @Inject constructor(
      * `action_receipt` CONFIRMED (resolved into `CommandResultMessage`
      * by [RelaySession.request]).
      */
-    suspend fun subscribeConversation(paneId: String): CommandResultMessage {
-        val agent = requireAgent(paneId)
-        requireCapability(agent, ClientCapabilities.CONVO_SUB)
-        return sendToAgent(agent, Inbound(type = "subscribe_conversation"))
+    suspend fun subscribeConversation(paneId: String, owner: Any) {
+        val ownership = ownership(paneId)
+        ownership.conversationMutex.withLock {
+            val agent = requireAgent(paneId)
+            requireCapability(agent, ClientCapabilities.CONVO_SUB)
+            // Record before dispatch: cancellation can lose the receipt after
+            // the relay already installed the subscription.
+            ownership.conversationOwners.add(owner)
+            sendToAgent(agent, Inbound(type = "subscribe_conversation"))
+        }
     }
 
     /**
@@ -1236,9 +1348,15 @@ class SessionRepository @Inject constructor(
      * skips the local capability gate: cleanup must ride even after a
      * mid-session `caps_update` retraction.
      */
-    suspend fun unsubscribeConversation(paneId: String): CommandResultMessage {
-        val agent = requireAgent(paneId)
-        return sendToAgent(agent, Inbound(type = "unsubscribe_conversation"))
+    suspend fun unsubscribeConversation(paneId: String, owner: Any) {
+        val ownership = ownership(paneId)
+        ownership.conversationMutex.withLock {
+            if (!ownership.conversationOwners.remove(owner) ||
+                ownership.conversationOwners.isNotEmpty()
+            ) return@withLock
+            val agent = requireAgent(paneId)
+            sendToAgent(agent, Inbound(type = "unsubscribe_conversation"))
+        }
     }
 
     // ── agent management ──────────────────────────────────────────────
@@ -1270,19 +1388,23 @@ class SessionRepository @Inject constructor(
         return sendToAgent(agent, Inbound(type = "agent_rename", name = name))
     }
 
-    /** `agent_restart` — respawn the pane's process in place. */
+    /** `agent_restart` — replace the pane; `data.pane_id` identifies its successor. */
     suspend fun restartAgent(paneId: String): CommandResultMessage {
         val agent = requireAgent(paneId)
-        return sendToAgent(agent, Inbound(type = "agent_restart"))
+        return sendToAgent(
+            agent,
+            Inbound(type = "agent_restart"),
+            timeoutMs = AGENT_REPLACEMENT_TIMEOUT_MS,
+        )
     }
 
-    /** `agent_clear` — wipe the pane's transcript (Lerdr's 45 s window). */
+    /** `agent_clear` — replace the pane with a fresh transcript (45 s window). */
     suspend fun clearAgent(paneId: String): CommandResultMessage {
         val agent = requireAgent(paneId)
         return sendToAgent(
             agent,
             Inbound(type = "agent_clear"),
-            timeoutMs = AGENT_CLEAR_TIMEOUT_MS,
+            timeoutMs = AGENT_REPLACEMENT_TIMEOUT_MS,
         )
     }
 
@@ -1779,7 +1901,30 @@ class SessionRepository @Inject constructor(
      * when the relay advertises `pane_size_lease_rows` (an old relay would
      * silently ignore them); returns the applied dimensions.
      */
-    suspend fun leasePaneSize(paneId: String, columns: Int, rows: Int = 0): Pair<Int, Int> {
+    suspend fun leasePaneSize(
+        paneId: String,
+        owner: Any,
+        columns: Int,
+        rows: Int = 0,
+    ): Pair<Int, Int> = ownership(paneId).let { ownership ->
+        ownership.terminalMutex.withLock {
+            if (synchronized(lock) { openPanes[paneId]?.lastOrNull() } !== owner) {
+                throw CancellationException("Terminal view no longer owns this pane")
+            }
+            if (_hidden.value) {
+                throw CommandException("Terminal viewport is hidden")
+            }
+            leasePaneSizeLocked(paneId, owner, ownership, columns, rows)
+        }
+    }
+
+    private suspend fun leasePaneSizeLocked(
+        paneId: String,
+        owner: Any,
+        ownership: PaneOwnership,
+        columns: Int,
+        rows: Int,
+    ): Pair<Int, Int> {
         val agent = requireAgent(paneId)
         val connection = connectionStore.connectionNow(agent.relayId)
         if (connection?.capabilities?.contains(LEASE_CAPABILITY) != true) {
@@ -1796,6 +1941,7 @@ class SessionRepository @Inject constructor(
                 "Terminal rows must be between $MIN_PANE_ROWS and $MAX_PANE_ROWS",
             )
         }
+        ownership.leaseOwner = owner
         val result = sendToAgent(
             agent,
             Inbound(type = "lease_pane_size", columns = columns, rows = leaseRows),
@@ -1822,7 +1968,15 @@ class SessionRepository @Inject constructor(
     }
 
     /** `release_pane_size` — drop the lease on close/background. */
-    suspend fun releasePaneSize(paneId: String) {
+    suspend fun releasePaneSize(paneId: String, owner: Any) {
+        val ownership = ownership(paneId)
+        ownership.terminalMutex.withLock {
+            if (ownership.leaseOwner !== owner) return@withLock
+            releasePaneSizeLocked(paneId, ownership)
+        }
+    }
+
+    private suspend fun releasePaneSizeLocked(paneId: String, ownership: PaneOwnership) {
         val agent = requireAgent(paneId)
         if (connectionStore.connectionNow(agent.relayId)
                 ?.capabilities?.contains(LEASE_CAPABILITY) != true
@@ -1830,6 +1984,7 @@ class SessionRepository @Inject constructor(
             throw CommandException("Relay lacks pane-size lease support")
         }
         sendToAgent(agent, Inbound(type = "release_pane_size"))
+        ownership.leaseOwner = null
         val runtime = synchronized(lock) { panes[paneId] }
         if (runtime != null) {
             runtime.mutex.withLock {
@@ -2016,7 +2171,7 @@ class SessionRepository @Inject constructor(
         cohortBusyCount(agent, agents, workspaces)
     }.distinctUntilChanged()
 
-    /** Session state for the pairing flow's outcome await. */
+    /** Current transport state for connection details and access checks. */
     fun sessionState(relayId: String): StateFlow<RelaySession.SessionState>? =
         synchronized(lock) { sessions[relayId]?.handle?.state }
 
@@ -2116,35 +2271,44 @@ class SessionRepository @Inject constructor(
         timeoutMs: Long = ReconnectPolicy.COMMAND_TIMEOUT_MS,
     ): CommandResultMessage {
         val session = sessionFor(relayId) ?: throw TransportException.NotConnected()
-        if (session.state.value !is RelaySession.SessionState.Connected) {
-            throw TransportException.NotConnected()
-        }
+        val connected = session.state.value as? RelaySession.SessionState.Connected
+            ?: throw TransportException.NotConnected()
         val requestId = UUID.randomUUID().toString()
         val framed = message.copy(requestId = requestId, protocol = Protocol.VERSION)
         val wire = withExtras(framed, extras)
         val pending = PendingRaw(
+            relayId = relayId,
+            session = session,
+            connected = connected,
             deferred = CompletableDeferred(),
             action = framed.type,
             actionId = framed.actionId.ifEmpty { null },
         )
         pendingRaw[requestId] = pending
         pending.rearm(requestId, timeoutMs)
-        if (!session.sendRaw(wire.toString())) {
-            pendingRaw.remove(requestId)
-            pending.timeoutJob?.cancel()
-            throw TransportException.WriteRejected("Could not send command to relay")
+        try {
+            if (!pending.ownedBy(relayId)) throw TransportException.NotConnected()
+            if (!session.sendRaw(wire.toString())) {
+                throw TransportException.WriteRejected("Could not send command to relay")
+            }
+            return pending.deferred.await()
+        } finally {
+            if (pendingRaw.remove(requestId, pending)) {
+                pending.timeoutJob?.cancel()
+                pending.deferred.cancel()
+            }
         }
-        return pending.deferred.await()
     }
 
-    private fun resolveCommandResult(message: CommandResultMessage) {
+    private fun resolveCommandResult(relayId: String, message: CommandResultMessage) {
         val requestId = message.requestId ?: return
         val pending = pendingRaw[requestId] ?: return
+        if (!pending.ownedBy(relayId)) return
         if (message.phase == CommandResultMessage.PHASE_ACCEPTED) {
             pending.rearm(requestId, ReconnectPolicy.ACCEPTED_COMMAND_TIMEOUT_MS)
             return
         }
-        pendingRaw.remove(requestId)
+        if (!pendingRaw.remove(requestId, pending)) return
         pending.timeoutJob?.cancel()
         if (message.ok == true) {
             pending.deferred.complete(message)
@@ -2160,13 +2324,13 @@ class SessionRepository @Inject constructor(
         }
     }
 
-    private fun resolveActionReceipt(message: ActionReceiptMessage) {
+    private fun resolveActionReceipt(relayId: String, message: ActionReceiptMessage) {
         val receipt = message.receipt ?: return
         var key = message.requestId
-        var pending = key?.let { pendingRaw[it] }
+        var pending = key?.let { pendingRaw[it] }?.takeIf { it.ownedBy(relayId) }
         if (pending == null && receipt.actionId.isNotEmpty()) {
             for ((candidateId, candidate) in pendingRaw) {
-                if (candidate.actionId == receipt.actionId) {
+                if (candidate.actionId == receipt.actionId && candidate.ownedBy(relayId)) {
                     key = candidateId
                     pending = candidate
                     break
@@ -2178,7 +2342,7 @@ class SessionRepository @Inject constructor(
             ActionReceiptPhase.PREPARED, ActionReceiptPhase.AWAITING_EVIDENCE ->
                 pending.rearm(key, ReconnectPolicy.ACCEPTED_COMMAND_TIMEOUT_MS)
             ActionReceiptPhase.CONFIRMED -> {
-                pendingRaw.remove(key)
+                if (!pendingRaw.remove(key, pending)) return
                 pending.timeoutJob?.cancel()
                 pending.deferred.complete(
                     CommandResultMessage(
@@ -2190,7 +2354,7 @@ class SessionRepository @Inject constructor(
                 )
             }
             else -> {
-                pendingRaw.remove(key)
+                if (!pendingRaw.remove(key, pending)) return
                 pending.timeoutJob?.cancel()
                 pending.deferred.completeExceptionally(
                     CommandException(
@@ -2204,9 +2368,10 @@ class SessionRepository @Inject constructor(
         }
     }
 
-    private fun resolveError(message: ErrorMessage) {
+    private fun resolveError(relayId: String, message: ErrorMessage) {
         val requestId = message.requestId ?: return
-        val pending = pendingRaw.remove(requestId) ?: return
+        val pending = pendingRaw[requestId] ?: return
+        if (!pending.ownedBy(relayId) || !pendingRaw.remove(requestId, pending)) return
         pending.timeoutJob?.cancel()
         val apiError = message.error
         pending.deferred.completeExceptionally(
@@ -2219,9 +2384,28 @@ class SessionRepository @Inject constructor(
         )
     }
 
+    private fun PendingRaw.ownedBy(relayId: String): Boolean =
+        this.relayId == relayId && sessionFor(relayId) === session &&
+            session.state.value === connected
+
+    private fun rejectRaw(relayId: String, reason: String) {
+        for ((requestId, pending) in pendingRaw) {
+            if (pending.relayId != relayId || !pendingRaw.remove(requestId, pending)) continue
+            pending.timeoutJob?.cancel()
+            pending.deferred.completeExceptionally(
+                CommandException(
+                    message = reason,
+                    phase = "dispatched_unknown",
+                    dispatchedUnknown = true,
+                ),
+            )
+        }
+    }
+
     private fun PendingRaw.rearm(requestId: String, timeoutMs: Long) {
+        if (pendingRaw[requestId] !== this) return
         timeoutJob?.cancel()
-        timeoutJob = scope.launch {
+        val job = scope.launch {
             delay(timeoutMs)
             if (pendingRaw.remove(requestId, this@rearm)) {
                 deferred.completeExceptionally(
@@ -2233,6 +2417,8 @@ class SessionRepository @Inject constructor(
                 )
             }
         }
+        timeoutJob = job
+        if (pendingRaw[requestId] !== this) job.cancel()
     }
 
     // ── activity journal ─────────────────────────────────────────────
@@ -2274,6 +2460,9 @@ class SessionRepository @Inject constructor(
     )
 
     private class PendingRaw(
+        val relayId: String,
+        val session: RelaySessionHandle,
+        val connected: RelaySession.SessionState.Connected,
         val deferred: CompletableDeferred<CommandResultMessage>,
         val action: String,
         val actionId: String?,
@@ -2308,9 +2497,7 @@ class SessionRepository @Inject constructor(
         const val WORKSPACE_MANAGEMENT_CAPABILITY = "workspace_management"
         const val WORKSPACE_REORDER_BLOCK_CAPABILITY = "workspace_reorder_block"
         const val AGENT_START_TIMEOUT_MS = 45_000L
-        const val AGENT_CLEAR_TIMEOUT_MS = 45_000L
-        /** `PANE_LEASE_HIDDEN_GRACE_MS` — hidden renewals stop past this. */
-        const val PANE_LEASE_HIDDEN_GRACE_MS = 5 * 60_000L
+        const val AGENT_REPLACEMENT_TIMEOUT_MS = 45_000L
         const val WORKSPACE_CLOSE_TIMEOUT_MS = 30_000L
         const val SELF_UPDATE_CAPABILITY = "self_update"
         /** Best-effort `revoke_device` inside `removeRelay` — never wedges an unpair. */

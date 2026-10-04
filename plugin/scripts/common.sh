@@ -601,12 +601,10 @@ verify_relay_release_health() {
     local health="$1"
     local expected_version="$2"
     local expected_revision="$3"
-    local expected_web_hash="$4"
 
     [ "$(json_string_field "$health" status)" = "ok" ] &&
         [ "$(json_string_field "$health" release_version)" = "$expected_version" ] &&
-        [ "$(json_string_field "$health" revision)" = "$expected_revision" ] &&
-        [ "$(json_string_field "$health" bundle_hash)" = "$expected_web_hash" ]
+        [ "$(json_string_field "$health" revision)" = "$expected_revision" ]
 }
 
 wait_for_relay_release_health() {
@@ -615,14 +613,12 @@ wait_for_relay_release_health() {
     local delay="$3"
     local expected_version="$4"
     local expected_revision="$5"
-    local expected_web_hash="$6"
     local health
     local attempt
 
     [ -n "$expected_version" ] &&
-        [ -n "$expected_revision" ] &&
-        [ -n "$expected_web_hash" ] || {
-            echo "Exact release health verification requires version, revision, and web hash." >&2
+        [ -n "$expected_revision" ] || {
+            echo "Exact release health verification requires version and revision." >&2
             return 1
         }
 
@@ -636,7 +632,7 @@ wait_for_relay_release_health() {
     for ((attempt = 1; attempt <= attempts; attempt++)); do
         if health="$(wait_for_relay_health "$port" 1 0)" &&
            verify_relay_release_health \
-               "$health" "$expected_version" "$expected_revision" "$expected_web_hash"; then
+               "$health" "$expected_version" "$expected_revision"; then
             printf '%s\n' "$health"
             return 0
         fi

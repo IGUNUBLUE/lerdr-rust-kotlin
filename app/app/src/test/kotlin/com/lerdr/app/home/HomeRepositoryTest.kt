@@ -8,10 +8,14 @@ import com.lerdr.app.session.FakeRelaySessionHandle
 import com.lerdr.app.session.SessionRepository
 import java.io.File
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import lerdr.core.protocol.LerdrJson
 import lerdr.core.data.DeviceRole
 import lerdr.core.data.RelayDeviceCredential
 import lerdr.core.data.RelayEndpoint
@@ -168,6 +172,61 @@ class HomeRepositoryTest {
     }
 
     @Test
+    fun `unknown activity timestamps do not invent elapsed ages`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.online()
+        h.agent("%idle", "idle") { copy(updatedAt = 0L, lastActiveAt = 0L) }
+        h.agent("%working", "working") { copy(updatedAt = 0L, lastActiveAt = 0L) }
+        h.agent("%question", "blocked") {
+            copy(updatedAt = 0L, lastActiveAt = 0L, attentionKind = "question")
+        }
+        val state = h.repository.uiState.first()
+        assertThat(state.idle.single().agents.single().statusLine).isEqualTo("idle")
+        assertThat(state.working.single().agents.single().elapsedLabel).isEqualTo("working")
+        assertThat(state.needsYou.single().metaLabel).isEqualTo("question")
+    }
+
+    @Test
+    fun `unknown last activity falls back to a known update timestamp`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.online()
+        h.agent("%idle", "idle") { copy(updatedAt = 900_000L, lastActiveAt = 0L) }
+        assertThat(h.repository.uiState.first().idle.single().agents.single().statusLine)
+            .isEqualTo("idle · 1m ago")
+        h.agent("%idle", "idle") { copy(updatedAt = 990_000L, lastActiveAt = 850_000L) }
+        assertThat(h.repository.uiState.first().idle.single().agents.single().statusLine)
+            .isEqualTo("idle · 2m ago")
+    }
+
+    @Test
+    fun `reader inventory does not admit agent or workspace creation`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.online(DeviceRole.READER)
+        val state = h.repository.uiState.first()
+        assertThat(state.live).isTrue()
+        assertThat(state.canLaunch).isFalse()
+    }
+
+    @Test
+    fun `controller can launch before its first agent exists`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.online()
+        val state = h.repository.uiState.first()
+        assertThat(state.working).isEmpty()
+        assertThat(state.idle).isEmpty()
+        assertThat(state.canLaunch).isTrue()
+    }
+
+    @Test
+    fun `connected inventory with unknown role cannot launch`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.online(role = null)
+        val state = h.repository.uiState.first()
+        assertThat(state.live).isTrue()
+        assertThat(state.canLaunch).isFalse()
+    }
+
+    @Test
     fun `empty state has no agents and an offline relay row`() = runTest {
         val h = Harness(this, tmp.root)
         h.registry.upsert(h.endpoint)
@@ -218,6 +277,36 @@ class HomeRepositoryTest {
         assertThat(card.controllable).isTrue()
         assertThat(card.responding).isFalse()
         assertThat(state.working).isEmpty()
+    }
+
+    @Test
+    fun `choosing an approval after an empty wire label answers its original index`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.online()
+        h.agent("%2", "blocked") {
+            copy(
+                terminalId = "t2",
+                serverSessionId = "ss1",
+                generation = 1,
+                attentionKind = "approval",
+                prompt = "Run tests?",
+                options = listOf("", "Allow", "Deny"),
+                approvalFingerprint = "approval-2",
+                blockedEventId = "ev2",
+            )
+        }
+        val card = h.repository.uiState.first().needsYou.single()
+        val selectedIndex = card.options.indexOf("Allow")
+        val response = backgroundScope.launch {
+            h.sessions.respond(card.paneId, selectedIndex, card.options[selectedIndex])
+        }
+        runCurrent()
+        val sent = h.awaitHandle().sentRaw
+            .map { LerdrJson.parseToJsonElement(it) as JsonObject }
+            .single { it["type"]?.jsonPrimitive?.content == "respond" }
+        assertThat(sent["index"]?.jsonPrimitive?.content).isEqualTo("1")
+        assertThat(sent["total"]?.jsonPrimitive?.content).isEqualTo("3")
+        response.cancel()
     }
 
     @Test

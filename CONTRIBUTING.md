@@ -1,7 +1,7 @@
 # Contributing
 
-Thanks for your interest in lerdr. This project is **beta** — contributions
-are welcome, with a few ground rules that keep the codebase coherent.
+Contributions are welcome, with a few ground rules that keep the codebase
+coherent.
 
 ## Before you start
 
@@ -47,7 +47,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test -p <crate-you-touched>
 
 # Wire-facing changes: golden vectors must stay green
-cargo test -p lerdr-protocol --test vectors
+cargo test --workspace
 
 # Kotlin / Android (from app/)
 ./gradlew test                    # or :core:<module>:test for JVM modules

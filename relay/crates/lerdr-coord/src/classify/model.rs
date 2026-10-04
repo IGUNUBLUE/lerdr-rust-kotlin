@@ -263,6 +263,10 @@ pub(crate) struct Interaction {
     pub(crate) agent: String,
     #[serde(skip)]
     pub(crate) notes_active: bool,
+    /// Native multi-select footers distinguish Space-toggle/Enter-submit
+    /// dialogs from the legacy Enter-toggle menu.
+    #[serde(skip)]
+    pub(crate) omp_space_toggle: bool,
 }
 
 pub(crate) fn is_zero_i64(value: &i64) -> bool {

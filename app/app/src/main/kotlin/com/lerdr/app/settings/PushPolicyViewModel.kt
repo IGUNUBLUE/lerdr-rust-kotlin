@@ -8,6 +8,9 @@ import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.format.DateTimeParseException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,17 +25,21 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import lerdr.core.model.Inbound
+import lerdr.core.data.DeviceRole
 import lerdr.core.model.PushPolicyMessage
-import lerdr.core.model.PushPolicyResultMessage
+import lerdr.core.protocol.LerdrJson
 import lerdr.core.model.PushPolicyView
 import lerdr.core.model.PushTestResultMessage
 import lerdr.core.store.RelayStatus
 import lerdr.core.transport.CommandException
+import lerdr.core.transport.RelaySession
+import lerdr.core.transport.ReconnectPolicy
 
 /**
  * The relay's per-device push policy in editable form — Lerdr's
@@ -97,8 +104,11 @@ data class PushPolicyUiState(
     val capabilitiesKnown: Boolean = false,
     /** `push_config.capabilities` contains `push_policy`. */
     val supported: Boolean = false,
+    /** The current authenticated session is a controller. */
+    val canControl: Boolean = false,
     /** Connected + capable + no policy yet + no failure — get in flight. */
     val loading: Boolean = false,
+    val refreshing: Boolean = false,
     /** The `push_policy_get` request failed — the card offers Retry. */
     val loadFailed: Boolean = false,
     val policy: PushPolicyUi? = null,
@@ -115,12 +125,9 @@ data class PushPolicyUiState(
  * - on connect Lerdr fires `push_policy_get` when the relay advertises
  *   the `push_policy` capability; [bind] mirrors that — the
  *   rising edge of `connected && capable` fetches once per connection;
- * - edits apply optimistically through one serialized `push_policy_set`
- *   (`{categories, settle_ms, cooldown_ms, snoozed, update_once,
- *   snooze_until?}` — the whole editable map, no `device_id`/`locale`; the
- *   relay binds both from the authenticated identity). A rejected set
- *   restores the pre-edit policy and surfaces the `push_policy_result`
- *   code;
+ * - edits apply optimistically through one serialized `push_policy_set`;
+ *   the correlated command result supplies the authoritative saved policy.
+ *   Uncorrelated `push_policy_result` frames cannot settle a newer edit.
  * - snooze rides the same `push_policy_set` path (Lerdr never calls
  *   `push_snooze` from this UI): off → `snoozed:false`; a duration →
  *   `snoozed:true` + `snooze_until = now + duration` RFC3339; indefinite →
@@ -147,14 +154,53 @@ class PushPolicyViewModel(
         val policy: PushPolicyUi? = null,
         val loadFailed: Boolean = false,
         val saving: Boolean = false,
+        val refreshing: Boolean = false,
         val policyError: String? = null,
         val test: PushTestUi = PushTestUi.Idle,
     )
 
     private val local = MutableStateFlow(Local())
 
-    /** Pre-edit snapshot — Lerdr restores `previous` on a rejected set. */
-    private var pendingRevert: PushPolicyUi? = null
+    private var generation = 0L
+    private var loadJob: Job? = null
+    private var saveJob: Job? = null
+    private var testJob: Job? = null
+    private var pendingPolicy: CompletableDeferred<PushPolicyUi>? = null
+    private var pendingTestResult: CompletableDeferred<PushTestUi>? = null
+
+    private data class Access(
+        val ready: Boolean = false,
+        val canControl: Boolean = false,
+        val deviceId: String = "",
+        val credentialId: String = "",
+    )
+
+    private fun access(relayId: String): Access {
+        val connection = sessions.connectionNow(relayId)
+        val state = sessions.sessionState(relayId)?.value as? RelaySession.SessionState.Connected
+        val finish = state?.finish
+        val ready = state != null && connection?.status == RelayStatus.CONNECTED &&
+            !connection.authRejected && connection.protocol > 0 &&
+            PUSH_POLICY_CAPABILITY in connection.capabilities
+        return Access(
+            ready = ready,
+            canControl = ready && finish?.role == DeviceRole.CONTROLLER.wireName,
+            deviceId = finish?.deviceId.orEmpty(),
+            credentialId = finish?.credentialId.orEmpty(),
+        )
+    }
+
+    private fun cancelOperations() {
+        generation++
+        loadJob?.cancel()
+        saveJob?.cancel()
+        testJob?.cancel()
+        loadJob = null
+        saveJob = null
+        testJob = null
+        pendingTestResult = null
+        pendingPolicy = null
+    }
 
     val uiState: StateFlow<PushPolicyUiState> = combine(
         boundRelay.flatMapLatest { relayId ->
@@ -163,11 +209,9 @@ class PushPolicyViewModel(
         local,
     ) { connection, local ->
         val connected = connection?.status == RelayStatus.CONNECTED
-        // `applyPushConfig` always leaves protocol > 0 — it is the marker
-        // that the capability list is final for this connection.
         val capabilitiesKnown = connection != null && connection.protocol > 0
-        val supported = connected &&
-            connection.capabilities.contains(PUSH_POLICY_CAPABILITY)
+        val access = access(local.relayId)
+        val supported = access.ready
         PushPolicyUiState(
             relayId = local.relayId,
             relayLabel = connection?.relayLabel.orEmpty().ifEmpty { local.relayId },
@@ -175,9 +219,11 @@ class PushPolicyViewModel(
             connecting = connection?.status == RelayStatus.CONNECTING,
             capabilitiesKnown = capabilitiesKnown,
             supported = supported,
+            canControl = access.canControl,
             loading = connected && (!capabilitiesKnown || supported) &&
                 local.policy == null && !local.loadFailed,
             loadFailed = local.loadFailed,
+            refreshing = local.refreshing,
             policy = local.policy,
             saving = local.saving,
             policyError = local.policyError,
@@ -204,17 +250,17 @@ class PushPolicyViewModel(
      */
     fun bind(relayId: String) {
         if (boundRelay.value == relayId) return
-        pendingRevert = null
+        cancelOperations()
         local.value = Local(relayId = relayId)
         boundRelay.value = relayId
     }
 
-    /** Retry hook for the card's Retry action after a failed get. */
+    /** Retry after a failed get; reads never overlap policy mutations. */
     fun refreshPolicy() {
         val relayId = boundRelay.value
-        if (relayId.isEmpty()) return
+        if (!access(relayId).ready || loadJob != null || saveJob != null || testJob != null) return
         local.update { it.copy(loadFailed = false) }
-        viewModelScope.launch { requestPolicy(relayId) }
+        requestPolicy(relayId)
     }
 
     // ── edits → push_policy_set ───────────────────────────────────────
@@ -260,138 +306,154 @@ class PushPolicyViewModel(
      */
     fun sendTest() {
         val relayId = boundRelay.value
-        if (relayId.isEmpty() || local.value.test == PushTestUi.Sending) return
-        if (sessions.connectionNow(relayId)?.status != RelayStatus.CONNECTED) {
+        val access = access(relayId)
+        if (!access.ready) {
             local.update { it.copy(test = PushTestUi.Rejected("disconnected")) }
             return
         }
+        if (!access.canControl || local.value.policy == null ||
+            loadJob != null || saveJob != null || testJob != null
+        ) return
+        val currentGeneration = generation
+        val response = CompletableDeferred<PushTestUi>()
+        pendingTestResult = response
         local.update { it.copy(test = PushTestUi.Sending) }
-        viewModelScope.launch {
+        testJob = viewModelScope.launch(start = CoroutineStart.LAZY) {
             try {
-                sessions.request(relayId, Inbound(type = ACTION_TEST_DEVICE))
+                val outcome = withTimeoutOrNull(ReconnectPolicy.COMMAND_TIMEOUT_MS) {
+                    sessions.request(relayId, Inbound(type = ACTION_TEST_DEVICE))
+                    response.await()
+                } ?: throw CommandException("Push test result timed out", code = "timeout")
+                if (generation == currentGeneration) {
+                    local.update {
+                        it.copy(test = outcome)
+                    }
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
-                local.update {
-                    it.copy(
-                        test = PushTestUi.Rejected(
-                            when (failure) {
-                                is CommandException ->
-                                    failure.code ?: failure.phase ?: "failed"
-                                else -> "disconnected"
-                            },
-                        ),
-                    )
+                if (generation == currentGeneration) {
+                    local.update {
+                        it.copy(test = PushTestUi.Rejected(
+                            (failure as? CommandException)?.code
+                                ?: (failure as? CommandException)?.phase ?: "disconnected",
+                        ))
+                    }
+                }
+            } finally {
+                if (generation == currentGeneration) {
+                    pendingTestResult = null
+                    testJob = null
                 }
             }
         }
+        testJob?.start()
     }
 
     // ── plumbing ──────────────────────────────────────────────────────
 
-    /** Lerdr's rising edge: `push_policy_get` once per live connection. */
-    private suspend fun collectPolicyTrigger(relayId: String) = coroutineScope {
+    /** Reset connection-owned state and refetch only after authenticated capabilities. */
+    private suspend fun collectPolicyTrigger(relayId: String) {
         sessions.connection(relayId)
-            .map { connection ->
-                connection?.status == RelayStatus.CONNECTED &&
-                    connection.capabilities.contains(PUSH_POLICY_CAPABILITY)
+            .flatMapLatest {
+                (sessions.sessionState(relayId) ?: flowOf(null)).map { access(relayId) }
             }
             .distinctUntilChanged()
-            .collect { ready ->
-                // The next connect edge refetches — Lerdr re-sends the
-                // get on every `push_config`.
-                local.update { it.copy(loadFailed = false) }
-                if (ready) launch { requestPolicy(relayId) }
+            .collect { access ->
+                cancelOperations()
+                local.value = Local(relayId = relayId)
+                if (access.ready) requestPolicy(relayId)
             }
     }
 
-    private suspend fun requestPolicy(relayId: String) {
-        try {
-            sessions.request(relayId, Inbound(type = ACTION_POLICY_GET))
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (failure: Exception) {
-            local.update { it.copy(loadFailed = true) }
+    private fun requestPolicy(relayId: String) {
+        val currentGeneration = generation
+        val response = CompletableDeferred<PushPolicyUi>()
+        pendingPolicy = response
+        local.update { it.copy(refreshing = true) }
+        loadJob = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            try {
+                withTimeoutOrNull(ReconnectPolicy.COMMAND_TIMEOUT_MS) {
+                    sessions.request(relayId, Inbound(type = ACTION_POLICY_GET))
+                    response.await()
+                } ?: throw CommandException("Notification policy result timed out", code = "timeout")
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                if (generation == currentGeneration) {
+                    local.update { it.copy(loadFailed = true) }
+                }
+            } finally {
+                if (generation == currentGeneration) {
+                    loadJob = null
+                    pendingPolicy = null
+                    local.update { it.copy(refreshing = false) }
+                }
+            }
         }
+        loadJob?.start()
     }
 
-    /** Optimistic edit + serialized send — Lerdr's `applyPolicy`. */
+    /** One full-policy mutation at a time, settled by its correlated reply. */
     private fun applyEdit(edit: (PushPolicyUi) -> PushPolicyUi) {
         val relayId = boundRelay.value
-        val snapshot = local.value
-        val current = snapshot.policy ?: return
-        if (relayId.isEmpty() || snapshot.saving) return
-        if (sessions.connectionNow(relayId)?.status != RelayStatus.CONNECTED) return
+        val current = local.value.policy ?: return
+        if (!access(relayId).canControl || loadJob != null || saveJob != null || testJob != null) return
         val next = edit(current)
         if (next == current) return
-        pendingRevert = current
+        val currentGeneration = generation
         local.update { it.copy(policy = next, saving = true, policyError = null) }
-        viewModelScope.launch {
+        saveJob = viewModelScope.launch(start = CoroutineStart.LAZY) {
             try {
-                sessions.request(
+                val result = sessions.request(
                     relayId,
                     Inbound(type = ACTION_POLICY_SET, policy = next.toWire()),
                 )
-                pendingRevert = null
-                local.update { it.copy(saving = false) }
+                if (generation == currentGeneration) {
+                    val saved = (result.data as? JsonObject)?.get("policy")?.let {
+                        normalizePolicy(LerdrJson.decodeFromJsonElement(PushPolicyView.serializer(), it))
+                    }
+                    if (saved == null) throw CommandException("Relay returned no saved policy")
+                    local.update { it.copy(policy = saved, saving = false) }
+                }
             } catch (cancelled: CancellationException) {
-                pendingRevert = null
-                local.update { it.copy(saving = false) }
                 throw cancelled
             } catch (failure: Exception) {
-                failSave(null)
+                if (generation == currentGeneration) {
+                    local.update {
+                        it.copy(
+                            policy = current,
+                            saving = false,
+                            policyError = failure.message ?: "The relay did not save this notification policy.",
+                        )
+                    }
+                }
+            } finally {
+                if (generation == currentGeneration) saveJob = null
             }
         }
-    }
-
-    /**
-     * Rejected set — restore the pre-edit snapshot and surface the failure.
-     * Runs from the `push_policy_result(ok:false)` frame and/or the failed
-     * `command_result` throw; both are idempotent, the coded frame wins.
-     */
-    private fun failSave(code: String?) {
-        val previous = pendingRevert
-        pendingRevert = null
-        local.update {
-            it.copy(
-                policy = previous ?: it.policy,
-                saving = false,
-                policyError = when {
-                    code != null ->
-                        "The relay did not save this notification policy ($code)."
-                    it.policyError != null -> it.policyError
-                    else -> "The relay did not save this notification policy."
-                },
-            )
-        }
+        saveJob?.start()
     }
 
     private suspend fun collectFrames(relayId: String) {
         sessions.frames.collect { frame ->
-            if (frame.relayId != relayId) return@collect
+            if (frame.relayId != relayId || boundRelay.value != relayId) return@collect
+            if (!access(relayId).ready) return@collect
             when (val message = frame.message) {
-                is PushPolicyMessage -> adoptPolicy(message.policy)
-                is PushPolicyResultMessage -> {
-                    // Lerdr: `(push_policy|push_policy_result) && ok !== false`
-                    // updates the store; a failed result only reports.
-                    if (message.ok == false) {
-                        failSave(message.code)
-                    } else {
-                        adoptPolicy(message.policy)
+                is PushPolicyMessage -> if (loadJob != null) {
+                    val policy = normalizePolicy(message.policy)
+                    if (policy?.deviceId == access(relayId).deviceId) {
+                        local.update { it.copy(policy = policy, loadFailed = false, policyError = null) }
+                        pendingPolicy?.complete(policy)
                     }
                 }
-                is PushTestResultMessage -> local.update {
-                    it.copy(test = mapTestStage(message.stage))
+                // These frames have no request id; only the correlated set result
+                // may overwrite the policy or fail an edit.
+                is PushTestResultMessage -> if (testJob != null) {
+                    pendingTestResult?.complete(mapTestStage(message.stage))
                 }
                 else -> Unit
             }
-        }
-    }
-
-    private fun adoptPolicy(view: PushPolicyView?) {
-        val policy = normalizePolicy(view) ?: return
-        local.update {
-            it.copy(policy = policy, loadFailed = false, policyError = null)
         }
     }
 

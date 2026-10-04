@@ -63,9 +63,10 @@ object SpeechChunker {
      * `speechChunks(text, limit)` — greedy sentence packing into `limit`-char
      * fragments joined on a single space; an over-long piece cuts at the last
      * space inside the limit, else hard-cuts at the limit. Lengths count
-     * UTF-16 units exactly like Lerdr's `String.length`.
+     * UTF-16 units, but hard cuts never split a surrogate pair.
      */
     fun speechChunks(text: String, limit: Int = DEFAULT_CHUNK_LIMIT): List<String> {
+        require(limit > 0) { "Speech chunk limit must be positive." }
         val chunks = mutableListOf<String>()
         var current = ""
         for (sentence in text.split(SENTENCE_SPLIT)) {
@@ -84,8 +85,16 @@ object SpeechChunker {
                     chunks += piece.substring(0, cut)
                     piece = piece.substring(cut + 1)
                 } else {
-                    chunks += piece.substring(0, limit)
-                    piece = piece.substring(limit)
+                    val end = if (piece[limit - 1].isHighSurrogate() &&
+                        piece[limit].isLowSurrogate()
+                    ) {
+                        limit - 1
+                    } else {
+                        limit
+                    }
+                    require(end > 0) { "Speech chunk limit cannot fit this code point." }
+                    chunks += piece.substring(0, end)
+                    piece = piece.substring(end)
                 }
             }
         }

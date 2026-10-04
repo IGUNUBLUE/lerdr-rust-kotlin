@@ -50,16 +50,23 @@ class RelaySpeechPlayerTest {
         var failWith: Throwable? = null
         /** Set to park [play] until [interrupt] or the test completes it. */
         var gate: CompletableDeferred<Unit>? = null
+        private var activeGate: CompletableDeferred<Unit>? = null
 
         override suspend fun play(wav: ByteArray) {
             played += wav
-            gate?.await()
-            failWith?.let { throw it }
+            val playbackGate = gate
+            activeGate = playbackGate
+            try {
+                playbackGate?.await()
+                failWith?.let { throw it }
+            } finally {
+                if (activeGate === playbackGate) activeGate = null
+            }
         }
 
         override fun interrupt() {
             interruptCount++
-            gate?.complete(Unit)
+            activeGate?.complete(Unit)
         }
     }
 
@@ -283,6 +290,62 @@ class RelaySpeechPlayerTest {
         assertThat(h.sends.map { it.second }).containsExactly("First run", "Second run")
         assertThat(h.sink.played).hasSize(1)
         assertThat(h.player.state.value.phase).isEqualTo(SpeechPhase.IDLE)
+        assertThat(h.exchanges.first().cancelled).isTrue()
+    }
+
+    @Test
+    fun `stop before the queued run starts never requests synthesis`() = runTest {
+        val h = Harness(this)
+        h.enabled.value = true
+        h.pump()
+        h.player.speak("r1", "Reading.")
+        h.player.stop()
+        h.pump()
+        assertThat(h.sends).isEmpty()
+        assertThat(h.sink.played).isEmpty()
+        assertThat(h.player.state.value.phase).isEqualTo(SpeechPhase.IDLE)
+    }
+
+    @Test
+    fun `replacing active audio cancels prefetch and finishes only the new run`() = runTest {
+        val h = Harness(this)
+        h.enabled.value = true
+        h.pump()
+        h.sink.gate = CompletableDeferred()
+        h.respondWith(FakeExchange(result = h.wavData("old")))
+        val prefetch = h.respondWith(FakeExchange(gate = CompletableDeferred()))
+        h.player.speak("r1", TWO_CHUNKS)
+        h.pump()
+        val oldPlayback = checkNotNull(h.sink.gate)
+
+        h.sink.gate = CompletableDeferred()
+        h.respondWith(FakeExchange(result = h.wavData("new")))
+        h.player.speak("r2", "Replacement.")
+        h.pump()
+        assertThat(prefetch.cancelled).isTrue()
+        assertThat(h.sink.played.map { it.decodeToString() })
+            .containsExactly("RIFF-old", "RIFF-new").inOrder()
+        oldPlayback.complete(Unit)
+        h.pump()
+        assertThat(h.player.state.value.phase).isEqualTo(SpeechPhase.SPEAKING)
+        h.sink.gate?.complete(Unit)
+        h.pump()
+        assertThat(h.player.state.value.phase).isEqualTo(SpeechPhase.IDLE)
+    }
+
+    @Test
+    fun `playback failure cancels the next fragment already being synthesized`() = runTest {
+        val h = Harness(this)
+        h.enabled.value = true
+        h.pump()
+        h.sink.failWith = SpeechPlaybackException("Playback failed.")
+        h.respondWith(FakeExchange())
+        val prefetch = h.respondWith(FakeExchange(gate = CompletableDeferred()))
+        h.player.speak("r1", TWO_CHUNKS)
+        h.pump()
+        assertThat(prefetch.cancelled).isTrue()
+        assertThat(h.player.state.value.phase).isEqualTo(SpeechPhase.ERROR)
+        assertThat(h.player.state.value.issue).isEqualTo("Playback failed.")
     }
 
     @Test

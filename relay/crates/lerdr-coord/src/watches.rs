@@ -939,26 +939,27 @@ pub(crate) async fn pane_read_fresh(
     unreachable!("loop returns or iterates twice")
 }
 
-/// Per-dimension merge for the observe surface: the lease ledger wins
-/// (its dims are what the pane's tty was stty'd to), the committed
-/// `layouts[]` rect supplies whatever the lease leaves alone. `None`
-/// for an unresolvable dimension ⇒ the caller spawns unsized.
+/// Herdr's observer crops its native VT grid to the requested surface.
+/// A stty lease changes the process's window size, not that grid, so known
+/// native dimensions take precedence. Lease dimensions are a fallback;
+/// an unresolved dimension leaves the observer at Herdr's default size.
 fn merge_stream_size(
     lease_cols: Option<i64>,
     lease_rows: Option<i64>,
     topo_size: Option<(u16, u16)>,
 ) -> Option<(u16, u16)> {
     let dim = |lease: Option<i64>, topo: u16| {
-        lease
-            .and_then(|v| u16::try_from(v).ok().filter(|v| *v > 0))
-            .or(if topo > 0 { Some(topo) } else { None })
+        if topo > 0 {
+            Some(topo)
+        } else {
+            lease.and_then(|v| u16::try_from(v).ok().filter(|v| *v > 0))
+        }
     };
     let (topo_cols, topo_rows) = topo_size.unwrap_or_default();
     Some((dim(lease_cols, topo_cols)?, dim(lease_rows, topo_rows)?))
 }
 
-/// The surface geometry the observer should run at — lease dims when a
-/// size lease owns the pane's tty, else the committed layout rect.
+/// Resolve the observer's native grid independently of the process TTY lease.
 /// Everything is in-memory state (topology borrow + lease locks), so
 /// this is cheap enough to re-resolve every poll.
 async fn resolve_stream_size(deps: &WatchDeps, pane_id: &str) -> Option<(u16, u16)> {
@@ -968,10 +969,9 @@ async fn resolve_stream_size(deps: &WatchDeps, pane_id: &str) -> Option<(u16, u1
     merge_stream_size(lease_cols, lease_rows, topo)
 }
 
-/// The observe surface is a fixed size chosen at spawn — it does not
-/// follow the pane through lease applies/releases or layout changes
-/// (splits, resizes). Re-resolve the target each poll and respawn when
-/// it drifts: a stale surface silently drops the pane's bottom/right
+/// The observe surface is fixed at spawn. Re-resolve the native layout
+/// (or its lease fallback) each poll and respawn when it changes:
+/// a stale surface silently drops the pane's bottom/right
 /// cells off the wire (the emulator's `render_rows` trims the missing
 /// tail as blanks). A dead stream stays dead — revival owns `None`.
 async fn sync_stream_geometry(pane_id: &str, deps: &WatchDeps, slot: &mut StreamSlot) {
@@ -1701,36 +1701,36 @@ mod tests {
     use std::time::Duration;
     use tokio::sync::broadcast;
 
-    /// `merge_stream_size` — lease dims (the tty's real size while a
-    /// size lease is held) win per-dimension over the committed layout
-    /// rect; unsized only when neither knows a dimension.
     #[test]
-    fn stream_size_merges_lease_over_layout() {
-        // Lease owns both dims — layout irrelevant.
+    fn smaller_phone_lease_cannot_crop_a_native_hidden_prompt() {
+        // A stty lease changes the process's window size, not Herdr's VT grid.
+        let mut native = vt100::Parser::new(42, 129, 0);
+        native.process(b"\x1b[1;1Hready\x1b[32;76H\x1b[32mPassword:");
+        let (cols, rows) = merge_stream_size(Some(54), Some(10), Some((129, 42))).unwrap();
+        let mut bytes = Vec::new();
+        for (row, cells) in native
+            .screen()
+            .rows_formatted(0, cols)
+            .take(usize::from(rows))
+            .enumerate()
+        {
+            bytes.extend_from_slice(format!("\x1b[{};1H", row + 1).as_bytes());
+            bytes.extend_from_slice(&cells);
+        }
+        let mut emulator = crate::pane_stream::PaneEmulator::new();
+        emulator.apply(&lerdr_herdr::observe::TerminalFrame {
+            seq: 1,
+            full: true,
+            bytes,
+            width: cols,
+            height: rows,
+        });
+        let (content, _) = emulator.render_parts(ReadSource::Visible, true, 500);
         assert_eq!(
-            merge_stream_size(Some(57), Some(36), Some((168, 52))),
-            Some((57, 36))
+            crate::classify::store::no_echo_semantics(&content),
+            (true, Some("Password:".to_owned())),
+            "the rendered phone frame must retain the native bottom/right prompt"
         );
-        // Cols-only lease: layout supplies rows.
-        assert_eq!(
-            merge_stream_size(Some(57), None, Some((168, 52))),
-            Some((57, 52))
-        );
-        // Unleased: the layout rect is the surface.
-        assert_eq!(
-            merge_stream_size(None, None, Some((168, 52))),
-            Some((168, 52))
-        );
-        // No layout either → unsized spawn (Herdr's default surface).
-        assert_eq!(merge_stream_size(None, None, None), None);
-        // Garbage lease values fall through to the layout rect.
-        assert_eq!(
-            merge_stream_size(Some(0), Some(-1), Some((168, 52))),
-            Some((168, 52))
-        );
-        // A single unresolvable dimension drops the whole size — spawn
-        // unsized rather than assert a half-known surface.
-        assert_eq!(merge_stream_size(Some(0), None, None), None);
     }
 
     /// `requestedPaneWatchInterval`: the whitelist passes through,

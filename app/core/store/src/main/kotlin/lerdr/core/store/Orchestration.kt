@@ -3,13 +3,13 @@ package lerdr.core.store
 /**
  * Orchestration cohorts — Herdr workspaces linked by `worktree.repo_root`:
  * the root checkout hosts the orchestrator pane and linked worktrees host
- * its dispatched children. Hook-bound agents carry `agent_session_id` and
- * report real lifecycle, but an orchestrator started outside
- * `agent start` has none — Herdr classifies it by
- * `default_known_agent_idle_fallback`, so it reads `idle` even while its
- * TUI visibly coordinates work. The worktree link is the honest
- * client-side signal: the pane state stays unclaimed and nothing on the
- * relay asserts into a foreign pane.
+ * its dispatched children. An agent integration supplies session identity
+ * and real lifecycle; without it Herdr's omp idle fallback cannot see
+ * in-process tasks. `agent start` is not required for lifecycle reporting.
+ * The worktree link is a display-only fallback for separate child panes:
+ * the pane state stays unclaimed and nothing on the relay asserts into a
+ * foreign pane. Busy children inside the same omp process require the
+ * Herdr omp integration in that process's active profile.
  */
 
 /** Status groups that count as live cohort work — busy or awaiting input. */

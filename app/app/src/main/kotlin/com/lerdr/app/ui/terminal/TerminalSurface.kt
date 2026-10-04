@@ -49,6 +49,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.text
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
@@ -703,8 +705,28 @@ private fun TerminalGrid(
     val contentWidth = max(viewportWidth, maxCells * metrics.cellWidth)
     val contentHeight = rows.size * metrics.rowHeight
 
+    // Match the drawn window, not the entire scrollback. Reuse measured text
+    // and defer scroll reads to semantics so ordinary drawing stays unchanged.
+    val outputSemantics = remember(rowLayouts, metrics.rowHeight, verticalScroll) {
+        Modifier.semantics {
+            val first = floor(verticalScroll.value / metrics.rowHeight).toInt()
+                .coerceIn(0, rowLayouts.size)
+            val last = ceil(
+                (verticalScroll.value + verticalScroll.viewportSize) / metrics.rowHeight,
+            ).toInt().coerceIn(first, rowLayouts.size)
+            text = AnnotatedString(
+                buildString {
+                    for (index in first until last) {
+                        if (index > first) append('\n')
+                        append(rowLayouts[index].layoutInput.text.text)
+                    }
+                },
+            )
+        }
+    }
+
     Canvas(
-        modifier = Modifier.requiredSize(
+        modifier = outputSemantics.requiredSize(
             width = with(density) { contentWidth.toDp() },
             height = with(density) { contentHeight.toDp() },
         ),

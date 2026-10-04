@@ -235,23 +235,25 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn captures_stdout_and_reports_stderr() {
-        let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("herdr");
-        std::fs::write(
-            &bin,
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'herdr 9.9.9'; else echo '{\"bad\":1}' >&2; exit 3; fi\n",
-        )
-        .unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let bin = Path::new("/bin/sh");
 
-        let out = run_cli(&bin, None, &["--version"], Duration::from_secs(5))
-            .await
-            .unwrap();
+        let out = run_cli(
+            bin,
+            None,
+            &["-c", "printf 'herdr 9.9.9\\n'"],
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
         assert_eq!(String::from_utf8(out).unwrap().trim(), "herdr 9.9.9");
-        let err = run_cli(&bin, None, &["api", "schema"], Duration::from_secs(5))
-            .await
-            .unwrap_err();
+        let err = run_cli(
+            bin,
+            None,
+            &["-c", "printf '{\"bad\":1}\\n' >&2; exit 3"],
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap_err();
         match err {
             CliError::Failed(msg) => assert!(msg.contains("bad")),
             other => panic!("expected Failed, got {other}"),

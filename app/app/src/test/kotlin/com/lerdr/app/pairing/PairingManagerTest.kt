@@ -14,6 +14,8 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import lerdr.core.data.InvitePayload
 import lerdr.core.data.RelayDeviceCredential
+import lerdr.core.data.RelayInvitation
+import lerdr.core.transport.DeviceAuthentication
 import lerdr.core.data.RelayRegistry
 import lerdr.core.store.AgentStore
 import lerdr.core.store.ConnectionStore
@@ -51,17 +53,17 @@ class PairingManagerTest {
          * pair() suspends on real DataStore IO between upsert and connect —
          * poll (with a real clock) until the transport handle appears.
          */
-        fun awaitHandle(origin: String): FakeRelaySessionHandle {
+        fun awaitHandle(origin: String, previous: FakeRelaySessionHandle? = null): FakeRelaySessionHandle {
             val deadline = System.currentTimeMillis() + 5_000
             var handle: FakeRelaySessionHandle? = null
-            while (handle == null && System.currentTimeMillis() < deadline) {
+            while ((handle == null || handle === previous) && System.currentTimeMillis() < deadline) {
                 handle = factory.handleFor(origin)
-                if (handle == null) {
+                if (handle == null || handle === previous) {
                     testScope.runCurrent()
                     Thread.sleep(5)
                 }
             }
-            return handle ?: error("pairing never connected to $origin")
+            return handle?.takeIf { it !== previous } ?: error("pairing never connected to $origin")
         }
     }
 
@@ -96,6 +98,38 @@ class PairingManagerTest {
         val record = h.credentials.get(endpoint.id)
         assertThat(record).isInstanceOf(RelayDeviceCredential::class.java)
         assertThat((record as RelayDeviceCredential).invitationId).isEqualTo("inv1")
+    }
+
+    @Test
+    fun `a new invitation cannot reuse the previous connected enrollment verdict`() = runTest {
+        val h = Harness(this, tmp.root)
+        val payload = invitePayload()
+        val initial = backgroundScope.async { h.manager.pair(payload) }
+        val oldHandle = h.awaitHandle(payload.socketOrigin)
+        oldHandle.enroll()
+        oldHandle.connect()
+        runCurrent()
+        val relayId = (initial.await() as PairingOutcome.Success).relayId
+
+        val nextPayload = payload.copy(invitation = payload.invitation!!.copy(id = "inv2"))
+        val next = backgroundScope.async { h.manager.pair(nextPayload) }
+        val deadline = System.currentTimeMillis() + 5_000
+        while ((h.credentials.records.value[relayId] as? RelayInvitation)?.id != "inv2" &&
+            System.currentTimeMillis() < deadline
+        ) {
+            runCurrent()
+            Thread.sleep(5)
+        }
+        runCurrent()
+        assertThat(next.isCompleted).isFalse()
+        val freshHandle = h.awaitHandle(payload.socketOrigin, oldHandle)
+        freshHandle.enroll(auth = DeviceAuthentication.invitation("inv2", ByteArray(32)))
+        freshHandle.connect()
+        runCurrent()
+
+        assertThat(next.await()).isEqualTo(PairingOutcome.Success(relayId))
+        assertThat((h.credentials.get(relayId) as RelayDeviceCredential).invitationId)
+            .isEqualTo("inv2")
     }
 
     @Test

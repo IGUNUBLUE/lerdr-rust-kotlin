@@ -51,12 +51,18 @@ internal fun createQuestionDraft(interaction: Interaction): QuestionDraft = Ques
     otherText = interaction.other.text,
 )
 
-/** `questionSubmitAllowed` — multi always; single needs one choice or valid Other. */
+/** Match the relay's selection and Other validation before enabling Submit. */
 internal fun questionSubmitAllowed(interaction: Interaction, draft: QuestionDraft): Boolean {
-    if (interaction.kindOrNull == Interaction.Kind.MULTI_SELECT) return true
-    val otherAllowed = draft.otherSelected &&
+    if (draft.selected.any { index -> interaction.options.none { it.index == index } }) return false
+    val otherAllowed = draft.otherSelected && !interaction.other.hidden &&
         (draft.otherText.isNotBlank() || interaction.other.allowEmpty)
-    return draft.selected.size == 1 || otherAllowed
+    if (draft.otherSelected && !otherAllowed) return false
+    return if (interaction.kindOrNull == Interaction.Kind.MULTI_SELECT) {
+        draft.selected.isNotEmpty() || otherAllowed
+    } else {
+        (draft.selected.size == 1 && !draft.otherSelected) ||
+            (draft.selected.isEmpty() && otherAllowed)
+    }
 }
 
 /**

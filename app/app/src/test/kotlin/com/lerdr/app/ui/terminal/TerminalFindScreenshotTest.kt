@@ -1,11 +1,15 @@
 package com.lerdr.app.ui.terminal
 
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -24,6 +28,9 @@ import com.lerdr.app.session.TerminalContent
 import com.lerdr.app.session.TerminalUiState
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import lerdr.core.model.PaneSearchResult
+import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -73,6 +80,47 @@ class TerminalFindScreenshotTest {
         rows = uiRows,
         revision = 1,
     )
+
+    @Test
+    fun accessibleOutput_tracksViewportAndLiveContent() {
+        val state = TerminalSurfaceState(ScrollState(0), onFontScaleChanged = {})
+        val content = mutableStateOf(List(40) { "native_row_${it.toString().padStart(2, '0')}" })
+        composeRule.setContent {
+            LerdrTheme {
+                TerminalSurface(
+                    rows = parseTerminalRows(content.value, TERMINAL_FORMAT_ANSI),
+                    cursor = null,
+                    revision = 1,
+                    state = state,
+                    modifier = Modifier.fillMaxWidth().height(100.dp),
+                )
+            }
+        }
+        fun accessibleText(): String = composeRule.onAllNodes(
+            SemanticsMatcher.keyIsDefined(SemanticsProperties.Text),
+        ).fetchSemanticsNodes().single().config[SemanticsProperties.Text]
+            .joinToString("\n") { it.text }
+
+        composeRule.runOnIdle { runBlocking { state.scrollToBottom() } }
+        val tail = accessibleText()
+        assertTrue(tail.contains("native_row_39"))
+        assertFalse(tail.contains("native_row_00"))
+
+        composeRule.runOnIdle { runBlocking { state.revealRow(0) } }
+        val head = accessibleText()
+        assertTrue(head.contains("native_row_00"))
+        assertFalse(head.contains("native_row_39"))
+
+        composeRule.runOnIdle {
+            content.value = content.value.toMutableList().apply {
+                this[0] = "updated_native_head"
+            }
+        }
+        val updated = accessibleText()
+        assertTrue(updated.contains("updated_native_head"))
+        assertFalse(updated.contains("native_row_00"))
+        assertFalse(updated.contains("native_row_39"))
+    }
 
     @Test
     fun findOpen_matchesHighlighted() {

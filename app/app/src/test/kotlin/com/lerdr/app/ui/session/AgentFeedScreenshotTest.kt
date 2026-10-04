@@ -3,14 +3,22 @@ package com.lerdr.app.ui.session
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.isFocused
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeDown
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.google.common.truth.Truth.assertThat
@@ -164,11 +172,18 @@ class AgentFeedScreenshotTest {
         canAttach = true,
     )
 
-    private fun show(uiState: FeedUiState, listState: LazyListState? = null) {
+    private fun show(
+        uiState: FeedUiState,
+        listState: LazyListState? = null,
+        draft: String = "",
+        liveState: State<FeedUiState>? = null,
+    ) {
         composeRule.setContent {
             LerdrTheme {
                 AgentFeedContent(
-                    uiState = uiState,
+                    uiState = liveState?.value ?: uiState,
+                    composerValue = TextFieldValue(draft),
+                    onComposerChange = {},
                     onOpenTerminal = {},
                     onOpenFiles = {},
                     onBack = {},
@@ -216,6 +231,23 @@ class AgentFeedScreenshotTest {
     }
 
     @Test
+    @Config(qualifiers = "w411dp-h891dp")
+    fun feed_unknownAttention() {
+        show(
+            baseState().copy(
+                entries = emptyList(),
+                statusLabel = "blocked",
+                blocked = agent(
+                    status = "blocked",
+                    attentionKind = BlockedMessage.ATTENTION_UNKNOWN,
+                    prompt = "Provider failed; inspect the native terminal.",
+                ),
+            ),
+        )
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
     fun feed_approvalTriage() {
         show(
             baseState().copy(
@@ -228,6 +260,40 @@ class AgentFeedScreenshotTest {
                 ),
             ),
         )
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun feed_nativeApprovalOptionsReadable() {
+        val labels = listOf(
+            "Yes, proceed (y)",
+            "Yes, and don't ask again for commands that start\n" +
+                "with `cat -- /home/l/.local/state/lerdr-audit/\n" +
+                "physical-ixsij1wu/providers/work/lerdr-audit-\n" +
+                "owned-note.txt` (p)",
+            "No, and tell Codex what to do differently (esc)",
+        )
+        show(
+            baseState().copy(
+                entries = emptyList(),
+                statusLabel = "blocked",
+                blocked = agent(
+                    status = "blocked",
+                    attentionKind = BlockedMessage.ATTENTION_APPROVAL,
+                    prompt = "May I read the isolated audit note?",
+                    options = labels,
+                ),
+            ),
+        )
+        labels.forEach { label ->
+            val layouts = mutableListOf<TextLayoutResult>()
+            composeRule.onNodeWithText(label, useUnmergedTree = true)
+                .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+            val layout = layouts.single()
+            assertThat(layout.getLineEnd(layout.lineCount - 1, visibleEnd = true))
+                .isEqualTo(label.length)
+            assertThat(layout.didOverflowHeight).isFalse()
+        }
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
 
@@ -261,6 +327,16 @@ class AgentFeedScreenshotTest {
     }
 
     @Test
+    fun feed_findOpen() {
+        show(baseState().copy(entries = entries + markdownEntry))
+        composeRule.onNodeWithContentDescription("Session actions").performClick()
+        composeRule.onNodeWithText("Find in conversation").performClick()
+        composeRule.mainClock.advanceTimeBy(300)
+        composeRule.waitForIdle()
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
     fun feed_find() {
         show(baseState().copy(entries = entries + markdownEntry))
         composeRule.onNodeWithContentDescription("Session actions").performClick()
@@ -278,13 +354,13 @@ class AgentFeedScreenshotTest {
     fun feed_slashMenu() {
         show(
             baseState().copy(
-                composerDraft = "/cl",
                 slashCommands = listOf(
                     SlashCommand("/clear", "Clear the conversation"),
                     SlashCommand("/close", "Close the pane", source = "project"),
                     SlashCommand("/help", "Show help"),
                 ),
             ),
+            draft = "/cl",
         )
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
@@ -361,12 +437,12 @@ class AgentFeedScreenshotTest {
     fun feed_attachmentReady() {
         show(
             baseState().copy(
-                composerDraft = "Attachment: att_c1\nSummarize this.",
                 attachments = AttachmentBatch(
                     items = listOf(item("c1", "notes.md", AttachmentItemState.READY, bytes = 1_024)),
                 ),
                 uploadStatus = "Attached notes.md",
             ),
+            draft = "Attachment: att_c1\nSummarize this.",
         )
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
@@ -555,6 +631,8 @@ class AgentFeedScreenshotTest {
             LerdrTheme {
                 AgentFeedContent(
                     uiState = uiState.value,
+                    composerValue = TextFieldValue(),
+                    onComposerChange = {},
                     onOpenTerminal = {},
                     onOpenFiles = {},
                     onBack = {},
@@ -590,6 +668,120 @@ class AgentFeedScreenshotTest {
             val last = info.visibleItemsInfo.last()
             assertThat(last.index).isEqualTo(info.totalItemsCount - 1)
             assertThat(last.offset + last.size).isAtMost(info.viewportEndOffset)
+        }
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun feed_olderPrependKeepsExpandedRowWhenHeaderDisappears() {
+        val anchor = markdownEntry.copy(
+            id = "anchor-tool",
+            text = "Inspect the current record.",
+            tools = listOf(markdownEntry.tools.first()),
+        )
+        val later = (1..40).map { index ->
+            entries.last().copy(id = "later-$index", text = "Later turn $index.")
+        }
+        val initial = baseState().copy(entries = listOf(anchor) + later, hasMoreHistory = true)
+        val uiState = mutableStateOf(initial)
+        val listState = LazyListState()
+        composeRule.setContent {
+            LerdrTheme {
+                AgentFeedContent(
+                    uiState = uiState.value,
+                    composerValue = TextFieldValue(),
+                    onComposerChange = {},
+                    onOpenTerminal = {},
+                    onOpenFiles = {},
+                    onBack = {},
+                    onDraftChange = {},
+                    onSendPrompt = {},
+                    onRespond = { _, _ -> },
+                    onQuestionDraftChange = {},
+                    onSubmitQuestion = {},
+                    onNavigateQuestion = {},
+                    onClarifyQuestion = {},
+                    onCopyResponse = { entryText, onCopied -> onCopied(entryText) },
+                    onClearError = {},
+                    onLoadOlder = {
+                        uiState.value = uiState.value.copy(historyLoading = true)
+                    },
+                    onReloadHistory = {},
+                    onRecoverHistory = {},
+                    onCancelPreparation = {},
+                    onContinuePreparation = {},
+                    onPickAttachments = {},
+                    onRemoveAttachment = {},
+                    onClearAttachments = {},
+                    onRestartAttachments = {},
+                    listState = listState,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+        composeRule.onRoot().performTouchInput {
+            swipeDown(startY = height * 0.35f, endY = height * 0.70f, durationMillis = 700)
+        }
+        composeRule.waitForIdle()
+        composeRule.runOnIdle { listState.requestScrollToItem(0) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("Expand").performClick()
+        composeRule.waitForIdle()
+        var anchorOffset = 0
+        composeRule.runOnIdle {
+            assertThat(listState.layoutInfo.visibleItemsInfo.first().key).isEqualTo("load-older")
+            anchorOffset = listState.layoutInfo.visibleItemsInfo.single {
+                it.key == anchor.id
+            }.offset
+        }
+        composeRule.onNodeWithText("Load older turns").performClick()
+        composeRule.waitForIdle()
+        composeRule.runOnIdle {
+            uiState.value = initial.copy(
+                entries = listOf(
+                    entries.first().copy(
+                        id = "older-turn",
+                        text = (1..20).joinToString("\n\n") { "Earlier paragraph $it." },
+                    ),
+                ) + initial.entries,
+                hasMoreHistory = false,
+            )
+        }
+        composeRule.waitForIdle()
+        composeRule.runOnIdle {
+            assertThat(listState.layoutInfo.visibleItemsInfo.single {
+                it.key == anchor.id
+            }.offset).isEqualTo(anchorOffset)
+        }
+        composeRule.onNodeWithContentDescription("Collapse").assertIsDisplayed()
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun feed_scrollBackWithinTallLastTurnDoesNotRepin() {
+        val tall = entries.last().copy(
+            id = "long-final-response",
+            text = (1..80).joinToString("\n\n") { "Long response paragraph $it." },
+        )
+        val listState = LazyListState()
+        val uiState = mutableStateOf(baseState().copy(entries = entries + tall))
+        show(uiState.value, listState, liveState = uiState)
+        composeRule.waitForIdle()
+        composeRule.onRoot().performTouchInput {
+            swipeDown(startY = height * 0.35f, endY = height * 0.70f, durationMillis = 700)
+        }
+        composeRule.waitForIdle()
+        composeRule.runOnIdle {
+            uiState.value = uiState.value.copy(
+                entries = entries + tall.copy(text = tall.text + "\n\nA new streamed paragraph."),
+            )
+        }
+        composeRule.waitForIdle()
+        composeRule.runOnIdle {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.last()
+            assertThat(last.key).isEqualTo(tall.id)
+            assertThat(last.offset + last.size).isGreaterThan(info.viewportEndOffset + 64)
         }
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }

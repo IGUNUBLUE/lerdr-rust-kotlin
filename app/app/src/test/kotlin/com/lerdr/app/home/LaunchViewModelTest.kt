@@ -163,16 +163,20 @@ class LaunchViewModelTest {
          * membership — a direct `connect()` would be torn down), then drive
          * the fake handle through Connected + the ready push_config.
          */
-        suspend fun connectReady(role: DeviceRole = DeviceRole.CONTROLLER) {
+        suspend fun connectReady(
+            role: DeviceRole = DeviceRole.CONTROLLER,
+            directoryBrowser: Boolean = true,
+        ) {
             credentials.seed("r1", credential(role))
             repository.start()
             pump()
             registry.upsert(endpoint)
             val handle = awaitHandle()
             handle.connect()
+            val browserCapability = if (directoryBrowser) """"directory_browser",""" else ""
             handle.emit(
                 launchJson(
-                    """{"type":"push_config","capabilities":["directory_browser","workspace_management"],"inventory":{"state":"ready"},"agent_profiles":[{"id":"claude","label":"Claude"}]}""",
+                    """{"type":"push_config","capabilities":[${browserCapability}"workspace_management"],"inventory":{"state":"ready"},"agent_profiles":[{"id":"claude","label":"Claude"}]}""",
                 ),
             )
             pump()
@@ -196,7 +200,7 @@ class LaunchViewModelTest {
             )
         }
 
-        private suspend fun answerDirectoryListing(listing: String) {
+        suspend fun answerDirectoryListing(listing: String) {
             val sent = sentFrames().last {
                 it["type"]?.jsonPrimitive?.content == "list_directories"
             }
@@ -310,6 +314,62 @@ class LaunchViewModelTest {
     }
 
     @Test
+    fun `reopening directory browser discovers a project created while closed`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        h.viewModel.beginWorkspace()
+        h.answerDirectoryListing(
+            """{"current":{"path":"/home/u","label":"u"},"parent":"","directories":[]}""",
+        )
+        h.viewModel.openDirectoryBrowser()
+        h.pump()
+        h.answerDirectoryListing(
+            """{"current":{"path":"/home/u","label":"u"},"parent":"","directories":[]}""",
+        )
+        h.viewModel.closeDirectoryBrowser()
+        h.viewModel.openDirectoryBrowser()
+        h.pump()
+        h.answerDirectoryListing(
+            """{"current":{"path":"/home/u","label":"u"},"parent":"","directories":[{"name":"new-project","path":"/home/u/new-project"}]}""",
+        )
+
+        assertThat(h.viewModel.uiState.value.directory.listing!!.directories.map { it.path })
+            .containsExactly("/home/u/new-project")
+    }
+
+    @Test
+    fun `directory result cannot replace a name edited while it was loading`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        h.viewModel.beginAgent()
+        h.answerDirectory()
+        h.viewModel.loadDirectory("/home/u/lerdr")
+        h.viewModel.onNameChange("chosen-session")
+        h.answerDirectoryListing(
+            """{"current":{"path":"/home/u/lerdr","label":"lerdr"},"parent":"/home/u","directories":[]}""",
+        )
+
+        assertThat(h.viewModel.uiState.value.cwd).isEqualTo("/home/u/lerdr")
+        assertThat(h.viewModel.uiState.value.name).isEqualTo("chosen-session")
+    }
+
+    @Test
+    fun `explicitly choosing the suggested name keeps it when manual cwd changes`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady(directoryBrowser = false)
+        h.viewModel.beginAgent()
+        h.viewModel.onCwdChange("/home/u/first")
+        h.pump()
+        val chosenName = h.viewModel.uiState.value.name
+        h.viewModel.onNameChange(chosenName)
+        h.viewModel.onCwdChange("/home/u/second")
+        h.pump()
+
+        assertThat(h.viewModel.uiState.value.cwd).isEqualTo("/home/u/second")
+        assertThat(h.viewModel.uiState.value.name).isEqualTo(chosenName)
+    }
+
+    @Test
     fun `directory browser reports capability gaps instead of loading`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectReady()
@@ -328,5 +388,110 @@ class LaunchViewModelTest {
         assertThat(
             h.sentFrames().map { it["type"]?.jsonPrimitive?.content },
         ).doesNotContain("list_directories")
+    }
+
+    @Test
+    fun `workspace submit waits for the selected directory to finish loading`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        h.viewModel.beginWorkspace()
+        h.answerDirectory()
+        h.browseIntoProject()
+        h.viewModel.loadDirectory("/home/u/other")
+        h.viewModel.closeDirectoryBrowser()
+        h.viewModel.submitWorkspace()
+        h.pump()
+        assertThat(
+            h.sentFrames().map { it["type"]?.jsonPrimitive?.content },
+        ).doesNotContain("workspace_create")
+
+        h.answerDirectoryListing(
+            """{"current":{"path":"/home/u/other","label":"other"},"parent":"/home/u","directories":[]}""",
+        )
+        h.viewModel.submitWorkspace()
+        h.pump()
+        val created = h.sentFrames().single {
+            it["type"]?.jsonPrimitive?.content == "workspace_create"
+        }
+        assertThat(created["cwd"]?.jsonPrimitive?.content).isEqualTo("/home/u/other")
+        h.answer("workspace_create")
+        assertThat(h.events).contains(LaunchViewModel.LaunchEvent.Dismissed)
+    }
+
+    @Test
+    fun `manual cwd allows workspace creation without directory browser capability`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady(directoryBrowser = false)
+        h.viewModel.beginWorkspace()
+        h.viewModel.onCwdChange("/home/u/project")
+        h.viewModel.onWorkspaceLabelChange("project")
+        h.viewModel.submitWorkspace()
+        h.pump()
+        assertThat(
+            h.sentFrames().map { it["type"]?.jsonPrimitive?.content },
+        ).doesNotContain("list_directories")
+        h.answer("workspace_create")
+        assertThat(h.events).contains(LaunchViewModel.LaunchEvent.Dismissed)
+    }
+
+    @Test
+    fun `manual cwd allows agent launch without directory browser capability`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady(directoryBrowser = false)
+        h.viewModel.beginAgent()
+        h.viewModel.onCwdChange("/home/u/project")
+        h.viewModel.submitAgent()
+        h.pump()
+        h.answer("agent_start", """{"pane_id":"%9"}""")
+        h.handle().emit(
+            launchJson(
+                """{"type":"agents","agents":[{"pane_id":"%9","raw_pane_id":"%9","name":"project-claude","cwd":"/home/u/project","status":"working"}]}""",
+            ),
+        )
+        h.pump()
+        assertThat(h.events)
+            .contains(LaunchViewModel.LaunchEvent.Launched("r1::%9"))
+    }
+
+    @Test
+    fun `reopening a workspace form cannot submit the pending creation twice`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        h.viewModel.beginWorkspace()
+        h.answerDirectory()
+        h.browseIntoProject()
+        h.viewModel.onWorkspaceLabelChange("project")
+        h.viewModel.submitWorkspace()
+        h.pump()
+
+        h.viewModel.setSheetActive(false)
+        h.viewModel.beginWorkspace()
+        h.viewModel.submitWorkspace()
+        h.pump()
+        assertThat(h.viewModel.uiState.value.submitting).isTrue()
+        assertThat(
+            h.sentFrames().filter { it["type"]?.jsonPrimitive?.content == "workspace_create" },
+        ).hasSize(1)
+        h.answer("workspace_create")
+        assertThat(h.events).contains(LaunchViewModel.LaunchEvent.Dismissed)
+    }
+
+    @Test
+    fun `restored visible sheet warms its directory when the relay becomes ready`() = runTest {
+        val h = Harness(this, tmp.root)
+        // Restoration brings the sheet back without a New action calling beginWorkspace.
+        h.viewModel.setSheetActive(true)
+        h.connectReady()
+        h.answerDirectory()
+        h.browseIntoProject()
+        h.viewModel.onWorkspaceLabelChange("restored")
+        h.viewModel.submitWorkspace()
+        h.pump()
+        val created = h.sentFrames().single {
+            it["type"]?.jsonPrimitive?.content == "workspace_create"
+        }
+        assertThat(created["cwd"]?.jsonPrimitive?.content).isEqualTo("/home/u/lerdr")
+        h.answer("workspace_create")
+        assertThat(h.events).contains(LaunchViewModel.LaunchEvent.Dismissed)
     }
 }

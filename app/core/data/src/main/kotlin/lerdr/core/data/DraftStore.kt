@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 
 /**
@@ -26,15 +28,16 @@ import kotlinx.serialization.json.Json
  * - Empty text clears; saves are atomic per edit; IO failures map to
  *   [DraftSaveResult.UNAVAILABLE] (`'unavailable'` parity).
  *
- * Lerdr's 300 ms debounce + in-memory tier lives in the ViewModel
- * layer here (`snapshotFlow { }.debounce().collect { save(...) }`) — this
- * store keeps writes synchronous and exact.
+ * ViewModels own active editor state and restore it when the draft identity
+ * changes. Mutations are serialized in acceptance order; callers queuing
+ * application-lifetime saves must enter [save] before yielding.
  */
 class DraftStore(
     private val dataStore: DataStore<Preferences>,
     private val now: () -> Long = System::currentTimeMillis,
     private val json: Json = Json,
 ) {
+    private val mutations = Mutex()
 
     /**
      * The live draft for [identity], or null — expired and malformed
@@ -52,7 +55,11 @@ class DraftStore(
         val draft = decode(raw, identity)
         if (draft == null) {
             // Stored but unparseable/foreign/expired — remove on read.
-            dataStore.edit { it.remove(key) }
+            mutations.withLock {
+                dataStore.edit { prefs ->
+                    if (prefs[key] == raw) prefs.remove(key)
+                }
+            }
         }
         return draft
     }
@@ -61,7 +68,11 @@ class DraftStore(
      * `savePromptDraft` — non-empty within [MAX_BYTES] writes and prunes;
      * empty clears; oversize clears and reports TOO_LARGE.
      */
-    suspend fun save(identity: String, text: String): DraftSaveResult = try {
+    suspend fun save(identity: String, text: String): DraftSaveResult = mutations.withLock {
+        saveLocked(identity, text)
+    }
+
+    private suspend fun saveLocked(identity: String, text: String): DraftSaveResult = try {
         val key = draftKey(identity)
         if (text.isEmpty()) {
             dataStore.edit { it.remove(key) }
@@ -85,8 +96,18 @@ class DraftStore(
     }
 
     /** `clearPromptDraft`. */
-    suspend fun clear(identity: String) {
+    suspend fun clear(identity: String) = mutations.withLock {
         dataStore.edit { it.remove(draftKey(identity)) }
+        Unit
+    }
+
+    /** Clear a submitted snapshot without removing a newer draft for the same identity. */
+    suspend fun clearIfMatches(identity: String, submittedText: String) = mutations.withLock {
+        val key = draftKey(identity)
+        dataStore.edit { prefs ->
+            if (decode(prefs[key], identity)?.text == submittedText) prefs.remove(key)
+        }
+        Unit
     }
 
     /**
@@ -94,10 +115,10 @@ class DraftStore(
      * evicts oldest-first beyond [MAX_ENTRIES].
      * @return the storage keys that were removed.
      */
-    suspend fun prune(): List<String> {
+    suspend fun prune(): List<String> = mutations.withLock {
         val removed = mutableListOf<String>()
         dataStore.edit { prefs -> removed += pruneLocked(prefs, now()) }
-        return removed
+        removed
     }
 
     private fun pruneLocked(prefs: MutablePreferences, at: Long): List<String> {

@@ -6,8 +6,8 @@ import lerdr.core.conversation.ConversationEntry
  * Feed find — the conversation analogue of the terminal's
  * the local implementation. Lerdr filters
  * entries on one joined corpus per row and highlights the needle inside
- * each rendered message; result navigation reuses the terminal find bar
- * (`TerminalFindBar` in `com.lerdr.app.session`) where one "match" is one
+ * each rendered message; result navigation reuses the session find bar
+ * (`SessionFindBar` in `com.lerdr.app.session`) where one "match" is one
  * matching entry row.
  */
 

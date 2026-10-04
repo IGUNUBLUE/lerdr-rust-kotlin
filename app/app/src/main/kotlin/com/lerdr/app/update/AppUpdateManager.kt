@@ -1,6 +1,7 @@
 package com.lerdr.app.update
 
 import android.app.DownloadManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -11,8 +12,10 @@ import androidx.core.content.edit
 import com.lerdr.app.BuildConfig
 import com.lerdr.app.di.AppScope
 import com.lerdr.app.notify.LerdrNotifier
+import com.lerdr.app.MainActivity
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
@@ -24,6 +27,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import lerdr.core.protocol.LerdrJson
 import okhttp3.OkHttpClient
@@ -53,6 +58,9 @@ class AppUpdateManager @Inject constructor(
 
     private val prefs = context.getSharedPreferences(PREFS_FILE, Context.MODE_PRIVATE)
     private val http = OkHttpClient()
+    internal val apkStager = UpdateApkStager(context)
+    private val stagingLock = Mutex()
+    private val installing = AtomicBoolean()
 
     private val _state = MutableStateFlow(AppUpdateState())
     val state: StateFlow<AppUpdateState> = _state
@@ -72,16 +80,25 @@ class AppUpdateManager @Inject constructor(
     }
     internal var pollMs: Long = POLL_MS
 
-    init {
-        // Cold start: a download that completed while the process was dead
-        // surfaces as READY_TO_INSTALL immediately; the next checkNow()
-        // replaces it if the tag is no longer newer than the build.
-        val staged = prefs.getString(KEY_STAGED_TAG, null)
-        if (staged != null && isNewerVersion(BuildConfig.VERSION_NAME, staged)) {
-            _state.value = AppUpdateState(
-                phase = UpdatePhase.READY_TO_INSTALL,
-                latestVersion = staged,
-            )
+    private val restoration = scope.launch {
+        stagingLock.withLock {
+            withContext(Dispatchers.IO) { retireLegacyDownload() }
+            val staged = prefs.getString(KEY_STAGED_TAG, null)
+            val pending = prefs.getString(KEY_PENDING_TAG, null)
+            if (staged != null && isNewerVersion(BuildConfig.VERSION_NAME, staged)) {
+                _state.value = AppUpdateState(
+                    phase = UpdatePhase.READY_TO_INSTALL,
+                    latestVersion = staged,
+                )
+            } else if (pending != null) {
+                _state.value = AppUpdateState(
+                    phase = UpdatePhase.DOWNLOADING,
+                    latestVersion = pending,
+                )
+                scope.launch {
+                    watchDownload(prefs.getLong(KEY_DOWNLOAD_ID, -1L), autoInstall = false)
+                }
+            }
         }
     }
 
@@ -97,6 +114,8 @@ class AppUpdateManager @Inject constructor(
         }
         _state.update { it.copy(phase = UpdatePhase.CHECKING) }
         scope.launch {
+            restoration.join()
+            if (_state.value.phase == UpdatePhase.DOWNLOADING) return@launch
             val outcome = runCatching { releaseFetcher() }
             val release = outcome.getOrNull()
             if (release == null) {
@@ -111,6 +130,9 @@ class AppUpdateManager @Inject constructor(
             }
             val latest = release.tag.removePrefix("v")
             if (!isNewerVersion(BuildConfig.VERSION_NAME, latest)) {
+                stagingLock.withLock {
+                    withContext(Dispatchers.IO) { clearStagedFiles() }
+                }
                 _state.value = AppUpdateState(
                     phase = UpdatePhase.UP_TO_DATE,
                     latestVersion = latest,
@@ -119,7 +141,7 @@ class AppUpdateManager @Inject constructor(
                 return@launch
             }
             if (prefs.getString(KEY_STAGED_TAG, null) == latest &&
-                downloadExists()
+                withContext(Dispatchers.IO) { downloadExists() }
             ) {
                 _state.value = AppUpdateState(
                     phase = UpdatePhase.READY_TO_INSTALL,
@@ -158,14 +180,17 @@ class AppUpdateManager @Inject constructor(
     }
 
     /**
-     * Called from the screen's resume effect after returning from the
+     * Called by the screen's activity-result callback after returning from the
      * install-permission settings — continues whichever step was pending.
      */
     fun resumeAfterPermission() {
         if (_state.value.phase != UpdatePhase.NEEDS_INSTALL_PERMISSION) return
         if (!canInstallPackages()) {
             // Still denied — drop back so the row offers the gate again.
-            _state.update { it.copy(phase = UpdatePhase.AVAILABLE) }
+            val staged = prefs.getString(KEY_STAGED_TAG, null) == _state.value.latestVersion
+            _state.update {
+                it.copy(phase = if (staged) UpdatePhase.READY_TO_INSTALL else UpdatePhase.AVAILABLE)
+            }
             return
         }
         if (prefs.getString(KEY_STAGED_TAG, null) == _state.value.latestVersion) {
@@ -188,61 +213,137 @@ class AppUpdateManager @Inject constructor(
     private fun enqueue() {
         val version = _state.value.latestVersion
         val url = _state.value.apkUrl
-        clearStagedFiles()
-        val id = runCatching { enqueueDownload(Uri.parse(url), version) }
-            .getOrElse {
-                _state.update { it.copy(phase = UpdatePhase.FAILED) }
-                return
+        _state.update { it.copy(phase = UpdatePhase.DOWNLOADING, detail = "") }
+        scope.launch {
+            val outcome = runCatching {
+                stagingLock.withLock {
+                    withContext(Dispatchers.IO) {
+                        clearStagedFiles()
+                        val id = enqueueDownload(Uri.parse(url), version)
+                        prefs.edit(commit = true) {
+                            putLong(KEY_DOWNLOAD_ID, id)
+                            putString(KEY_PENDING_TAG, version)
+                            putBoolean(KEY_PROTECTED_DOWNLOAD, true)
+                        }
+                        id
+                    }
+                }
             }
-        prefs.edit {
-            putLong(KEY_DOWNLOAD_ID, id)
-            putString(KEY_PENDING_TAG, version)
+            val id = outcome.getOrNull()
+            if (id == null) {
+                fail(outcome.exceptionOrNull())
+                return@launch
+            }
+            watchDownload(id, autoInstall = true)
         }
-        _state.update { it.copy(phase = UpdatePhase.DOWNLOADING) }
-        scope.launch { watchDownload(id, version) }
     }
 
-    private suspend fun watchDownload(id: Long, version: String) {
+    private suspend fun watchDownload(id: Long, autoInstall: Boolean) {
         while (scope.isActive) {
             delay(pollMs)
-            when (downloadStatus(id)) {
+            when (val status = withContext(Dispatchers.IO) { downloadStatus(id) }) {
                 DownloadManager.STATUS_SUCCESSFUL -> {
-                    prefs.edit {
-                        putString(KEY_STAGED_TAG, version)
-                        remove(KEY_PENDING_TAG)
-                    }
-                    _state.update {
-                        it.copy(phase = UpdatePhase.READY_TO_INSTALL)
-                    }
-                    // Foreground path — the receiver covers process death.
-                    installStaged()
+                    if (completeDownload(id) != null && autoInstall) installStaged()
                     return
                 }
-                DownloadManager.STATUS_FAILED -> {
-                    _state.update { it.copy(phase = UpdatePhase.FAILED) }
+                DownloadManager.STATUS_FAILED, -1 -> {
+                    stagingLock.withLock {
+                        withContext(Dispatchers.IO) { clearStagedFiles() }
+                        fail(IllegalStateException(
+                            if (status == -1) "APK download was cancelled or removed"
+                            else "APK download failed",
+                        ))
+                    }
                     return
                 }
             }
         }
+    }
+
+    /** Shared by the live poller and the process-death broadcast path. Never starts an activity. */
+    internal suspend fun completeDownload(id: Long): String? {
+        restoration.join()
+        return stagingLock.withLock {
+            withContext(Dispatchers.IO) {
+                if (id < 0 || id != prefs.getLong(KEY_DOWNLOAD_ID, -1L)) return@withContext null
+                val version = prefs.getString(KEY_PENDING_TAG, null)
+                    ?: prefs.getString(KEY_STAGED_TAG, null) ?: return@withContext null
+                if (downloadStatus(id) != DownloadManager.STATUS_SUCCESSFUL) return@withContext null
+                val outcome = runCatching {
+                    check(prefs.getBoolean(KEY_PROTECTED_DOWNLOAD, false)) { "Legacy update requires download" }
+                    preparedApk()
+                    prefs.edit(commit = true) {
+                        putString(KEY_STAGED_TAG, version)
+                        remove(KEY_PENDING_TAG)
+                        remove(KEY_ERROR)
+                    }
+                }
+                if (outcome.isFailure) {
+                    clearStagedFiles()
+                    fail(outcome.exceptionOrNull())
+                    return@withContext null
+                }
+                _state.update {
+                    it.copy(phase = UpdatePhase.READY_TO_INSTALL, latestVersion = version, detail = "")
+                }
+                version
+            }
+        }
+    }
+
+    private fun preparedApk(): File {
+        check(prefs.getBoolean(KEY_PROTECTED_DOWNLOAD, false)) { "Legacy update requires download" }
+        val name = prefs.getString(KEY_STAGED_FILE, null)
+        val file = if (name != null) {
+            apkStager.saved(name).also(apkStager::validate)
+        } else {
+            val id = prefs.getLong(KEY_DOWNLOAD_ID, -1L)
+            val source = if (id >= 0) downloadedUri(id) else null
+            check(source != null) { "Downloaded APK is absent" }
+            apkStager.stage(source).also {
+                prefs.edit(commit = true) { putString(KEY_STAGED_FILE, it.name) }
+            }
+        }
+        return file
     }
 
     private fun installStaged() {
-        val id = prefs.getLong(KEY_DOWNLOAD_ID, -1L)
-        val uri = if (id >= 0) downloadedUri(id) else null
-        if (uri == null) {
-            // Staged file vanished (Downloads cleared) — re-offer the row.
-            prefs.edit { remove(KEY_STAGED_TAG).remove(KEY_DOWNLOAD_ID) }
-            _state.update { it.copy(phase = UpdatePhase.AVAILABLE) }
+        if (!canInstallPackages()) {
+            _state.update { it.copy(phase = UpdatePhase.NEEDS_INSTALL_PERMISSION) }
             return
         }
-        context.startActivity(
-            Intent(Intent.ACTION_VIEW)
-                .setDataAndType(uri, APK_MIME)
-                .addFlags(
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                        Intent.FLAG_ACTIVITY_NEW_TASK,
-                ),
-        )
+        if (!installing.compareAndSet(false, true)) return
+        scope.launch {
+            try {
+                stagingLock.withLock {
+                    val outcome = runCatching {
+                        withContext(Dispatchers.IO) { apkStager.uri(preparedApk()) }
+                    }
+                    val uri = outcome.getOrNull()
+                    if (uri == null) {
+                        withContext(Dispatchers.IO) { clearStagedFiles() }
+                        fail(outcome.exceptionOrNull())
+                        return@withLock
+                    }
+                    // Permission can be revoked while the archive is being verified.
+                    if (!canInstallPackages()) {
+                        _state.update { it.copy(phase = UpdatePhase.NEEDS_INSTALL_PERMISSION) }
+                        return@withLock
+                    }
+                    runCatching {
+                        context.startActivity(installerIntent(uri))
+                    }.onFailure { fail(it) }
+                }
+            } finally {
+                installing.set(false)
+            }
+        }
+    }
+
+    private fun fail(failure: Throwable?) {
+        val detail = failure?.message.orEmpty()
+        prefs.edit { putString(KEY_ERROR, detail) }
+        _state.update { it.copy(phase = UpdatePhase.FAILED, detail = detail) }
     }
 
     // ── notification ────────────────────────────────────────────────
@@ -265,11 +366,7 @@ class AppUpdateManager @Inject constructor(
             .setNotificationVisibility(
                 DownloadManager.Request.VISIBILITY_VISIBLE,
             )
-            .setDestinationInExternalFilesDir(
-                context,
-                UPDATES_DIR,
-                "lerdr-$version.apk",
-            )
+        // No external destination: DownloadManager owns protected system staging.
         return downloadManager()?.enqueue(request)
             ?: error("DownloadManager unavailable")
     }
@@ -283,22 +380,54 @@ class AppUpdateManager @Inject constructor(
         }
     }
 
-    private fun downloadExists(): Boolean {
+    private fun downloadExists(): Boolean =
+        prefs.getString(KEY_STAGED_FILE, null)?.let { apkStager.saved(it).isFile } == true
+
+    private fun clearStagedFiles() {
         val id = prefs.getLong(KEY_DOWNLOAD_ID, -1L)
-        if (id < 0) return false
-        val cursor = downloadManager()
-            ?.query(DownloadManager.Query().setFilterById(id)) ?: return false
-        cursor.use {
-            if (!it.moveToFirst()) return false
-            return it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)) ==
-                DownloadManager.STATUS_SUCCESSFUL
+        if (id >= 0) downloadManager()?.remove(id)
+        apkStager.clear()
+        context.getExternalFilesDir(UPDATES_DIR)?.listFiles()?.forEach(File::delete)
+        prefs.edit(commit = true) {
+            remove(KEY_DOWNLOAD_ID)
+            remove(KEY_STAGED_FILE)
+            remove(KEY_STAGED_TAG)
+            remove(KEY_PENDING_TAG)
+            remove(KEY_PROTECTED_DOWNLOAD)
+            remove(KEY_ERROR)
+        }
+        notifier.cancelUpdateNotification()
+    }
+
+    private fun retireLegacyDownload() {
+        val id = prefs.getLong(KEY_DOWNLOAD_ID, -1L)
+        if (id >= 0 && !prefs.getBoolean(KEY_PROTECTED_DOWNLOAD, false)) {
+            // Revoke an already-posted pre-cutover direct installer PendingIntent too.
+            runCatching { downloadedUri(id) }.getOrNull()?.let {
+                PendingIntent.getActivity(
+                    context, 77_001, installerIntent(it),
+                    PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
+                )?.cancel()
+            }
+            PendingIntent.getActivity(
+                context, 77_001, installPermissionIntent(),
+                PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
+            )?.cancel()
+            clearStagedFiles()
+        }
+        prefs.getString(KEY_ERROR, null)?.let {
+            _state.update { state -> state.copy(phase = UpdatePhase.FAILED, detail = it) }
         }
     }
 
-    private fun clearStagedFiles() {
-        context.getExternalFilesDir(UPDATES_DIR)?.listFiles()
-            ?.forEach(File::delete)
-    }
+    internal fun updateSettingsIntent(): Intent =
+        Intent(Intent.ACTION_VIEW, Uri.parse("lerdr://settings"), context, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+
+    internal fun installerIntent(uri: Uri): Intent =
+        Intent(Intent.ACTION_VIEW)
+            .setDataAndType(uri, APK_MIME)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
 
     private suspend fun fetchLatestRelease(): ReleaseInfo = withContext(Dispatchers.IO) {
         val request = Request.Builder()
@@ -335,6 +464,9 @@ class AppUpdateManager @Inject constructor(
         const val KEY_DOWNLOAD_ID = "download_id"
         const val KEY_PENDING_TAG = "pending_tag"
         const val KEY_STAGED_TAG = "staged_tag"
+        internal const val KEY_STAGED_FILE = "staged_file"
+        internal const val KEY_PROTECTED_DOWNLOAD = "protected_download"
+        internal const val KEY_ERROR = "error"
 
         /**
          * `v0.0.12` vs `0.0.11` — numeric field compare, ignoring any

@@ -400,11 +400,18 @@ pub(crate) fn plan_omp_input(
             index,
         };
         let mut keys = navigation_keys(&current, &target);
-        keys.push("Enter".to_owned());
+        keys.push(
+            if current.omp_space_toggle {
+                "Space"
+            } else {
+                "Enter"
+            }
+            .to_owned(),
+        );
         steps.push(InputStep::keys(keys));
         current.focus = target;
     }
-    if payload.other_selected {
+    if payload.other_selected || (current.omp_space_toggle && current.other.selected) {
         let target = QuestionFocus {
             kind: FocusKind::Option,
             index: current.all_option_count - 1,
@@ -413,9 +420,20 @@ pub(crate) fn plan_omp_input(
         keys.push("Enter".to_owned());
         keys.push("Ctrl+U".to_owned());
         steps.push(InputStep::keys(keys));
-        if !payload.other_text.is_empty() {
+        if payload.other_selected && !payload.other_text.is_empty() {
             steps.push(InputStep::text(payload.other_text.clone()));
         }
+        steps.push(InputStep::keys(vec!["Enter".to_owned()]));
+        if current.omp_space_toggle {
+            // Custom input returns to its row rather than submitting a
+            // multi-select. Enter on a real option confirms without toggling.
+            steps.push(InputStep::keys(vec!["Up".to_owned(), "Enter".to_owned()]));
+        }
+        return steps;
+    }
+    if current.omp_space_toggle {
+        // Native Enter confirms the selected set and advances/submits;
+        // there is no inline "Done selecting" row to navigate down to.
         steps.push(InputStep::keys(vec!["Enter".to_owned()]));
         return steps;
     }
@@ -623,4 +641,99 @@ pub(crate) fn approval_keys(target: usize, current: usize) -> Vec<String> {
     }
     keys.push("Enter".to_owned());
     keys
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::classify::parse::parse_question;
+
+    fn native_multi() -> Interaction {
+        parse_question(
+            "╭─ Ask ─╮\n│ Choose audit answers │\n│ ❯ ☑ Alpha │\n│   ☑ Beta │\n│   ☐ Gamma │\n│   ☐ Other (type your own) │\n│ ␣ toggle · ⏎ submit · ↑/↓ move · ⎋ cancel │\n╰────────╯",
+            "omp",
+        )
+        .unwrap()
+    }
+
+    fn answer() -> QuestionPayload {
+        QuestionPayload {
+            interaction_id: String::new(),
+            selected: vec![1, 2],
+            other_selected: false,
+            other_text: String::new(),
+            clarify: false,
+            navigation: String::new(),
+        }
+    }
+
+    #[test]
+    fn native_multi_reconciles_selection_before_confirming() {
+        let steps = plan_input(&native_multi(), &answer());
+        assert_eq!(
+            steps,
+            vec![
+                InputStep::keys(vec!["Space".into()]),
+                InputStep::keys(vec!["Down".into(), "Down".into(), "Space".into()]),
+                InputStep::keys(vec!["Enter".into()]),
+            ]
+        );
+    }
+
+    #[test]
+    fn native_multi_custom_answer_confirms_after_returning_to_option() {
+        let mut payload = answer();
+        payload.selected = vec![0, 1];
+        payload.other_selected = true;
+        payload.other_text = "owned custom answer".into();
+        assert_eq!(
+            plan_input(&native_multi(), &payload),
+            vec![
+                InputStep::keys(vec![
+                    "Down".into(),
+                    "Down".into(),
+                    "Down".into(),
+                    "Enter".into(),
+                    "Ctrl+U".into(),
+                ]),
+                InputStep::text("owned custom answer"),
+                InputStep::keys(vec!["Enter".into()]),
+                InputStep::keys(vec!["Up".into(), "Enter".into()]),
+            ]
+        );
+    }
+
+    #[test]
+    fn native_multi_clears_deselected_custom_answer_before_confirming() {
+        let mut interaction = native_multi();
+        interaction.other.selected = true;
+        interaction.other.text = "previous answer".into();
+        let mut payload = answer();
+        payload.selected = vec![0, 1];
+        assert_eq!(
+            plan_input(&interaction, &payload),
+            vec![
+                InputStep::keys(vec![
+                    "Down".into(),
+                    "Down".into(),
+                    "Down".into(),
+                    "Enter".into(),
+                    "Ctrl+U".into(),
+                ]),
+                InputStep::keys(vec!["Enter".into()]),
+                InputStep::keys(vec!["Up".into(), "Enter".into()]),
+            ]
+        );
+    }
+
+    #[test]
+    fn native_multi_next_footer_remains_a_live_question() {
+        let interaction = parse_question(
+            "╭─ Ask ─╮\n│ Choose audit answers │\n│ ❯ ☐ Alpha │\n│   ☐ Beta │\n│ ␣ toggle · ⏎ next · ↑/↓ move · ⎋ cancel │\n╰────────╯",
+            "omp",
+        )
+        .unwrap();
+        assert_eq!(interaction.kind, "multi_select");
+        assert!(interaction.omp_space_toggle);
+    }
 }

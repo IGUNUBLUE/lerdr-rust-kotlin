@@ -119,6 +119,7 @@ class RealHomeRepository @Inject constructor(
 
         return HomeUiState(
             live = connections.values.any { it.status == RelayStatus.CONNECTED },
+            canLaunch = relays.any { sessions.canControl(it.id) },
             relaySummary = relaySummary(relays, connections),
             needsYou = sorted
                 .filter { agentNeedsResponse(it) || agentNeedsInspection(it) }
@@ -262,10 +263,10 @@ class RealHomeRepository @Inject constructor(
             AttentionKind.QUESTION -> "question"
             AttentionKind.CHAT -> "attention"
         }
-        // `approvalOptions` — capable + ≥ 2 real labels, full list so the UI
-        // can score the deny tone against the true last index.
+        // Keep wire positions intact; only rendering skips empty labels.
+        // `respond` carries the original option index and total.
         val approvalOptions = if (kind == AttentionKind.APPROVAL) {
-            options?.filter { it.isNotEmpty() }?.takeIf { it.size >= 2 }
+            options?.takeIf { labels -> labels.count { it.isNotEmpty() } >= 2 }
         } else {
             null
         }
@@ -276,12 +277,17 @@ class RealHomeRepository @Inject constructor(
                 it.id.isNotEmpty() && it.question.isNotEmpty() &&
                 it.options.isNotEmpty()
         }
+        val activityAt = lastActiveAt ?: updatedAt
         return AttentionCardUi(
             paneId = paneId,
             relayId = relayId,
             agentLabel = displayLabel(),
             kind = kind,
-            metaLabel = "$kindLabel · ${ageLabel(at - (lastActiveAt ?: updatedAt))}",
+            metaLabel = if (activityAt > 0L) {
+                "$kindLabel · ${ageLabel(at - activityAt)}"
+            } else {
+                kindLabel
+            },
             prompt = prompt ?: question?.question ?: command ?: "",
             options = approvalOptions.orEmpty(),
             interaction = question,
@@ -298,6 +304,7 @@ class RealHomeRepository @Inject constructor(
         cohortLabel: String? = null,
     ): AgentListItemUi {
         val statusText = status?.takeIf { it.isNotEmpty() } ?: "unknown"
+        val activityAt = lastActiveAt ?: updatedAt
         val watching = tokens?.containsKey(WATCHING_TOKEN) == true
         val labels = stateLabels?.values?.filter { it.isNotEmpty() }.orEmpty()
         return if (working) {
@@ -308,7 +315,7 @@ class RealHomeRepository @Inject constructor(
                 statusLine = activity?.summary?.takeIf { it.isNotEmpty() }
                     ?: prompt ?: command ?: cohortLabel ?: statusText,
                 activityLabel = cohortLabel ?: statusText,
-                elapsedLabel = elapsedLabel(at - (lastActiveAt ?: updatedAt)),
+                elapsedLabel = if (activityAt > 0L) elapsedLabel(at - activityAt) else statusText,
                 working = true,
                 controllable = sessions.canControl(relayId),
                 provider = agent?.takeIf { it.isNotEmpty() },
@@ -320,7 +327,11 @@ class RealHomeRepository @Inject constructor(
                 paneId = paneId,
                 relayId = relayId,
                 title = displayLabel(),
-                statusLine = "$statusText · ${ageLabel(at - (lastActiveAt ?: updatedAt))} ago",
+                statusLine = if (activityAt > 0L) {
+                    "$statusText · ${ageLabel(at - activityAt)} ago"
+                } else {
+                    statusText
+                },
                 activityLabel = null,
                 elapsedLabel = "idle",
                 working = false,

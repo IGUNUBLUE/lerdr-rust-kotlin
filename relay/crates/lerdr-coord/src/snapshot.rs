@@ -40,9 +40,8 @@ pub fn compose_snapshot(topology: &Topology) -> Vec<Outbound> {
             // field refreshes on the next connect (same as the retired implementation).
             speech_languages: (!topology.local_speech.languages.is_empty())
                 .then(|| topology.local_speech.languages.clone()),
-            // Resolved launch profiles for the Start Agent picker —
-            // `null` until the first collect lands; the sheet shows its
-            // empty state then.
+            // Handshake-only launch profiles. An uninitialized topology
+            // retains the frozen null shape; serving waits for discovery.
             agent_profiles: topology
                 .agent_profiles
                 .as_ref()

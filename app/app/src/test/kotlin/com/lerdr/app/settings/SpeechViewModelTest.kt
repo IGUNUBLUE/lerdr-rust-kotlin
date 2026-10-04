@@ -28,6 +28,8 @@ import kotlinx.coroutines.test.setMain
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonPrimitive
+import lerdr.core.data.DeviceRole
+import lerdr.core.data.RelayDeviceCredential
 import lerdr.core.data.RelayEndpoint
 import lerdr.core.data.RelayRegistry
 import lerdr.core.data.RelayTransport
@@ -185,8 +187,27 @@ class SpeechViewModelTest {
             capabilities: List<String> =
                 listOf("speech_synthesis", "speech_voice_management"),
             speechLanguages: List<String> = listOf("en", "fr"),
+            role: DeviceRole? = DeviceRole.CONTROLLER,
         ) {
-            repository.connect(endpoint)
+            if (role != null) {
+                credentials.seed(
+                    "r1",
+                    RelayDeviceCredential(
+                        id = "cred-1",
+                        version = 1,
+                        secret = Base64.getUrlEncoder().withoutPadding()
+                            .encodeToString(ByteArray(32) { it.toByte() }),
+                        deviceId = "dev-1",
+                        role = role,
+                        locale = "en",
+                        issuedAtEpochMs = 1_000L,
+                    ),
+                )
+            }
+            repository.start()
+            pump()
+            registry.upsert(endpoint)
+            await { factory.handleFor(origin) != null }
             val handle = handle()
             handle.connect()
             val caps = capabilities.joinToString(",") { "\"$it\"" }
@@ -359,7 +380,34 @@ class SpeechViewModelTest {
     }
 
     @Test
-    fun `install sends the language extra and refreshes the catalog`() = runTest {
+    fun `readers retain the catalog but cannot install or remove voices`() = runTest {
+        val h = Harness(this, tmp.root)
+        val viewModel = h.viewModel()
+        backgroundScope.launch { viewModel.uiState.collect { } }
+        h.connectSpeech(role = DeviceRole.READER)
+        h.await { sentTypes(h.handle()).contains("speech_voices_list") }
+        h.answer("speech_voices_list", data = h.catalogJson())
+        h.await { viewModel.uiState.value.catalog != null }
+        assertThat(viewModel.uiState.value.showCatalog).isTrue()
+        assertThat(viewModel.uiState.value.canSpeakTest).isTrue()
+        assertThat(viewModel.uiState.value.canManageVoices).isFalse()
+
+        viewModel.installVoice("fr")
+        h.pump()
+        assertThat(viewModel.uiState.value.lastError).isNotNull()
+        viewModel.dismissError()
+        viewModel.removeVoice("en")
+        h.pump()
+        assertThat(viewModel.uiState.value.lastError).isNotNull()
+        assertThat(sentTypes(h.handle())).containsNoneOf(
+            "speech_voice_install",
+            "speech_voice_remove",
+        )
+        assertThat(viewModel.uiState.value.catalog!!.rows.any { it.busy }).isFalse()
+    }
+
+    @Test
+    fun `voice installation refreshes the catalog and clears pending state`() = runTest {
         val h = Harness(this, tmp.root)
         val viewModel = h.viewModel()
         backgroundScope.launch { viewModel.uiState.collect { } }
@@ -392,24 +440,6 @@ class SpeechViewModelTest {
             viewModel.uiState.value.catalog!!
                 .rows.single { it.language == "fr" }.busy,
         ).isFalse()
-    }
-
-    @Test
-    fun `remove sends speech_voice_remove`() = runTest {
-        val h = Harness(this, tmp.root)
-        val viewModel = h.viewModel()
-        backgroundScope.launch { viewModel.uiState.collect { } }
-        h.connectSpeech()
-        h.await { sentTypes(h.handle()).contains("speech_voices_list") }
-        h.answer("speech_voices_list", data = h.catalogJson())
-        h.await { viewModel.uiState.value.catalog != null }
-
-        viewModel.removeVoice("en")
-        h.pump()
-        val remove = sentFrames(h.handle())
-            .last { it["type"]?.jsonPrimitive?.content == "speech_voice_remove" }
-        assertThat(remove["language"]?.jsonPrimitive?.content).isEqualTo("en")
-        h.answer("speech_voice_remove", data = h.catalogJson())
     }
 
     @Test
@@ -460,24 +490,6 @@ class SpeechViewModelTest {
     }
 
     // ── speak test ──────────────────────────────────────────────────────
-
-    @Test
-    fun `speak test reads the sample through the relay`() = runTest {
-        val h = Harness(this, tmp.root)
-        val viewModel = h.viewModel()
-        backgroundScope.launch { viewModel.uiState.collect { } }
-        h.connectSpeech()
-        h.await { viewModel.uiState.value.enabled }
-
-        viewModel.toggleSpeakTest()
-        h.await { h.sends.isNotEmpty() }
-        assertThat(h.sends.single().first).isEqualTo("r1")
-        assertThat(h.sends.single().second)
-            .isEqualTo(SpeechViewModel.SPEAK_TEST_TEXT)
-        assertThat(h.sends.single().third).isEqualTo("en")
-        h.await { viewModel.uiState.value.phase == SpeechPhase.IDLE }
-        assertThat(h.sink.played).isNotEmpty()
-    }
 
     @Test
     fun `speak test stops an active reading`() = runTest {

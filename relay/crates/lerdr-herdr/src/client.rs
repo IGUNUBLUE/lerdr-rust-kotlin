@@ -1193,32 +1193,28 @@ impl Client {
         ))
     }
 
-    /// The topology subscription set with the optional-variant fallback:
-    /// attempt each of `workspace.reordered` / `pane.output_changed` while
-    /// its capability is not known-unsupported
-    /// (`ShouldAttemptWorkspaceReordered` generalized), and on Herdr's
-    /// `unknown variant` refusal resubscribe with the named entry dropped
-    /// — the Go client's `Bootstrap` retry looped over both optional
-    /// entries. Every outcome is recorded into the ledger
-    /// (`subscription_acknowledged` / `subscription_rejected`).
-    ///
-    /// Called standalone, the ledger's published verdict gates each
-    /// attempt — a schema `schema_absent` or an earlier same-server
-    /// rejection skips the doomed round-trip (0.9.1 lists
-    /// `pane_output_changed` among streamed events but ships no matching
-    /// `Subscription` variant, so the schema gate is what keeps the
-    /// request clean there). Called through [`Client::bootstrap_with`]
-    /// the live verdicts have just been invalidated
-    /// (`reconnect_required`), so `workspace.reordered`'s consult reads
-    /// `unknown` and the variant is re-probed — the retired implementation's
-    /// reset→attempt ordering verbatim. `pane.output_changed` is *not* a
-    /// live verdict — its published schema adjudication stays consulted
-    /// across reconnects.
+    /// Global topology events and per-pane lifecycle subscriptions.
+    /// Optional variants are gated by the capability ledger and dropped only
+    /// on a named unknown-variant refusal. Pane discovery precedes subscribing;
+    /// bootstrap still reconciles an authoritative snapshot after acceptance.
     pub async fn subscribe_topology(&self) -> Result<EventStream, SubscribeError> {
         let mut attempt = SubscriptionAttempt {
             workspace_reordered: self.should_attempt_workspace_reordered(),
             pane_output_changed: self.should_attempt_pane_output_changed(),
             pane_agent_status_changed: self.should_attempt_pane_agent_status_changed(),
+        };
+        // Pane IDs are subscription parameters, not a global event kind.
+        // Bootstrap still reads an authoritative snapshot after subscribing.
+        let pane_ids = if attempt.pane_agent_status_changed {
+            self.session_snapshot()
+                .await
+                .map_err(SubscribeError::transport)?
+                .panes
+                .into_iter()
+                .map(|pane| pane.pane_id)
+                .collect::<std::collections::BTreeSet<_>>()
+        } else {
+            std::collections::BTreeSet::new()
         };
         // `None`/`Some(_)` from the `*_supported` accessors describes this
         // bootstrap's probe — a skipped attempt probed nothing.
@@ -1236,11 +1232,14 @@ impl Client {
                 .subscribe_events(&topology_subscriptions(
                     attempt.workspace_reordered,
                     attempt.pane_output_changed,
-                    attempt.pane_agent_status_changed,
+                    pane_ids
+                        .iter()
+                        .filter(|_| attempt.pane_agent_status_changed)
+                        .cloned(),
                 ))
                 .await
             {
-                Ok(stream) => {
+                Ok(mut stream) => {
                     if attempt.workspace_reordered {
                         self.inner
                             .workspace_reordered
@@ -1261,7 +1260,7 @@ impl Client {
                             "subscription_acknowledged",
                         );
                     }
-                    if attempt.pane_agent_status_changed {
+                    if attempt.pane_agent_status_changed && !pane_ids.is_empty() {
                         self.inner
                             .pane_agent_status_changed
                             .store(SUBSCRIPTION_SUPPORTED, Ordering::Relaxed);
@@ -1270,6 +1269,9 @@ impl Client {
                             FeatureState::Supported,
                             "subscription_acknowledged",
                         );
+                    }
+                    if attempt.pane_agent_status_changed {
+                        stream.topology_panes = Some(pane_ids);
                     }
                     return Ok(stream);
                 }
@@ -1327,25 +1329,39 @@ impl Client {
         // `workspace.reordered` again unless a *standalone* caller left a
         // same-server verdict in place.
         self.invalidate_live_capabilities();
-        let mut stream = if topology_fallback {
-            self.subscribe_topology()
+        loop {
+            let mut stream = if topology_fallback {
+                self.subscribe_topology()
+                    .await
+                    .map_err(BootstrapError::Subscribe)?
+            } else {
+                self.subscribe_events(subscriptions)
+                    .await
+                    .map_err(BootstrapError::Subscribe)?
+            };
+            let snapshot = self
+                .session_snapshot()
                 .await
-                .map_err(BootstrapError::Subscribe)?
-        } else {
-            self.subscribe_events(subscriptions)
-                .await
-                .map_err(BootstrapError::Subscribe)?
-        };
-        let snapshot = self
-            .session_snapshot()
-            .await
-            .map_err(BootstrapError::Snapshot)?;
-        let gap_events = stream.drain();
-        Ok(Bootstrap {
-            snapshot,
-            stream,
-            gap_events,
-        })
+                .map_err(BootstrapError::Snapshot)?;
+            if let Some(pane_ids) = &stream.topology_panes {
+                if snapshot.panes.len() != pane_ids.len()
+                    || snapshot
+                        .panes
+                        .iter()
+                        .any(|pane| !pane_ids.contains(&pane.pane_id))
+                {
+                    // Membership changed before the subscription could observe it.
+                    // Rebuild coverage rather than publishing a partial live stream.
+                    continue;
+                }
+            }
+            let gap_events = stream.drain();
+            return Ok(Bootstrap {
+                snapshot,
+                stream,
+                gap_events,
+            });
+        }
     }
 
     /// Run the supervised resync loop — resubscribe → snapshot → forward

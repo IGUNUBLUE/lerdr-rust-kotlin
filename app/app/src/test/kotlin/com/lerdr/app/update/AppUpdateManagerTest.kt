@@ -3,6 +3,10 @@ package com.lerdr.app.update
 import android.app.DownloadManager
 import android.content.Intent
 import android.net.Uri
+import android.content.pm.Signature
+import android.content.pm.SigningInfo
+import android.content.pm.PackageInfo
+import java.io.ByteArrayInputStream
 import androidx.core.content.edit
 import com.google.common.truth.Truth.assertThat
 import com.lerdr.app.BuildConfig
@@ -128,6 +132,21 @@ class AppUpdateManagerTest {
         m.releaseFetcher = { release("v${bump(BuildConfig.VERSION_NAME)}") }
         m.canInstallPackages = { true }
         val apk = Uri.parse("content://downloads/my_downloads/42")
+        val bytes = "trusted update bytes".toByteArray()
+        val context = RuntimeEnvironment.getApplication()
+        shadowOf(context.contentResolver).registerInputStream(apk, ByteArrayInputStream(bytes))
+        val signing = SigningInfo().also {
+            shadowOf(it).setSignatures(arrayOf(Signature("1234")))
+        }
+        shadowOf(context.packageManager).getInternalMutablePackageInfo(context.packageName)
+            .signingInfo = signing
+        m.apkStager.archiveInfo = {
+            PackageInfo().apply {
+                packageName = context.packageName
+                longVersionCode = BuildConfig.VERSION_CODE.toLong() + 1
+                signingInfo = signing
+            }
+        }
         val statuses = mutableListOf(
             DownloadManager.STATUS_RUNNING,
             DownloadManager.STATUS_SUCCESSFUL,
@@ -143,12 +162,14 @@ class AppUpdateManagerTest {
         m.startUpdate()
         assertThat(m.state.value.phase).isEqualTo(UpdatePhase.DOWNLOADING)
 
-        await { m.state.value.phase == UpdatePhase.READY_TO_INSTALL }
+        await { shadowOf(context).peekNextStartedActivity() != null }
 
         val started = shadowOf(RuntimeEnvironment.getApplication())
             .nextStartedActivity
         assertThat(started.action).isEqualTo(Intent.ACTION_VIEW)
-        assertThat(started.data).isEqualTo(apk)
+        assertThat(started.data!!.authority).isEqualTo("${context.packageName}.updates")
+        assertThat(context.contentResolver.openInputStream(started.data!!)!!.use { it.readBytes() })
+            .isEqualTo(bytes)
         assertThat(started.type).isEqualTo(AppUpdateManager.APK_MIME)
     }
 
@@ -164,6 +185,58 @@ class AppUpdateManagerTest {
         await { m.state.value.phase == UpdatePhase.AVAILABLE }
         m.startUpdate()
         await { m.state.value.phase == UpdatePhase.FAILED }
+    }
+
+    @Test
+    fun `cancelled download clears pending state and permits another check`() = runTest {
+        val m = manager(this)
+        val newer = bump(BuildConfig.VERSION_NAME)
+        m.releaseFetcher = { release("v$newer") }
+        m.canInstallPackages = { true }
+        m.enqueueDownload = { _, _ -> 7L }
+        val statuses = mutableListOf(DownloadManager.STATUS_RUNNING, -1)
+        m.downloadStatus = { statuses.removeFirstOrNull() ?: -1 }
+
+        m.checkNow()
+        await { m.state.value.phase == UpdatePhase.AVAILABLE }
+        m.startUpdate()
+        await { m.state.value.phase == UpdatePhase.FAILED }
+
+        val prefs = RuntimeEnvironment.getApplication()
+            .getSharedPreferences(AppUpdateManager.PREFS_FILE, 0)
+        assertThat(m.state.value.detail).contains("cancelled or removed")
+        assertThat(prefs.contains(AppUpdateManager.KEY_DOWNLOAD_ID)).isFalse()
+        assertThat(prefs.contains(AppUpdateManager.KEY_PENDING_TAG)).isFalse()
+        m.checkNow()
+        await { m.state.value.phase == UpdatePhase.AVAILABLE }
+        assertThat(m.state.value.latestVersion).isEqualTo(newer)
+    }
+
+    @Test
+    fun `restored missing download does not resume polling on another cold start`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val prefs = context.getSharedPreferences(AppUpdateManager.PREFS_FILE, 0)
+        prefs.edit(commit = true) {
+            clear()
+            putLong(AppUpdateManager.KEY_DOWNLOAD_ID, 7L)
+            putString(AppUpdateManager.KEY_PENDING_TAG, bump(BuildConfig.VERSION_NAME))
+            putBoolean(AppUpdateManager.KEY_PROTECTED_DOWNLOAD, true)
+        }
+        val m = AppUpdateManager(context, backgroundScope, LerdrNotifier(context))
+            .also {
+                it.pollMs = 0
+                it.downloadStatus = { -1 }
+            }
+        await { m.state.value.phase == UpdatePhase.FAILED }
+
+        val restored = AppUpdateManager(context, backgroundScope, LerdrNotifier(context))
+            .also {
+                it.pollMs = 0
+                it.downloadStatus = { error("Cancelled download must not be polled again") }
+            }
+        await { restored.state.value.phase == UpdatePhase.FAILED }
+        assertThat(restored.state.value.detail).contains("cancelled or removed")
+        assertThat(prefs.contains(AppUpdateManager.KEY_PENDING_TAG)).isFalse()
     }
 
     // ── helpers ─────────────────────────────────────────────────────

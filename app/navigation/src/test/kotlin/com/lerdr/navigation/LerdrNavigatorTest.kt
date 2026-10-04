@@ -83,4 +83,78 @@ class LerdrNavigatorTest {
         assertThat(nav.backStack.toList())
             .containsExactly(LerdrKey.Home, LerdrKey.Terminal("w:p1"))
     }
+
+    @Test
+    fun replacementPreservesModesAndRemovesClosedPaneBackTargets() {
+        val nav = navigator(
+            LerdrKey.Home,
+            LerdrKey.AgentFeed("r1::old"),
+            LerdrKey.Terminal("r1::other"),
+            LerdrKey.Files("r1::old"),
+        )
+        nav.replaceAgent("r1::old", "r1::new")
+        assertThat(nav.backStack.toList()).containsExactly(
+            LerdrKey.Home,
+            LerdrKey.AgentFeed("r1::new"),
+            LerdrKey.Terminal("r1::other"),
+            LerdrKey.Files("r1::new"),
+        ).inOrder()
+        nav.goBack()
+        nav.goBack()
+        assertThat(nav.backStack.last()).isEqualTo(LerdrKey.AgentFeed("r1::new"))
+    }
+
+    @Test
+    fun matchingTopLevelDeepLinkDoesNotAddAnotherBackStep() {
+        val nav = navigator(LerdrKey.Home, LerdrKey.Settings)
+        nav.navigate(LerdrDeepLinks.match("lerdr://settings")!!)
+        nav.goBack()
+        assertThat(nav.backStack.toList()).containsExactly(LerdrKey.Home)
+    }
+
+    @Test
+    fun homeDeepLinkClearsTheCurrentTabAndItsDetails() {
+        val nav = navigator(LerdrKey.Home, LerdrKey.Settings, LerdrKey.RelayDetail("r1"))
+        nav.navigate(LerdrDeepLinks.match("lerdr://agents")!!)
+        assertThat(nav.backStack.toList()).containsExactly(LerdrKey.Home)
+    }
+
+    @Test
+    fun matchingPaneDeepLinkReplacesTheCurrentSessionMode() {
+        val nav = navigator(LerdrKey.Home, LerdrKey.Terminal("r1::%1"))
+        val link = LerdrDeepLinks.match("lerdr://agent?pane_id=r1%3A%3A%251")!!
+        nav.navigate(link)
+        nav.navigate(link)
+        assertThat(nav.backStack.last()).isEqualTo(LerdrKey.AgentFeed("r1::%1"))
+        nav.goBack()
+        assertThat(nav.backStack.toList()).containsExactly(LerdrKey.Home)
+    }
+
+    @Test
+    fun warmPairingLinkReplacesTheOpenPairingForm() {
+        val nav = navigator(LerdrKey.Home, LerdrKey.Computers, LerdrKey.Pairing())
+        val first = LerdrDeepLinks.match("lerdr://pair?setup=first&label=First")!!
+        val second = LerdrDeepLinks.match("lerdr://pair?setup=second&label=Second")!!
+        nav.navigate(first)
+        nav.navigate(second)
+        nav.navigate(second)
+        assertThat(nav.backStack.last()).isEqualTo(second)
+        nav.goBack()
+        assertThat(nav.backStack.toList())
+            .containsExactly(LerdrKey.Home, LerdrKey.Computers).inOrder()
+    }
+
+    @Test
+    fun pairingCompletionReturnsToHomeRatherThanTheLaunchingTab() {
+        val nav = navigator(LerdrKey.Home, LerdrKey.Computers, LerdrKey.Pairing())
+        nav.onPairingComplete()
+        assertThat(nav.backStack.toList()).containsExactly(LerdrKey.Home)
+    }
+
+    @Test
+    fun backAtTheRootDoesNotLeaveAnEmptyGraph() {
+        val nav = navigator(LerdrKey.Home)
+        nav.goBack()
+        assertThat(nav.backStack.toList()).containsExactly(LerdrKey.Home)
+    }
 }

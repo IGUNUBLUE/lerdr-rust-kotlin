@@ -19,8 +19,10 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import lerdr.core.data.DraftStore
 import lerdr.core.data.RelayEndpoint
+import lerdr.core.data.RelayDeviceCredential
 import lerdr.core.data.RelayRegistry
 import lerdr.core.protocol.LerdrJson
+import lerdr.core.data.DeviceRole
 import lerdr.core.store.AgentStore
 import lerdr.core.store.ConnectionStore
 import lerdr.core.store.WorkspaceStore
@@ -102,6 +104,21 @@ class FeedViewModelAttachmentTest {
             factory.handleFor(origin) ?: error("no session for $origin")
 
         suspend fun connectReady() {
+            credentials.seed(
+                "r1",
+                RelayDeviceCredential(
+                    id = "cred-1",
+                    version = 1,
+                    secret = java.util.Base64.getUrlEncoder().withoutPadding()
+                        .encodeToString(ByteArray(32) { it.toByte() }),
+                    deviceId = "dev-1",
+                    role = DeviceRole.CONTROLLER,
+                    locale = "en",
+                    issuedAtEpochMs = 1_000L,
+                ),
+            )
+            repository.start()
+            pump()
             repository.connect(endpoint)
             handle().connect()
             handle().emit(
@@ -202,13 +219,13 @@ class FeedViewModelAttachmentTest {
         // Let the upload coroutine finish appending refs.
         val expectedRef = "r_${sha256Hex(body).take(31)}"
         val deadline = System.currentTimeMillis() + 5_000
-        while (!vm.uiState.value.composerDraft.contains("Attachment:") &&
+        while (!vm.composerValue.text.contains("Attachment:") &&
             System.currentTimeMillis() < deadline
         ) {
             runCurrent()
             Thread.sleep(5)
         }
-        assertThat(vm.uiState.value.composerDraft)
+        assertThat(vm.composerValue.text)
             .isEqualTo("look at this\nAttachment: $expectedRef\n")
         // Clean batch cleared itself — chips disappear once refs landed.
         assertThat(vm.uiState.value.attachments.items).isEmpty()
@@ -230,7 +247,7 @@ class FeedViewModelAttachmentTest {
         vm.selectAttachments(listOf("content://docs/a.txt"))
         h.answerUpload("a.txt", body)
         val deadline = System.currentTimeMillis() + 5_000
-        while (!vm.uiState.value.composerDraft.contains("Attachment:") &&
+        while (!vm.composerValue.text.contains("Attachment:") &&
             System.currentTimeMillis() < deadline
         ) {
             runCurrent()
@@ -238,14 +255,19 @@ class FeedViewModelAttachmentTest {
         }
 
         vm.sendPrompt()
-        // submit_prompt resolves through the typed `request` path — the fake
-        // answers ok immediately, so the draft clears without extra driving.
         h.awaitRequest("submit_prompt")
+        val clearedDeadline = System.currentTimeMillis() + 5_000
+        while (vm.composerValue.text.isNotEmpty() &&
+            System.currentTimeMillis() < clearedDeadline
+        ) {
+            runCurrent()
+            Thread.sleep(5)
+        }
         val submitted = h.handle().requests.last { it.type == "submit_prompt" }
         val expectedRef = "r_${sha256Hex(body).take(31)}"
         assertThat(submitted.text)
             .isEqualTo("check this file\nAttachment: $expectedRef")
-        assertThat(vm.uiState.value.composerDraft).isEmpty()
+        assertThat(vm.composerValue.text).isEmpty()
         assertThat(h.uploads.itemsNow(h.paneId)).isEmpty()
     }
 

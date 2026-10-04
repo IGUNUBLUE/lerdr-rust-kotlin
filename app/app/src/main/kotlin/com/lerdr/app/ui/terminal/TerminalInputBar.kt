@@ -26,6 +26,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.tooling.preview.PreviewLightDark
@@ -64,19 +65,21 @@ fun TerminalInputBar(
     onSendSecret: (String) -> Unit = {},
 ) {
     val spacing = LerdrTheme.spacing
-    var draft by rememberSaveable { mutableStateOf("") }
+    var draft by rememberSaveable(stateSaver = TextFieldValue.Saver) {
+        mutableStateOf(TextFieldValue())
+    }
     // Keyed on the mode so a stale answer can't survive the prompt that
     // authored it — Lerdr clears `secretValue` when secretMode ends.
-    var secretDraft by remember(secretMode) { mutableStateOf("") }
+    var secretDraft by remember(secretMode) { mutableStateOf(TextFieldValue()) }
 
     fun submit() {
-        val text = if (secretMode) secretDraft else draft
+        val text = (if (secretMode) secretDraft else draft).text
         if (text.isEmpty() || !enabled) return
         if (secretMode) {
-            secretDraft = ""
+            secretDraft = TextFieldValue()
             onSendSecret(text)
         } else {
-            draft = ""
+            draft = TextFieldValue()
             onSendText(text)
         }
     }
@@ -93,11 +96,12 @@ fun TerminalInputBar(
                 onValueChange = { next ->
                     // Latched Ctrl turns the next typed letter into the
                     // chord — the letter never enters the draft.
-                    val current = if (secretMode) secretDraft else draft
-                    val appended = next.length == current.length + 1 &&
-                        next.startsWith(current)
-                    if (ctrlLatched && appended && next.last().isLetter()) {
-                        onCtrlChord(next.last())
+                    val current = (if (secretMode) secretDraft else draft).text
+                    val nextText = next.text
+                    val appended = nextText.length == current.length + 1 &&
+                        nextText.startsWith(current)
+                    if (ctrlLatched && appended && nextText.last().isLetter()) {
+                        onCtrlChord(nextText.last())
                     } else if (secretMode) {
                         secretDraft = next
                     } else {
@@ -162,7 +166,7 @@ fun TerminalInputBar(
             IconButton(
                 onClick = ::submit,
                 enabled = enabled &&
-                    (if (secretMode) secretDraft else draft).isNotEmpty(),
+                    (if (secretMode) secretDraft else draft).text.isNotEmpty(),
             ) {
                 Icon(
                     Icons.AutoMirrored.Filled.Send,

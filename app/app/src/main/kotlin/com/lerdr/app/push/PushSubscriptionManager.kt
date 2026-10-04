@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -92,10 +93,9 @@ data class PushUiState(
  * - `onNewEndpoint` persists `{endpoint, p256dh, auth}` and pushes
  *   `push_subscribe` to every connected relay; a rotated endpoint rides
  *   `replace_endpoints` so the relay prunes the stale record.
- * - `onMessage` hands the connector-decrypted record to
- *   [PushPayload.toCommands] → [LerdrNotifier] — pane-scoped ids collide
- *   with the socket-driven notifications, so both paths update in place
- *   rather than duplicate.
+ * - `onMessage` binds the connector-decrypted record to exactly one stored
+ *   enrolled relay before [PushPayload.toCommands] → [LerdrNotifier]. This
+ *   works before sockets/snapshots load; pane slots match socket notifications.
  * - `onUnregistered` (distributor removed/reset) sends `push_unsubscribe`
  *   and clears the store; `push_viewed_pane` suppression stays on the
  *   socket path, untouched.
@@ -141,6 +141,15 @@ class PushSubscriptionManager @Inject constructor(
         // subscription is withdrawn while the socket still lives.
         sessions.onRelayRemoving = ::unsubscribeRelay
         scope.launch { ensureRegistered() }
+        scope.launch {
+            // Installation happens outside Lerdr; returning must discover
+            // the new distributor without replacing an active registration.
+            sessions.hidden.drop(1).collect { hidden ->
+                if (!hidden && _uiState.value.stage == PushStage.NO_DISTRIBUTOR) {
+                    ensureRegistered()
+                }
+            }
+        }
         scope.launch { observeConnections() }
         scope.launch { observePinPolicy() }
         scope.launch { loadStoredSubscription() }
@@ -202,11 +211,14 @@ class PushSubscriptionManager @Inject constructor(
         }
     }
 
-    /** Connector already decrypted the record — render or retract. */
+    /** Connector already decrypted the record; enrollment still binds its owner. */
     fun onMessage(message: PushMessage, instance: String) {
         if (!message.decrypted) return
         val payload = PushPayload.parse(message.content) ?: return
-        notifier.execute(payload.toCommands())
+        scope.launch {
+            val relayId = sessions.enrolledRelayForPushDevice(payload.key.deviceId)
+            notifier.execute(payload.toCommands(relayId))
+        }
     }
 
     /** Distributor dropped the registration — tell relays, clear store. */

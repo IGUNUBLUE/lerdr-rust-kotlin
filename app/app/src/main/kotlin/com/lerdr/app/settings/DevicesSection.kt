@@ -130,6 +130,7 @@ fun DevicesContent(
 ) {
     val spacing = LerdrTheme.spacing
     val disabled = uiState.actionBusy
+    val mutationEnabled = uiState.canAdminister && uiState.connected && !disabled
     var renameTarget by remember { mutableStateOf<DeviceUi?>(null) }
     var revokeTarget by remember { mutableStateOf<DeviceUi?>(null) }
     var inviteOpen by rememberSaveable { mutableStateOf(false) }
@@ -356,7 +357,7 @@ fun DevicesContent(
 
             // ── danger zone ───────────────────────────────────────────
             Row(horizontalArrangement = Arrangement.spacedBy(spacing.small)) {
-                if (uiState.currentDeviceId.isNotEmpty()) {
+                if (uiState.canAdminister && uiState.currentDeviceId.isNotEmpty()) {
                     TextButton(
                         onClick = { forgetOpen = true },
                         enabled = !disabled && uiState.connected,
@@ -380,10 +381,10 @@ fun DevicesContent(
 
     // ── dialogs ───────────────────────────────────────────────────────
 
-    renameTarget?.let { target ->
+    renameTarget?.takeIf { uiState.canAdminister }?.let { target ->
         RenameDeviceDialog(
             device = target,
-            busy = disabled,
+            enabled = mutationEnabled,
             onConfirm = { name ->
                 onRename(target.deviceId, name)
                 renameTarget = null
@@ -392,10 +393,9 @@ fun DevicesContent(
         )
     }
 
-    if (inviteOpen) {
+    if (inviteOpen && uiState.canAdminister) {
         InviteDeviceDialog(
-            busy = disabled,
-            connected = uiState.connected,
+            enabled = mutationEnabled && uiState.canInvite,
             onConfirm = { name, role ->
                 onInvite(name, role)
                 inviteOpen = false
@@ -404,7 +404,7 @@ fun DevicesContent(
         )
     }
 
-    revokeTarget?.let { target ->
+    revokeTarget?.takeIf { uiState.canAdminister }?.let { target ->
         AlertDialog(
             onDismissRequest = { revokeTarget = null },
             title = { Text("Revoke ${target.name}?") },
@@ -420,7 +420,7 @@ fun DevicesContent(
                         onRevoke(target)
                         revokeTarget = null
                     },
-                    enabled = !disabled && uiState.connected,
+                    enabled = mutationEnabled,
                 ) {
                     Text("Revoke", color = MaterialTheme.colorScheme.error)
                 }
@@ -433,10 +433,9 @@ fun DevicesContent(
         )
     }
 
-    if (resetOpen) {
+    if (resetOpen && uiState.canAdminister) {
         ResetDevicesDialog(
-            busy = disabled,
-            connected = uiState.connected,
+            enabled = mutationEnabled,
             onConfirm = {
                 onReset()
                 resetOpen = false
@@ -445,7 +444,7 @@ fun DevicesContent(
         )
     }
 
-    if (forgetOpen) {
+    if (forgetOpen && uiState.canAdminister) {
         AlertDialog(
             onDismissRequest = { forgetOpen = false },
             title = { Text("Forget this device") },
@@ -462,7 +461,7 @@ fun DevicesContent(
                         onForgetCurrent()
                         forgetOpen = false
                     },
-                    enabled = !disabled && uiState.connected,
+                    enabled = mutationEnabled,
                 ) {
                     Text("Forget", color = MaterialTheme.colorScheme.error)
                 }
@@ -594,9 +593,8 @@ private fun RelayUpdateBlock(
         status.warning -> colors.onAttentionContainer
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(spacing.small),
+    Column(
+        verticalArrangement = Arrangement.spacedBy(spacing.small),
         modifier = Modifier
             .fillMaxWidth()
             .clip(MaterialTheme.shapes.small)
@@ -605,7 +603,7 @@ private fun RelayUpdateBlock(
             // Update-state changes announce politely.
             .liveRegionPolite(),
     ) {
-        Column(Modifier.weight(1f)) {
+        Column(Modifier.fillMaxWidth()) {
             Text(
                 status.label,
                 style = MaterialTheme.typography.bodyMedium,
@@ -625,19 +623,21 @@ private fun RelayUpdateBlock(
             val installable = uiState.update?.state == "available" &&
                 uiState.update.canInstall == true &&
                 !uiState.update.targetRevision.isNullOrEmpty()
-            if (installable && uiState.canAdminister) {
-                TextButton(
-                    onClick = onInstall,
-                    enabled = uiState.connected,
-                ) {
-                    Text("Update")
+            Row(horizontalArrangement = Arrangement.spacedBy(spacing.small)) {
+                if (installable && uiState.canAdminister) {
+                    TextButton(
+                        onClick = onInstall,
+                        enabled = uiState.connected,
+                    ) {
+                        Text("Update")
+                    }
                 }
-            }
-            TextButton(
-                onClick = onCheck,
-                enabled = uiState.connected && uiState.updateSupported,
-            ) {
-                Text("Check")
+                TextButton(
+                    onClick = onCheck,
+                    enabled = uiState.connected && uiState.updateSupported,
+                ) {
+                    Text("Check")
+                }
             }
         }
     }
@@ -946,7 +946,14 @@ private fun InvitationBlock(
                                     android.content.ClipData.newPlainText(
                                         "invitation link",
                                         invitation.link,
-                                    ),
+                                    ).apply {
+                                        description.extras = android.os.PersistableBundle().apply {
+                                            putBoolean(
+                                                android.content.ClipDescription.EXTRA_IS_SENSITIVE,
+                                                true,
+                                            )
+                                        }
+                                    },
                                 ),
                             )
                             onCopied()
@@ -998,7 +1005,7 @@ private fun QrCanvas(qr: QrBitmapUi, modifier: Modifier = Modifier) {
 @Composable
 private fun RenameDeviceDialog(
     device: DeviceUi,
-    busy: Boolean,
+    enabled: Boolean,
     onConfirm: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -1024,13 +1031,13 @@ private fun RenameDeviceDialog(
         confirmButton = {
             TextButton(
                 onClick = { onConfirm(name) },
-                enabled = !busy && name.isNotBlank(),
+                enabled = enabled && name.isNotBlank(),
             ) {
                 Text("Save")
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !busy) {
+            TextButton(onClick = onDismiss) {
                 Text("Cancel")
             }
         },
@@ -1040,8 +1047,7 @@ private fun RenameDeviceDialog(
 /** Lerdr `invite-device-*` — name + role + the one-use-secret warning. */
 @Composable
 private fun InviteDeviceDialog(
-    busy: Boolean,
-    connected: Boolean,
+    enabled: Boolean,
     onConfirm: (String, DeviceRole) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -1091,13 +1097,13 @@ private fun InviteDeviceDialog(
         confirmButton = {
             TextButton(
                 onClick = { onConfirm(name, role) },
-                enabled = !busy && connected && name.isNotBlank(),
+                enabled = enabled && name.isNotBlank(),
             ) {
                 Text("Create invitation")
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !busy) {
+            TextButton(onClick = onDismiss) {
                 Text("Cancel")
             }
         },
@@ -1107,8 +1113,7 @@ private fun InviteDeviceDialog(
 /** Lerdr `reset-devices-*` — gated on typing RESET. */
 @Composable
 private fun ResetDevicesDialog(
-    busy: Boolean,
-    connected: Boolean,
+    enabled: Boolean,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -1139,13 +1144,13 @@ private fun ResetDevicesDialog(
         confirmButton = {
             TextButton(
                 onClick = onConfirm,
-                enabled = !busy && connected && confirmation == "RESET",
+                enabled = enabled && confirmation == "RESET",
             ) {
                 Text("Confirm reset", color = MaterialTheme.colorScheme.error)
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !busy) {
+            TextButton(onClick = onDismiss) {
                 Text("Cancel")
             }
         },

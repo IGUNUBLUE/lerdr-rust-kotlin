@@ -16,9 +16,9 @@ them (also runs in `relay.yml` on every PR):
    owns it — the checker handles both)
 3. The git tag `vx.y.z` (checked by the release workflow's verify job)
 
-Release PR should also refresh `relay/Cargo.lock` after bumping and may bump
-`versionName`/`versionCode` in `app/app/build.gradle.kts` (currently a
-static `0.1.0` — the APK's embedded version does not follow the tag yet).
+Release PR must also refresh `relay/Cargo.lock` after bumping and set
+`versionName` in `app/app/build.gradle.kts` to the same release version.
+Increment `versionCode` so release-over-release Android upgrades remain eligible.
 
 Then:
 
@@ -37,9 +37,9 @@ git push origin v<x.y.z>
   without it.
 - `lerdr_<v>_universal.apk` — only when `ANDROID_KEYSTORE_BASE64` +
   `ANDROID_KEYSTORE_PASSWORD` + `ANDROID_KEY_ALIAS` + `ANDROID_KEY_PASSWORD`
-  secrets are configured. Otherwise a zipaligned **unsigned** APK is kept as
-  a workflow artifact (`lerdr_<v>_universal-unsigned.apk`) and is not
-  attached to the release.
+  secrets are configured. Otherwise the pipeline publishes a zipaligned
+  **unsigned** APK (`lerdr_<v>_universal-unsigned.apk`); this is not a
+  signed app release.
 - The release is `--latest` when the tag is on `main`, `--prerelease`
   otherwise (the in-app update check skips prereleases).
 
@@ -54,6 +54,12 @@ git push origin v<x.y.z>
   normally and keep the paired credential.
 
 ## Gates before publish
+
+Before tagging, run the Rust and Android verification gates and smoke the
+signed, minified APK on an owned device. QR acceptance requires an actual
+camera decode and enrollment, not merely opening the scanner or loading ML Kit.
+Record the APK identity and any remaining audit limits separately; publication
+does not waive those limits.
 
 1. `verify` — version sync + every check workflow that ran for the tagged
    commit (`fixture-check.yml`, `relay.yml`, `app.yml`) must be green.

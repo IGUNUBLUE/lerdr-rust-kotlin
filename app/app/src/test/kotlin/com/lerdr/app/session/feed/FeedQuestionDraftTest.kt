@@ -86,9 +86,40 @@ class FeedQuestionDraftTest {
     }
 
     @Test
-    fun `multi-select always submits`() {
-        assertThat(questionSubmitAllowed(multi(), QuestionDraft())).isTrue()
+    fun `multi-select requires a selection and validates a selected Other`() {
+        assertThat(questionSubmitAllowed(multi(), QuestionDraft())).isFalse()
+        assertThat(questionSubmitAllowed(multi(), QuestionDraft(selected = setOf(0, 1)))).isTrue()
+        assertThat(
+            questionSubmitAllowed(
+                multi(),
+                QuestionDraft(selected = setOf(0), otherSelected = true),
+            ),
+        ).isFalse()
+        assertThat(
+            questionSubmitAllowed(
+                multi(other = Other(allowEmpty = true)),
+                QuestionDraft(otherSelected = true),
+            ),
+        ).isTrue()
     }
+
+    @Test
+    fun `stale choices hidden Other and conflicting single selections cannot submit`() {
+        assertThat(questionSubmitAllowed(single(), QuestionDraft(selected = setOf(9)))).isFalse()
+        assertThat(
+            questionSubmitAllowed(
+                single(other = Other(hidden = true, allowEmpty = true)),
+                QuestionDraft(otherSelected = true),
+            ),
+        ).isFalse()
+        assertThat(
+            questionSubmitAllowed(
+                single(),
+                QuestionDraft(selected = setOf(0), otherSelected = true, otherText = "other"),
+            ),
+        ).isFalse()
+    }
+
 
     @Test
     fun `single option pick clears the Other slot`() {

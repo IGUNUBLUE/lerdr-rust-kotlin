@@ -103,7 +103,24 @@ class WorktreesViewModelTest {
             capabilities: String = "\"worktree_management\"",
             inventoryState: String = "ready",
             linkedWorktree: Boolean = true,
+            role: DeviceRole = DeviceRole.CONTROLLER,
         ) {
+            registry.upsert(endpoint)
+            credentials.seed(
+                "r1",
+                RelayDeviceCredential(
+                    id = "cred-1",
+                    version = 1,
+                    secret = java.util.Base64.getUrlEncoder().withoutPadding()
+                        .encodeToString(ByteArray(32)),
+                    deviceId = "dev-1",
+                    role = role,
+                    locale = "en",
+                    issuedAtEpochMs = 1_000L,
+                ),
+            )
+            repository.start()
+            pump()
             repository.connect(endpoint)
             handle().connect()
             handle().emit(
@@ -482,6 +499,13 @@ class WorktreesViewModelTest {
 
         val requestId = h.lastRequest("worktree_remove")["request_id"]!!.jsonPrimitive.content
         val actionId = h.lastRequest("worktree_remove")["action_id"]!!.jsonPrimitive.content
+        // Prepared evidence does not decide a later dirty-worktree refusal.
+        h.handle().emit(
+            json(
+                """{"type":"action_receipt","request_id":"$requestId","receipt":{"action_id":"$actionId","phase":"prepared"}}""",
+            ),
+        )
+        h.pump()
         // Result fails without the data payload; the receipt's error code
         // still carries the force escape (the relay emits both frames).
         h.handle().emit(
@@ -607,5 +631,29 @@ class WorktreesViewModelTest {
         h.pump()
 
         assertThat(vm.uiState.value.shouldDismiss).isTrue()
+    }
+
+    @Test
+    fun `reader lists worktrees without gaining mutation controls`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady(role = DeviceRole.READER)
+        val vm = h.viewModel()
+        h.pump()
+        h.answerOk(
+            "worktree_list",
+            """{"source":{"repo_key":"k1"},"worktrees":[{"path":"/checkout","branch":"fix"}]}""",
+        )
+        assertThat(vm.uiState.value.listing?.worktrees?.single()?.path).isEqualTo("/checkout")
+        assertThat(vm.uiState.value.canControl).isFalse()
+        vm.onBranchDraftChange("fix/reader")
+        vm.createWorktree()
+        vm.openWorktree("/checkout", "fix")
+        vm.requestRemove()
+        vm.confirmRemove()
+        h.pump()
+        assertThat(vm.uiState.value.confirmRemove).isFalse()
+        assertThat(h.sentOf("worktree_create")).isEmpty()
+        assertThat(h.sentOf("worktree_open")).isEmpty()
+        assertThat(h.sentOf("worktree_remove")).isEmpty()
     }
 }

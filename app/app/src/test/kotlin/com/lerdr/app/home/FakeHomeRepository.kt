@@ -15,6 +15,7 @@ class FakeHomeRepository : HomeRepository {
     override val uiState: Flow<HomeUiState> = MutableStateFlow(
         HomeUiState(
             live = true,
+            canLaunch = true,
             relaySummary = "2 computers · tailscale",
             needsYou = listOf(
                 AttentionCardUi(

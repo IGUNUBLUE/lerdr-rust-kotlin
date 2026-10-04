@@ -54,14 +54,15 @@ internal fun approvalButtonTone(option: String, index: Int, total: Int): Approva
 /**
  * The blocker card. [interaction] is the effective question (the
  * ViewModel's command-result override wins over the stale store copy);
- * [enabled] folds `responding` + the reader-role gate into one switch —
- * mutating affordances stay visible but inert like Lerdr.
+ * [enabled] disables controls while a response is pending; [canControl]
+ * hides mutating affordances entirely for reader-role devices.
  */
 @Composable
 internal fun FeedBlockerCard(
     agent: Agent,
     interaction: Interaction?,
     draft: QuestionDraft,
+    canControl: Boolean,
     enabled: Boolean,
     onRespond: (Int, String) -> Unit,
     onDraftChange: (QuestionDraft) -> Unit,
@@ -76,7 +77,8 @@ internal fun FeedBlockerCard(
     val kind = attentionKind(agent)
     val approval = kind == BlockedMessage.ATTENTION_APPROVAL
     val options = agent.options.orEmpty()
-    val prompt = agent.prompt ?: interaction?.question ?: agent.command ?: ""
+    val prompt = interaction?.question?.takeIf { it.isNotEmpty() }
+        ?: agent.prompt ?: agent.command ?: ""
 
     Card(
         colors = CardDefaults.cardColors(
@@ -100,7 +102,11 @@ internal fun FeedBlockerCard(
                         .size(16.dp),
                 )
                 Text(
-                    if (approval) "APPROVAL NEEDED" else "QUESTION",
+                    when (kind) {
+                        BlockedMessage.ATTENTION_APPROVAL -> "APPROVAL NEEDED"
+                        BlockedMessage.ATTENTION_QUESTION -> "QUESTION"
+                        else -> "ATTENTION NEEDED"
+                    },
                     style = MaterialTheme.typography.labelMedium,
                     color = colors.attention,
                 )
@@ -109,6 +115,19 @@ internal fun FeedBlockerCard(
                 Text(prompt, style = MaterialTheme.typography.titleSmall)
             }
             when {
+                !canControl -> Column(
+                    verticalArrangement = Arrangement.spacedBy(spacing.extraSmall),
+                ) {
+                    val labels = interaction?.options?.map { it.label } ?: options
+                    labels.forEach { label ->
+                        Text(label, style = MaterialTheme.typography.bodyMedium)
+                    }
+                    Text(
+                        "Read-only — another controller must answer.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 approval && options.isNotEmpty() -> ApprovalButtons(
                     options = options,
                     enabled = enabled,
@@ -152,8 +171,8 @@ private fun ApprovalButtons(
 ) {
     val colors = LerdrTheme.extendedColors
     val spacing = LerdrTheme.spacing
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(spacing.small),
+    Column(
+        verticalArrangement = Arrangement.spacedBy(spacing.small),
         modifier = Modifier.fillMaxWidth(),
     ) {
         options.forEachIndexed { index, label ->
@@ -161,30 +180,33 @@ private fun ApprovalButtons(
                 ApprovalTone.APPROVE -> Button(
                     onClick = { onRespond(index, label) },
                     enabled = enabled,
+                    shape = MaterialTheme.shapes.medium,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = colors.working,
                         contentColor = colors.onWorking,
                     ),
-                    modifier = Modifier.weight(1f),
-                ) { Text(label, maxLines = 1) }
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(label) }
                 ApprovalTone.TRUST -> FilledTonalButton(
                     onClick = { onRespond(index, label) },
                     enabled = enabled,
+                    shape = MaterialTheme.shapes.medium,
                     colors = ButtonDefaults.filledTonalButtonColors(
                         containerColor = MaterialTheme.colorScheme.secondaryContainer,
                         contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
                     ),
-                    modifier = Modifier.weight(1f),
-                ) { Text(label, maxLines = 1) }
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(label) }
                 ApprovalTone.DENY -> Button(
                     onClick = { onRespond(index, label) },
                     enabled = enabled,
+                    shape = MaterialTheme.shapes.medium,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = colors.danger,
                         contentColor = colors.onDanger,
                     ),
-                    modifier = Modifier.weight(1f),
-                ) { Text(label, maxLines = 1) }
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(label) }
             }
         }
     }

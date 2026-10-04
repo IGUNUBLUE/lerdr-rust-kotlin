@@ -98,7 +98,7 @@ fun WorktreesSheet(
             onDismiss = onDismiss,
         )
     }
-    if (uiState.confirmRemove) {
+    if (uiState.confirmRemove && uiState.canControl) {
         RemoveWorktreeDialog(
             workspaceLabel = uiState.workspaceLabel,
             force = uiState.confirmForce,
@@ -170,23 +170,26 @@ fun WorktreesSheetContent(
                         WorktreeRow(
                             worktree = worktree,
                             enabled = !uiState.busy,
+                            canControl = uiState.canControl && uiState.managementAvailable,
                             onOpen = { onOpenWorktree(worktree.path, worktree.title) },
                         )
                     }
                 }
                 Spacer(Modifier.height(spacing.medium))
-                CreateWorktreeForm(
-                    uiState = uiState,
-                    onBranchDraftChange = onBranchDraftChange,
-                    onBaseDraftChange = onBaseDraftChange,
-                    onLabelDraftChange = onLabelDraftChange,
-                    onCreate = onCreate,
-                    onDismiss = onDismiss,
-                )
+                if (uiState.canControl && uiState.managementAvailable) {
+                    CreateWorktreeForm(
+                        uiState = uiState,
+                        onBranchDraftChange = onBranchDraftChange,
+                        onBaseDraftChange = onBaseDraftChange,
+                        onLabelDraftChange = onLabelDraftChange,
+                        onCreate = onCreate,
+                        onDismiss = onDismiss,
+                    )
+                }
             }
         }
 
-        if (uiState.linkedWorktree) {
+        if (uiState.linkedWorktree && uiState.canControl) {
             Spacer(Modifier.height(spacing.medium))
             HorizontalDivider()
             Spacer(Modifier.height(spacing.medium))
@@ -268,6 +271,7 @@ private fun ErrorRow(message: String, enabled: Boolean, onRetry: () -> Unit) {
 private fun WorktreeRow(
     worktree: WorktreeEntry,
     enabled: Boolean,
+    canControl: Boolean,
     onOpen: () -> Unit,
 ) {
     val spacing = LerdrTheme.spacing
@@ -297,6 +301,7 @@ private fun WorktreeRow(
         when {
             worktree.openWorkspaceId != null -> StateChip("Open")
             worktree.isBare || worktree.isPrunable -> StateChip("Unavailable")
+            !canControl -> Unit
             else -> FilledTonalButton(
                 onClick = onOpen,
                 enabled = enabled,

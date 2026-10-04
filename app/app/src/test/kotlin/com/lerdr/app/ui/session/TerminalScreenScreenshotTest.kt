@@ -22,7 +22,7 @@ import org.robolectric.annotation.GraphicsMode
 
 /**
  * Roborazzi coverage for Terminal mode — the leased-grid meta row and
- * amber chip, the no-echo/secret-prompt states, and the reader gate.
+ * lifecycle chip, the no-echo/secret-prompt states, and the reader gate.
  * Records via `./gradlew :app:recordRoborazziDebug`, verifies via
  * `:app:verifyRoborazziDebug`.
  */
@@ -57,7 +57,7 @@ class TerminalScreenScreenshotTest {
         title = "claude",
         provider = "claude",
         breadcrumb = "lerdr · main · sd",
-        statusLabel = "lease 92×42",
+        statusLabel = "working",
         connected = true,
         waitingForContent = false,
         leaseColumns = 92,
@@ -86,10 +86,19 @@ class TerminalScreenScreenshotTest {
         }
     }
 
-    /** Lease held — amber status chip + the `── pane 92×42 ──` meta row. */
+    /** Lease geometry stays in the meta row while the header shows lifecycle. */
     @Test
     fun terminal_liveLease() {
         show(baseState())
+        composeRule.onNodeWithText("pane 92×42").assertExists()
+        composeRule.onNodeWithText("working").assertExists()
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun terminal_blockedWithLease() {
+        show(baseState().copy(statusLabel = "blocked"))
+        composeRule.onNodeWithText("blocked").assertExists()
         composeRule.onNodeWithText("pane 92×42").assertExists()
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }

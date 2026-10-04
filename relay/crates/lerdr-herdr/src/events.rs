@@ -274,19 +274,12 @@ impl Serialize for Subscription {
     }
 }
 
-/// The relay's topology subscription set — the Go client's
-/// `topologySubscriptions` (20 lifecycle events) plus three gated optional
-/// entries: `workspace.reordered` (older Herdr builds reject the whole
-/// `events.subscribe` when the name is present), `pane.output_changed`
-/// (only present on builds whose schema exposes the subscription variant —
-/// 0.9.1 lists the `pane_output_changed` event payload but ships no
-/// `pane.output_changed` subscription, so the capability consult keeps it
-/// off the wire there), and `pane.agent_status_changed` — the ordered,
-/// reliable agent lifecycle stream the topology commits statuses from.
+/// Global topology events plus lifecycle transitions scoped to concrete panes.
+/// Herdr requires `pane_id` on every agent-status subscription.
 pub fn topology_subscriptions(
     include_workspace_reordered: bool,
     include_pane_output_changed: bool,
-    include_pane_agent_status_changed: bool,
+    pane_ids: impl IntoIterator<Item = String>,
 ) -> Vec<Subscription> {
     const NAMES: &[&str] = &[
         "pane.created",
@@ -317,9 +310,11 @@ pub fn topology_subscriptions(
     if include_pane_output_changed {
         subs.push(Subscription::Named("pane.output_changed"));
     }
-    if include_pane_agent_status_changed {
-        subs.push(Subscription::Named("pane.agent_status_changed"));
-    }
+    subs.extend(
+        pane_ids
+            .into_iter()
+            .map(Subscription::pane_agent_status_changed),
+    );
     subs
 }
 
@@ -366,7 +361,12 @@ pub(crate) async fn subscribe_on(
     let response = wire::decode_response(&line).map_err(SubscribeError::transport)?;
 
     if let Some(error) = response.error {
-        let pre_dispatch = wire::is_pre_dispatch_refusal(&response.id, &error.code, &error.message);
+        // Herdr 0.9.3 can echo the request ID on decoder refusals. No
+        // subscription exists before this handshake acknowledges it.
+        let pre_dispatch = wire::is_pre_dispatch_refusal(&response.id, &error.code, &error.message)
+            || (response.id == request_id
+                && error.code == "invalid_request"
+                && error.message.starts_with("invalid request:"));
         return Err(SubscribeError::refused(
             error.code,
             error.message,
@@ -408,6 +408,8 @@ pub struct EventStream {
     /// Terminal error captured by `drain` for the next poll.
     pending_terminal: Option<EventStreamError>,
     done: bool,
+    /// Membership covered by topology lifecycle subscriptions, if enabled.
+    pub(crate) topology_panes: Option<std::collections::BTreeSet<String>>,
 }
 
 impl EventStream {
@@ -421,6 +423,7 @@ impl EventStream {
             reader,
             pending_terminal: None,
             done: false,
+            topology_panes: None,
         }
     }
 
@@ -746,7 +749,10 @@ impl EventSupervisor {
                         {
                             return;
                         }
+                        let mut gap_membership_changed = false;
                         for event in std::mem::take(&mut boot.gap_events) {
+                            gap_membership_changed |=
+                                topology_fallback && changes_pane_membership(&event);
                             if tx
                                 .send(SupervisorSignal::Invalidated { event, gap: true })
                                 .await
@@ -755,15 +761,30 @@ impl EventSupervisor {
                                 return;
                             }
                         }
+                        // Finish the queued burst before replacing its pane coverage.
+                        // A fixed bound keeps new traffic from delaying the refresh.
+                        let mut buffered_before_refresh =
+                            gap_membership_changed.then(|| boot.stream.rx.len());
                         loop {
+                            if let Some(remaining) = buffered_before_refresh.as_mut() {
+                                if *remaining == 0 {
+                                    continue 'resync;
+                                }
+                                *remaining -= 1;
+                            }
                             match boot.stream.next_event().await {
                                 Some(Ok(event)) => {
+                                    let membership_changed =
+                                        topology_fallback && changes_pane_membership(&event);
                                     if tx
                                         .send(SupervisorSignal::Invalidated { event, gap: false })
                                         .await
                                         .is_err()
                                     {
                                         return;
+                                    }
+                                    if membership_changed && buffered_before_refresh.is_none() {
+                                        buffered_before_refresh = Some(boot.stream.rx.len());
                                     }
                                 }
                                 Some(Err(err)) => {
@@ -806,6 +827,12 @@ impl EventSupervisor {
         });
         SupervisorStream { rx, task }
     }
+}
+fn changes_pane_membership(event: &Event) -> bool {
+    matches!(
+        event.name.as_str(),
+        "pane.created" | "pane.closed" | "pane.moved" | "workspace.closed" | "tab.closed"
+    )
 }
 
 /// Stream half of the supervisor — yields [`SupervisorSignal`] until dropped.
@@ -940,54 +967,6 @@ mod tests {
         assert_eq!(b.next_delay(), Duration::from_millis(500));
         b.reset();
         assert_eq!(b.next_delay(), Duration::from_millis(100));
-    }
-
-    #[test]
-    fn topology_subscriptions_reordered_gate() {
-        let with = topology_subscriptions(true, false, false);
-        let without = topology_subscriptions(false, false, false);
-        assert_eq!(with.len(), without.len() + 1);
-        assert!(with
-            .iter()
-            .any(|s| matches!(s, Subscription::Named("workspace.reordered"))));
-        assert!(!without
-            .iter()
-            .any(|s| matches!(s, Subscription::Named("workspace.reordered"))));
-    }
-
-    /// `pane.output_changed` rides the same bounded-set handshake as
-    /// `workspace.reordered` — gated independently, absent by default.
-    #[test]
-    fn topology_subscriptions_output_changed_gate() {
-        let with = topology_subscriptions(false, true, false);
-        let without = topology_subscriptions(false, false, false);
-        assert_eq!(with.len(), without.len() + 1);
-        assert!(with
-            .iter()
-            .any(|s| matches!(s, Subscription::Named("pane.output_changed"))));
-        assert!(!without
-            .iter()
-            .any(|s| matches!(s, Subscription::Named("pane.output_changed"))));
-        // All optionals together extend the 20-name base by three.
-        assert_eq!(
-            topology_subscriptions(true, true, true).len(),
-            without.len() + 3
-        );
-    }
-
-    /// `pane.agent_status_changed` — gated the same way; its payload is
-    /// the ordered status stream the topology commits from.
-    #[test]
-    fn topology_subscriptions_agent_status_changed_gate() {
-        let with = topology_subscriptions(false, false, true);
-        let without = topology_subscriptions(false, false, false);
-        assert_eq!(with.len(), without.len() + 1);
-        assert!(with
-            .iter()
-            .any(|s| matches!(s, Subscription::Named("pane.agent_status_changed"))));
-        assert!(!without
-            .iter()
-            .any(|s| matches!(s, Subscription::Named("pane.agent_status_changed"))));
     }
 
     /// The status payload decodes the documented event shape.

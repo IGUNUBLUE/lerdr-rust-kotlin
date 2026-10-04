@@ -9,6 +9,9 @@ local.properties
 # Kotlin build session data
 app/.kotlin/
 
+# Private agent tooling metadata
+.atl/
+
 # Secrets and machine-local config
 *.env
 .env

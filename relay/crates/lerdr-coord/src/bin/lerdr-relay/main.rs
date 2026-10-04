@@ -985,6 +985,7 @@ async fn run(args: ServeArgs) -> Result<(), BoxError> {
     spawn_udp_ingress(&topology, &cfg, relay.shutdown());
     spawn_support_writer(&cfg, relay.shutdown());
 
+    topology.wait_for_agent_profiles().await?;
     let listener = TcpListener::bind((cfg.host.as_str(), cfg.port)).await?;
     // The retired implementation logs `instance` with the listen line.
     info!(addr = %listener.local_addr()?, instance = %cfg.instance_id, "lerdr-relay listening");

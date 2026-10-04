@@ -18,11 +18,8 @@ import kotlinx.coroutines.flow.map
  * `lerdr` preferences DataStore (the same instance [RelayRegistry] and
  * `DraftStore` use; keys are namespaced).
  *
- * [ThemeMode] is the source of truth for the Settings theme picker; the
- * visual application is a separate platform concern — on API 31+ the
- * screen also calls `UiModeManager.setApplicationNightMode`, which is the
- * mechanism that actually flips `isSystemInDarkTheme` for the app
- * (no appcompat on the classpath).
+ * [ThemeMode] drives both the Settings picker and the root Compose palette.
+ * API 31+ also synchronizes the durable choice with the system splash theme.
  */
 @Singleton
 class AppPreferences @Inject constructor(
@@ -39,7 +36,7 @@ class AppPreferences @Inject constructor(
     }
 
     /**
-     * Opt-in app lock (Lerdr docs/security.md "device verification") —
+     * Opt-in app lock (docs/10-spec-gaps.md "biometric lock") —
      * when on, `security.LockGate` covers the UI at process start until
      * `BiometricPrompt` verifies the user once. Defaults off. UX gate
      * only: this flag is not a secret and the Keystore credential seal

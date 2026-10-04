@@ -67,6 +67,13 @@ Everything else stacks on top with predictive back.
 Top bar: agent name (editable), workspace breadcrumb, status chip,
 connection dot. **Segmented control** in the app bar switches modes:
 `Feed | Terminal | Files`.
+When measured labels cannot fit at the current text scale, replace the segments
+with a single-height current-mode button and a menu containing all three complete
+labels and the selected-mode check. Keep the terminal viewport available.
+
+The status chip always shows agent lifecycle, including `working` and
+`blocked`; viewport dimensions stay in the Terminal metadata row and never
+replace lifecycle status.
 
 ### Feed mode (default) — *what the agent is doing*
 
@@ -175,6 +182,19 @@ workspace tree/file/git, activity journal + copy response, push subscribe/
 policy/snooze/test/viewed, device list/rename/revoke/invite/reset,
 speech voices + speak/cancel, update check/install, slash commands, QR
 pairing, pane lease, and the current Tailscale transport.
+
+Current reachability is narrower than that product checklist:
+
+- Workspace rename has repository/API plumbing, but no production UI caller.
+- Attachment documents and images use the system document picker; there is no
+  attachment-camera launcher. QR camera scanning is a separate flow.
+- Question clarification needs a genuine provider form exposing `can_chat`;
+  the audited Codex multi-question form supports answer/next/back, not clarify.
+- Activity is a bounded refresh/filter view, not a paginated or clear-history
+  screen. Response copy is omitted when the peer lacks its capability.
+- Diagnostics export has no production UI entry.
+
+These gaps are not feature acceptance or permission to synthesize capabilities.
 
 ## Accessibility & quality bars
 

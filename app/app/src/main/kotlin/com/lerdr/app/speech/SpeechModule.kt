@@ -35,7 +35,7 @@ object SpeechModule {
         enabled = preferences.enabled,
         language = preferences.language,
         sender = SessionSpeechSender(scope, sessions),
-        sink = MediaPlayerSpeechAudioSink(context.cacheDir),
+        sink = MediaPlayerSpeechAudioSink(context),
         locked = { lockState.locked.value },
     )
 }
