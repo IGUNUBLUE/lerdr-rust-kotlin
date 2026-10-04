@@ -64,6 +64,9 @@ cargo test --workspace
 - Fill in the PR template — including the AI-disclosure field.
 - No `Co-Authored-By` or tool attribution trailers in commits; AI
   disclosure lives in the PR body, not the git history.
+- Keep real device identifiers, private paths, credentials and raw audit
+  captures out of commits, PRs and release notes. Use synthetic data for test
+  fixtures and screenshots; retain raw runtime evidence only in private storage.
 
 ## Scope notes
 

@@ -26,6 +26,10 @@ The `protocol v3` / `herdr-e2ee-v2` wire contract remains frozen.
 
 ### Fixed
 
+- **Audit evidence uses synthetic identifiers** — replace operator-specific
+  paths and run markers in regression inputs, screenshots and documentation.
+  Raw device evidence stays private; public release evidence is redacted.
+
 - **Visible Terminal output is accessible to TalkBack** — expose the drawn
   viewport without composing every row or reading hidden scrollback.
 - **Large-text notification settings remain readable** — move the system

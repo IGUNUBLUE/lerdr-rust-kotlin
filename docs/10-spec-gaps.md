@@ -502,7 +502,7 @@ render → pane-size lease → interactive key bar):
 
 ## Round 12 — phone-terminal interaction layer + mobile polish (2025)
 
-Second live pass on emulator + real device (Moto G85, `adb reverse`
+Second live pass on emulator + an authorized physical Android device (`adb reverse`
 USB tunnel — LAN 8377 is firewalled; `ws://127.0.0.1` over USB works
 unchanged because the E2EE handshake is host-agnostic). Everything
 below is verified on-device; multi-finger pinch verified by code path
@@ -903,7 +903,7 @@ against.
   workspace `{cwd,tokens,worktree}` — declared deltas; the app already
   parses `pane_revision` 0-normalized, so emitting it later is free.
 - **Startup-burst frame order** — unordered pool; both relays race.
-- **Live smoke** — partially validated (Moto G85 paired to the Rust
+- **Live smoke** — partially validated (an authorized physical phone paired to the Rust
   relay over Tailscale, live frames render); watch/lease/question
   flows on device still to exercise.
 - **Phase 5** — untouched by design (binary inner codec, zstd,
@@ -1587,8 +1587,8 @@ negotiated, and exercised end-to-end on both sides.
   and composition. Saving reads the immediate value. Handled dismissal and
   replacement results are consumed before closing the sheet, so a retained
   ViewModel does not immediately close its next opening. The owned API35
-  minified app changed `codex-audit-ixsij1wu-reopen` into
-  `codex-auit-ixsij1wu-reopend` before correction. After correction, fast input
+  minified app corrupted an edited test tab name before correction. After
+  correction, fast input
   retained the exact name; a midtext insertion could be deleted without
   corruption. Two successful native renames each allowed management to reopen,
   and the original owned tab label was restored and verified in Herdr. The
