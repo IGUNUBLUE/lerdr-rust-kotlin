@@ -42,6 +42,8 @@ struct OpenCodeRow {
     #[serde(default)]
     message_data: String,
     #[serde(default)]
+    message_type: String,
+    #[serde(default)]
     part_id: String,
     #[serde(default)]
     part_data: String,
@@ -94,15 +96,21 @@ struct CacheEntry {
     has_more: bool,
 }
 
+#[derive(Default)]
+struct OpenCodeCache {
+    pages: HashMap<String, CacheEntry>,
+    schemas: HashMap<String, (FileStamp, bool)>,
+}
+
 /// `openCodeReader`.
 pub(crate) struct OpenCodeReader {
-    cache: Mutex<HashMap<String, CacheEntry>>,
+    cache: Mutex<OpenCodeCache>,
 }
 
 impl OpenCodeReader {
     pub(crate) fn new() -> Self {
         OpenCodeReader {
-            cache: Mutex::new(HashMap::new()),
+            cache: Mutex::new(OpenCodeCache::default()),
         }
     }
 
@@ -215,8 +223,48 @@ impl OpenCodeReader {
         )
     }
 
-    /// `query` — the CTE select is the retired implementation's verbatim; `before` resolves to
-    /// the `(time_created, id)` cursor tuple and selects strictly older rows.
+    fn schema_v2(&self, database: &str, stamp: Option<FileStamp>) -> Result<bool, &'static str> {
+        if let Some(stamp) = stamp {
+            let cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some((cached, v2)) = cache.schemas.get(database) {
+                if *cached == stamp {
+                    return Ok(*v2);
+                }
+            }
+        }
+        let output = run_json_query(
+            "sqlite3",
+            database,
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_v2') AS v2;",
+            MAX_OPENCODE_OUTPUT,
+            OPENCODE_QUERY_TIMEOUT,
+        )
+        .map_err(|err| match err {
+            SqliteError::OutputLimit => "output_limit",
+            SqliteError::QueryFailed => "query_failed",
+        })?;
+        let rows: Vec<Value> = serde_json::from_slice(&output).map_err(|_| "source_corrupt")?;
+        let v2 = rows
+            .first()
+            .and_then(|row| row["v2"].as_i64())
+            .ok_or("source_corrupt")?
+            != 0;
+        if let Some(stamp) = stamp.filter(|stamp| file_stamp(database) == Some(*stamp)) {
+            let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(entry) = cache.schemas.get_mut(database) {
+                *entry = (stamp, v2);
+            } else {
+                if cache.schemas.len() >= MAX_OPENCODE_CACHE {
+                    cache.schemas.clear();
+                }
+                cache.schemas.insert(database.to_owned(), (stamp, v2));
+            }
+        }
+        Ok(v2)
+    }
+
+    /// Read the detected native schema; v1 orders by `(time_created, id)`,
+    /// v2 by its unique per-session sequence. Cursors remain message ids.
     fn query(
         &self,
         _reader: &Reader,
@@ -229,7 +277,7 @@ impl OpenCodeReader {
         let cache_key = format!("{database}\x00{session_id}\x00{before}\x00{limit}");
         if let Some(stamp) = stamp {
             let cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
-            if let Some(entry) = cache.get(&cache_key) {
+            if let Some(entry) = cache.pages.get(&cache_key) {
                 if entry.stamp == stamp {
                     // Rows are not Clone-cheap; reparse cost is acceptable but
                     // the cache stores raw JSON so clone via serde is trivial.
@@ -238,21 +286,28 @@ impl OpenCodeReader {
                 }
             }
         }
-        let session_hex = hex::encode(session_id.as_bytes());
-        let mut cursor_cte =
-            "cursor AS (SELECT NULL AS time_created,NULL AS id WHERE 0)".to_string();
-        let mut cursor_filter = String::new();
-        let mut cursor_found = "1".to_string();
-        if !before.is_empty() {
-            let cursor_hex = hex::encode(before.as_bytes());
-            cursor_cte = format!(
-                "cursor AS (SELECT time_created,id FROM message WHERE session_id=CAST(X'{session_hex}' AS TEXT) AND id=CAST(X'{cursor_hex}' AS TEXT))"
-            );
-            cursor_filter = " AND EXISTS(SELECT 1 FROM cursor) AND (m.time_created < (SELECT time_created FROM cursor) OR (m.time_created = (SELECT time_created FROM cursor) AND m.id < (SELECT id FROM cursor)))".to_string();
-            cursor_found = "EXISTS(SELECT 1 FROM cursor)".to_string();
-        }
-        let query = format!(
-            "WITH {cursor_cte},selected AS (\
+        let v2 = match self.schema_v2(database, stamp) {
+            Ok(v2) => v2,
+            Err(code) => return (Vec::new(), false, code),
+        };
+        let query = if v2 {
+            v2_query(session_id, before, limit)
+        } else {
+            let session_hex = hex::encode(session_id.as_bytes());
+            let mut cursor_cte =
+                "cursor AS (SELECT NULL AS time_created,NULL AS id WHERE 0)".to_string();
+            let mut cursor_filter = String::new();
+            let mut cursor_found = "1".to_string();
+            if !before.is_empty() {
+                let cursor_hex = hex::encode(before.as_bytes());
+                cursor_cte = format!(
+                    "cursor AS (SELECT time_created,id FROM message WHERE session_id=CAST(X'{session_hex}' AS TEXT) AND id=CAST(X'{cursor_hex}' AS TEXT))"
+                );
+                cursor_filter = " AND EXISTS(SELECT 1 FROM cursor) AND (m.time_created < (SELECT time_created FROM cursor) OR (m.time_created = (SELECT time_created FROM cursor) AND m.id < (SELECT id FROM cursor)))".to_string();
+                cursor_found = "EXISTS(SELECT 1 FROM cursor)".to_string();
+            }
+            format!(
+                "WITH {cursor_cte},selected AS (\
                 SELECT m.id,m.time_created,m.data FROM message AS m WHERE m.session_id=CAST(X'{session_hex}' AS TEXT){cursor_filter} \
                 ORDER BY m.time_created DESC,m.id DESC LIMIT {limit_plus}\
             ) SELECT s.id AS session_id,s.directory,s.title,s.time_updated,COALESCE(s.agent,'') AS agent,\
@@ -261,8 +316,9 @@ impl OpenCodeReader {
             (SELECT COUNT(*) FROM message WHERE session_id=s.id) AS message_total,{cursor_found} AS cursor_found \
             FROM session AS s LEFT JOIN selected AS sm ON 1=1 LEFT JOIN part AS p ON p.message_id=sm.id \
             WHERE s.id=CAST(X'{session_hex}' AS TEXT) ORDER BY sm.time_created DESC,sm.id DESC,p.id DESC;",
-            limit_plus = limit + 1,
-        );
+                limit_plus = limit + 1,
+            )
+        };
         let output = match run_json_query(
             "sqlite3",
             database,
@@ -298,10 +354,10 @@ impl OpenCodeReader {
         if let Some(stamp) = stamp {
             if file_stamp(database) == Some(stamp) {
                 let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
-                if cache.len() >= MAX_OPENCODE_CACHE {
-                    cache.clear();
+                if cache.pages.len() >= MAX_OPENCODE_CACHE {
+                    cache.pages.clear();
                 }
-                cache.insert(
+                cache.pages.insert(
                     cache_key,
                     CacheEntry {
                         stamp,
@@ -315,6 +371,42 @@ impl OpenCodeReader {
     }
 }
 
+fn v2_query(session_id: &str, before: &str, limit: usize) -> String {
+    let session = hex::encode(session_id.as_bytes());
+    let cursor = if before.is_empty() {
+        "SELECT NULL AS seq WHERE 0".to_owned()
+    } else {
+        format!(
+            "SELECT seq FROM session_message WHERE session_id=CAST(X'{session}' AS TEXT) \
+             AND id=CAST(X'{}' AS TEXT) AND type IN ('user','assistant')",
+            hex::encode(before.as_bytes())
+        )
+    };
+    let older = if before.is_empty() {
+        ""
+    } else {
+        " AND m.seq < (SELECT seq FROM cursor)"
+    };
+    let found = if before.is_empty() {
+        "1"
+    } else {
+        "EXISTS(SELECT 1 FROM cursor)"
+    };
+    format!(
+        "WITH cursor AS ({cursor}),selected AS (\
+         SELECT m.id,m.type,m.seq,m.time_created,m.data FROM session_message m \
+         WHERE m.session_id=CAST(X'{session}' AS TEXT) AND m.type IN ('user','assistant'){older} \
+         ORDER BY m.seq DESC LIMIT {}\
+         ) SELECT s.id AS session_id,s.directory,COALESCE(s.title,'') AS title,s.time_updated,COALESCE(s.agent,'') AS agent,\
+         COALESCE(sm.id,'') AS message_id,COALESCE(sm.time_created,0) AS time_created,\
+         COALESCE(sm.data,'null') AS message_data,COALESCE(sm.type,'') AS message_type,\
+         (SELECT COUNT(*) FROM session_message WHERE session_id=s.id AND type IN ('user','assistant')) AS message_total,\
+         {found} AS cursor_found FROM session_v2 s LEFT JOIN selected sm ON 1=1 \
+         WHERE s.id=CAST(X'{session}' AS TEXT) ORDER BY sm.seq DESC;",
+        limit + 1
+    )
+}
+
 fn clone_row(row: &OpenCodeRow) -> OpenCodeRow {
     OpenCodeRow {
         session_id: row.session_id.clone(),
@@ -325,6 +417,7 @@ fn clone_row(row: &OpenCodeRow) -> OpenCodeRow {
         message_id: row.message_id.clone(),
         time_created: row.time_created,
         message_data: row.message_data.clone(),
+        message_type: row.message_type.clone(),
         part_id: row.part_id.clone(),
         part_data: row.part_data.clone(),
         message_total: row.message_total,
@@ -355,7 +448,11 @@ fn valid_session_id(value: &str) -> bool {
 /// '\n'; tool parts become `ToolActivity`; anything unparseable or with a
 /// non-visible role marks `corrupt`.
 fn parse_rows(rows: &[OpenCodeRow]) -> (Vec<Entry>, bool) {
-    let mut entries: Vec<Entry> = Vec::new();
+    let mut entries: Vec<Entry> = if rows.first().is_some_and(|row| !row.message_type.is_empty()) {
+        Vec::with_capacity(rows.len())
+    } else {
+        Vec::new()
+    };
     let mut by_message: HashMap<String, usize> = HashMap::new();
     let mut corrupt = false;
     for row in rows {
@@ -364,6 +461,13 @@ fn parse_rows(rows: &[OpenCodeRow]) -> (Vec<Entry>, bool) {
         }
         if row.message_id.len() > 256 || row.message_id.contains(['\x00', '\r', '\n']) {
             corrupt = true;
+            continue;
+        }
+        if !row.message_type.is_empty() {
+            match parse_v2_row(row) {
+                Ok(entry) => entries.push(entry),
+                Err(_) => corrupt = true,
+            }
             continue;
         }
         let index = match by_message.get(&row.message_id) {
@@ -465,6 +569,76 @@ fn parse_rows(rows: &[OpenCodeRow]) -> (Vec<Entry>, bool) {
     (kept, corrupt)
 }
 
+fn append_text(target: &mut String, text: &str) {
+    let text = sanitize_text(text);
+    if text.is_empty() {
+        return;
+    }
+    if target.is_empty() {
+        *target = text;
+    } else {
+        target.push('\n');
+        target.push_str(&text);
+    }
+}
+
+fn parse_v2_row(row: &OpenCodeRow) -> Result<Entry, serde_json::Error> {
+    let data: Value = serde_json::from_str(&row.message_data)?;
+    let mut entry = Entry {
+        id: row.message_id.clone(),
+        role: row.message_type.clone(),
+        timestamp: if row.time_created > 0 {
+            super::util::format_unix_millis(row.time_created)
+        } else {
+            String::new()
+        },
+        ..Entry::default()
+    };
+    if row.message_type == "user" {
+        append_text(&mut entry.text, data["text"].as_str().unwrap_or(""));
+    } else if let Some(content) = data["content"].as_array() {
+        for item in content {
+            match item["type"].as_str() {
+                Some("text") => append_text(&mut entry.text, item["text"].as_str().unwrap_or("")),
+                Some("tool") => {
+                    let state = &item["state"];
+                    let mut tool = new_tool_activity(
+                        item["id"].as_str().unwrap_or(""),
+                        item["name"].as_str().unwrap_or(""),
+                        state.get("input"),
+                    );
+                    if let Some(content) = state["content"].as_array() {
+                        for part in content {
+                            if part["type"] == "text" {
+                                append_text(&mut tool.output, part["text"].as_str().unwrap_or(""));
+                            }
+                        }
+                    }
+                    let (output, truncated) = clamp_text(&tool.output, MAX_ENTRY_BYTES);
+                    tool.output = output;
+                    tool.truncated |= truncated;
+                    tool.error = state["status"] == "error"
+                        || state
+                            .pointer("/error/message")
+                            .and_then(Value::as_str)
+                            .is_some_and(|s| !s.trim().is_empty());
+                    entry.tools.push(tool);
+                }
+                _ => {}
+            }
+        }
+    }
+    if entry.text.is_empty() && entry.tools.is_empty() {
+        append_text(
+            &mut entry.text,
+            data.pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+        );
+    }
+    Ok(entry)
+}
+
 impl Reader {
     /// `readOpenCodeFor` — trim + clamp, read, workspace check, then page.
     pub(crate) fn opencode_read_for(
@@ -505,5 +679,170 @@ impl Reader {
             source_path: metadata.database,
             ..Page::default()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    fn sql(database: &Path, sql: &str) {
+        let output = Command::new("sqlite3")
+            .arg(database)
+            .arg(sql)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn v2_sequence_pages_exclude_idle_and_fence_workspace_and_cursor() {
+        let home = TempDir::new().unwrap();
+        let cwd = home.path().join("work");
+        let root = home.path().join("data");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        let database = root.join("opencode.db");
+        sql(&database, &format!(
+            "CREATE TABLE session_v2(id TEXT PRIMARY KEY,directory TEXT,title TEXT,time_updated INTEGER,agent TEXT);
+             CREATE TABLE session_message(id TEXT PRIMARY KEY,session_id TEXT,type TEXT,seq INTEGER,time_created INTEGER,data TEXT,UNIQUE(session_id,seq));
+             INSERT INTO session_v2 VALUES('ses_history123',CAST(X'{}' AS TEXT),NULL,0,NULL);",
+            hex::encode(cwd.to_str().unwrap())
+        ));
+        for (id, kind, seq, time, data) in [
+            ("msg_user", "user", 4, 900, json!({"text":"question"})),
+            (
+                "msg_middle",
+                "assistant",
+                5,
+                100,
+                json!({"content":[{"type":"reasoning","text":"not visible"},{"type":"text","text":"first"},{"type":"text","text":"second"}]}),
+            ),
+            ("msg_idle", "idle", 12, 1000, json!({"outcome":"success"})),
+            (
+                "msg_latest",
+                "assistant",
+                18,
+                50,
+                json!({"content":[{"type":"text","text":"answer"}]}),
+            ),
+        ] {
+            sql(
+                &database,
+                &format!(
+                    "INSERT INTO session_message VALUES('{id}','ses_history123','{kind}',{seq},{time},CAST(X'{}' AS TEXT));",
+                    hex::encode(data.to_string())
+                ),
+            );
+        }
+        let data_root = root.to_string_lossy().into_owned();
+        let reader = Reader::new_with_env(
+            home.path().to_owned(),
+            Box::new(move |key| (key == "LERDR_OPENCODE_DATA_DIRS").then(|| data_root.clone())),
+        );
+        let cwd = cwd.to_str().unwrap();
+        let page = reader
+            .opencode_read_for(cwd, "ses_history123", "", 2)
+            .unwrap();
+        assert!(page.available && page.has_more && !page.source_corrupt);
+        assert_eq!(page.total, 3);
+        assert_eq!(
+            page.entries
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            ["msg_middle", "msg_latest"]
+        );
+        assert_eq!(page.entries[0].text, "first\nsecond");
+        assert_eq!(page.entries[1].text, "answer");
+        let older = reader
+            .opencode_read_for(cwd, "ses_history123", &page.cursor_before, 2)
+            .unwrap();
+        assert!(!older.has_more);
+        assert_eq!(older.entries[0].id, "msg_user");
+        assert_eq!(older.entries[0].role, "user");
+        assert_eq!(older.entries[0].text, "question");
+        assert_eq!(
+            reader
+                .opencode_read_for(cwd, "ses_history123", "msg_absent", 2)
+                .unwrap()
+                .reason_code,
+            "invalid_cursor"
+        );
+        assert_eq!(
+            reader
+                .opencode_read_for(home.path().to_str().unwrap(), "ses_history123", "", 2)
+                .unwrap()
+                .reason_code,
+            "invalid_session"
+        );
+    }
+
+    #[test]
+    fn v2_tool_states_keep_partial_inputs_and_native_text_results() {
+        for (status, input, expected_input, expected_output, failed) in [
+            ("streaming", json!("{\"path\":"), "{\"path\":", "", false),
+            (
+                "running",
+                json!({"path":"file"}),
+                "{\"path\":\"file\"}",
+                "",
+                false,
+            ),
+            (
+                "completed",
+                json!({"path":"file"}),
+                "{\"path\":\"file\"}",
+                "saved\nok",
+                false,
+            ),
+            (
+                "error",
+                json!({"path":"file"}),
+                "{\"path\":\"file\"}",
+                "",
+                true,
+            ),
+        ] {
+            let state = json!({
+                "status":status,"input":input,
+                "content":if status == "completed" { json!([{"type":"text","text":"saved"},{"type":"file","uri":"file:///result","mime":"text/plain"},{"type":"text","text":"ok"}]) } else { json!([]) },
+                "error":if failed { json!({"type":"tool.failed","message":"denied"}) } else { Value::Null }
+            });
+            let row = OpenCodeRow {
+                message_id: "msg_tool".into(),
+                message_type: "assistant".into(),
+                message_data:
+                    json!({"content":[{"type":"tool","id":"call1","name":"write","state":state}]})
+                        .to_string(),
+                ..OpenCodeRow::default()
+            };
+            let (entries, corrupt) = parse_rows(&[row]);
+            assert!(!corrupt);
+            let tool = &entries[0].tools[0];
+            assert_eq!((&*tool.id, &*tool.name), ("call1", "write"));
+            assert_eq!(tool.input, expected_input);
+            assert_eq!(tool.output, expected_output);
+            assert_eq!(tool.error, failed);
+        }
+    }
+
+    #[test]
+    fn v2_corrupt_payload_does_not_hide_native_assistant_error() {
+        let rows = [
+            OpenCodeRow { message_id: "msg_bad".into(), message_type: "user".into(), message_data: "{".into(), ..OpenCodeRow::default() },
+            OpenCodeRow { message_id: "msg_error".into(), message_type: "assistant".into(), message_data: json!({"content":[],"error":{"type":"provider.invalid-output","message":"Tool call is missing id or name"}}).to_string(), ..OpenCodeRow::default() },
+        ];
+        let (entries, corrupt) = parse_rows(&rows);
+        assert!(corrupt);
+        assert_eq!(entries[0].id, "msg_error");
+        assert_eq!(entries[0].text, "Tool call is missing id or name");
     }
 }

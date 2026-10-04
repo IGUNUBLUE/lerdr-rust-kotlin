@@ -176,6 +176,7 @@ class ConnectionStore(
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     private val lock = Any()
+    private val startingInventory = AgentInventoryStatus(AgentInventoryState.STARTING)
 
     private val _connections = MutableStateFlow<Map<String, RelayConnection>>(emptyMap())
 
@@ -276,14 +277,21 @@ class ConnectionStore(
                 }
                 TransportStatus.CONNECTING -> {
                     if (connection.status == RelayStatus.CONNECTING) return
-                    _connections.value = _connections.value + (relayId to
-                        connection.copy(status = RelayStatus.CONNECTING))
+                    _connections.value = _connections.value + (relayId to connection.copy(
+                        status = RelayStatus.CONNECTING,
+                        protocol = 0,
+                        capabilities = emptyList(),
+                        inventory = startingInventory,
+                    ))
                 }
                 TransportStatus.CLOSED -> {
                     val unauthorized =
                         detail.code == TransportStatusDetail.DEVICE_UNAUTHORIZED
                     _connections.value = _connections.value + (relayId to connection.copy(
                         status = RelayStatus.DISCONNECTED,
+                        protocol = 0,
+                        capabilities = emptyList(),
+                        inventory = startingInventory,
                         authRejected = connection.authRejected || unauthorized,
                         closed = connection.closed || unauthorized,
                     ))

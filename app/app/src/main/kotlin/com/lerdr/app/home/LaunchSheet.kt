@@ -94,6 +94,7 @@ fun NewAgentSheet(
             onNameChange = viewModel::onNameChange,
             onPromptChange = viewModel::onPromptChange,
             onBrowseDirectories = viewModel::openDirectoryBrowser,
+            onCwdChange = viewModel::onCwdChange,
             onSubmit = viewModel::submitAgent,
         )
     }
@@ -114,6 +115,7 @@ fun NewAgentSheetContent(
     onNameChange: (String) -> Unit,
     onPromptChange: (String) -> Unit,
     onBrowseDirectories: () -> Unit,
+    onCwdChange: (String) -> Unit,
     onSubmit: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -172,6 +174,8 @@ fun NewAgentSheetContent(
 
         LaunchFieldLabel("Working Directory")
         DirectoryField(
+            cwd = uiState.cwd,
+            onValueChange = onCwdChange,
             label = uiState.cwdLabel.ifEmpty { uiState.cwd },
             loading = uiState.directory.loading,
             supported = uiState.directory.supported,
@@ -179,7 +183,9 @@ fun NewAgentSheetContent(
             onClick = onBrowseDirectories,
         )
         LaunchHint(
-            if (uiState.cwdIsHome) {
+            if (!uiState.directory.supported) {
+                "Enter a project folder on this computer."
+            } else if (uiState.cwdIsHome) {
                 "The home directory can't host a workspace — tap the " +
                     "folder to pick a project below it."
             } else {
@@ -252,6 +258,7 @@ fun NewWorkspaceSheet(
             onRelaySelect = viewModel::selectRelay,
             onLabelChange = viewModel::onWorkspaceLabelChange,
             onBrowseDirectories = viewModel::openDirectoryBrowser,
+            onCwdChange = viewModel::onCwdChange,
             onSubmit = viewModel::submitWorkspace,
         )
     }
@@ -269,6 +276,7 @@ fun NewWorkspaceSheetContent(
     onRelaySelect: (String) -> Unit,
     onLabelChange: (String) -> Unit,
     onBrowseDirectories: () -> Unit,
+    onCwdChange: (String) -> Unit,
     onSubmit: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -295,6 +303,8 @@ fun NewWorkspaceSheetContent(
 
         LaunchFieldLabel("Working Directory")
         DirectoryField(
+            cwd = uiState.cwd,
+            onValueChange = onCwdChange,
             label = uiState.cwdLabel.ifEmpty { uiState.cwd },
             loading = uiState.directory.loading,
             supported = uiState.directory.supported,
@@ -302,7 +312,9 @@ fun NewWorkspaceSheetContent(
             onClick = onBrowseDirectories,
         )
         LaunchHint(
-            if (uiState.cwdIsHome) {
+            if (!uiState.directory.supported) {
+                "Enter a project folder on this computer."
+            } else if (uiState.cwdIsHome) {
                 "The home directory can't host a workspace — tap the " +
                     "folder to pick a project below it."
             } else {
@@ -321,6 +333,7 @@ fun NewWorkspaceSheetContent(
 
         Spacer(Modifier.height(spacing.extraSmall))
         val canSubmit = !uiState.submitting && !uiState.readOnly &&
+            !uiState.directory.loading && uiState.directoryReady &&
             !uiState.cwdIsHome &&
             uiState.relayId.isNotEmpty() && uiState.cwd.isNotEmpty() &&
             uiState.workspaceLabel.isNotBlank()
@@ -422,7 +435,7 @@ fun DirectoryBrowserDialog(
                                     )
                                 },
                                 label = "Parent folder",
-                                onClick = { onBrowse(listing!!.parent) },
+                                onClick = { onBrowse(listing.parent) },
                             )
                         }
                         listing?.directories?.forEach { entry ->
@@ -469,7 +482,7 @@ private fun DirectoryRow(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 40.dp)
+            .heightIn(min = 48.dp)
             .clickable(role = Role.Button, onClick = onClick)
             .padding(vertical = LerdrTheme.spacing.extraSmall),
     ) {
@@ -679,17 +692,29 @@ private fun WorkspacePicker(
 }
 
 /**
- * The cwd field is a button rather than free text: the selected folder is
- * always the last listing's `current`, so tapping opens the browser dialog.
+ * Browse supported relays; otherwise let the user enter the remote cwd.
  */
 @Composable
 private fun DirectoryField(
+    cwd: String,
+    onValueChange: (String) -> Unit,
     label: String,
     loading: Boolean,
     supported: Boolean,
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
+    if (!supported) {
+        OutlinedTextField(
+            value = cwd,
+            onValueChange = onValueChange,
+            enabled = enabled,
+            singleLine = true,
+            placeholder = { Text("/home/user/project") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        return
+    }
     val text = label.ifEmpty {
         when {
             loading -> "Loading…"
@@ -767,6 +792,7 @@ private fun NewAgentSheetPreview() {
             onNameChange = {},
             onPromptChange = {},
             onBrowseDirectories = {},
+            onCwdChange = {},
             onSubmit = {},
         )
     }
@@ -782,11 +808,13 @@ private fun NewWorkspaceSheetPreview() {
                 relayId = "sd",
                 cwd = "/home/u/lerdr",
                 cwdLabel = "lerdr",
+                directoryReady = true,
                 workspaceLabel = "lerdr",
             ),
             onRelaySelect = {},
             onLabelChange = {},
             onBrowseDirectories = {},
+            onCwdChange = {},
             onSubmit = {},
         )
     }

@@ -12,10 +12,13 @@ import java.time.OffsetDateTime
 import java.util.UUID
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -411,11 +414,11 @@ class AttachmentUploads internal constructor(
     suspend fun cancel(paneId: String) {
         val batch = batches[paneId] ?: return
         val job: Job?
-        val pending: CompletableDeferred<UploadBeginResult>?
-        var uploadId: String?
+        val pending: Deferred<Result<UploadBeginResult>>?
+        val activeUploadId: String?
         synchronized(batch) {
             batch.epoch += 1
-            uploadId = batch.activeUploadId
+            activeUploadId = batch.activeUploadId
             batch.activeUploadId = null
             batch.uploading = false
             batch.items.clear()
@@ -425,18 +428,26 @@ class AttachmentUploads internal constructor(
             batch.publish()
         }
         job?.cancel()
-        if (uploadId == null && pending != null) {
-            uploadId = try {
-                pending.await()
-            } catch (failure: Exception) {
-                null
-            }?.uploadId
-            synchronized(batch) {
-                if (batch.pendingBegin === pending) batch.pendingBegin = null
+        // Discard belongs to the helper, not the screen coroutine that invoked
+        // cancel: a late begin id must still be cleaned after that screen exits.
+        withContext(NonCancellable) {
+            val uploadId = if (activeUploadId == null && pending != null) {
+                try {
+                    pending.await().getOrThrow().uploadId
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    null
+                } finally {
+                    synchronized(batch) {
+                        if (batch.pendingBegin === pending) batch.pendingBegin = null
+                    }
+                }
+            } else {
+                activeUploadId
             }
+            if (!uploadId.isNullOrEmpty()) sessions.uploadCancel(paneId, uploadId)
         }
-        if (uploadId.isNullOrEmpty()) return
-        sessions.uploadCancel(paneId, uploadId)
     }
 
     /**
@@ -464,9 +475,31 @@ class AttachmentUploads internal constructor(
         batch: Batch,
         uploadItems: List<InternalItem>,
     ): List<UploadAttachment> {
+        val job = currentJob()
         val run: Int
+        val pendingBegin: Deferred<Result<UploadBeginResult>>
         synchronized(batch) {
             run = ++batch.epoch
+            batch.job = job
+            // App scope is supervised and outlives the upload/UI caller.
+            pendingBegin = scope.async(start = CoroutineStart.LAZY) {
+                synchronized(batch) {
+                    if (run != batch.epoch) throw CancellationException("Upload cancelled before begin")
+                }
+                try {
+                    Result.success(sessions.uploadBegin(
+                        paneId,
+                        uploadItems.map { UploadFileSpec(it.name, it.mediaType, it.bytes) },
+                    ))
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    // Expected command refusals belong to the upload caller;
+                    // they must not fail an unrelated app-scope child.
+                    Result.failure(failure)
+                }
+            }
+            batch.pendingBegin = pendingBegin
             batch.uploading = true
             batch.issue = null
             for (item in uploadItems) {
@@ -476,21 +509,11 @@ class AttachmentUploads internal constructor(
                 item.issue = null
             }
             batch.publish()
+            pendingBegin.start()
         }
-        batch.job = currentJob()
         var began = false
-        val pendingBegin = CompletableDeferred<UploadBeginResult>()
-        batch.pendingBegin = pendingBegin
         try {
-            val begin = try {
-                sessions.uploadBegin(
-                    paneId,
-                    uploadItems.map { UploadFileSpec(it.name, it.mediaType, it.bytes) },
-                ).also { pendingBegin.complete(it) }
-            } catch (failure: Exception) {
-                pendingBegin.completeExceptionally(failure)
-                throw failure
-            }
+            val begin = pendingBegin.await().getOrThrow()
             if (run != batch.epoch) return emptyList()
             synchronized(batch) {
                 if (batch.pendingBegin === pendingBegin) batch.pendingBegin = null
@@ -756,7 +779,7 @@ class AttachmentUploads internal constructor(
 
         /** `pendingBegin` — an `upload_begin` still awaiting its result. */
         @Volatile
-        var pendingBegin: CompletableDeferred<UploadBeginResult>? = null
+        var pendingBegin: Deferred<Result<UploadBeginResult>>? = null
 
         /** The coroutine running [runUpload] — cancelled by [cancel]. */
         @Volatile

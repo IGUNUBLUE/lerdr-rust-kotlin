@@ -1,11 +1,13 @@
 package com.lerdr.app.session
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.lifecycle.ViewModelStore
 import app.cash.turbine.test
 import com.google.common.truth.Truth.assertThat
 import com.lerdr.app.ui.terminal.TerminalCursorUi
 import java.io.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
@@ -349,6 +351,48 @@ class TerminalViewModelTest {
     }
 
     @Test
+    fun `background returns viewport to desktop until foreground resumes`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        val desktopGeometry = 160 to 50
+        val phoneGeometry = 84 to 31
+        var remoteGeometry = desktopGeometry
+        h.handle().responder = { message ->
+            when (message.type) {
+                "lease_pane_size" -> remoteGeometry = phoneGeometry
+                "release_pane_size" -> remoteGeometry = desktopGeometry
+            }
+            lerdr.core.model.CommandResultMessage(
+                action = message.type,
+                ok = true,
+                phase = lerdr.core.model.CommandResultMessage.PHASE_COMPLETED,
+                data = buildJsonObject {
+                    put("columns", remoteGeometry.first)
+                    put("rows", remoteGeometry.second)
+                },
+            )
+        }
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
+        viewModel.onViewportMeasured(92, 42)
+        h.pump()
+        assertThat(remoteGeometry).isEqualTo(phoneGeometry)
+
+        h.repository.setHidden(true)
+        h.pump()
+        assertThat(remoteGeometry).isEqualTo(desktopGeometry)
+        viewModel.onViewportMeasured(110, 51)
+        h.pump()
+        assertThat(remoteGeometry).isEqualTo(desktopGeometry)
+        advanceTimeBy(20_000)
+        h.pump()
+        assertThat(remoteGeometry).isEqualTo(desktopGeometry)
+
+        h.repository.setHidden(false)
+        h.pump()
+        assertThat(remoteGeometry).isEqualTo(phoneGeometry)
+    }
+
+    @Test
     fun `viewport measurement negotiates the pane-size lease`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectReady()
@@ -376,11 +420,129 @@ class TerminalViewModelTest {
         assertThat(lease.columns).isEqualTo(92)
         assertThat(lease.rows).isEqualTo(42)
 
-        // The resize committed a snapshot — the chip reads the lease grid.
+        // Geometry remains available without replacing the live lifecycle.
         val state = viewModel.uiState.value
         assertThat(state.leaseColumns).isEqualTo(92)
         assertThat(state.leaseRows).isEqualTo(42)
-        assertThat(state.statusLabel).isEqualTo("lease 92×42")
+        assertThat(state.statusLabel).isEqualTo("working")
+
+        h.emitAgent("claude", status = "idle")
+        assertThat(viewModel.uiState.value.statusLabel).isEqualTo("idle")
+        h.emitAgent("claude", status = "blocked")
+        assertThat(viewModel.uiState.value.statusLabel).isEqualTo("blocked")
+        assertThat(viewModel.uiState.value.leaseColumns).isEqualTo(92)
+        assertThat(viewModel.uiState.value.leaseRows).isEqualTo(42)
+    }
+
+    @Test
+    fun `queued old teardown preserves reopened terminal lease and content until final close`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        h.handle().responder = { message ->
+            lerdr.core.model.CommandResultMessage(
+                action = message.type,
+                ok = true,
+                phase = lerdr.core.model.CommandResultMessage.PHASE_COMPLETED,
+                data = buildJsonObject {
+                    put("columns", message.columns)
+                    put("rows", message.rows)
+                },
+            )
+        }
+        val old = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
+        val oldStore = ViewModelStore().apply { put("terminal", old) }
+        h.emitPaneContent("live content")
+        old.onViewportMeasured(92, 42)
+        h.pump()
+        oldStore.clear() // App-scope cleanup is queued, not yet run.
+        val successor = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
+        val successorStore = ViewModelStore().apply { put("terminal", successor) }
+        backgroundScope.launch { successor.uiState.collect { } }
+        successor.onViewportMeasured(84, 35)
+        h.pump()
+        assertThat(h.handle().requests.map { it.type }).doesNotContain("release_pane_size")
+        assertThat(sentFrames(h.handle()).map { it["type"]?.jsonPrimitive?.content })
+            .doesNotContain("unwatch_pane")
+        assertThat(successor.uiState.value.lines).containsExactly("live content")
+        assertThat(successor.uiState.value.leaseColumns).isEqualTo(84)
+        assertThat(successor.uiState.value.leaseRows).isEqualTo(35)
+        successorStore.clear()
+        h.pump()
+        assertThat(h.handle().requests.count { it.type == "release_pane_size" }).isEqualTo(1)
+        assertThat(sentFrames(h.handle()).count { it["type"]?.jsonPrimitive?.content == "unwatch_pane" })
+            .isEqualTo(1)
+        assertThat(h.repository.paneSnapshot(h.paneId).first()).isNull()
+    }
+
+    @Test
+    fun `close releases lease dispatched before its acquire receipt arrives`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        val acquire = CompletableDeferred<Unit>()
+        h.handle().responder = { message ->
+            if (message.type == "lease_pane_size") acquire.await()
+            lerdr.core.model.CommandResultMessage(
+                action = message.type,
+                ok = true,
+                phase = lerdr.core.model.CommandResultMessage.PHASE_COMPLETED,
+            )
+        }
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
+        val store = ViewModelStore().apply { put("terminal", viewModel) }
+        h.emitPaneContent("leased pane")
+        viewModel.onViewportMeasured(92, 42)
+        h.pump()
+        store.clear()
+        h.pump()
+        assertThat(h.handle().requests.map { it.type })
+            .containsExactly("lease_pane_size", "release_pane_size").inOrder()
+        assertThat(h.repository.paneSnapshot(h.paneId).first()).isNull()
+        assertThat(sentFrames(h.handle()).map { it["type"]?.jsonPrimitive?.content })
+            .contains("unwatch_pane")
+    }
+
+    @Test
+    fun `pending old release completes before successor size acquire`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        val release = CompletableDeferred<Unit>()
+        h.handle().responder = { message ->
+            if (message.type == "release_pane_size") release.await()
+            lerdr.core.model.CommandResultMessage(
+                action = message.type,
+                ok = true,
+                phase = lerdr.core.model.CommandResultMessage.PHASE_COMPLETED,
+                data = buildJsonObject {
+                    put("columns", message.columns)
+                    put("rows", message.rows)
+                },
+            )
+        }
+        val old = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
+        val oldStore = ViewModelStore().apply { put("terminal", old) }
+        h.emitPaneContent("before close")
+        old.onViewportMeasured(92, 42)
+        h.pump()
+        oldStore.clear()
+        h.pump()
+        val successor = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
+        val successorStore = ViewModelStore().apply { put("terminal", successor) }
+        backgroundScope.launch { successor.uiState.collect { } }
+        successor.onViewportMeasured(84, 35)
+        h.pump()
+        assertThat(h.handle().requests.map { it.type })
+            .containsExactly("lease_pane_size", "release_pane_size").inOrder()
+        release.complete(Unit)
+        h.pump()
+        h.emitPaneContent("after close", fingerprint = "fp-2")
+        assertThat(h.handle().requests.map { it.type })
+            .containsExactly("lease_pane_size", "release_pane_size", "lease_pane_size").inOrder()
+        assertThat(successor.uiState.value.leaseColumns).isEqualTo(84)
+        assertThat(successor.uiState.value.leaseRows).isEqualTo(35)
+        assertThat(successor.uiState.value.lines).containsExactly("after close")
+        successorStore.clear()
+        h.pump()
+        assertThat(h.handle().requests.count { it.type == "release_pane_size" }).isEqualTo(2)
     }
 
     @Test

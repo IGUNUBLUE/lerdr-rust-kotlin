@@ -428,6 +428,20 @@ internal fun inlineAnnotated(
     highlight: String = "",
 ): AnnotatedString = buildAnnotatedString { appendInline(text, styles, highlight) }
 
+/** Fenced source is literal text; only find highlights may annotate it. */
+internal fun codeAnnotated(
+    code: String,
+    styles: InlineStyles,
+    highlight: String = "",
+): AnnotatedString = buildAnnotatedString {
+    appendHighlighted(
+        this,
+        code,
+        highlight,
+        SpanStyle(background = styles.highlightBackground, color = styles.highlightColor),
+    )
+}
+
 @Composable
 private fun rememberInlineStyles(baseColor: Color): InlineStyles {
     val scheme = MaterialTheme.colorScheme
@@ -585,7 +599,7 @@ private fun FeedCodeBlock(
             }
             SelectionContainer {
                 Text(
-                    inlineAnnotated(block.code, styles, highlight),
+                    codeAnnotated(block.code, styles, highlight),
                     style = LerdrTextStyles.code,
                     modifier = Modifier
                         .fillMaxWidth()

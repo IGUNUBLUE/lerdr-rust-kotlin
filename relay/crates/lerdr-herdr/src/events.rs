@@ -97,6 +97,26 @@ pub fn wire_event_name(name: &str) -> &str {
     }
 }
 
+/// `pane.agent_status_changed` payload (`PaneAgentStatusChangedEvent` in
+/// the schema) — the authoritative status transition stream: ordered and
+/// reliable, and it carries the new status itself, so committing it
+/// captures transitions a status-sampling refresh would read past.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PaneAgentStatusChangedData {
+    pub pane_id: String,
+    #[serde(default)]
+    pub workspace_id: String,
+    pub agent_status: AgentStatus,
+    #[serde(default)]
+    pub agent: Option<String>,
+    #[serde(default)]
+    pub display_agent: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub state_labels: std::collections::BTreeMap<String, String>,
+}
+
 /// One event from the subscription stream. `name` is always the canonical
 /// (dotted) form; `data` is the event's raw payload object (e.g.
 /// `{"pane": {…}}` for `pane.updated`).
@@ -254,17 +274,12 @@ impl Serialize for Subscription {
     }
 }
 
-/// The relay's topology subscription set — the Go client's
-/// `topologySubscriptions` (20 lifecycle events) plus two gated optional
-/// entries: `workspace.reordered` (older Herdr builds reject the whole
-/// `events.subscribe` when the name is present) and `pane.output_changed`
-/// (only present on builds whose schema exposes the subscription variant —
-/// 0.9.1 lists the `pane_output_changed` event payload but ships no
-/// `pane.output_changed` subscription, so the capability consult keeps it
-/// off the wire there).
+/// Global topology events plus lifecycle transitions scoped to concrete panes.
+/// Herdr requires `pane_id` on every agent-status subscription.
 pub fn topology_subscriptions(
     include_workspace_reordered: bool,
     include_pane_output_changed: bool,
+    pane_ids: impl IntoIterator<Item = String>,
 ) -> Vec<Subscription> {
     const NAMES: &[&str] = &[
         "pane.created",
@@ -295,6 +310,11 @@ pub fn topology_subscriptions(
     if include_pane_output_changed {
         subs.push(Subscription::Named("pane.output_changed"));
     }
+    subs.extend(
+        pane_ids
+            .into_iter()
+            .map(Subscription::pane_agent_status_changed),
+    );
     subs
 }
 
@@ -341,7 +361,12 @@ pub(crate) async fn subscribe_on(
     let response = wire::decode_response(&line).map_err(SubscribeError::transport)?;
 
     if let Some(error) = response.error {
-        let pre_dispatch = wire::is_pre_dispatch_refusal(&response.id, &error.code, &error.message);
+        // Herdr 0.9.3 can echo the request ID on decoder refusals. No
+        // subscription exists before this handshake acknowledges it.
+        let pre_dispatch = wire::is_pre_dispatch_refusal(&response.id, &error.code, &error.message)
+            || (response.id == request_id
+                && error.code == "invalid_request"
+                && error.message.starts_with("invalid request:"));
         return Err(SubscribeError::refused(
             error.code,
             error.message,
@@ -383,6 +408,8 @@ pub struct EventStream {
     /// Terminal error captured by `drain` for the next poll.
     pending_terminal: Option<EventStreamError>,
     done: bool,
+    /// Membership covered by topology lifecycle subscriptions, if enabled.
+    pub(crate) topology_panes: Option<std::collections::BTreeSet<String>>,
 }
 
 impl EventStream {
@@ -396,6 +423,7 @@ impl EventStream {
             reader,
             pending_terminal: None,
             done: false,
+            topology_panes: None,
         }
     }
 
@@ -721,7 +749,10 @@ impl EventSupervisor {
                         {
                             return;
                         }
+                        let mut gap_membership_changed = false;
                         for event in std::mem::take(&mut boot.gap_events) {
+                            gap_membership_changed |=
+                                topology_fallback && changes_pane_membership(&event);
                             if tx
                                 .send(SupervisorSignal::Invalidated { event, gap: true })
                                 .await
@@ -730,15 +761,30 @@ impl EventSupervisor {
                                 return;
                             }
                         }
+                        // Finish the queued burst before replacing its pane coverage.
+                        // A fixed bound keeps new traffic from delaying the refresh.
+                        let mut buffered_before_refresh =
+                            gap_membership_changed.then(|| boot.stream.rx.len());
                         loop {
+                            if let Some(remaining) = buffered_before_refresh.as_mut() {
+                                if *remaining == 0 {
+                                    continue 'resync;
+                                }
+                                *remaining -= 1;
+                            }
                             match boot.stream.next_event().await {
                                 Some(Ok(event)) => {
+                                    let membership_changed =
+                                        topology_fallback && changes_pane_membership(&event);
                                     if tx
                                         .send(SupervisorSignal::Invalidated { event, gap: false })
                                         .await
                                         .is_err()
                                     {
                                         return;
+                                    }
+                                    if membership_changed && buffered_before_refresh.is_none() {
+                                        buffered_before_refresh = Some(boot.stream.rx.len());
                                     }
                                 }
                                 Some(Err(err)) => {
@@ -781,6 +827,12 @@ impl EventSupervisor {
         });
         SupervisorStream { rx, task }
     }
+}
+fn changes_pane_membership(event: &Event) -> bool {
+    matches!(
+        event.name.as_str(),
+        "pane.created" | "pane.closed" | "pane.moved" | "workspace.closed" | "tab.closed"
+    )
 }
 
 /// Stream half of the supervisor — yields [`SupervisorSignal`] until dropped.
@@ -917,34 +969,28 @@ mod tests {
         assert_eq!(b.next_delay(), Duration::from_millis(100));
     }
 
+    /// The status payload decodes the documented event shape.
     #[test]
-    fn topology_subscriptions_reordered_gate() {
-        let with = topology_subscriptions(true, false);
-        let without = topology_subscriptions(false, false);
-        assert_eq!(with.len(), without.len() + 1);
-        assert!(with
-            .iter()
-            .any(|s| matches!(s, Subscription::Named("workspace.reordered"))));
-        assert!(!without
-            .iter()
-            .any(|s| matches!(s, Subscription::Named("workspace.reordered"))));
-    }
-
-    /// `pane.output_changed` rides the same bounded-set handshake as
-    /// `workspace.reordered` — gated independently, absent by default.
-    #[test]
-    fn topology_subscriptions_output_changed_gate() {
-        let with = topology_subscriptions(false, true);
-        let without = topology_subscriptions(false, false);
-        assert_eq!(with.len(), without.len() + 1);
-        assert!(with
-            .iter()
-            .any(|s| matches!(s, Subscription::Named("pane.output_changed"))));
-        assert!(!without
-            .iter()
-            .any(|s| matches!(s, Subscription::Named("pane.output_changed"))));
-        // Both optionals together extend the 20-name base by two.
-        assert_eq!(topology_subscriptions(true, true).len(), without.len() + 2);
+    fn agent_status_changed_payload_decodes() {
+        let event = Event {
+            name: "pane.agent_status_changed".into(),
+            data: serde_json::json!({
+                "pane_id": "w8:pJ",
+                "workspace_id": "w8",
+                "agent_status": "working",
+                "agent": "omp",
+                "display_agent": "OMP",
+                "title": "orch",
+                "state_labels": {"phase": "build"}
+            }),
+        };
+        let payload: PaneAgentStatusChangedData = event.data_as().expect("payload decodes");
+        assert_eq!(payload.pane_id, "w8:pJ");
+        assert_eq!(payload.agent_status, AgentStatus::Working);
+        assert_eq!(payload.agent.as_deref(), Some("omp"));
+        assert_eq!(payload.display_agent.as_deref(), Some("OMP"));
+        assert_eq!(payload.title.as_deref(), Some("orch"));
+        assert_eq!(payload.state_labels["phase"], "build");
     }
 
     #[tokio::test]

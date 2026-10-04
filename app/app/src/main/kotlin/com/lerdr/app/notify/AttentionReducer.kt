@@ -121,10 +121,10 @@ object NotifyDeepLinks {
 }
 
 /**
- * Transition → notification reducer. A pure function of two consecutive
- * [AgentStore.agents] snapshots: every dedupe, rate-limit and collapse
- * decision is derivable from prev→current alone, so the whole policy is
- * unit-testable without Android.
+ * Transition → notification reducer. A pure function of consecutive
+ * [AgentStore.agents] snapshots and the visible viewed pane. Dedupe, collapse,
+ * and retraction decisions stay derived from those inputs.
+ * Unit-testable without Android.
  *
  * Contract:
  * - **Dedupe key** is `(paneId, signal[, eventId])` — one notification per
@@ -145,9 +145,13 @@ object NotifyDeepLinks {
  */
 object AttentionReducer {
 
-    fun reduce(previous: List<Agent>, current: List<Agent>): List<NotificationCommand> {
+    fun reduce(
+        previous: List<Agent>,
+        current: List<Agent>,
+        viewedPaneId: String? = null,
+    ): List<NotificationCommand> {
         val prev = signals(previous)
-        val curr = signals(current)
+        val curr = signals(current, viewedPaneId)
         val prevPaneIds = previous.mapTo(HashSet()) { it.paneId }
         val commands = mutableListOf<NotificationCommand>()
 
@@ -225,9 +229,10 @@ object AttentionReducer {
     private class Row(val agent: Agent, val signal: AttentionSignal, val key: String)
 
     /** paneId → notified state, in snapshot order for deterministic output. */
-    private fun signals(agents: List<Agent>): Map<String, Row> {
+    private fun signals(agents: List<Agent>, viewedPaneId: String? = null): Map<String, Row> {
         val out = LinkedHashMap<String, Row>()
         for (agent in agents) {
+            if (agent.paneId == viewedPaneId) continue
             val signal = signalOf(agent) ?: continue
             out[agent.paneId] = Row(agent, signal, keyOf(agent, signal))
         }

@@ -506,4 +506,30 @@ class FilesViewModelTest {
         assertThat(state.currentDir).isEqualTo("app/src")
         assertThat(state.filter).isEmpty()
     }
+
+    @Test
+    fun `a replacement target reloads the same directory and clears its old preview`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        h.respondWith(
+            tree = """{"root":"/home/u/lerdr","entries":[{"path":"old.txt","kind":"file"}]}""",
+        )
+        val vm = h.viewModel()
+        h.pump()
+        vm.showFile("old.txt")
+        h.pump()
+        assertThat(vm.uiState.value.previewVisible).isTrue()
+
+        h.respondWith(
+            tree = """{"root":"/home/u/lerdr","entries":[{"path":"new.txt","kind":"file"}]}""",
+        )
+        h.handle().emit(
+            json(
+                """{"type":"agents","agents":[{"pane_id":"%1","raw_pane_id":"%1","terminal_id":"t2","server_session_id":"ss1","generation":4,"agent":"claude","status":"idle","cwd":"/home/u/lerdr","workspace_id":"w1","updated_at":101}]}""",
+            ),
+        )
+        h.pump()
+        assertThat(vm.uiState.value.tree?.entries?.single()?.path).isEqualTo("new.txt")
+        assertThat(vm.uiState.value.previewVisible).isFalse()
+    }
 }

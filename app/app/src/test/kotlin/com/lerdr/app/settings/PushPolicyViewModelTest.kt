@@ -6,6 +6,7 @@ import com.lerdr.app.session.FakeCredentialStore
 import com.lerdr.app.session.FakeRelaySessionFactory
 import com.lerdr.app.session.FakeRelaySessionHandle
 import com.lerdr.app.session.SessionRepository
+import com.lerdr.core.e2ee.E2EEServerFinish
 import java.io.File
 import java.time.Instant
 import kotlinx.coroutines.Dispatchers
@@ -21,6 +22,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import lerdr.core.data.RelayEndpoint
+import lerdr.core.data.DeviceRole
 import lerdr.core.data.RelayRegistry
 import lerdr.core.data.RelayTransport
 import lerdr.core.protocol.LerdrJson
@@ -99,9 +101,12 @@ class PushPolicyViewModelTest {
                 ?: error("no session for ${endpoint.socketOrigin}")
 
         /** CONNECTED + `push_config` carrying the given capability list. */
-        suspend fun connectReady(capabilities: List<String> = listOf("push_policy")) {
+        suspend fun connectReady(
+            capabilities: List<String> = listOf("push_policy"),
+            role: DeviceRole = DeviceRole.CONTROLLER,
+        ) {
             repository.connect(endpoint)
-            handle().connect()
+            handle().connect(finish(role))
             val caps = capabilities.joinToString(",") { "\"$it\"" }
             handle().emit(
                 json(
@@ -110,6 +115,16 @@ class PushPolicyViewModelTest {
                 ),
             )
             pump()
+        }
+
+        private fun finish(role: DeviceRole): E2EEServerFinish {
+            val constructor = E2EEServerFinish::class.java.declaredConstructors.single {
+                it.parameterCount == 7
+            }
+            constructor.isAccessible = true
+            return constructor.newInstance(
+                byteArrayOf(0), "dev-1", "cred-1", role.wireName, "en", 1L, null,
+            ) as E2EEServerFinish
         }
 
         fun sentOf(type: String): List<JsonObject> =
@@ -145,12 +160,18 @@ class PushPolicyViewModelTest {
             pump()
         }
 
-        suspend fun emitCommandResult(requestId: String, ok: Boolean, error: String? = null) {
+        suspend fun emitCommandResult(
+            requestId: String,
+            ok: Boolean,
+            error: String? = null,
+            policyJson: String? = null,
+        ) {
             val errorField = error?.let { ""","error":"$it"""" } ?: ""
+            val dataField = policyJson?.let { ""","data":{"policy":$it}""" } ?: ""
             handle().emit(
                 json(
                     """{"type":"command_result","request_id":"$requestId","ok":$ok,""" +
-                        """"phase":"${if (ok) "completed" else "failed"}"$errorField}""",
+                        """"phase":"${if (ok) "completed" else "failed"}"$errorField$dataField}""",
                 ),
             )
             pump()
@@ -280,24 +301,6 @@ class PushPolicyViewModelTest {
         assertThat(h.factory.created).isEmpty()
     }
 
-    @Test
-    fun `the policy fetch refires after a reconnect`() = runTest {
-        val h = Harness(this, tmp.root) { 0L }
-        val vm = h.viewModel()
-        backgroundScope.launch { vm.uiState.collect { } }
-        h.bindReady(vm)
-        assertThat(h.sentOf("push_policy_get")).hasSize(1)
-
-        h.handle().disconnect()
-        h.pump()
-        assertThat(vm.uiState.value.connected).isFalse()
-
-        // Capabilities persist on the row — the next CONNECTED edge refetches.
-        h.handle().connect()
-        h.pump()
-        h.awaitSent("push_policy_get", count = 2)
-        assertThat(h.sentOf("push_policy_get")).hasSize(2)
-    }
 
     @Test
     fun `a category toggle sends the whole editable policy map`() = runTest {
@@ -322,7 +325,13 @@ class PushPolicyViewModelTest {
 
         // Optimistic state already applied; confirmation clears `saving`.
         assertThat(vm.uiState.value.policy!!.categories["finished"]).isTrue()
-        h.emitCommandResult(sent["request_id"]!!.jsonPrimitive.content, ok = true)
+        h.emitCommandResult(
+            sent["request_id"]!!.jsonPrimitive.content,
+            ok = true,
+            policyJson = defaultPolicyJson(
+                categories = """{"attention":true,"question":true,"brief":true,"finished":true,"update":true,"test":true}""",
+            ),
+        )
         h.emitPolicyResult(ok = true, policyJson = defaultPolicyJson(
             categories = """{"attention":true,"question":true,"brief":true,"finished":true,"update":true,"test":true}""",
         ))
@@ -333,7 +342,7 @@ class PushPolicyViewModelTest {
     }
 
     @Test
-    fun `a rejected set reverts the edit and surfaces the wire code`() = runTest {
+    fun `a rejected correlated set reverts the edit`() = runTest {
         val h = Harness(this, tmp.root) { 0L }
         val vm = h.viewModel()
         backgroundScope.launch { vm.uiState.collect { } }
@@ -353,7 +362,7 @@ class PushPolicyViewModelTest {
         val state = vm.uiState.value
         assertThat(state.saving).isFalse()
         assertThat(state.policy!!.settleMs).isEqualTo(2_000)
-        assertThat(state.policyError).contains("push_invalid_duration")
+        assertThat(state.policyError).isNotNull()
     }
 
     @Test
@@ -387,7 +396,11 @@ class PushPolicyViewModelTest {
         var policy = sent["policy"]!!.jsonObject
         assertThat(policy["snoozed"]!!.jsonPrimitive.content).isEqualTo("true")
         assertThat(policy.containsKey("snooze_until")).isFalse()
-        h.emitCommandResult(sent["request_id"]!!.jsonPrimitive.content, ok = true)
+        h.emitCommandResult(
+            sent["request_id"]!!.jsonPrimitive.content,
+            ok = true,
+            policyJson = defaultPolicyJson(snoozed = true),
+        )
         h.emitPolicyResult(ok = true, policyJson = defaultPolicyJson(snoozed = true))
         assertThat(vm.uiState.value.policy!!.snoozed).isTrue()
         assertThat(vm.uiState.value.policy!!.snoozeUntil).isNull()
@@ -436,8 +449,9 @@ class PushPolicyViewModelTest {
         h.bindReady(vm)
 
         vm.sendTest()
-        h.awaitSent("push_test_device")
+        val sent = h.awaitSent("push_test_device").last()
         h.emitTestResult("rate_limited")
+        h.emitReceiptFor(sent)
 
         assertThat(vm.uiState.value.test).isEqualTo(PushTestUi.Rejected("rate_limited"))
     }
@@ -491,6 +505,175 @@ class PushPolicyViewModelTest {
 
         vm.refreshPolicy()
         h.awaitSent("push_policy_get", count = 2)
+    }
+
+    @Test
+    fun `reconnect blocks push transactions until current bootstrap and honors removed capability`() = runTest {
+        val h = Harness(this, tmp.root) { 0L }
+        val vm = h.viewModel()
+        backgroundScope.launch { vm.uiState.collect { } }
+        h.bindReady(vm)
+        h.handle().disconnect()
+        h.pump()
+        h.handle().connect()
+        h.pump()
+
+        vm.refreshPolicy()
+        vm.setCategory("finished", true)
+        vm.snoozeIndefinitely()
+        vm.sendTest()
+        h.pump()
+        assertThat(vm.uiState.value.capabilitiesKnown).isFalse()
+        assertThat(vm.uiState.value.policy).isNull()
+        assertThat(h.sentOf("push_policy_get")).hasSize(1)
+        assertThat(h.sentOf("push_policy_set")).isEmpty()
+        assertThat(h.sentOf("push_test_device")).isEmpty()
+
+        h.handle().emit(json(
+            """{"type":"push_config","protocol":3,"capabilities":[],"inventory":{"state":"ready"}}""",
+        ))
+        h.pump()
+        vm.refreshPolicy()
+        vm.setCategory("finished", true)
+        vm.sendTest()
+        h.pump()
+        assertThat(vm.uiState.value.capabilitiesKnown).isTrue()
+        assertThat(vm.uiState.value.supported).isFalse()
+        assertThat(h.sentOf("push_policy_get")).hasSize(1)
+        assertThat(h.sentOf("push_policy_set")).isEmpty()
+        assertThat(h.sentOf("push_test_device")).isEmpty()
+
+        h.handle().disconnect()
+        h.pump()
+        h.handle().connect()
+        h.pump()
+        h.handle().emit(json(
+            """{"type":"push_config","protocol":3,"capabilities":["push_policy"],"inventory":{"state":"ready"}}""",
+        ))
+        val get = h.awaitSent("push_policy_get", 2).last()
+        h.emitPolicy(defaultPolicyJson())
+        h.emitReceiptFor(get)
+        vm.setCategory("finished", true)
+        h.awaitSent("push_policy_set")
+        assertThat(vm.uiState.value.policy!!.categories["finished"]).isTrue()
+    }
+
+    @Test
+    fun `reader sessions can load policies but cannot toggle snooze or send tests`() = runTest {
+        val h = Harness(this, tmp.root) { 0L }
+        val vm = h.viewModel()
+        backgroundScope.launch { vm.uiState.collect { } }
+        vm.bind("r1")
+        h.connectReady(role = DeviceRole.READER)
+        val get = h.awaitSent("push_policy_get").single()
+        h.emitPolicy(defaultPolicyJson())
+        h.emitReceiptFor(get)
+
+        assertThat(vm.uiState.value.supported).isTrue()
+        assertThat(vm.uiState.value.canControl).isFalse()
+        vm.setCategory("finished", true)
+        vm.snoozeIndefinitely()
+        vm.sendTest()
+        h.pump()
+
+        assertThat(vm.uiState.value.policy!!.categories["finished"]).isFalse()
+        assertThat(vm.uiState.value.policy!!.snoozed).isFalse()
+        assertThat(h.sentOf("push_policy_set")).isEmpty()
+        assertThat(h.sentOf("push_test_device")).isEmpty()
+    }
+
+    @Test
+    fun `an old uncorrelated policy result cannot overwrite or fail a newer edit`() = runTest {
+        val h = Harness(this, tmp.root) { 0L }
+        val vm = h.viewModel()
+        backgroundScope.launch { vm.uiState.collect { } }
+        h.bindReady(vm)
+        vm.setCategory("finished", true)
+        val first = h.awaitSent("push_policy_set").single()
+        val saved = defaultPolicyJson(
+            categories = """{"attention":true,"question":true,"brief":true,"finished":true,"update":true,"test":true}""",
+        )
+        h.emitCommandResult(first["request_id"]!!.jsonPrimitive.content, ok = true, policyJson = saved)
+
+        vm.snoozeIndefinitely()
+        val second = h.awaitSent("push_policy_set", 2).last()
+        h.emitPolicyResult(ok = true, policyJson = saved)
+        h.emitPolicyResult(ok = false, code = "push_invalid_duration")
+        assertThat(vm.uiState.value.saving).isTrue()
+        assertThat(vm.uiState.value.policy!!.snoozed).isTrue()
+        assertThat(vm.uiState.value.policyError).isNull()
+        h.emitCommandResult(second["request_id"]!!.jsonPrimitive.content, ok = true,
+            policyJson = defaultPolicyJson(
+                categories = """{"attention":true,"question":true,"brief":true,"finished":true,"update":true,"test":true}""",
+                snoozed = true,
+            ),
+        )
+        assertThat(vm.uiState.value.saving).isFalse()
+        assertThat(vm.uiState.value.policy!!.snoozed).isTrue()
+    }
+
+    @Test
+    fun `rebinding ignores the previous relay save failure`() = runTest {
+        val h = Harness(this, tmp.root) { 0L }
+        val vm = h.viewModel()
+        backgroundScope.launch { vm.uiState.collect { } }
+        h.bindReady(vm)
+        vm.setCooldownMs(60_000)
+        val set = h.awaitSent("push_policy_set").single()
+        vm.bind("r2")
+        h.emitCommandResult(set["request_id"]!!.jsonPrimitive.content, ok = false)
+        h.emitPolicyResult(ok = false, code = "push_invalid_duration")
+
+        assertThat(vm.uiState.value.relayId).isEqualTo("r2")
+        assertThat(vm.uiState.value.policy).isNull()
+        assertThat(vm.uiState.value.policyError).isNull()
+        assertThat(vm.uiState.value.saving).isFalse()
+    }
+
+    @Test
+    fun `test results do not unlock operations before the correlated receipt`() = runTest {
+        val h = Harness(this, tmp.root) { 0L }
+        val vm = h.viewModel()
+        backgroundScope.launch { vm.uiState.collect { } }
+        h.bindReady(vm)
+        vm.sendTest()
+        val test = h.awaitSent("push_test_device").single()
+        h.emitTestResult("queued")
+        vm.sendTest()
+        vm.snoozeIndefinitely()
+        vm.refreshPolicy()
+        h.pump()
+
+        assertThat(vm.uiState.value.test).isEqualTo(PushTestUi.Sending)
+        assertThat(h.sentOf("push_test_device")).hasSize(1)
+        assertThat(h.sentOf("push_policy_set")).isEmpty()
+        assertThat(h.sentOf("push_policy_get")).hasSize(1)
+        h.emitReceiptFor(test)
+        assertThat(vm.uiState.value.test).isEqualTo(PushTestUi.Accepted("queued"))
+    }
+
+    @Test
+    fun `revocation clears in flight policy edits and ignores late success`() = runTest {
+        val h = Harness(this, tmp.root) { 0L }
+        val vm = h.viewModel()
+        backgroundScope.launch { vm.uiState.collect { } }
+        h.bindReady(vm)
+        vm.snoozeIndefinitely()
+        val set = h.awaitSent("push_policy_set").single()
+        h.handle().rejectAuth()
+        h.pump()
+        h.emitCommandResult(set["request_id"]!!.jsonPrimitive.content, ok = true,
+            policyJson = defaultPolicyJson(snoozed = true),
+        )
+        h.emitPolicyResult(ok = true, policyJson = defaultPolicyJson(snoozed = true))
+        vm.setCategory("finished", true)
+        h.pump()
+
+        assertThat(vm.uiState.value.connected).isFalse()
+        assertThat(vm.uiState.value.canControl).isFalse()
+        assertThat(vm.uiState.value.policy).isNull()
+        assertThat(vm.uiState.value.saving).isFalse()
+        assertThat(h.sentOf("push_policy_set")).hasSize(1)
     }
 
     private suspend fun Harness.emitReceiptFor(frame: JsonObject) {

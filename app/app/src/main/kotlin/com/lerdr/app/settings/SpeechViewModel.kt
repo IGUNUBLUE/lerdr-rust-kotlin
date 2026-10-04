@@ -65,6 +65,8 @@ data class SpeechUiState(
     val synthesisCapable: Boolean = false,
     /** `speech_voice_management` — the relay accepts phone-driven installs. */
     val managementCapable: Boolean = false,
+    /** Voice installs/removals require the enrolled controller role. */
+    val canManageVoices: Boolean = false,
     /** `speech_languages` ∩ `SPEECH_LANGUAGES` — voices the relay can speak. */
     val speakableLanguages: List<String> = emptyList(),
     /** Voice catalog card content; null until the first payload lands. */
@@ -271,6 +273,9 @@ class SpeechViewModel(
         viewModelScope.launch {
             try {
                 requireVoiceManagement()
+                if (!sessions.canControl(relayId)) {
+                    throw CommandException("Voice changes require a controller device.")
+                }
                 val result = sessions.request(
                     relayId,
                     Inbound(type = if (install) VOICE_INSTALL else VOICE_REMOVE),
@@ -352,6 +357,7 @@ class SpeechViewModel(
                 Protocol.SPEECH_SYNTHESIS_CAPABILITY in capabilities,
             managementCapable =
                 Protocol.SPEECH_VOICE_MANAGEMENT_CAPABILITY in capabilities,
+            canManageVoices = sessions.canControl(relayId),
             speakableLanguages = speakable,
             catalog = catalog,
             lastError = relay.error,

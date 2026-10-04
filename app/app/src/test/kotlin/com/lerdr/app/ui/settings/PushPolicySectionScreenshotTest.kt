@@ -87,6 +87,7 @@ class PushPolicySectionScreenshotTest {
                 connected = true,
                 capabilitiesKnown = true,
                 supported = true,
+                canControl = true,
                 policy = PushPolicyUi(
                     deviceId = "dev-1",
                     categories = PushPolicyUi.DEFAULT_CATEGORIES +
@@ -121,6 +122,7 @@ class PushPolicySectionScreenshotTest {
                 connected = true,
                 capabilitiesKnown = true,
                 supported = true,
+                canControl = true,
                 policy = PushPolicyUi(deviceId = "dev-1"),
                 policyError =
                     "The relay did not save this notification policy (push_invalid_duration).",
@@ -138,6 +140,7 @@ class PushPolicySectionScreenshotTest {
                 connected = true,
                 capabilitiesKnown = true,
                 supported = true,
+                canControl = true,
                 policy = PushPolicyUi(deviceId = "dev-1"),
             ),
             push = PushUiState(stage = PushStage.NO_DISTRIBUTOR),
@@ -153,6 +156,7 @@ class PushPolicySectionScreenshotTest {
                 connected = true,
                 capabilitiesKnown = true,
                 supported = true,
+                canControl = true,
                 policy = PushPolicyUi(deviceId = "dev-1"),
             ),
             push = PushUiState(

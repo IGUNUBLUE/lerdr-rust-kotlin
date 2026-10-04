@@ -1,10 +1,18 @@
 package com.lerdr.app.ui.terminal
 
 import androidx.activity.ComponentActivity
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextInputSelection
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.lerdr.core.designsystem.theme.LerdrTheme
@@ -70,6 +78,38 @@ class TerminalInputBarScreenshotTest {
         composeRule.onNodeWithTag("terminalSecretField").performTextInput("hunter2")
         composeRule.waitForIdle()
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun inputBar_restoresPlainDraftCaret() {
+        val restoration = StateRestorationTester(composeRule)
+        restoration.setContent {
+            LerdrTheme {
+                TerminalInputBar(onSendText = {})
+            }
+        }
+        val field = composeRule.onNodeWithTag("terminalInputField")
+        field.performTextInput("alpha omega")
+        field.performTextInputSelection(TextRange(6))
+        restoration.emulateSavedInstanceStateRestore()
+        field.performTextInput("beta ")
+        field.assertTextEquals("alpha beta omega")
+    }
+
+    @Test
+    fun inputBar_doesNotRestoreSecretDraft() {
+        val restoration = StateRestorationTester(composeRule)
+        restoration.setContent {
+            LerdrTheme {
+                TerminalInputBar(onSendText = {}, secretMode = true)
+            }
+        }
+        val field = composeRule.onNodeWithTag("terminalSecretField")
+        field.performTextInput("not-a-real-secret")
+        restoration.emulateSavedInstanceStateRestore()
+        field.assert(
+            SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")),
+        )
     }
 
     /** Reader gate — field and send affordance render disabled. */

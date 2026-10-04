@@ -67,12 +67,28 @@ polling.
 
 ### Event stream — the reactive spine
 
-`Bootstrap()`: subscribe (`lerdr-events`, topology subscription set) →
-returns `EventStream` + `SessionSnapshot` (workspaces, tabs, panes,
-agents, focus ids, `version`, `protocol`, `revision`,
-`state_change_seq`). Events arrive canonicalized; legacy names map
-(`workspace_created` → `workspace.created`; 26 aliases). Fallback:
-`workspace.reordered` unsupported → re-subscribe without it + probe.
+`Bootstrap()`: discover current pane IDs → subscribe (`lerdr-events`,
+global topology events plus per-pane lifecycle entries) → read an authoritative
+`SessionSnapshot` (workspaces, tabs, panes, agents, focus IDs, `version`,
+`protocol`, `revision`, `state_change_seq`). Rebuild the subscription if pane
+membership changed between discovery and the snapshot. Creation, closure and
+cross-workspace moves also trigger a new subscription and snapshot.
+Membership-triggered resubscription first forwards the complete bootstrap gap
+and the live burst already queued at the trigger. The live drain uses a fixed
+queue count, so continued traffic cannot postpone subscription refresh forever.
+These remain invalidations, with the gap semantics below.
+
+`pane.agent_status_changed` requires a concrete `pane_id`; omitting it rejects
+the entire handshake. Events arrive canonicalized; legacy names map
+(`workspace_created` → `workspace.created`; 26 aliases). A named unknown-variant
+refusal drops only that optional variant. Herdr 0.9.3 decoder refusals can echo
+`lerdr-events`; this handshake recognizes both echoed and empty IDs, without
+changing the dispatch taxonomy for other RPCs.
+
+Resync adopts sampled lifecycle status. Events buffered during the snapshot
+gap trigger fresh reads, never status replay over the snapshot: the streams
+share no sequence boundary. Subsequent live lifecycle events commit their
+carried status, preserving bursts shorter than the reconcile interval.
 
 26 canonical events: `pane.output_changed`, `pane.agent_status_changed`,
 `pane.agent_detected`, `pane.{created,closed,updated,focused,moved,
@@ -245,6 +261,18 @@ runtime schema is the capability-discovery input.
   dual claims are just multiple sources reporting on one identity. A
   Herdr without agent reporting refuses the method and the outcome
   degrades to the prior dispatched-unknown result.
+- **`pane.agent_status_changed` is the authoritative status stream, not a
+  watch nudge**: its payload carries the new `agent_status` (plus `agent`,
+  `display_agent`, `title`, `state_labels`), ordered and reliable. The
+  relay subscribes it on the topology stream (gated like
+  `workspace.reordered` — older builds may reject the name, the
+  handshake drops it per refusal) and commits the carried status into
+  the committed row — running the transition pipeline so a `working`
+  burst too short for a `session.snapshot` sample still produces the
+  working→idle `done`+unseen arc. Snapshot commits remain
+  status-preserving on the Event path; the `agent_event` UDP datagram
+  stays as a wake but now also commits its carried `status`/`pane_id`
+  instead of being reduced to a sampling poke.
 - **`terminal session control`** is NOT a socket RPC — it is a raw
   terminal-stream takeover surface for bridge clients that own the
   terminal UI (it accepts `terminal.mouse` events upstream of 0.9.2).

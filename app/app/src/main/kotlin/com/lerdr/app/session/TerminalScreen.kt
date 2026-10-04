@@ -113,6 +113,7 @@ fun TerminalScreen(
     onOpenFeed: () -> Unit,
     onOpenFiles: () -> Unit,
     onBack: () -> Unit,
+    onSessionReplaced: (String) -> Unit,
 ) {
     val appContext = LocalContext.current.applicationContext
     val viewModel: TerminalViewModel = viewModel(key = "terminal:$paneId") {
@@ -133,6 +134,7 @@ fun TerminalScreen(
         onOpenFeed = onOpenFeed,
         onOpenFiles = onOpenFiles,
         onBack = onBack,
+        onSessionReplaced = onSessionReplaced,
         tabsPaneId = paneId,
         onSendKeys = viewModel::sendKeys,
         onSendText = viewModel::sendText,
@@ -154,6 +156,7 @@ fun TerminalContent(
     onOpenFiles: () -> Unit,
     onBack: () -> Unit,
     tabsPaneId: String? = null,
+    onSessionReplaced: ((String) -> Unit)? = null,
     onSendKeys: (List<String>) -> Unit,
     onSendText: (String) -> Unit,
     onSendSecret: (String) -> Unit = {},
@@ -299,15 +302,17 @@ fun TerminalContent(
         topBar = {
             SessionTopBar(
                 title = uiState.title.ifEmpty { uiState.paneId.substringAfter("::") },
+                onActionMessage = { message ->
+                    scope.launch { snackbarHostState.showSnackbar(message) }
+                },
                 breadcrumb = uiState.breadcrumb,
                 statusLabel = uiState.statusLabel.ifEmpty {
                     if (uiState.connected) "live" else "offline"
                 },
-                // Mockup: the "lease N×M" chip is amber while this view
-                // holds the pane's size; otherwise the live/offline dot.
                 statusColor = when {
-                    uiState.leaseColumns > 0 -> colors.attention
-                    uiState.connected -> colors.live
+                    uiState.statusLabel == "working" ||
+                        uiState.statusLabel == "orchestrating" -> colors.working
+                    uiState.statusLabel.isEmpty() && uiState.connected -> colors.live
                     else -> colors.idle
                 },
                 mode = SessionMode.TERMINAL,
@@ -323,6 +328,7 @@ fun TerminalContent(
                 active = uiState.connected,
                 tabsPaneId = tabsPaneId,
                 onSessionClosed = onBack,
+                onSessionReplaced = onSessionReplaced,
                 actions = run {
                     // Fit-width toggle — a native-size TUI (omp keeps its
                     // host geometry) can be several viewports wide; fitting
@@ -404,8 +410,9 @@ fun TerminalContent(
                 .padding(innerPadding),
         ) {
             if (findOpen) {
-                TerminalFindBar(
+                SessionFindBar(
                     query = findQuery,
+                    placeholder = "Find in terminal",
                     onQueryChange = { findQuery = it },
                     matchCount = findResult.matches.size,
                     activeIndex = activeFindIndex,
@@ -557,8 +564,9 @@ fun TerminalContent(
  * field when it enters composition — Lerdr's focus+select on open.
  */
 @Composable
-internal fun TerminalFindBar(
+internal fun SessionFindBar(
     query: String,
+    placeholder: String,
     onQueryChange: (String) -> Unit,
     matchCount: Int,
     activeIndex: Int,
@@ -590,7 +598,7 @@ internal fun TerminalFindBar(
             OutlinedTextField(
                 value = query,
                 onValueChange = onQueryChange,
-                placeholder = { Text("Find in terminal") },
+                placeholder = { Text(placeholder) },
                 singleLine = true,
                 textStyle = LerdrTheme.terminalStyle,
                 keyboardOptions = KeyboardOptions(
@@ -999,7 +1007,7 @@ private fun TerminalContentPreview() {
                 title = "claude",
                 provider = "claude",
                 breadcrumb = "lerdr · main · sd",
-                statusLabel = "lease 92×42",
+                statusLabel = "working",
                 connected = true,
                 waitingForContent = false,
                 leaseColumns = 92,

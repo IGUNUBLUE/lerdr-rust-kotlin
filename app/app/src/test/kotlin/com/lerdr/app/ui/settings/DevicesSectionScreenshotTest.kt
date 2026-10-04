@@ -6,6 +6,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.Modifier
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
@@ -24,6 +30,8 @@ import lerdr.core.data.DeviceRole
 import lerdr.core.model.HerdrFeatureStatus
 import lerdr.core.model.HerdrStatus
 import lerdr.core.model.UpdateState
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -50,25 +58,28 @@ class DevicesSectionScreenshotTest {
         compareOptions = RoborazziOptions.CompareOptions(changeThreshold = 0.02f),
     )
 
-    private fun content(uiState: DevicesUiState) {
+    private fun content(uiState: DevicesUiState, fontScale: Float = 1f) {
         composeRule.setContent {
-            LerdrTheme {
-                DevicesContent(
-                    uiState = uiState,
-                    onRefresh = {},
-                    onRename = { _, _ -> },
-                    onRevoke = {},
-                    onInvite = { _, _ -> },
-                    onForgetCurrent = {},
-                    onReset = {},
-                    onInvitationCopied = {},
-                    onInvitationCopyFailed = {},
-                    onDismissInvitation = {},
-                    onDismissStatus = {},
-                    onCheckUpdate = {},
-                    onInstallUpdate = {},
-                    modifier = Modifier.padding(12.dp),
-                )
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale)) {
+                LerdrTheme {
+                    DevicesContent(
+                        uiState = uiState,
+                        onRefresh = {},
+                        onRename = { _, _ -> },
+                        onRevoke = {},
+                        onInvite = { _, _ -> },
+                        onForgetCurrent = {},
+                        onReset = {},
+                        onInvitationCopied = {},
+                        onInvitationCopyFailed = {},
+                        onDismissInvitation = {},
+                        onDismissStatus = {},
+                        onCheckUpdate = {},
+                        onInstallUpdate = {},
+                        modifier = Modifier.padding(12.dp),
+                    )
+                }
             }
         }
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
@@ -114,6 +125,24 @@ class DevicesSectionScreenshotTest {
                 ),
             ),
         )
+    }
+
+    @Test
+    fun devices_reader() {
+        content(
+            DevicesUiState(
+                relayLabel = "workstation",
+                connected = true,
+                fetched = true,
+                currentDeviceId = "dev-1",
+                devices = listOf(device("dev-1", "Reader phone", current = true)),
+            ),
+        )
+        composeRule.onNodeWithText("Invite device").assertDoesNotExist()
+        composeRule.onNodeWithText("Rename").assertDoesNotExist()
+        composeRule.onNodeWithText("Revoke").assertDoesNotExist()
+        composeRule.onNodeWithText("Forget this device").assertDoesNotExist()
+        composeRule.onNodeWithText("Reset all devices").assertDoesNotExist()
     }
 
     @Test
@@ -299,6 +328,38 @@ class DevicesSectionScreenshotTest {
                 ),
             ),
         )
+    }
+
+    @Test
+    @Config(qualifiers = "w393dp-h851dp")
+    fun devices_update_large_text() {
+        content(
+            DevicesUiState(
+                relayLabel = "workstation",
+                connected = true,
+                canAdminister = true,
+                fetched = true,
+                updateSupported = true,
+                update = UpdateState(
+                    state = "available",
+                    currentVersion = "1.3.2",
+                    availableVersion = "1.4.0",
+                    availableRevision = "abc1234def5678",
+                    targetVersion = "1.4.0",
+                    targetRevision = "abc1234def5678",
+                    canInstall = true,
+                ),
+            ),
+            fontScale = 2f,
+        )
+        val heading = mutableListOf<TextLayoutResult>()
+        composeRule.onNodeWithText("Update v1.4.0 available")
+            .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(heading) }
+        assertTrue(heading.single().lineCount <= 2)
+        val revision = mutableListOf<TextLayoutResult>()
+        composeRule.onNodeWithText("Revision abc1234")
+            .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(revision) }
+        assertEquals(1, revision.single().lineCount)
     }
 
     @Test

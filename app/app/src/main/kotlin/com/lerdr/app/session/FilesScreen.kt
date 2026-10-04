@@ -35,6 +35,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -82,6 +84,7 @@ fun FilesScreen(
     onOpenFeed: () -> Unit,
     onOpenTerminal: () -> Unit,
     onBack: () -> Unit,
+    onSessionReplaced: (String) -> Unit,
 ) {
     val appContext = LocalContext.current.applicationContext
     val viewModel: FilesViewModel = viewModel(key = "files:$paneId") {
@@ -94,6 +97,7 @@ fun FilesScreen(
         onOpenFeed = onOpenFeed,
         onOpenTerminal = onOpenTerminal,
         onBack = onBack,
+        onSessionReplaced = onSessionReplaced,
         tabsPaneId = paneId,
         onSelectSection = viewModel::selectSection,
         onOpenDir = viewModel::openDir,
@@ -113,6 +117,7 @@ fun FilesContent(
     onOpenTerminal: () -> Unit,
     onBack: () -> Unit,
     tabsPaneId: String? = null,
+    onSessionReplaced: ((String) -> Unit)? = null,
     onSelectSection: (FilesSection) -> Unit,
     onOpenDir: (String) -> Unit,
     onShowFile: (String) -> Unit,
@@ -123,14 +128,23 @@ fun FilesContent(
 ) {
     val spacing = LerdrTheme.spacing
     val colors = LerdrTheme.extendedColors
+    val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
 
-    // In-place preview: Back returns to the listing before leaving the mode.
-    BackHandler(enabled = uiState.previewVisible, onBack = onClosePreview)
+    // Both system Back and the toolbar unwind the in-place browser first.
+    BackHandler(enabled = uiState.previewVisible || uiState.currentDir.isNotEmpty()) {
+        if (uiState.previewVisible) onClosePreview()
+        else onOpenDir(parentPathOf(uiState.currentDir))
+    }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             SessionTopBar(
                 title = uiState.title.ifEmpty { uiState.paneId.substringAfter("::") },
+                onActionMessage = { message ->
+                    scope.launch { snackbarHostState.showSnackbar(message) }
+                },
                 breadcrumb = uiState.breadcrumb,
                 statusLabel = uiState.statusLabel.ifEmpty {
                     if (uiState.connected) "connected" else "offline"
@@ -144,11 +158,18 @@ fun FilesContent(
                         SessionMode.FILES -> Unit
                     }
                 },
-                onBack = onBack,
+                onBack = {
+                    when {
+                        uiState.previewVisible -> onClosePreview()
+                        uiState.currentDir.isNotEmpty() -> onOpenDir(parentPathOf(uiState.currentDir))
+                        else -> onBack()
+                    }
+                },
                 provider = uiState.provider,
                 active = uiState.connected,
                 tabsPaneId = tabsPaneId,
                 onSessionClosed = onBack,
+                onSessionReplaced = onSessionReplaced,
                 actions = listOf(
                     SessionBarAction(
                         label = "Refresh",
@@ -643,7 +664,7 @@ private fun PreviewHeader(
                 .fillMaxWidth()
                 .padding(start = spacing.extraSmall, end = spacing.medium),
         ) {
-            IconButton(onClick = onClose) {
+            IconButton(onClick = onClose, modifier = Modifier.size(48.dp)) {
                 Icon(
                     Icons.AutoMirrored.Filled.ArrowBack,
                     contentDescription = "Back to file list",
@@ -714,10 +735,13 @@ private fun TextPreview(preview: WorkspaceFilePreview) {
 /** `data:<media>;base64,…` → decoded bitmap, off the main thread. */
 @Composable
 private fun ImagePreview(preview: WorkspaceFilePreview) {
-    val bitmap by produceState<ImageBitmap?>(null, preview.dataUrl) {
-        value = withContext(Dispatchers.Default) { decodeDataUrlBitmap(preview.dataUrl) }
+    val decoded by produceState<Result<ImageBitmap?>?>(null, preview.dataUrl) {
+        value = null
+        value = withContext(Dispatchers.Default) {
+            Result.success(decodeDataUrlBitmap(preview.dataUrl))
+        }
     }
-    val image = bitmap
+    val image = decoded?.getOrNull()
     when {
         image != null -> Column(
             modifier = Modifier
@@ -734,6 +758,10 @@ private fun ImagePreview(preview: WorkspaceFilePreview) {
         }
         preview.dataUrl.isEmpty() -> MessageRow(
             text = "This image preview carried no data.",
+            isError = true,
+        )
+        decoded != null -> MessageRow(
+            text = "This image could not be decoded.",
             isError = true,
         )
         else -> MessageRow("Loading ${preview.path}…", loading = true)

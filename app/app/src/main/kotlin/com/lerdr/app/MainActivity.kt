@@ -1,18 +1,23 @@
 package com.lerdr.app
 
+import android.app.UiModeManager
 import android.content.Intent
 import android.os.Bundle
+import android.os.Build
 import androidx.activity.compose.setContent
 import androidx.fragment.app.FragmentActivity
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.navigation3.runtime.EntryProviderScope
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lerdr.app.activity.ActivityScreen
 import com.lerdr.app.computers.ComputersScreen
 import com.lerdr.app.home.HomeScreen
@@ -23,8 +28,10 @@ import com.lerdr.app.session.AgentFeedScreen
 import com.lerdr.app.session.FilesScreen
 import com.lerdr.app.session.SessionRepository
 import com.lerdr.app.session.TerminalScreen
+import com.lerdr.app.settings.AppPreferences
 import com.lerdr.app.settings.RelayDetailScreen
 import com.lerdr.app.settings.SettingsScreen
+import com.lerdr.app.settings.ThemeMode
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import com.lerdr.navigation.LerdrDeepLinks
 import com.lerdr.navigation.LerdrKey
@@ -42,6 +49,9 @@ class MainActivity : FragmentActivity() {
     @Inject
     lateinit var sessions: SessionRepository
 
+    @Inject
+    lateinit var preferences: AppPreferences
+
     /**
      * Deep links that arrive while the app is running (singleTop) — emitted
      * into composition where the navigator consumes them.
@@ -57,14 +67,23 @@ class MainActivity : FragmentActivity() {
         val deepLinkedKey = intent?.dataString?.let(LerdrDeepLinks::match)
 
         setContent {
-            LerdrTheme {
+            val themeMode by preferences.themeMode.collectAsStateWithLifecycle(initialValue = null)
+            val darkTheme = when (themeMode) {
+                ThemeMode.DARK -> true
+                ThemeMode.LIGHT -> false
+                else -> isSystemInDarkTheme()
+            }
+            LaunchedEffect(themeMode) {
+                themeMode?.let { applyThemeMode(this@MainActivity, it) }
+            }
+            LerdrTheme(darkTheme = darkTheme) {
                 RequestPostNotificationsPermission()
 
                 val navigator = rememberLerdrNavigator(
                     *remember {
                         buildList {
                             add(LerdrKey.Home)
-                            deepLinkedKey?.let(::add)
+                            deepLinkedKey?.takeUnless { it == LerdrKey.Home }?.let(::add)
                         }.toTypedArray()
                     },
                 )
@@ -98,6 +117,7 @@ class MainActivity : FragmentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
         intent.dataString?.let { deepLinks.trySend(it) }
     }
 
@@ -115,6 +135,17 @@ class MainActivity : FragmentActivity() {
     }
 }
 
+/** Apply the durable preference, never race its write with activity recreation. */
+private fun applyThemeMode(context: android.content.Context, mode: ThemeMode) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+    val nightMode = when (mode) {
+        ThemeMode.SYSTEM -> UiModeManager.MODE_NIGHT_AUTO
+        ThemeMode.LIGHT -> UiModeManager.MODE_NIGHT_NO
+        ThemeMode.DARK -> UiModeManager.MODE_NIGHT_YES
+    }
+    context.getSystemService(UiModeManager::class.java)?.setApplicationNightMode(nightMode)
+}
+
 /**
  * The MVP graph — feature modules will later contribute their own
  * `EntryProviderScope<LerdrKey>.section()` blocks (nav3 modular pattern);
@@ -126,6 +157,7 @@ private fun EntryProviderScope<LerdrKey>.lerdrEntries(
     entry<LerdrKey.Home> {
         HomeScreen(
             onOpenAgent = navigator::openAgent,
+            onOpenAttention = navigator::openFeed,
             onSelectTopLevel = navigator::navigateTopLevel,
         )
     }
@@ -164,6 +196,7 @@ private fun EntryProviderScope<LerdrKey>.lerdrEntries(
             onOpenTerminal = { navigator.openTerminal(key.paneId) },
             onOpenFiles = { navigator.openFiles(key.paneId) },
             onBack = navigator::goBack,
+            onSessionReplaced = { navigator.replaceAgent(key.paneId, it) },
         )
     }
     entry<LerdrKey.Terminal> { key ->
@@ -172,6 +205,7 @@ private fun EntryProviderScope<LerdrKey>.lerdrEntries(
             onOpenFeed = { navigator.openFeed(key.paneId) },
             onOpenFiles = { navigator.openFiles(key.paneId) },
             onBack = navigator::goBack,
+            onSessionReplaced = { navigator.replaceAgent(key.paneId, it) },
         )
     }
     entry<LerdrKey.Files> { key ->
@@ -180,6 +214,7 @@ private fun EntryProviderScope<LerdrKey>.lerdrEntries(
             onOpenFeed = { navigator.openFeed(key.paneId) },
             onOpenTerminal = { navigator.openTerminal(key.paneId) },
             onBack = navigator::goBack,
+            onSessionReplaced = { navigator.replaceAgent(key.paneId, it) },
         )
     }
 }

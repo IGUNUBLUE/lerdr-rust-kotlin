@@ -2,7 +2,6 @@ package com.lerdr.app.pairing
 
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import lerdr.core.data.CredentialStore
@@ -73,9 +72,7 @@ class PairingManager @Inject constructor(
             return PairingOutcome.Failed(failure.message ?: "Could not store the invitation")
         }
 
-        sessions.connect(endpoint)
-        val state = sessions.sessionState(endpoint.id)
-            ?: return PairingOutcome.Failed("Session did not start")
+        val state = sessions.connectForPairing(endpoint)
         val verdict = withTimeoutOrNull(PAIRING_TIMEOUT_MS) {
             state.first {
                 it is RelaySession.SessionState.Connected ||

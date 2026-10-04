@@ -524,6 +524,38 @@ class DevicesViewModelTest {
         assertThat(state.devices).hasSize(1)
     }
 
+    @Test
+    fun `reader list revokes cached administration and blocks stale dialog actions`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.registry.upsert(h.endpoint)
+        h.await { h.registry.relays.value.isNotEmpty() }
+        h.connect()
+        val viewModel = h.viewModel()
+        h.await { h.handle().sentRaw.isNotEmpty() }
+        h.answerOk(deviceList(device("dev-1", "This phone", role = "controller", current = true)))
+        assertThat(viewModel.uiState.value.canAdminister).isTrue()
+
+        viewModel.refresh()
+        h.pump()
+        h.answerOk(
+            """{"current_device_id":"dev-1","role":"reader","devices":[""" +
+                device("dev-1", "This phone", current = true) + "]}",
+        )
+        assertThat(viewModel.uiState.value.canAdminister).isFalse()
+        val before = h.requestTypes()
+        val current = viewModel.uiState.value.devices.single()
+        viewModel.renameDevice(current.deviceId, "Stale rename")
+        viewModel.revokeDevice(current)
+        viewModel.forgetCurrentDevice()
+        viewModel.resetDevices()
+        viewModel.createInvitation("Stale invitation", DeviceRole.CONTROLLER)
+        h.pump()
+
+        assertThat(h.requestTypes()).containsExactlyElementsIn(before).inOrder()
+        assertThat(viewModel.uiState.value.actionBusy).isFalse()
+        assertThat(viewModel.uiState.value.invitation).isNull()
+    }
+
     /**
      * `FakeRelaySessionHandle.testFinish` with `role = "reader"` — the same
      * reflective construction (ctor is internal to core:e2ee).

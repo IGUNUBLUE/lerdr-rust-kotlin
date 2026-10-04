@@ -1,14 +1,16 @@
 package com.lerdr.app.settings
 
-import android.app.UiModeManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings as AndroidSettings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -17,8 +19,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
@@ -36,6 +41,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -52,15 +58,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.tooling.preview.PreviewLightDark
 import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -83,7 +90,7 @@ import lerdr.core.protocol.Protocol
 /**
  * Settings (docs/04 §Settings) — grouped, Pixel-style rows: Relays
  * (chevron into the per-relay detail), Security (app lock), Appearance
- * (per-app night mode, API 31+), Notifications status + system-settings
+ * (system/light/dark), Notifications status + system-settings
  * link, About. Per-relay management (devices, push, speech, updates)
  * lives on [RelayDetailScreen].
  */
@@ -111,13 +118,12 @@ fun SettingsScreen(
     }
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
-    // Returning from the install-permission grant resumes the pending
-    // update step (download or install) without a second tap.
-    LifecycleResumeEffect(uiState.update.phase) {
-        if (uiState.update.phase == UpdatePhase.NEEDS_INSTALL_PERMISSION) {
-            viewModel.resumeUpdateAfterPermission()
-        }
-        onPauseOrDispose { }
+    // Resume only after the permission activity actually returns. Attaching a
+    // resume effect while already resumed must not dismiss the visible gate.
+    val installPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        viewModel.resumeUpdateAfterPermission()
     }
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -141,21 +147,66 @@ fun SettingsScreen(
         onOpenRelay = onOpenRelay,
         badges = rememberLerdrNavBadges(),
         onRevalidateAll = viewModel::revalidateAll,
-        onThemeMode = { mode ->
-            viewModel.setThemeMode(mode)
-            applyThemeMode(context, mode)
-        },
+        onThemeMode = viewModel::setThemeMode,
         onAppLockChange = viewModel::setAppLockEnabled,
         onOpenNotificationSettings = { openNotificationSettings(context) },
         onCheckUpdate = viewModel::checkForUpdate,
         onUpdateAction = {
             if (uiState.update.phase == UpdatePhase.NEEDS_INSTALL_PERMISSION) {
-                context.startActivity(viewModel.installPermissionIntent())
+                installPermissionLauncher.launch(
+                    viewModel.installPermissionIntent().apply { removeFlags(Intent.FLAG_ACTIVITY_NEW_TASK) },
+                )
             } else {
                 viewModel.startUpdate()
             }
         },
     )
+}
+
+@Composable
+private fun ThemeChoices(
+    selected: ThemeMode,
+    onSelect: (ThemeMode) -> Unit,
+) {
+    val density = LocalDensity.current
+    val textMeasurer = rememberTextMeasurer()
+    val labelStyle = MaterialTheme.typography.labelLarge
+    val widestLabel = ThemeMode.entries.maxOf {
+        textMeasurer.measure(it.label, style = labelStyle).size.width
+    }
+    // Reserve room in every segment for the selected check, its gap and padding.
+    val minimumSegmentWidth = with(density) { widestLabel.toDp() } + 56.dp
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        if (maxWidth >= minimumSegmentWidth * ThemeMode.entries.size) {
+            LerdrSegmentedControl(
+                options = ThemeMode.entries.map { it.label },
+                selectedIndex = ThemeMode.entries.indexOf(selected),
+                onSelect = { onSelect(ThemeMode.entries[it]) },
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+            )
+        } else {
+            Column(Modifier.fillMaxWidth().selectableGroup()) {
+                ThemeMode.entries.forEach { mode ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .selectable(
+                                selected = mode == selected,
+                                role = Role.RadioButton,
+                                onClick = { onSelect(mode) },
+                            )
+                            .padding(vertical = LerdrTheme.spacing.extraSmall),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(LerdrTheme.spacing.small),
+                    ) {
+                        RadioButton(selected = mode == selected, onClick = null)
+                        Text(mode.label, style = labelStyle, modifier = Modifier.weight(1f))
+                    }
+                }
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -212,7 +263,7 @@ fun SettingsContent(
                         ListItem(
                             headlineContent = { Text("No computers paired") },
                             supportingContent = {
-                                Text("Pair one from the Agents tab (+) to see it here.")
+                                Text("Pair one from the Computers tab (+) to see it here.")
                             },
                         )
                     }
@@ -298,11 +349,9 @@ fun SettingsContent(
                                     vertical = spacing.extraSmall,
                                 ),
                         ) {
-                            LerdrSegmentedControl(
-                                options = ThemeMode.entries.map { it.label },
-                                selectedIndex = ThemeMode.entries.indexOf(uiState.themeMode),
-                                onSelect = { onThemeMode(ThemeMode.entries[it]) },
-                                modifier = Modifier.fillMaxWidth(),
+                            ThemeChoices(
+                                selected = uiState.themeMode,
+                                onSelect = onThemeMode,
                             )
                         }
                         Spacer(Modifier.height(spacing.small))
@@ -319,13 +368,18 @@ fun SettingsContent(
                         colors = listItemGroupColors(),
                         headlineContent = { Text("Notifications") },
                         supportingContent = {
-                            Text(
-                                if (notificationsEnabled) {
-                                    "Allowed — agent alerts can reach the shade."
-                                } else {
-                                    "Blocked — enable them to get agent alerts."
-                                },
-                            )
+                            Column {
+                                Text(
+                                    if (notificationsEnabled) {
+                                        "Allowed — agent alerts can reach the shade."
+                                    } else {
+                                        "Blocked — enable them to get agent alerts."
+                                    },
+                                )
+                                TextButton(onClick = onOpenNotificationSettings) {
+                                    Text("System settings")
+                                }
+                            }
                         },
                         leadingContent = {
                             Icon(
@@ -337,11 +391,6 @@ fun SettingsContent(
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
-                        },
-                        trailingContent = {
-                            TextButton(onClick = onOpenNotificationSettings) {
-                                Text("System settings")
-                            }
                         },
                     )
                 }
@@ -536,24 +585,6 @@ private fun openNotificationSettings(context: Context) {
                     .setData(Uri.parse("package:${context.packageName}")),
             )
         }
-    }
-}
-
-/**
- * Applies the persisted [ThemeMode] via the platform per-app night mode
- * (API 31+, persisted by the system — no appcompat on the classpath).
- * The activity recreates and `isSystemInDarkTheme` follows.
- */
-private fun applyThemeMode(context: Context, mode: ThemeMode) {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
-    val nightMode = when (mode) {
-        ThemeMode.SYSTEM -> UiModeManager.MODE_NIGHT_AUTO
-        ThemeMode.LIGHT -> UiModeManager.MODE_NIGHT_NO
-        ThemeMode.DARK -> UiModeManager.MODE_NIGHT_YES
-    }
-    runCatching {
-        context.getSystemService(UiModeManager::class.java)
-            ?.setApplicationNightMode(nightMode)
     }
 }
 

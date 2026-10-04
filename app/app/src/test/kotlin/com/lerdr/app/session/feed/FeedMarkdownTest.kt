@@ -127,4 +127,14 @@ class FeedMarkdownTest {
         }
         assertThat(marks).hasSize(2)
     }
+
+    @Test
+    fun `fenced source preserves markdown markers while highlighting literal matches`() {
+        val source = """val pattern = "**bold** [label](https://example.com) `tick`""""
+        val annotated = codeAnnotated(source, styles, highlight = "BOLD")
+        assertThat(annotated.text).isEqualTo(source)
+        assertThat(annotated.getLinkAnnotations(0, annotated.length)).isEmpty()
+        val mark = annotated.spanStyles.single()
+        assertThat(annotated.text.substring(mark.start, mark.end)).isEqualTo("bold")
+    }
 }

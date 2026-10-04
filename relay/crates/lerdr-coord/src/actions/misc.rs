@@ -2885,15 +2885,27 @@ mod tests {
         assert!(raw.contains("\"can_install\": true"));
     }
 
+    fn isolated_update_manager(dir: &std::path::Path) -> UpdateManager {
+        UpdateManager {
+            release_root: dir.to_path_buf(),
+            runtime_dir: dir.to_path_buf(),
+            herdr_bin: "/nonexistent/herdr".to_owned(),
+            version: "1.2.3".to_owned(),
+            revision: "a".repeat(40),
+            health_url: "http://127.0.0.1:0/healthz".to_owned(),
+            api_base: CANONICAL_API.to_owned(),
+            web_base: CANONICAL_WEB.to_owned(),
+            token_file: dir.join("github-token"),
+            metadata: ReleaseMetadata::default(),
+            state: UpdateState::default(),
+        }
+    }
+
     #[test]
     fn load_state_demotes_stale_available() {
         let dir = tempfile::tempdir().unwrap();
-        let mut manager = UpdateManager {
-            runtime_dir: dir.path().to_path_buf(),
-            version: "9.9.9".to_owned(),
-            ..UpdateManager::from_env()
-        };
-        manager.release_root = dir.path().to_path_buf();
+        let mut manager = isolated_update_manager(dir.path());
+        manager.version = "9.9.9".to_owned();
         write_state(
             &manager.state_path(),
             &UpdateState {
@@ -2914,7 +2926,8 @@ mod tests {
 
     #[test]
     fn eligibility_requires_released_build() {
-        let mut manager = UpdateManager::from_env();
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = isolated_update_manager(dir.path());
         manager.version = "dev".to_owned();
         manager.revision = "unknown".to_owned();
         let (eligible, mode, reason) = manager.eligibility();
@@ -2929,7 +2942,8 @@ mod tests {
 
     #[test]
     fn eligibility_needs_absolute_executable_herdr() {
-        let mut manager = UpdateManager::from_env();
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = isolated_update_manager(dir.path());
         manager.version = "1.2.3".to_owned();
         manager.revision = "a".repeat(40);
         manager.herdr_bin = "herdr".to_owned();

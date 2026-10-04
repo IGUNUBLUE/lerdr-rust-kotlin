@@ -1,9 +1,9 @@
 # lerdr
 
-> **Status: beta / in development.** Working end-to-end, but still
-> pre-release software — expect rough edges, moving pieces, and no
-> compatibility guarantees between versions yet. Releases are marked
-> pre-release on purpose.
+> **Status: 1.0.0.** Native Android app and Rust relay with the frozen
+> `protocol v3` / `herdr-e2ee-v2` contract. This release does not imply full
+> audit acceptance; see the [release limits](CHANGELOG.md#100--2026-10-04)
+> and [specification gaps](docs/10-spec-gaps.md).
 
 Your coding agents, live on your phone — sessions, questions, approvals,
 terminals, and workspace files, over an end-to-end encrypted channel.
@@ -60,6 +60,9 @@ Herdr clones the repo, runs the `[[build]]` hook, and registers the
 `lerdr.events` plugin. The hook downloads the checksum-verified
 `lerdr-relay` bundle from the matching GitHub release — no Rust toolchain
 required — then opens the **Lerdr: Setup** pane.
+
+For omp, also install its [profile-scoped lifecycle integration](plugin/README.md#omp-lifecycle-status)
+so working turns and in-process subagents do not appear idle.
 
 ### 2 · Print the setup QR — same machine
 

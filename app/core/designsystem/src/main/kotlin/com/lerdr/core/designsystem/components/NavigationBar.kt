@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.PreviewLightDark
 import com.lerdr.core.designsystem.theme.LerdrTheme
 
@@ -74,7 +75,9 @@ fun LerdrShortNavigationBar(
                 selected = item.selected,
                 onClick = item.onClick,
                 icon = { NavItemIcon(item) },
-                label = { Text(item.label) },
+                label = {
+                    Text(item.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                },
                 enabled = item.enabled,
                 iconPosition = NavigationItemIconPosition.Top,
             )

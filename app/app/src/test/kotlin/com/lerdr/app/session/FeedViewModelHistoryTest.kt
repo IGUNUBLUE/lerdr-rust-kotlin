@@ -3,6 +3,7 @@ package com.lerdr.app.session
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import com.google.common.truth.Truth.assertThat
 import java.io.File
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
@@ -679,5 +680,105 @@ class FeedViewModelHistoryTest {
         assertThat(state.historyError).isEqualTo("socket went away")
         assertThat(state.historyErrorCode).isEqualTo("history_failed")
         assertThat(state.historyErrorRetryable).isTrue()
+    }
+
+    @Test
+    fun `push reset replaces an in-flight older snapshot and renews pagination`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.credentials.seed("r1", credential(DeviceRole.CONTROLLER))
+        h.repository.start()
+        h.pump()
+        h.connectReady()
+        h.answerHistory(
+            readyPage(
+                entries = listOf(historyEntry("old-head", "old")),
+                nextCursor = "old-cursor",
+            ),
+        )
+        val vm = h.viewModel()
+        backgroundScope.launch { vm.uiState.collect { } }
+        h.pump()
+        val older = CompletableDeferred<JsonObject>()
+        h.handle().responder = { message ->
+            CommandResultMessage(
+                action = message.type,
+                ok = true,
+                phase = CommandResultMessage.PHASE_COMPLETED,
+                requestId = message.requestId,
+                data = if (message.cursor != null) older.await() else readyPage(
+                    entries = listOf(historyEntry("new-head", "new")),
+                    nextCursor = "new-cursor",
+                ),
+            )
+        }
+        vm.loadOlderHistory()
+        h.pump()
+        h.handle().emit(
+            historyJson(
+                """{"type":"conversation_update","target":{"pane_id":"%1","terminal_id":"t1","server_session_id":"ss1","generation":3},"generation":3,"reset":true,"messages":[${historyEntry("new-head", "new")}]}""",
+            ),
+        )
+        h.pump()
+        older.complete(readyPage(entries = listOf(historyEntry("stale", "stale"))))
+        h.pump()
+        assertThat(vm.uiState.value.entries.map { it.id }).containsExactly("new-head")
+        assertThat(vm.uiState.value.hasMoreHistory).isTrue()
+
+        vm.loadOlderHistory()
+        h.pump()
+        assertThat(h.historyRequests().last().cursor.toString()).isEqualTo("\"new-cursor\"")
+    }
+
+    @Test
+    fun `push from a different terminal or relay session cannot replace live history`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.credentials.seed("r1", credential(DeviceRole.CONTROLLER))
+        h.repository.start()
+        h.pump()
+        h.connectReady()
+        h.answerHistory(readyPage(entries = listOf(historyEntry("live", "live"))))
+        val vm = h.viewModel()
+        backgroundScope.launch { vm.uiState.collect { } }
+        h.pump()
+        val demands = h.historyRequests().size
+        for ((terminal, session) in listOf("other-terminal" to "ss1", "t1" to "other-session")) {
+            h.handle().emit(historyJson(
+                """{"type":"conversation_update","target":{"pane_id":"%1","terminal_id":"$terminal","server_session_id":"$session","generation":3},"generation":3,"reset":true,"messages":[${historyEntry("foreign", "foreign")}]}""",
+            ))
+            h.pump()
+            assertThat(vm.uiState.value.entries.map { it.id }).containsExactly("live")
+            assertThat(h.historyRequests()).hasSize(demands)
+        }
+    }
+
+    @Test
+    fun `vanished pane tombstone clears history without starting a failed demand`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.credentials.seed("r1", credential(DeviceRole.CONTROLLER))
+        h.repository.start()
+        h.pump()
+        h.connectReady()
+        h.answerHistory(readyPage(
+            entries = listOf(historyEntry("live", "live")),
+            nextCursor = "old-cursor",
+            hasMore = true,
+        ))
+        val vm = h.viewModel()
+        backgroundScope.launch { vm.uiState.collect { } }
+        h.pump()
+        val demands = h.historyRequests().size
+        h.handle().emit(historyJson("""{"type":"agents","agents":[]}"""))
+        h.pump()
+        h.handle().emit(historyJson(
+            """{"type":"conversation_update","target":{"pane_id":"%1","terminal_id":"t1","server_session_id":"ss1","generation":3},"generation":3,"reset":true,"messages":[]}""",
+        ))
+        h.pump()
+        assertThat(vm.uiState.value.entries).isEmpty()
+        assertThat(vm.uiState.value.historyError).isNull()
+        assertThat(vm.uiState.value.historyLoading).isFalse()
+        assertThat(vm.uiState.value.hasMoreHistory).isFalse()
+        vm.loadOlderHistory()
+        h.pump()
+        assertThat(h.historyRequests()).hasSize(demands)
     }
 }

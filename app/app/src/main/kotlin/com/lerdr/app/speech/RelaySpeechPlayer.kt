@@ -1,9 +1,10 @@
 package com.lerdr.app.speech
 
 import androidx.compose.runtime.Immutable
-import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -104,7 +105,9 @@ class RelaySpeechPlayer(
      * late reply or a resolved clip from the abandoned run cannot restart
      * or overwrite the fresh state.
      */
-    private val generation = AtomicLong(0)
+    private val lock = Any()
+    private var generation = 0L
+    private var playbackJob: Job? = null
 
     /** Synchronous reads of the flows, like Lerdr's `get(store)`. */
     @Volatile
@@ -113,21 +116,21 @@ class RelaySpeechPlayer(
     @Volatile
     private var languageNow = DEFAULT_LANGUAGE
 
-    /** `cancelRelaySynthesis` — the exchange awaiting its reply right now. */
-    @Volatile
+    /** The exchange owned by the current run, including its prefetched clip. */
     private var inFlight: SpeechExchange? = null
 
     init {
         scope.launch {
             enabled.collect { on ->
-                enabledNow = on
-                if (on) {
-                    // setSpeechEnabled(true) — `speechState.set('idle')`
-                    // unconditionally; `speaking` cannot be live here since
-                    // disabling already stopped it.
-                    _state.value = SpeechPlayerState(SpeechPhase.IDLE)
-                } else {
-                    stopInternal()
+                synchronized(lock) {
+                    enabledNow = on
+                    if (on) {
+                        if (_state.value.phase == SpeechPhase.OFF) {
+                            _state.value = SpeechPlayerState(SpeechPhase.IDLE)
+                        }
+                    } else {
+                        stopInternal()
+                    }
                 }
             }
         }
@@ -141,22 +144,31 @@ class RelaySpeechPlayer(
      */
     fun speak(relayId: String, text: String): Boolean {
         if (locked() || !enabledNow || text.isBlank()) return false
-        val gen = generation.incrementAndGet()
+        val chunksLanguage = languageNow
         val chunks = SpeechChunker.speechChunks(
             SpeechChunker.speakableText(text).ifEmpty { text },
             SpeechChunker.SPEAK_CHUNK_LIMIT,
         )
         if (chunks.isEmpty()) return false
-        _state.value = SpeechPlayerState(SpeechPhase.SPEAKING)
-        scope.launch { playChunks(relayId, chunks, gen) }
-        return true
+        return synchronized(lock) {
+            if (locked() || !enabledNow) return@synchronized false
+            stopInternal()
+            val gen = generation
+            _state.value = SpeechPlayerState(SpeechPhase.SPEAKING)
+            playbackJob = scope.launch(start = CoroutineStart.LAZY) {
+                playChunks(relayId, chunks, chunksLanguage, gen)
+            }.also { it.start() }
+            true
+        }
     }
 
     /** `stopSpeech` — cancel the in-flight synthesis and end the run. */
     fun stop() = stopInternal()
 
-    private fun stopInternal() {
-        generation.incrementAndGet()
+    private fun stopInternal() = synchronized(lock) {
+        generation++
+        playbackJob?.cancel()
+        playbackJob = null
         inFlight?.cancel()
         inFlight = null
         sink.interrupt()
@@ -170,39 +182,72 @@ class RelaySpeechPlayer(
      * while clip `i` is still playing, so a relay round trip never gaps
      * the audio.
      */
-    private suspend fun playChunks(relayId: String, chunks: List<String>, gen: Long) {
-        val language = languageNow
-        var pending: SpeechExchange
+    private suspend fun playChunks(
+        relayId: String,
+        chunks: List<String>,
+        language: String,
+        gen: Long,
+    ) {
+        var pending: SpeechExchange? = null
         try {
-            pending = sender.send(relayId, chunks[0], language)
-            inFlight = pending
-            for (index in chunks.indices) {
-                val request = pending
-                val result = request.await()
-                if (inFlight === request) inFlight = null
-                if (gen != generation.get()) return
-                if (index + 1 < chunks.size) {
-                    pending = sender.send(relayId, chunks[index + 1], language)
-                    inFlight = pending
-                }
-                val wav = decodeAudio(result)
-                sink.play(wav)
-                if (gen != generation.get()) return
+            synchronized(lock) {
+                if (gen != generation) return
+                pending = sender.send(relayId, chunks[0], language)
+                inFlight = pending
             }
-            inFlight = null
-            _state.value = SpeechPlayerState(SpeechPhase.IDLE)
+            for (index in chunks.indices) {
+                val request = checkNotNull(pending)
+                val result = request.await()
+                val wav = synchronized(lock) {
+                    if (gen != generation) return
+                    if (inFlight === request) inFlight = null
+                    pending = null
+                    val audio = decodeAudio(result)
+                    if (index + 1 < chunks.size) {
+                        pending = sender.send(relayId, chunks[index + 1], language)
+                        inFlight = pending
+                    }
+                    audio
+                }
+                sink.play(wav)
+                synchronized(lock) {
+                    if (gen != generation) return
+                }
+            }
+            synchronized(lock) {
+                if (gen == generation) {
+                    _state.value = SpeechPlayerState(SpeechPhase.IDLE)
+                }
+            }
         } catch (cancelled: CancellationException) {
+            synchronized(lock) {
+                if (gen == generation) {
+                    _state.value = SpeechPlayerState(
+                        if (enabledNow) SpeechPhase.IDLE else SpeechPhase.OFF,
+                    )
+                }
+            }
             throw cancelled
         } catch (failure: Exception) {
-            if (gen != generation.get()) return
-            // Bump like Lerdr so a stale completion cannot revive this run.
-            generation.incrementAndGet()
-            inFlight = null
-            _state.value = SpeechPlayerState(
-                SpeechPhase.ERROR,
-                issue = failure.message?.takeIf { it.isNotEmpty() }
-                    ?: "The relay could not read this aloud.",
-            )
+            synchronized(lock) {
+                if (gen != generation) return
+                _state.value = SpeechPlayerState(
+                    SpeechPhase.ERROR,
+                    issue = failure.message?.takeIf { it.isNotEmpty() }
+                        ?: "The relay could not read this aloud.",
+                )
+            }
+        } finally {
+            synchronized(lock) {
+                pending?.let { request ->
+                    if (inFlight === request) inFlight = null
+                    request.cancel()
+                }
+                if (gen == generation) {
+                    playbackJob = null
+                    sink.interrupt()
+                }
+            }
         }
     }
 

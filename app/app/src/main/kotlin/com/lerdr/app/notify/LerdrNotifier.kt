@@ -154,7 +154,7 @@ class LerdrNotifier @Inject constructor(
 
     /**
      * "APK downloaded" card posted by [com.lerdr.app.update]'s receiver —
-     * the tap intent is already built (installer or permission grant).
+     * the explicit tap intent opens Settings to review the validated download.
      */
     fun postUpdateDownloaded(version: String, body: String, tap: PendingIntent) {
         if (!notificationsEnabled()) return

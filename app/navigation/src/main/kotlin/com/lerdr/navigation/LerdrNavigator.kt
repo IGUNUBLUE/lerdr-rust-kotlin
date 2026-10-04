@@ -43,11 +43,18 @@ fun rememberLerdrNavigator(vararg elements: LerdrKey): LerdrNavigator {
 class LerdrNavigator(val backStack: NavBackStack<LerdrKey>) {
 
     fun navigate(key: LerdrKey) {
-        backStack.add(key)
+        when {
+            key in LerdrKey.topLevel -> navigateTopLevel(key)
+            key is LerdrKey.AgentFeed || key is LerdrKey.Terminal || key is LerdrKey.Files ->
+                navigateAgentMode(key)
+            key is LerdrKey.Pairing && backStack.lastOrNull() is LerdrKey.Pairing ->
+                swapTop(key)
+            backStack.lastOrNull() != key -> backStack.add(key)
+        }
     }
 
     fun goBack() {
-        backStack.removeLastOrNull()
+        if (backStack.size > 1) backStack.removeLastOrNull()
     }
 
     /**
@@ -58,7 +65,7 @@ class LerdrNavigator(val backStack: NavBackStack<LerdrKey>) {
     fun navigateTopLevel(key: LerdrKey) {
         when (key) {
             LerdrKey.Home -> {
-                while (backStack.size > 1 && backStack.last() != LerdrKey.Home) {
+                while (backStack.size > 1) {
                     backStack.removeLastOrNull()
                 }
             }
@@ -91,6 +98,23 @@ class LerdrNavigator(val backStack: NavBackStack<LerdrKey>) {
         navigateAgentMode(LerdrKey.Files(paneId))
     }
 
+    /** Replace closed pane references without changing mode or returning to them on Back. */
+    fun replaceAgent(oldPaneId: String, newPaneId: String) {
+        for (index in backStack.indices) {
+            val entry = backStack[index]
+            val replacement = when (entry) {
+                is LerdrKey.AgentFeed ->
+                    if (entry.paneId == oldPaneId) entry.copy(paneId = newPaneId) else entry
+                is LerdrKey.Terminal ->
+                    if (entry.paneId == oldPaneId) entry.copy(paneId = newPaneId) else entry
+                is LerdrKey.Files ->
+                    if (entry.paneId == oldPaneId) entry.copy(paneId = newPaneId) else entry
+                else -> entry
+            }
+            if (replacement != entry) backStack[index] = replacement
+        }
+    }
+
     /** Mode switch: replace in place when the pane matches, else push. */
     private fun navigateAgentMode(key: LerdrKey) {
         val paneId = when (key) {
@@ -114,9 +138,6 @@ class LerdrNavigator(val backStack: NavBackStack<LerdrKey>) {
 
     /** Pairing succeeded — drop all pairing entries, land on Home. */
     fun onPairingComplete() {
-        backStack.removeAll { it is LerdrKey.Pairing }
-        if (backStack.isEmpty() || backStack.first() != LerdrKey.Home) {
-            backStack.add(0, LerdrKey.Home)
-        }
+        navigateTopLevel(LerdrKey.Home)
     }
 }

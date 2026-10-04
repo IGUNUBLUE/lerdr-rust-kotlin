@@ -6,6 +6,7 @@ import java.io.File
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
@@ -18,6 +19,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import lerdr.core.data.RelayEndpoint
 import lerdr.core.data.RelayRegistry
+import lerdr.core.model.Inbound
 import lerdr.core.protocol.LerdrJson
 import lerdr.core.protocol.Protocol
 import lerdr.core.store.AgentStore
@@ -77,6 +79,7 @@ class SessionRepositoryTest {
             transport = lerdr.core.data.RelayTransport.WEBSOCKET,
         )
         val origin = "ws://192.168.1.5:7474"
+        val viewOwner = Any()
 
         /**
          * coroutines-test 1.11 treats backgroundScope as background work:
@@ -151,6 +154,199 @@ class SessionRepositoryTest {
         h.repository.connect(h.endpoint)
         assertThat(h.factory.created).containsKey("ws://192.168.1.5:7474/ws")
         assertThat(h.connections.connectionNow("r1")?.status).isEqualTo(RelayStatus.CONNECTING)
+    }
+
+    @Test
+    fun `sessions created while hidden inherit visibility and defer pane watch until resume`() = runTest {
+        val h = Harness(this, tmp.root)
+        val paneId = clientPaneId("r1", "%1")
+        h.repository.setHidden(true)
+        h.repository.openPane(paneId, h.viewOwner)
+        h.connectReady()
+        assertThat(h.handle().hidden).isTrue()
+        assertThat(sentTypes(h.handle())).doesNotContain("read_pane")
+        h.repository.setHidden(false)
+        h.pump()
+        assertThat(h.handle().hidden).isFalse()
+        assertThat(sentTypes(h.handle())).contains("read_pane")
+        h.handle().emit(
+            json("""{"type":"pane_content","pane_id":"%1","content":"resumed","content_fingerprint":"fp-resume","format":"ansi"}"""),
+        )
+        h.pump()
+        assertThat(h.repository.paneSnapshot(paneId).first()?.lines).containsExactly("resumed")
+        assertThat(sentTypes(h.handle())).contains("watch_pane")
+    }
+
+    @Test
+    fun `terminal restored before connection renders once initial agent inventory arrives`() = runTest {
+        val h = Harness(this, tmp.root)
+        val paneId = clientPaneId("r1", "%1")
+        h.repository.openPane(paneId, h.viewOwner)
+        h.connectReady()
+        if ("read_pane" in sentTypes(h.handle())) {
+            h.handle().emit(
+                json("""{"type":"pane_content","pane_id":"%1","content":"live after bootstrap","content_fingerprint":"fp-cold","format":"ansi"}"""),
+            )
+        }
+        h.pump()
+        assertThat(h.repository.paneSnapshot(paneId).first()?.lines)
+            .containsExactly("live after bootstrap")
+
+        h.repository.closePane(paneId, h.viewOwner)
+        val reads = sentTypes(h.handle()).count { it == "read_pane" }
+        h.handle().emit(json(h.agentRow("%1")))
+        h.pump()
+        assertThat(h.repository.paneSnapshot(paneId).first()).isNull()
+        assertThat(sentTypes(h.handle()).count { it == "read_pane" }).isEqualTo(reads)
+    }
+
+    @Test
+    fun `old terminal close preserves successor runtime and reconnect watch until final close`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        val paneId = clientPaneId("r1", "%1")
+        val successor = Any()
+        h.repository.openPane(paneId, h.viewOwner)
+        h.handle().emit(
+            json("""{"type":"pane_content","pane_id":"%1","content":"before","content_fingerprint":"fp-before","format":"ansi"}"""),
+        )
+        h.pump()
+        h.repository.openPane(paneId, successor)
+        h.repository.closePane(paneId, h.viewOwner)
+        assertThat(h.repository.paneSnapshot(paneId).first()?.lines).containsExactly("before")
+        assertThat(sentTypes(h.handle())).doesNotContain("unwatch_pane")
+        h.handle().disconnect()
+        h.pump()
+        h.connectReady()
+        h.handle().emit(
+            json("""{"type":"pane_content","pane_id":"%1","content":"after reconnect","content_fingerprint":"fp-after","format":"ansi"}"""),
+        )
+        h.pump()
+        assertThat(h.repository.paneSnapshot(paneId).first()?.lines).containsExactly("after reconnect")
+        assertThat(sentTypes(h.handle()).count { it == "watch_pane" }).isEqualTo(2)
+        h.repository.closePane(paneId, successor)
+        assertThat(sentTypes(h.handle()).count { it == "unwatch_pane" }).isEqualTo(1)
+        assertThat(h.repository.paneSnapshot(paneId).first()).isNull()
+        h.handle().disconnect()
+        h.pump()
+        val reads = sentTypes(h.handle()).count { it == "read_pane" }
+        h.connectReady()
+        assertThat(sentTypes(h.handle()).count { it == "read_pane" }).isEqualTo(reads)
+    }
+
+    @Test
+    fun `old unsubscribe cannot stop successor and final owner still unsubscribes`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady(caps = listOf("convo_sub"))
+        val paneId = clientPaneId("r1", "%1")
+        val successor = Any()
+        h.handle().responder = { request ->
+            lerdr.core.model.CommandResultMessage(
+                action = request.type,
+                ok = true,
+                phase = lerdr.core.model.CommandResultMessage.PHASE_CONFIRMED,
+            )
+        }
+        h.repository.subscribeConversation(paneId, h.viewOwner)
+        h.repository.subscribeConversation(paneId, successor)
+        h.repository.unsubscribeConversation(paneId, h.viewOwner)
+        assertThat(h.handle().requests.map { it.type }).doesNotContain("unsubscribe_conversation")
+        h.repository.unsubscribeConversation(paneId, successor)
+        assertThat(h.handle().requests.count { it.type == "unsubscribe_conversation" }).isEqualTo(1)
+    }
+
+    @Test
+    fun `pending unsubscribe finishes before successor subscribes`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady(caps = listOf("convo_sub"))
+        val paneId = clientPaneId("r1", "%1")
+        val successor = Any()
+        val release = CompletableDeferred<Unit>()
+        h.handle().responder = { request ->
+            if (request.type == "unsubscribe_conversation") release.await()
+            lerdr.core.model.CommandResultMessage(
+                action = request.type,
+                ok = true,
+                phase = lerdr.core.model.CommandResultMessage.PHASE_CONFIRMED,
+            )
+        }
+        h.repository.subscribeConversation(paneId, h.viewOwner)
+        val oldClose = backgroundScope.async { h.repository.unsubscribeConversation(paneId, h.viewOwner) }
+        h.pump()
+        val newOpen = backgroundScope.async { h.repository.subscribeConversation(paneId, successor) }
+        h.pump()
+        assertThat(h.handle().requests.map { it.type })
+            .containsExactly("subscribe_conversation", "unsubscribe_conversation").inOrder()
+        release.complete(Unit)
+        h.pump()
+        oldClose.await()
+        newOpen.await()
+        assertThat(h.handle().requests.map { it.type })
+            .containsExactly("subscribe_conversation", "unsubscribe_conversation", "subscribe_conversation").inOrder()
+        h.repository.unsubscribeConversation(paneId, successor)
+        assertThat(h.handle().requests.last().type).isEqualTo("unsubscribe_conversation")
+    }
+
+    @Test
+    fun `canceled pending subscription is still cleaned by its owner`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady(caps = listOf("convo_sub"))
+        val paneId = clientPaneId("r1", "%1")
+        val confirmation = CompletableDeferred<Unit>()
+        h.handle().responder = { request ->
+            if (request.type == "subscribe_conversation") confirmation.await()
+            lerdr.core.model.CommandResultMessage(
+                action = request.type,
+                ok = true,
+                phase = lerdr.core.model.CommandResultMessage.PHASE_CONFIRMED,
+            )
+        }
+        val pending = backgroundScope.launch { h.repository.subscribeConversation(paneId, h.viewOwner) }
+        h.pump()
+        pending.cancelAndJoin()
+        h.repository.unsubscribeConversation(paneId, h.viewOwner)
+        assertThat(h.handle().requests.map { it.type })
+            .containsExactly("subscribe_conversation", "unsubscribe_conversation").inOrder()
+    }
+
+    @Test
+    fun `successor inherits outstanding size lease before measuring its own grid`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        val paneId = clientPaneId("r1", "%1")
+        val successor = Any()
+        h.handle().responder = { request ->
+            lerdr.core.model.CommandResultMessage(
+                action = request.type,
+                ok = true,
+                phase = lerdr.core.model.CommandResultMessage.PHASE_COMPLETED,
+                data = json("""{"columns":${request.columns}}"""),
+            )
+        }
+        h.repository.openPane(paneId, h.viewOwner)
+        h.repository.leasePaneSize(paneId, h.viewOwner, 92)
+        h.repository.openPane(paneId, successor)
+        h.repository.releasePaneSize(paneId, h.viewOwner)
+        h.repository.closePane(paneId, h.viewOwner)
+        assertThat(h.handle().requests.map { it.type }).doesNotContain("release_pane_size")
+        h.repository.closePane(paneId, successor)
+        assertThat(h.handle().requests.map { it.type })
+            .containsExactly("lease_pane_size", "release_pane_size").inOrder()
+        assertThat(h.repository.paneSnapshot(paneId).first()).isNull()
+    }
+
+    @Test
+    fun `old viewed owner cannot clear reopened primary terminal`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectPrimaryAgent()
+        val paneId = clientPaneId("r1", "%1")
+        val successor = Any()
+        h.repository.setViewedPane(paneId, h.viewOwner)
+        h.repository.setViewedPane(paneId, successor)
+        h.repository.setViewedPane(null, h.viewOwner)
+        assertThat(viewedFrames(h.handle())).hasSize(1)
+        h.repository.setViewedPane(null, successor)
+        assertThat(viewedFrames(h.handle()).last()["visible"]!!.jsonPrimitive.boolean).isFalse()
     }
 
     @Test
@@ -242,7 +438,7 @@ class SessionRepositoryTest {
     fun `openPane reads then acks pane_content with the fingerprint`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectReady()
-        h.repository.openPane(clientPaneId("r1", "%1"))
+        h.repository.openPane(clientPaneId("r1", "%1"), h.viewOwner)
         h.pump()
         // watch + read_pane go out — read carries empty fingerprint first time.
         assertThat(sentTypes(h.handle())).contains("read_pane")
@@ -268,7 +464,7 @@ class SessionRepositoryTest {
     fun `watch_pane is emitted once content lands and relay supports deltas`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectReady()
-        h.repository.openPane(clientPaneId("r1", "%1"))
+        h.repository.openPane(clientPaneId("r1", "%1"), h.viewOwner)
         h.handle().emit(
             json(
                 """{"type":"pane_content","pane_id":"%1","content":"x","content_fingerprint":"fp-1","format":"ansi"}""",
@@ -286,7 +482,7 @@ class SessionRepositoryTest {
     fun `rejected pane_delta issues a forced read_pane`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectReady()
-        h.repository.openPane(clientPaneId("r1", "%1"))
+        h.repository.openPane(clientPaneId("r1", "%1"), h.viewOwner)
         h.handle().emit(
             json(
                 """{"type":"pane_content","pane_id":"%1","content":"x","content_fingerprint":"fp-1","format":"ansi"}""",
@@ -367,11 +563,74 @@ class SessionRepositoryTest {
     fun `disconnected session closes the store connection and pane watches reset`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectReady()
-        h.repository.openPane(clientPaneId("r1", "%1"))
+        h.repository.openPane(clientPaneId("r1", "%1"), h.viewOwner)
         h.pump()
         h.handle().disconnect()
         h.pump()
         assertThat(h.connections.connectionNow("r1")?.status).isEqualTo(RelayStatus.DISCONNECTED)
+    }
+
+    @Test
+    fun `disconnect resolves pending raw work immediately with unknown dispatch outcome`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        val failure = CompletableDeferred<CommandException>()
+        backgroundScope.launch {
+            try {
+                h.repository.request("r1", Inbound(type = "device_list"))
+                failure.completeExceptionally(AssertionError("expected disconnect failure"))
+            } catch (expected: CommandException) {
+                failure.complete(expected)
+            }
+        }
+        h.pump()
+        h.handle().disconnect()
+        h.pump()
+
+        assertThat(failure.isCompleted).isTrue()
+        assertThat(failure.await().phase).isEqualTo("dispatched_unknown")
+        assertThat(failure.await().dispatchedUnknown).isTrue()
+    }
+
+    @Test
+    fun `foreign relay results errors and receipts cannot resolve owned raw work`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        val otherEndpoint = h.endpoint.copy(id = "r2", host = "192.168.1.6")
+        h.repository.connect(otherEndpoint)
+        h.pump()
+        val other = h.awaitHandle(otherEndpoint.socketOrigin)
+        other.connect()
+        h.pump()
+        val pending = backgroundScope.async {
+            h.repository.request("r1", Inbound(type = "device_list", actionId = "owned-action"))
+        }
+        h.pump()
+        val requestId = sentFrames(h.handle())
+            .single { it["type"]?.jsonPrimitive?.content == "device_list" }["request_id"]!!
+            .jsonPrimitive.content
+
+        other.emit(
+            json(
+                """{"type":"command_result","request_id":"$requestId","ok":true,"phase":"completed","data":{"role":"reader"}}""",
+            ),
+        )
+        other.emit(json("""{"type":"error","request_id":"$requestId","error":{"code":"foreign_error"}}"""))
+        other.emit(
+            json(
+                """{"type":"action_receipt","request_id":"foreign-request","receipt":{"action_id":"owned-action","phase":"confirmed"}}""",
+            ),
+        )
+        h.pump()
+        assertThat(pending.isCompleted).isFalse()
+
+        h.handle().emit(
+            json(
+                """{"type":"command_result","request_id":"$requestId","ok":true,"phase":"completed","data":{"role":"controller"}}""",
+            ),
+        )
+        assertThat((pending.await().data as? JsonObject)?.get("role")?.jsonPrimitive?.content)
+            .isEqualTo("controller")
     }
 
     @Test
@@ -396,7 +655,7 @@ class SessionRepositoryTest {
     fun `viewed pane pushes the exact target for a primary-session pane`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectPrimaryAgent()
-        h.repository.setViewedPane(clientPaneId("r1", "%1"))
+        h.repository.setViewedPane(clientPaneId("r1", "%1"), h.viewOwner)
         val pushed = viewedFrames(h.handle())
         assertThat(pushed).hasSize(1)
         val set = pushed.single()
@@ -414,8 +673,8 @@ class SessionRepositoryTest {
     fun `viewed pane dedupes an unchanged signature`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectPrimaryAgent()
-        h.repository.setViewedPane(clientPaneId("r1", "%1"))
-        h.repository.setViewedPane(clientPaneId("r1", "%1"))
+        h.repository.setViewedPane(clientPaneId("r1", "%1"), h.viewOwner)
+        h.repository.setViewedPane(clientPaneId("r1", "%1"), h.viewOwner)
         assertThat(viewedFrames(h.handle())).hasSize(1)
     }
 
@@ -423,8 +682,8 @@ class SessionRepositoryTest {
     fun `leaving the session clears the viewed relay`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectPrimaryAgent()
-        h.repository.setViewedPane(clientPaneId("r1", "%1"))
-        h.repository.setViewedPane(null)
+        h.repository.setViewedPane(clientPaneId("r1", "%1"), h.viewOwner)
+        h.repository.setViewedPane(null, h.viewOwner)
         val pushed = viewedFrames(h.handle())
         assertThat(pushed).hasSize(2)
         val clear = pushed[1]
@@ -438,7 +697,7 @@ class SessionRepositoryTest {
     fun `locking clears the viewed pane and unlocking republishes it`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectPrimaryAgent()
-        h.repository.setViewedPane(clientPaneId("r1", "%1"))
+        h.repository.setViewedPane(clientPaneId("r1", "%1"), h.viewOwner)
         h.repository.setLocked(true)
         h.repository.setLocked(false)
         val pushed = viewedFrames(h.handle())
@@ -456,7 +715,7 @@ class SessionRepositoryTest {
     fun `a non-primary agent never publishes a viewed pane`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectReady() // fixture agent rides server_session_id "ss1"
-        h.repository.setViewedPane(clientPaneId("r1", "%1"))
+        h.repository.setViewedPane(clientPaneId("r1", "%1"), h.viewOwner)
         assertThat(viewedFrames(h.handle())).isEmpty()
     }
 
@@ -464,7 +723,7 @@ class SessionRepositoryTest {
     fun `hiding the app clears the viewed pane`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectPrimaryAgent()
-        h.repository.setViewedPane(clientPaneId("r1", "%1"))
+        h.repository.setViewedPane(clientPaneId("r1", "%1"), h.viewOwner)
         h.repository.setHidden(true)
         val pushed = viewedFrames(h.handle())
         assertThat(pushed).hasSize(2)
@@ -479,7 +738,7 @@ class SessionRepositoryTest {
         h.registry.upsert(h.endpoint)
         h.repository.start()
         h.connectPrimaryAgent()
-        h.repository.setViewedPane(clientPaneId("r1", "%1"))
+        h.repository.setViewedPane(clientPaneId("r1", "%1"), h.viewOwner)
         h.handle().emit(json(h.agentRow("%1", serverSessionId = "primary", generation = 4)))
         h.pump()
         val pushed = viewedFrames(h.handle())

@@ -7,6 +7,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.onNodeWithText
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.lerdr.app.TestApp
@@ -68,6 +70,43 @@ class SpeechSectionScreenshotTest {
     }
 
     @Test
+    fun speech_reader() {
+        capture(
+            SpeechUiState(
+                relayId = "reader",
+                relayLabel = "workstation",
+                enabled = true,
+                connected = true,
+                synthesisCapable = true,
+                managementCapable = true,
+                speakableLanguages = listOf("en"),
+                catalog = SpeechCatalogUi(
+                    engineInstalled = true,
+                    rows = listOf(
+                        SpeechVoiceRowUi(
+                            language = "en",
+                            label = "English",
+                            stateLabel = "Neural voice cached, 63 MB",
+                            installed = true,
+                            busy = false,
+                        ),
+                        SpeechVoiceRowUi(
+                            language = "fr",
+                            label = "French",
+                            stateLabel = "Not downloaded - 65 MB download",
+                            installed = false,
+                            busy = false,
+                        ),
+                    ),
+                ),
+            ),
+        )
+        composeRule.onNodeWithText("Download").assertDoesNotExist()
+        composeRule.onNodeWithText("Remove").assertDoesNotExist()
+        composeRule.onNodeWithText("Speak test").assertIsEnabled()
+    }
+
+    @Test
     fun speech_disabled() {
         capture(
             SpeechUiState(
@@ -125,6 +164,7 @@ class SpeechSectionScreenshotTest {
                 connected = true,
                 synthesisCapable = true,
                 managementCapable = true,
+                canManageVoices = true,
                 speakableLanguages = listOf("en", "fr"),
                 catalog = SpeechCatalogUi(
                     cacheDir = "/home/u/.cache/lerdr/voices",

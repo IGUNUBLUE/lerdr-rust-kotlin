@@ -199,7 +199,8 @@ fun PushPolicyContent(
             )
 
             val policy = uiState.policy
-            val controlsEnabled = uiState.connected && uiState.supported && !uiState.saving
+            val controlsEnabled = uiState.connected && uiState.supported && uiState.canControl &&
+                !uiState.refreshing && !uiState.saving && uiState.test != PushTestUi.Sending
             when {
                 // Capability verdict is only trustworthy once push_config landed.
                 uiState.connected && uiState.capabilitiesKnown && !uiState.supported ->
@@ -343,6 +344,45 @@ private fun PolicyControls(
     onSendTest: () -> Unit,
 ) {
     val spacing = LerdrTheme.spacing
+    if (!uiState.canControl) {
+        CardHint("Read-only device — notification policy changes require a controller.")
+        CONFIGURABLE_CATEGORIES.forEach { category ->
+            ListItem(
+                headlineContent = { Text(category.label) },
+                supportingContent = {
+                    Text(if (policy.categories[category.key] == true) "On" else "Off")
+                },
+                colors = cardItemColors(),
+            )
+        }
+        ListItem(
+            headlineContent = { Text("Settle delay") },
+            supportingContent = { Text("${policy.settleMs} ms") },
+            colors = cardItemColors(),
+        )
+        ListItem(
+            headlineContent = { Text("Cooldown") },
+            supportingContent = { Text("${policy.cooldownMs} ms") },
+            colors = cardItemColors(),
+        )
+        ListItem(
+            headlineContent = { Text("Snooze") },
+            supportingContent = {
+                Text(when {
+                    !policy.snoozed -> "Not snoozed"
+                    policy.snoozeUntil != null -> "Until ${formatSnoozeUntil(policy.snoozeUntil)}"
+                    else -> "Until turned off"
+                })
+            },
+            colors = cardItemColors(),
+        )
+        ListItem(
+            headlineContent = { Text("Update alerts") },
+            supportingContent = { Text(if (policy.updateOnce) "Once per relay version" else "Every update") },
+            colors = cardItemColors(),
+        )
+        return
+    }
     CONFIGURABLE_CATEGORIES.forEach { category ->
         // Row-owned toggle — the whole row is the touch target and reads
         // as one "on/off" Switch; the trailing Switch is display-only.
@@ -600,6 +640,7 @@ private fun PushPolicyContentPreview() {
                     connected = true,
                     capabilitiesKnown = true,
                     supported = true,
+                    canControl = true,
                     policy = PushPolicyUi(
                         deviceId = "dev-1",
                         categories = PushPolicyUi.DEFAULT_CATEGORIES +

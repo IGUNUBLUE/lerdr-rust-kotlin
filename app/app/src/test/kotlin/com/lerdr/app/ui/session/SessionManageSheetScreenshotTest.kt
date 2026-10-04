@@ -3,6 +3,7 @@ package com.lerdr.app.ui.session
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.text.input.TextFieldValue
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.lerdr.app.session.manage.ManageConfirm
@@ -43,15 +44,16 @@ class SessionManageSheetScreenshotTest {
         workspaceLabel = "lerdr",
         sessionName = "Fix the login bug",
         canControl = true,
-        nameDraft = "lerdr",
+        canCopyResponse = true,
     )
 
-    private fun show(uiState: ManageUiState) {
+    private fun show(uiState: ManageUiState, name: String = uiState.title) {
         composeRule.setContent {
             LerdrTheme {
                 ManageSheetContent(
                     uiState = uiState,
-                    onNameDraftChange = {},
+                    nameValue = TextFieldValue(name),
+                    onNameChange = {},
                     onSaveName = {},
                     onCopyResponse = {},
                     onRestart = {},
@@ -77,7 +79,7 @@ class SessionManageSheetScreenshotTest {
 
     @Test
     fun manageSheet_nameDirty() {
-        show(baseState().copy(nameDraft = "lerdr renamed", nameDirty = true))
+        show(baseState().copy(nameDirty = true), name = "lerdr renamed")
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
 

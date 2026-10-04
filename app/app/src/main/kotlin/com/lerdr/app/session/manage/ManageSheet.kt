@@ -44,6 +44,7 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -85,6 +86,7 @@ object ManageSheetTags {
 fun ManageSheet(
     paneId: String,
     onDismiss: () -> Unit,
+    onSessionReplaced: (String) -> Unit,
 ) {
     val app = LocalContext.current.applicationContext
     val viewModel: ManageViewModel = viewModel(key = "manage:$paneId") {
@@ -100,8 +102,13 @@ fun ManageSheet(
     }
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
-    LaunchedEffect(uiState.shouldDismiss) {
-        if (uiState.shouldDismiss) onDismiss()
+    LaunchedEffect(uiState.replacementPaneId, uiState.shouldDismiss) {
+        val replacement = uiState.replacementPaneId
+        if (replacement != null || uiState.shouldDismiss) {
+            viewModel.consumeDismissal()
+            onDismiss()
+            replacement?.let(onSessionReplaced)
+        }
     }
     val clipboard = LocalClipboard.current
     LaunchedEffect(uiState.clipboardText) {
@@ -115,7 +122,8 @@ fun ManageSheet(
     ModalBottomSheet(onDismissRequest = onDismiss) {
         ManageSheetContent(
             uiState = uiState,
-            onNameDraftChange = viewModel::onNameDraftChange,
+            nameValue = viewModel.nameValue,
+            onNameChange = viewModel::onNameChange,
             onSaveName = viewModel::saveRename,
             onCopyResponse = viewModel::copyResponse,
             onRestart = viewModel::restart,
@@ -130,7 +138,8 @@ fun ManageSheet(
 @Composable
 fun ManageSheetContent(
     uiState: ManageUiState,
-    onNameDraftChange: (String) -> Unit,
+    nameValue: TextFieldValue,
+    onNameChange: (TextFieldValue) -> Unit,
     onSaveName: () -> Unit,
     onCopyResponse: () -> Unit,
     onRestart: () -> Unit,
@@ -161,7 +170,7 @@ fun ManageSheetContent(
         }
 
         when {
-            uiState.confirming != null -> ManageConfirmPanel(
+            uiState.confirming != null && uiState.canControl -> ManageConfirmPanel(
                 confirming = uiState.confirming,
                 busy = uiState.busy,
                 onConfirm = onConfirmAction,
@@ -169,7 +178,8 @@ fun ManageSheetContent(
             )
             uiState.canControl -> ManageActions(
                 uiState = uiState,
-                onNameDraftChange = onNameDraftChange,
+                nameValue = nameValue,
+                onNameChange = onNameChange,
                 onSaveName = onSaveName,
                 onCopyResponse = onCopyResponse,
                 onRestart = onRestart,
@@ -204,7 +214,8 @@ fun ManageSheetContent(
 @Composable
 private fun ManageActions(
     uiState: ManageUiState,
-    onNameDraftChange: (String) -> Unit,
+    nameValue: TextFieldValue,
+    onNameChange: (TextFieldValue) -> Unit,
     onSaveName: () -> Unit,
     onCopyResponse: () -> Unit,
     onRestart: () -> Unit,
@@ -222,8 +233,8 @@ private fun ManageActions(
             horizontalArrangement = Arrangement.spacedBy(LerdrTheme.spacing.extraSmall),
         ) {
             OutlinedTextField(
-                value = uiState.nameDraft,
-                onValueChange = onNameDraftChange,
+                value = nameValue,
+                onValueChange = onNameChange,
                 modifier = Modifier
                     .weight(1f)
                     .testTag(ManageSheetTags.NAME_FIELD),
@@ -246,14 +257,16 @@ private fun ManageActions(
 
         Spacer(Modifier.height(LerdrTheme.spacing.extraSmall))
 
-        FilledTonalButton(
-            onClick = onCopyResponse,
-            enabled = !uiState.busy,
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag(ManageSheetTags.COPY_RESPONSE),
-        ) {
-            Text("Copy last response")
+        if (uiState.canCopyResponse) {
+            FilledTonalButton(
+                onClick = onCopyResponse,
+                enabled = !uiState.busy,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag(ManageSheetTags.COPY_RESPONSE),
+            ) {
+                Text("Copy last response")
+            }
         }
         FilledTonalButton(
             onClick = onRestart,
@@ -430,9 +443,9 @@ private fun ManageSheetContentPreview() {
                 workspaceLabel = "lerdr",
                 sessionName = "Fix the login bug",
                 canControl = true,
-                nameDraft = "lerdr",
             ),
-            onNameDraftChange = {},
+            nameValue = TextFieldValue("lerdr"),
+            onNameChange = {},
             onSaveName = {},
             onCopyResponse = {},
             onRestart = {},
@@ -458,7 +471,8 @@ private fun ManageSheetContentReaderPreview() {
                 workspaceLabel = "lerdr",
                 canControl = false,
             ),
-            onNameDraftChange = {},
+            nameValue = TextFieldValue("lerdr"),
+            onNameChange = {},
             onSaveName = {},
             onCopyResponse = {},
             onRestart = {},

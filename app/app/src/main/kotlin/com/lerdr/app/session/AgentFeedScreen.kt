@@ -53,6 +53,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -67,6 +68,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -78,6 +80,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.PreviewLightDark
@@ -136,15 +139,24 @@ fun AgentFeedScreen(
     onOpenTerminal: () -> Unit,
     onOpenFiles: () -> Unit,
     onBack: () -> Unit,
+    onSessionReplaced: (String) -> Unit,
 ) {
     val appContext = LocalContext.current.applicationContext
+    val entryPoint = remember(appContext) {
+        EntryPointAccessors.fromApplication(appContext, AppEntryPoint::class.java)
+    }
+    val sessions = entryPoint.sessionRepository()
+    val viewedOwner = remember(paneId) { Any() }
+    DisposableEffect(sessions, paneId) {
+        sessions.setViewedPane(paneId, viewedOwner)
+        onDispose { sessions.setViewedPane(null, viewedOwner) }
+    }
     val viewModel: FeedViewModel = viewModel(key = "feed:$paneId") {
-        val entryPoint = EntryPointAccessors.fromApplication(appContext, AppEntryPoint::class.java)
         FeedViewModel(
             paneId,
-            entryPoint.sessionRepository(),
+            sessions,
             entryPoint.draftStore(),
-            AttachmentUploads(entryPoint.appScope(), entryPoint.sessionRepository(), appContext),
+            AttachmentUploads(entryPoint.appScope(), sessions, appContext),
             entryPoint.appScope(),
         )
     }
@@ -160,9 +172,12 @@ fun AgentFeedScreen(
     }
     AgentFeedContent(
         uiState = uiState,
+        composerValue = viewModel.composerValue,
+        onComposerChange = viewModel::onComposerChange,
         onOpenTerminal = onOpenTerminal,
         onOpenFiles = onOpenFiles,
         onBack = onBack,
+        onSessionReplaced = onSessionReplaced,
         tabsPaneId = paneId,
         onDraftChange = viewModel::onDraftChange,
         onSendPrompt = viewModel::sendPrompt,
@@ -189,10 +204,13 @@ fun AgentFeedScreen(
 @Composable
 fun AgentFeedContent(
     uiState: FeedUiState,
+    composerValue: TextFieldValue,
+    onComposerChange: (TextFieldValue) -> Unit,
     onOpenTerminal: () -> Unit,
     onOpenFiles: () -> Unit,
     onBack: () -> Unit,
     tabsPaneId: String? = null,
+    onSessionReplaced: ((String) -> Unit)? = null,
     onDraftChange: (String) -> Unit,
     onSendPrompt: () -> Unit,
     onRespond: (Int, String) -> Unit,
@@ -292,7 +310,7 @@ fun AgentFeedContent(
     // ── slash commands — Lerdr `slashMenuOpen` + keyboard navigation ──
     var dismissedSlashQuery by rememberSaveable { mutableStateOf<String?>(null) }
     var activeSlashIndex by rememberSaveable { mutableIntStateOf(0) }
-    val slashQuery = slashQueryFor(uiState.composerDraft)
+    val slashQuery = slashQueryFor(composerValue.text)
     val slashMatches = remember(uiState.slashCommands, slashQuery) {
         matchingSlashCommands(
             SlashCommandCatalog(uiState.slashCommands, uiState.slashTruncated),
@@ -306,8 +324,8 @@ fun AgentFeedContent(
     // Lerdr `slashMenuOpen` — pure draft-text drive; a blocked agent still
     // accepts commands (chat-while-blocked is the clarify path).
     val slashMenuOpen = uiState.canControl && slashQuery != null &&
-        dismissedSlashQuery != uiState.composerDraft
-    LaunchedEffect(uiState.composerDraft) {
+        dismissedSlashQuery != composerValue.text
+    LaunchedEffect(composerValue.text) {
         if (slashQuery == null) {
             dismissedSlashQuery = null
             activeSlashIndex = 0
@@ -341,9 +359,9 @@ fun AgentFeedContent(
         }
     }
 
-    // Follow the tail only while the user is pinned to the bottom — a
-    // "Load older" prepend keeps its anchor via the stable item keys, and
-    // manual scroll-back must not yank the viewport down on new output.
+    // Entry keys preserve prepend anchors. The exhausted load-older header
+    // has no surviving key, so retain its first visible entry explicitly.
+    // Manual scroll-back must not yank the viewport down on new output.
     //
     // The pin is a sticky boolean re-evaluated on every scroll-position
     // change, so an upward drag drops it mid-gesture and a queued snap
@@ -351,6 +369,17 @@ fun AgentFeedContent(
     // initial sample — it is not a scroll, and evaluating it clears the
     // pin before the first snap ever runs.
     var pinnedToBottom by remember { mutableStateOf(true) }
+    var olderAnchorId by remember(listState) { mutableStateOf<String?>(null) }
+    var olderAnchorOffset by remember(listState) { mutableIntStateOf(0) }
+    LaunchedEffect(visibleEntries, uiState.historyLoading, loadOlderVisible) {
+        val anchorId = olderAnchorId ?: return@LaunchedEffect
+        if (uiState.historyLoading) return@LaunchedEffect
+        olderAnchorId = null
+        val index = visibleEntries.indexOfFirst { it.id == anchorId }
+        if (index >= 0) {
+            listState.requestScrollToItem(headerOffset + index, olderAnchorOffset)
+        }
+    }
     val bottomGapThreshold = with(LocalDensity.current) { PIN_BOTTOM_GAP.roundToPx() }
     LaunchedEffect(listState) {
         var lastScrollIndex = -1
@@ -384,7 +413,10 @@ fun AgentFeedContent(
                 lastScrollIndex = listState.firstVisibleItemIndex
                 lastScrollOffset = listState.firstVisibleItemScrollOffset
                 lastTotalItems = info.totalItemsCount
-                pinnedToBottom = didNotScrollUp || bottomGap < bottomGapThreshold
+                // A negative gap beyond rounding slop is an offscreen tail,
+                // not a near-bottom viewport inside a tall final entry.
+                pinnedToBottom = didNotScrollUp ||
+                    (bottomGap >= -PIN_SCROLL_SLOP_PX && bottomGap < bottomGapThreshold)
             }
     }
     // The snapper: fires on content or viewport changes — item count,
@@ -441,6 +473,9 @@ fun AgentFeedContent(
         topBar = {
             SessionTopBar(
                 title = uiState.title.ifEmpty { uiState.paneId.substringAfter("::") },
+                onActionMessage = { message ->
+                    scope.launch { snackbarHostState.showSnackbar(message) }
+                },
                 breadcrumb = uiState.breadcrumb,
                 statusLabel = uiState.statusLabel.ifEmpty {
                     if (uiState.connected) "connected" else "offline"
@@ -472,6 +507,7 @@ fun AgentFeedContent(
                 ),
                 tabsPaneId = tabsPaneId,
                 onSessionClosed = onBack,
+                onSessionReplaced = onSessionReplaced,
             )
         },
         bottomBar = {
@@ -497,7 +533,7 @@ fun AgentFeedContent(
                             .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom),
                     ),
                     agentLabel = uiState.title.ifEmpty { uiState.paneId.substringAfter("::") },
-                    draft = uiState.composerDraft,
+                    draft = composerValue,
                     sending = uiState.responding,
                     canControl = uiState.canControl,
                     // Raw `blocked` status — `submit_prompt` stays refused
@@ -508,7 +544,7 @@ fun AgentFeedContent(
                     onSlashKey = { key ->
                         when (key) {
                             Key.Escape -> {
-                                dismissedSlashQuery = uiState.composerDraft
+                                dismissedSlashQuery = composerValue.text
                                 true
                             }
                             Key.DirectionDown -> {
@@ -542,7 +578,7 @@ fun AgentFeedContent(
                     attachments = uiState.attachments,
                     uploadStatus = uiState.uploadStatus,
                     uploadError = uiState.uploadError,
-                    onDraftChange = onDraftChange,
+                    onDraftChange = onComposerChange,
                     onSend = onSendPrompt,
                     onPickAttachments = onPickAttachments,
                     onRemoveAttachment = onRemoveAttachment,
@@ -558,8 +594,9 @@ fun AgentFeedContent(
                 .padding(innerPadding),
         ) {
             if (findOpen) {
-                TerminalFindBar(
+                SessionFindBar(
                     query = findQuery,
+                    placeholder = "Find in conversation",
                     onQueryChange = { findQuery = it },
                     matchCount = matchCount,
                     activeIndex = activeFindIndex,
@@ -600,6 +637,7 @@ fun AgentFeedContent(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
+                    .clipToBounds()
                     .alpha(if (tailReady) 1f else 0f),
                 contentPadding = PaddingValues(
                     top = spacing.small,
@@ -624,7 +662,21 @@ fun AgentFeedContent(
                 if (loadOlderVisible) {
                     item(key = "load-older") {
                         TextButton(
-                            onClick = onLoadOlder,
+                            onClick = {
+                                val visible = listState.layoutInfo.visibleItemsInfo
+                                val entry = if (visible.firstOrNull()?.key == "load-older") {
+                                    visible.firstOrNull {
+                                        it.index >= headerOffset &&
+                                            it.index < headerOffset + visibleEntries.size
+                                    }
+                                } else {
+                                    null
+                                }
+                                olderAnchorId = entry?.key as? String
+                                olderAnchorOffset = -(entry?.offset ?: 0)
+                                pinnedToBottom = false
+                                onLoadOlder()
+                            },
                             enabled = !uiState.historyLoading && !uiState.preparationPaused,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
@@ -675,11 +727,6 @@ fun AgentFeedContent(
                                 }
                             }
                         },
-                        // No placementSpec: a streaming feed repositions
-                        // items on every growth/insert, and sliding them
-                        // under the tail-pin's instant re-snaps paints
-                        // overlapping rows until the stream settles.
-                        modifier = Modifier.animateItem(placementSpec = null),
                     )
                 }
                 if (searching && visibleEntries.isEmpty() && uiState.entries.isNotEmpty()) {
@@ -697,6 +744,7 @@ fun AgentFeedContent(
                             agent = agent,
                             interaction = uiState.blockedInteraction,
                             draft = uiState.questionDraft,
+                            canControl = uiState.canControl,
                             enabled = uiState.canControl && !uiState.responding,
                             onRespond = onRespond,
                             onDraftChange = onQuestionDraftChange,
@@ -704,7 +752,6 @@ fun AgentFeedContent(
                             onPreviousQuestion = { onNavigateQuestion("previous") },
                             onClarifyQuestion = onClarifyQuestion,
                             onOpenTerminal = onOpenTerminal,
-                            modifier = Modifier.animateItem(placementSpec = null),
                         )
                     }
                 }
@@ -823,7 +870,7 @@ private fun WorkingRow() {
 @Composable
 private fun Composer(
     agentLabel: String,
-    draft: String,
+    draft: TextFieldValue,
     sending: Boolean,
     canControl: Boolean,
     blocked: Boolean,
@@ -833,7 +880,7 @@ private fun Composer(
     attachments: AttachmentBatch,
     uploadStatus: String,
     uploadError: Boolean,
-    onDraftChange: (String) -> Unit,
+    onDraftChange: (TextFieldValue) -> Unit,
     onSend: () -> Unit,
     onPickAttachments: () -> Unit,
     onRemoveAttachment: (String) -> Unit,
@@ -842,6 +889,17 @@ private fun Composer(
     modifier: Modifier = Modifier,
 ) {
     val spacing = LerdrTheme.spacing
+    if (!canControl) {
+        Surface(color = MaterialTheme.colorScheme.surface, modifier = modifier) {
+            Text(
+                "Read-only — this device cannot reply",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(spacing.medium),
+            )
+        }
+        return
+    }
     val controlsLocked = sending || attachments.uploading || !canControl
     Surface(color = MaterialTheme.colorScheme.surface, modifier = modifier) {
         Column(modifier = Modifier.fillMaxWidth()) {
@@ -849,6 +907,7 @@ private fun Composer(
                 AttachmentTray(
                     attachments = attachments,
                     controlsLocked = controlsLocked,
+                    canClear = !sending || attachments.uploading,
                     onRemoveAttachment = onRemoveAttachment,
                     onClearAttachments = onClearAttachments,
                     onRestartAttachments = onRestartAttachments,
@@ -889,7 +948,7 @@ private fun Composer(
                         Text(
                             when {
                                 !canControl -> "Read-only — this device cannot reply"
-                                blocked -> "Waiting at a question — answer it in the terminal"
+                                blocked -> "Agent needs attention — answer above or use the terminal"
                                 else -> "Message $agentLabel…"
                             },
                         )
@@ -916,7 +975,7 @@ private fun Composer(
                         },
                 )
                 Spacer(Modifier.width(spacing.small))
-                val sendable = draft.isNotBlank() ||
+                val sendable = draft.text.isNotBlank() ||
                     attachments.items.any { it.state == AttachmentItemState.SELECTED }
                 IconButton(
                     onClick = onSend,
@@ -945,6 +1004,7 @@ private fun Composer(
 private fun AttachmentTray(
     attachments: AttachmentBatch,
     controlsLocked: Boolean,
+    canClear: Boolean,
     onRemoveAttachment: (String) -> Unit,
     onClearAttachments: () -> Unit,
     onRestartAttachments: () -> Unit,
@@ -981,8 +1041,8 @@ private fun AttachmentTray(
                     Text("Restart upload")
                 }
             }
-            TextButton(onClick = onClearAttachments, enabled = !controlsLocked) {
-                Text("Clear")
+            TextButton(onClick = onClearAttachments, enabled = canClear) {
+                Text(if (attachments.uploading) "Cancel upload" else "Clear")
             }
         }
     }
@@ -1056,6 +1116,8 @@ private fun formatBytes(bytes: Long): String = when {
 private fun AgentFeedContentPreview() {
     LerdrTheme {
         AgentFeedContent(
+            composerValue = TextFieldValue(),
+            onComposerChange = {},
             uiState = FeedUiState(
                 paneId = "sd::%1",
                 title = "claude",

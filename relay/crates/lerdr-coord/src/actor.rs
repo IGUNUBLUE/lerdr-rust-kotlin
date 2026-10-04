@@ -116,6 +116,11 @@ enum TopologyCommand {
     /// session; advance its epoch and republish so stale exact targets
     /// stop validating.
     BumpGeneration(String),
+    /// The plugin `agent_event` datagram's status half — the payload is
+    /// the transition itself, so it commits like the socket event rather
+    /// than merely waking a sampling refresh (the refresh still runs —
+    /// it reconciles every other field).
+    StatusChanged(lerdr_herdr::PaneAgentStatusChangedData),
     /// Internal lane: a spawned post-sync capability collect finished;
     /// install its report (`set_herdr_status` dedupes).
     CapabilitiesReady(CapabilityReport),
@@ -143,6 +148,25 @@ impl TopologyHandle {
     pub fn try_refresh(&self) {
         // Full inbox = a refresh is already queued; dropping is correct.
         let _ = self.commands.try_send(TopologyCommand::Refresh);
+    }
+
+    /// The launch catalog is handshake-only metadata. Do not accept clients
+    /// until its bounded discovery (including the local fallback) is committed.
+    pub async fn wait_for_agent_profiles(&self) -> Result<(), watch::error::RecvError> {
+        let mut topology = self.topology.clone();
+        topology
+            .wait_for(|state| state.agent_profiles.is_some())
+            .await
+            .map(|_| ())
+    }
+
+    /// Plugin `agent_event` datagram — commit the carried status
+    /// transition (`try_send`: a full inbox means a refresh is already
+    /// queued, which reconciles the same state).
+    pub fn report_agent_status(&self, payload: lerdr_herdr::PaneAgentStatusChangedData) {
+        let _ = self
+            .commands
+            .try_send(TopologyCommand::StatusChanged(payload));
     }
 
     /// `state.SetOnTransition` — install the channel each committed
@@ -278,9 +302,12 @@ impl TopologyActor {
                 // — shares `agent_start`'s validation source so the picker
                 // can only offer ids the action accepts.
                 let profiles_resolver = profiles::Resolver::new();
-                let mut stream =
-                    client.supervise_events(EventSupervisor::topology());
+                // Publish the catalog before inventory/capability probes can
+                // stall it; later sessions cannot receive new profile rows.
+                state.set_agent_profiles(resolved_agent_profiles(&client, &profiles_resolver).await);
                 let mut published = PublishedView::default();
+                publish(&state, &mut published, &topology_tx);
+                let mut stream = client.supervise_events(EventSupervisor::topology());
                 let mut events_active = false;
                 // `agent.view` survives event-stream resubscribes — its
                 // documented loss points are restore/handoff (the
@@ -336,7 +363,7 @@ impl TopologyActor {
                                     let outcome = state.accept_enriched(
                                         *snapshot,
                                         &enrichments,
-                                        CommitKind::Event,
+                                        CommitKind::Poll,
                                     );
                                     events_active = true;
                                     publish(&state, &mut published, &topology_tx);
@@ -357,7 +384,41 @@ impl TopologyActor {
                                         spawn_collect(&client, &cmd_tx, &profiles_resolver);
                                     }
                                 }
-                                SupervisorSignal::Invalidated { event, .. } => {
+                                SupervisorSignal::Invalidated { event, gap } => {
+                                    // `pane.agent_status_changed` is the
+                                    // authoritative transition stream —
+                                    // its payload carries the status, so
+                                    // the commit is the payload, not a
+                                    // snapshot sample (a short `working`
+                                    // burst a refresh would read past
+                                    // lands here instead). The pane-class
+                                    // invalidation below still goes out —
+                                    // watchers re-read the content.
+                                    if !gap && event.name == "pane.agent_status_changed" {
+                                        if let Ok(payload) = event
+                                            .data_as::<lerdr_herdr::PaneAgentStatusChangedData>(
+                                        ) {
+                                            if let Some(outcome) =
+                                                state.commit_agent_status(&payload)
+                                            {
+                                                publish(
+                                                    &state,
+                                                    &mut published,
+                                                    &topology_tx,
+                                                );
+                                                forward_outcome(&transitions, outcome)
+                                                    .await;
+                                            }
+                                        }
+                                    }
+                                    if gap && event.name == "pane.agent_status_changed" {
+                                        // No shared snapshot/event sequence: sample again,
+                                        // never replay a possibly older status over resync.
+                                        poll_failures = record_poll(
+                                            poll_once(&client, &enrich, &mut state, &topology_tx, &transitions, &mut published).await,
+                                            poll_failures,
+                                        );
+                                    }
                                     // Pane lifecycle events mutate the
                                     // retired implementation's `SessionCache` (events.go:
                                     // `Apply` — pane.{created,updated,
@@ -477,6 +538,17 @@ impl TopologyActor {
                                 Some(TopologyCommand::BumpGeneration(pane_id)) => {
                                     state.bump_generation(&pane_id);
                                     publish(&state, &mut published, &topology_tx);
+                                }
+                                Some(TopologyCommand::StatusChanged(payload)) => {
+                                    // The UDP `agent_event`'s own
+                                    // transition — commit the carried
+                                    // status like the socket event does.
+                                    if let Some(outcome) =
+                                        state.commit_agent_status(&payload)
+                                    {
+                                        publish(&state, &mut published, &topology_tx);
+                                        forward_outcome(&transitions, outcome).await;
+                                    }
                                 }
                                 Some(TopologyCommand::CapabilitiesReady(report)) => {
                                     // Unchanged evidence carries unchanged
@@ -727,18 +799,25 @@ async fn push_facts(
     // raw `server.agent_manifests` list: manifests describe detection,
     // not launchability, so they include agents the pane can't start
     // (`agent_start` validates `profile_id` against this same resolver).
-    let profiles = resolver
-        .profiles(client)
-        .await
-        .into_iter()
-        .map(|p| AgentProfile {
-            id: p.id,
-            label: p.label,
-        })
-        .collect();
+    let profiles = resolved_agent_profiles(client, resolver).await;
     let _ = commands
         .send(TopologyCommand::AgentProfilesReady(profiles))
         .await;
+}
+
+async fn resolved_agent_profiles(
+    client: &Client,
+    resolver: &profiles::Resolver,
+) -> Vec<AgentProfile> {
+    resolver
+        .profiles(client)
+        .await
+        .into_iter()
+        .map(|profile| AgentProfile {
+            id: profile.id,
+            label: profile.label,
+        })
+        .collect()
 }
 
 /// `CapabilityReport` → the `herdrStatusPayload` wire shape — every field
@@ -926,6 +1005,85 @@ mod tests {
         }
     }
 
+    /// Catalog RPC is available while inventory/bootstrap probes remain pending.
+    struct CatalogBeforeSyncTransport;
+
+    impl lerdr_herdr::Transport for CatalogBeforeSyncTransport {
+        fn dial(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = std::io::Result<lerdr_herdr::BoxIo>> + Send>> {
+            Box::pin(async {
+                let (client_end, server_end) = tokio::io::duplex(4096);
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+                    let mut reader = tokio::io::BufReader::new(server_end);
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                    if request["method"] == "integration.list" {
+                        let reply = serde_json::json!({
+                            "id": request["id"],
+                            "result": {
+                                "type": "integration_list",
+                                "integrations": [{
+                                    "target": "lerdr-test-catalog-boundary",
+                                    "state": "current"
+                                }]
+                            }
+                        });
+                        let mut bytes = serde_json::to_vec(&reply).unwrap();
+                        bytes.push(b'\n');
+                        let _ = reader.get_mut().write_all(&bytes).await;
+                    } else {
+                        line.clear();
+                        let _ = reader.read_line(&mut line).await;
+                    }
+                });
+                Ok(Box::new(client_end) as lerdr_herdr::BoxIo)
+            })
+        }
+
+        fn describe(&self) -> String {
+            "catalog-before-sync".to_owned()
+        }
+    }
+
+    #[tokio::test]
+    async fn initial_catalog_precedes_pending_inventory_and_capability_discovery() {
+        let client = Client::new(
+            Arc::new(CatalogBeforeSyncTransport),
+            lerdr_herdr::ClientConfig::default(),
+        );
+        let cancel = CancellationToken::new();
+        let handle = TopologyActor::spawn(client, cancel.clone());
+        let mut rx = handle.topology.clone();
+        let initial = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let current = rx.borrow_and_update().clone();
+                if current.agent_profiles.is_some() {
+                    break current;
+                }
+                rx.changed().await.expect("topology channel closed");
+            }
+        })
+        .await
+        .expect("initial catalog must not depend on completed inventory/capability probes");
+        let snapshot = crate::snapshot::compose_snapshot(&initial);
+        let lerdr_core::protocol::Outbound::PushConfig(config) = &snapshot[0] else {
+            panic!("first session snapshot message must be push_config");
+        };
+        let first_message = serde_json::to_value(config).unwrap();
+        assert!(first_message["agent_profiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|profile| profile["id"] == "lerdr-test-catalog-boundary"));
+        assert!(!initial.inventory_ready);
+        cancel.cancel();
+    }
+
     #[tokio::test]
     async fn bump_generation_reaches_the_published_topology() {
         let client = Client::new(
@@ -1074,6 +1232,31 @@ mod tests {
         };
         match request["method"].as_str().unwrap_or_default() {
             "events.subscribe" => {
+                if request["params"]["subscriptions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|subscription| {
+                        subscription["type"] == "pane.agent_status_changed"
+                            && !snapshot_panes.iter().any(|pane| {
+                                subscription["pane_id"].is_string()
+                                    && subscription["pane_id"] == pane["pane_id"]
+                            })
+                    })
+                {
+                    let _ = conn
+                        .write_all(
+                            (serde_json::json!({"id": "", "error": {
+                                "code": "invalid_request",
+                                "message": "missing or unknown pane_id"
+                            }})
+                            .to_string()
+                                + "\n")
+                                .as_bytes(),
+                        )
+                        .await;
+                    return;
+                }
                 let _ = conn
                     .write_all(
                         serde_json::json!({"id": id, "result": {"type": "subscription_started"}})
@@ -1470,5 +1653,56 @@ mod tests {
         })
         .await;
         cancel.cancel();
+    }
+    #[tokio::test]
+    async fn native_status_subscription_preserves_completion_between_snapshots() {
+        use lerdr_herdr::{AgentInfo, AgentStatus, PaneAgentStatusChangedData, SessionSnapshot};
+        let events = ["working", "idle"]
+            .into_iter()
+            .map(|status| {
+                serde_json::to_vec(&serde_json::json!({
+                    "event": "pane_agent_status_changed",
+                    "data": {"pane_id": "wE:pE", "workspace_id": "wE",
+                             "agent_status": status, "agent": "codex"}
+                }))
+                .unwrap()
+            })
+            .collect();
+        let server = Arc::new(MiniHerdr::with_parts(
+            events,
+            vec![serde_json::json!({
+                "pane_id": "wE:pE", "terminal_id": "term_1",
+                "workspace_id": "wE", "tab_id": "wE:t1",
+                "agent_status": "idle", "focused": false
+            })],
+        ));
+        let client = mini_client(&server);
+        let mut topology = Topology::default();
+        topology.accept(SessionSnapshot {
+            agents: vec![AgentInfo {
+                pane_id: "wE:pE".into(),
+                terminal_id: "term_1".into(),
+                workspace_id: "wE".into(),
+                tab_id: "wE:t1".into(),
+                agent: Some("codex".into()),
+                agent_status: AgentStatus::Idle,
+                ..AgentInfo::default()
+            }],
+            ..SessionSnapshot::default()
+        });
+        let mut stream = client.subscribe_topology().await.unwrap();
+        for _ in 0..2 {
+            let event = tokio::time::timeout(Duration::from_secs(2), stream.next_event())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            topology
+                .commit_agent_status(&event.data_as::<PaneAgentStatusChangedData>().unwrap())
+                .expect("live transition");
+        }
+        assert_eq!(topology.agents()[0].status, "done");
+        let (_, acknowledged, _) = topology.acknowledge("wE:pE").unwrap();
+        assert_eq!(acknowledged, "idle");
     }
 }

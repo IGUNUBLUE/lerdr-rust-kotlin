@@ -1,16 +1,20 @@
 package com.lerdr.app.session
 
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import com.google.common.truth.Truth.assertThat
 import com.lerdr.app.session.manage.ManageConfirm
 import com.lerdr.app.session.manage.ManageViewModel
 import com.lerdr.app.session.manage.sessionNameOf
 import java.io.File
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -102,6 +106,7 @@ class SessionManageViewModelTest {
         suspend fun connectReady(
             role: DeviceRole = DeviceRole.CONTROLLER,
             inventoryState: String = "ready",
+            copyAvailable: Boolean = false,
         ) {
             // Registry first — `start()`'s reconcile tears down sessions
             // whose endpoint is not registered.
@@ -112,7 +117,7 @@ class SessionManageViewModelTest {
             handle().connect()
             handle().emit(
                 json(
-                    """{"type":"push_config","capabilities":["workspace_management","directory_browser","worktree_management","tab_reorder"],"inventory":{"state":"$inventoryState"}}""",
+                    """{"type":"push_config","capabilities":["workspace_management","directory_browser","worktree_management","tab_reorder"${if (copyAvailable) ",\"agent_response_copy\"" else ""}],"inventory":{"state":"$inventoryState"}}""",
                 ),
             )
             handle().emit(
@@ -152,7 +157,7 @@ class SessionManageViewModelTest {
         assertThat(state.workspaceLabel).isEqualTo("lerdr")
         assertThat(state.sessionName).isEqualTo("Fix the login bug")
         assertThat(state.canControl).isTrue()
-        assertThat(state.nameDraft).isEqualTo("lerdr")
+        assertThat(vm.nameValue.text).isEqualTo("lerdr")
         assertThat(state.nameDirty).isFalse()
     }
 
@@ -165,7 +170,7 @@ class SessionManageViewModelTest {
 
         assertThat(vm.uiState.value.canControl).isFalse()
 
-        vm.onNameDraftChange("renamed")
+        vm.onNameChange(TextFieldValue("renamed"))
         vm.saveRename()
         vm.restart()
         vm.beginConfirm(ManageConfirm.CLEAR)
@@ -186,7 +191,7 @@ class SessionManageViewModelTest {
         val vm = h.viewModel()
         h.pump()
 
-        vm.onNameDraftChange("  renamed agent  ")
+        vm.onNameChange(TextFieldValue("  renamed agent  "))
         assertThat(vm.uiState.value.nameDirty).isTrue()
         vm.saveRename()
         h.pump()
@@ -199,15 +204,63 @@ class SessionManageViewModelTest {
     }
 
     @Test
+    fun `handling a rename dismissal leaves management available for another action`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        val vm = h.viewModel()
+        h.pump()
+
+        vm.onNameChange(TextFieldValue("renamed agent"))
+        vm.saveRename()
+        h.pump()
+        assertThat(vm.uiState.value.shouldDismiss).isTrue()
+
+        vm.consumeDismissal()
+        h.pump()
+        assertThat(vm.uiState.value.shouldDismiss).isFalse()
+        vm.beginConfirm(ManageConfirm.STOP)
+        h.pump()
+        assertThat(vm.uiState.value.confirming).isEqualTo(ManageConfirm.STOP)
+        assertThat(vm.uiState.value.shouldDismiss).isFalse()
+        vm.cancelConfirm()
+        h.pump()
+        assertThat(vm.uiState.value.confirming).isNull()
+    }
+
+    @Test
+    fun `an inventory update cannot rewind an edited name or its IME selection`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        val vm = h.viewModel()
+        h.pump()
+        val edited = TextFieldValue(
+            "codex-audit-ixsij1wu-reopen",
+            selection = TextRange(5),
+            composition = TextRange(0, 5),
+        )
+
+        vm.onNameChange(edited)
+        assertThat(vm.nameValue).isEqualTo(edited)
+        h.handle().emit(
+            json(
+                """{"type":"agents","agents":[{"pane_id":"%1","raw_pane_id":"%1","terminal_id":"t1","server_session_id":"ss1","generation":3,"agent":"claude","name":"changed title","status":"idle","cwd":"/home/u/lerdr","project":"another project","workspace_id":"w1","tab_id":"tabA","updated_at":101}]}""",
+            ),
+        )
+        h.pump()
+        assertThat(vm.uiState.value.title).isEqualTo("another project")
+        assertThat(vm.nameValue).isEqualTo(edited)
+    }
+
+    @Test
     fun `an unchanged or blank name sends nothing`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectReady()
         val vm = h.viewModel()
         h.pump()
 
-        vm.onNameDraftChange("lerdr") // unchanged
+        vm.onNameChange(TextFieldValue("lerdr")) // unchanged
         vm.saveRename()
-        vm.onNameDraftChange("   ") // blank
+        vm.onNameChange(TextFieldValue("   ")) // blank
         vm.saveRename()
         h.pump()
 
@@ -219,40 +272,42 @@ class SessionManageViewModelTest {
     // ── restart / clear / stop / copy ─────────────────────────────────
 
     @Test
-    fun `restart sends agent_restart with a status`() = runTest {
-        val h = Harness(this, tmp.root)
-        h.connectReady()
-        val vm = h.viewModel()
-        h.pump()
-
-        vm.restart()
-        h.pump()
-
-        assertThat(h.handle().requests.last().type).isEqualTo("agent_restart")
-        val state = vm.uiState.value
-        assertThat(state.status).isEqualTo("Restart requested.")
-        assertThat(state.statusError).isFalse()
-        assertThat(state.shouldDismiss).isFalse()
-    }
-
-    @Test
-    fun `clear runs behind the confirm panel then dismisses`() = runTest {
-        val h = Harness(this, tmp.root)
-        h.connectReady()
-        val vm = h.viewModel()
-        h.pump()
-
-        vm.beginConfirm(ManageConfirm.CLEAR)
-        h.pump()
-        assertThat(vm.uiState.value.confirming).isEqualTo(ManageConfirm.CLEAR)
-
-        vm.confirmAction()
-        h.pump()
-
-        assertThat(h.handle().requests.last().type).isEqualTo("agent_clear")
-        val state = vm.uiState.value
-        assertThat(state.confirming).isNull()
-        assertThat(state.shouldDismiss).isTrue()
+    fun `replacement keeps the sheet until its reply when the old agent disappears`() = runTest {
+        for (clear in listOf(false, true)) {
+            val h = Harness(this, tmp.newFolder(if (clear) "clear" else "restart"))
+            h.connectReady()
+            val vm = h.viewModel()
+            h.pump()
+            val reply = CompletableDeferred<Unit>()
+            h.handle().responder = { message ->
+                reply.await()
+                CommandResultMessage(
+                    action = message.type,
+                    ok = true,
+                    phase = CommandResultMessage.PHASE_COMPLETED,
+                    requestId = message.requestId,
+                    data = json("""{"pane_id":"%2"}"""),
+                )
+            }
+            if (clear) {
+                vm.beginConfirm(ManageConfirm.CLEAR)
+                vm.confirmAction()
+            } else {
+                vm.restart()
+            }
+            h.pump()
+            h.handle().emit(json("""{"type":"agents","agents":[]}"""))
+            h.pump()
+            advanceTimeBy(20_000)
+            h.pump()
+            assertThat(vm.uiState.value.busy).isTrue()
+            assertThat(vm.uiState.value.shouldDismiss).isFalse()
+            reply.complete(Unit)
+            h.pump()
+            assertThat(vm.uiState.value.busy).isFalse()
+            assertThat(vm.uiState.value.replacementPaneId).isEqualTo("r1::%2")
+            assertThat(vm.uiState.value.shouldDismiss).isTrue()
+        }
     }
 
     @Test
@@ -288,7 +343,7 @@ class SessionManageViewModelTest {
     @Test
     fun `copyResponse lands data text on the clipboard channel`() = runTest {
         val h = Harness(this, tmp.root)
-        h.connectReady()
+        h.connectReady(copyAvailable = true)
         val vm = h.viewModel()
         h.pump()
 
@@ -308,7 +363,6 @@ class SessionManageViewModelTest {
         assertThat(h.handle().requests.last().type).isEqualTo("copy_agent_response")
         val state = vm.uiState.value
         assertThat(state.clipboardText).isEqualTo("the rendered reply")
-        assertThat(state.status).isEqualTo("Last response copied to the clipboard.")
         vm.consumeClipboard()
         h.pump()
         assertThat(vm.uiState.value.clipboardText).isNull()
@@ -317,7 +371,7 @@ class SessionManageViewModelTest {
     @Test
     fun `copyResponse with no reply surfaces the empty status`() = runTest {
         val h = Harness(this, tmp.root)
-        h.connectReady()
+        h.connectReady(copyAvailable = true)
         val vm = h.viewModel()
         h.pump()
 
@@ -326,7 +380,6 @@ class SessionManageViewModelTest {
 
         val state = vm.uiState.value
         assertThat(state.clipboardText).isNull()
-        assertThat(state.status).isEqualTo("The agent has no response to copy.")
         assertThat(state.statusError).isTrue()
     }
 

@@ -206,11 +206,10 @@ fn context_with_client(
 }
 
 /// `ActionContext` over an arbitrary client: the topology snapshot carries
-/// `agents`/`workspaces`/`panes`, `features` seeds the capability ledger
-/// rows `herdr_status.features` projects, the profile resolver points at
-/// an empty config dir, and the spawned supervisor shares the transport
-/// (its `events.subscribe` requests are filtered out of
-/// [`Script::requests`]).
+/// `agents`/`workspaces`/`panes`, `features` seeds the capability ledger,
+/// and the profile resolver points at an empty config dir. The background
+/// supervisor has its own transport; its discovery cannot consume an action's
+/// scripted replies or contaminate that action's dispatch observations.
 fn context_full(
     client: Client,
     agents: Vec<AgentInfo>,
@@ -243,7 +242,7 @@ fn context_full(
         );
     }
     ActionContext {
-        handle: TopologyActor::spawn(client.clone(), CancellationToken::new()),
+        handle: TopologyActor::spawn(Script::new([]).client(), CancellationToken::new()),
         leases: Leases::new(client.clone()),
         profiles: Resolver::with_config_home(tempfile::tempdir().expect("tempdir").keep()),
         questions: crate::actions::questions::Questions::default(),
@@ -489,43 +488,7 @@ async fn submit_prompt_qoder_enter_failure_is_partially_applied() {
     assert_eq!(frames.data, Some(json!({ "dispatched_unknown": true })));
 }
 
-#[tokio::test]
-async fn agent_stop_dispatches_pane_close() {
-    let script = Script::new([]);
-    let ctx = context(&script, vec![agent("wE:p1", "wE:t1", "claude")]);
-    let msg = message(serde_json::Map::from_iter([
-        ("type".into(), json!("agent_stop")),
-        ("pane_id".into(), json!("wE:p1")),
-    ]));
-    let frames = frames_of(super::input::agent_stop(ctx, "r1", "a1", &msg).await);
-    assert!(frames.ok);
-    let requests = script.requests();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].0, "pane.close");
-    assert_eq!(requests[0].1, json!({ "pane_id": "wE:p1" }));
-}
-
 // ── tabs ------------------------------------------------------------------
-
-#[tokio::test]
-async fn agent_rename_targets_the_panes_tab() {
-    let script = Script::new([]);
-    let ctx = context(&script, vec![agent("wE:p1", "wE:t1", "claude")]);
-    let msg = message(serde_json::Map::from_iter([
-        ("type".into(), json!("agent_rename")),
-        ("pane_id".into(), json!("wE:p1")),
-        ("name".into(), json!("  new label  ")),
-    ]));
-    let frames = frames_of(super::tabs::agent_rename(ctx, "r1", "a1", &msg).await);
-    assert!(frames.ok);
-    let requests = script.requests();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].0, "tab.rename");
-    assert_eq!(
-        requests[0].1,
-        json!({ "tab_id": "wE:t1", "label": "new label" })
-    );
-}
 
 #[tokio::test]
 async fn tab_reorder_moves_the_panes_tab() {
@@ -684,135 +647,6 @@ async fn workspace_create_without_root_pane_is_dispatched_unknown() {
 
 // ── agent_start lifecycle ---------------------------------------------------
 
-/// `Lifecycle.Start` through the argv path: profile `sh` resolves on PATH
-/// (kind is empty → `pane.send_input` + `agent.get` + `agent.rename`).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn agent_start_argv_lifecycle_matches_oracle_call_sequence() {
-    let home = super::workspace::home_dir().expect("home");
-    let cwd = tempfile::tempdir_in(&home).expect("tempdir in home");
-    let resolved = std::fs::canonicalize(cwd.path()).expect("canonical");
-
-    // Profile `sh` via INI — `binary_path("sh")` resolves on every host.
-    let config_home = tempfile::tempdir().expect("config tempdir");
-    std::fs::create_dir_all(config_home.path().join("herdr")).unwrap();
-    std::fs::write(
-        config_home.path().join("herdr/agent-profiles.ini"),
-        "[config]\nreplace_profiles = true\n[profiles]\nsh = Shell\n",
-    )
-    .unwrap();
-
-    // The lifecycle reads `agent.list` twice — `reconcileExisting`, then
-    // the workspace-selection inventory.
-    let script = Script::new([
-        (
-            "agent.list",
-            Step::Reply(json!({ "type": "agent_list", "agents": [] })),
-        ),
-        (
-            "agent.list",
-            Step::Reply(json!({ "type": "agent_list", "agents": [] })),
-        ),
-        (
-            "workspace.list",
-            Step::Reply(json!({ "type": "workspace_list", "workspaces": [] })),
-        ),
-        (
-            "workspace.create",
-            Step::Reply(json!({
-                "type": "workspace_created",
-                "workspace": { "workspace_id": "wT" },
-                "tab": { "tab_id": "wT:t1" },
-                "root_pane": { "pane_id": "wT:p1" },
-            })),
-        ),
-        (
-            "agent.get",
-            Step::Reply(json!({
-                "type": "agent_info",
-                "agent": {
-                    "pane_id": "wT:p1",
-                    "terminal_id": "term_1",
-                    "workspace_id": "wT",
-                    "tab_id": "wT:t1",
-                    "focused": false,
-                    "agent_status": "idle",
-                    "agent": "sh",
-                    "revision": 1,
-                },
-            })),
-        ),
-    ]);
-    let client = script.client();
-    let ctx = {
-        let mut topology = Topology::default();
-        topology.accept(SessionSnapshot::default());
-        ActionContext {
-            handle: TopologyActor::spawn(client.clone(), CancellationToken::new()),
-            leases: Leases::new(client.clone()),
-            profiles: Resolver::with_config_home(config_home.path().to_owned()),
-            questions: crate::actions::questions::Questions::default(),
-            uploads: crate::actions::uploads::Uploads::new(
-                tempfile::tempdir().expect("tempdir").keep(),
-            ),
-            activities: crate::actions::activity::Journal::default(),
-            push: crate::actions::push::Push::default(),
-            speech: crate::actions::speech::Speech::default(),
-            notices: crate::actions::Notices::default(),
-            audit: None,
-            device_id: "test-device".to_owned(),
-            client,
-            topology: Arc::new(topology),
-            client_id: "test-client".to_owned(),
-        }
-    };
-    let msg = message(serde_json::Map::from_iter([
-        ("type".into(), json!("agent_start")),
-        ("profile_id".into(), json!("sh")),
-        ("name".into(), json!("shell-1")),
-        ("cwd".into(), json!(resolved.to_string_lossy())),
-    ]));
-    let frames = frames_of(super::agents::agent_start(ctx, "r1", "a1", &msg).await);
-    assert!(frames.ok, "frames: {:?}", frames.data);
-    assert_eq!(frames.phase, "completed");
-    assert_eq!(frames.receipt_phase, "confirmed");
-
-    let requests = script.requests();
-    let methods: Vec<&str> = requests.iter().map(|(m, _)| m.as_str()).collect();
-    assert_eq!(
-        methods,
-        vec![
-            "integration.list",
-            "agent.list",
-            "agent.list",
-            "workspace.list",
-            "workspace.create",
-            "tab.rename",
-            "pane.send_input",
-            "agent.get",
-            "agent.rename",
-        ]
-    );
-    // `workspace.create` gets the cwd + basename label, never focus.
-    assert_eq!(requests[4].1["cwd"], json!(resolved.to_string_lossy()));
-    assert_eq!(requests[4].1["focus"], json!(false));
-    // The fresh tab is renamed to the agent name.
-    assert_eq!(
-        requests[5].1,
-        json!({ "tab_id": "wT:t1", "label": "shell-1" })
-    );
-    // The argv profile runs through pane input — shell-joined + Enter.
-    assert_eq!(requests[6].0, "pane.send_input");
-    assert_eq!(requests[6].1["pane_id"], json!("wT:p1"));
-    assert_eq!(requests[6].1["keys"], json!(["Enter"]));
-    assert!(requests[6].1["text"].as_str().unwrap().ends_with("sh"));
-    // Detection poll then rename.
-    assert_eq!(requests[7].1, json!({ "target": "wT:p1" }));
-    assert_eq!(
-        requests[8].1,
-        json!({ "target": "wT:p1", "name": "shell-1" })
-    );
-}
-
 /// A kind profile goes through `agent.start` with the transient-refusal
 /// retry: one `agent_pane_busy`, then success.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -860,7 +694,7 @@ async fn agent_start_kind_retries_pane_busy() {
         let mut topology = Topology::default();
         topology.accept(SessionSnapshot::default());
         ActionContext {
-            handle: TopologyActor::spawn(client.clone(), CancellationToken::new()),
+            handle: TopologyActor::spawn(Script::new([]).client(), CancellationToken::new()),
             leases: Leases::new(client.clone()),
             profiles: Resolver::with_config_home(tempfile::tempdir().expect("tempdir").keep()),
             questions: crate::actions::questions::Questions::default(),

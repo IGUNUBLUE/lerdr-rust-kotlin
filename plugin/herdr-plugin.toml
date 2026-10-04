@@ -20,11 +20,11 @@ id = "lerdr.events"
 name = "Lerdr"
 # Synced to the Rust workspace crates (relay/crates/*/Cargo.toml). Release PRs
 # bump it; the [[build]] hook resolves the matching v<version> release tag.
-version = "0.2.7"
+version = "1.0.0"
 
 # Herdr 0.7.5 introduced the live-agent facade used for atomic starts and prompts.
 min_herdr_version = "0.7.5"
-description = "Remote mobile control for Herdr: approve and monitor agents from your smartphone (Android/iOS) with an installable web app, push notifications, QR pairing, and a private Tailscale transport"
+description = "Remote Android control for Herdr: monitor agents, answer questions and approvals, use live terminals and workspace files, with QR pairing, push notifications, and end-to-end encryption over Tailscale"
 platforms = ["macos", "linux"]
 
 # Install the exact versioned, checksum- and manifest-verified release bundle.

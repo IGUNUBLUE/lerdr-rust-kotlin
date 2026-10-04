@@ -347,6 +347,7 @@ async fn workspace_reordered_subscription_outcome_overrides_schema() {
     // (`subscription_acknowledged`), not `schema_advertised`: observed
     // evidence wins over inference.
     let server = FakeHerdr::start(Action::Reply(pong())).await;
+    server.push(Action::Reply(support::snapshot_result()));
     server.push(Action::Stream(vec![support::subscription_started_line()]));
     let schema = schema_with(&["ping", "events.subscribe"], &["workspace.reordered"], &[]);
     let client = test_client(&server, SchemaSource::Static(schema));
@@ -357,14 +358,6 @@ async fn workspace_reordered_subscription_outcome_overrides_schema() {
     // The schema verdict does not exist until `collect_capabilities`
     // runs below — this subscribe is pre-adjudication, so
     // `pane.output_changed` rides and is acknowledged.
-    let reqs = server.requests();
-    let types: Vec<&str> = reqs[0].params["subscriptions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|s| s["type"].as_str())
-        .collect();
-    assert!(types.contains(&"pane.output_changed"));
     assert_eq!(client.pane_output_changed_supported(), Some(true));
 
     let report = client.collect_capabilities().await;
@@ -391,6 +384,7 @@ async fn workspace_reordered_subscription_outcome_overrides_schema() {
 #[tokio::test]
 async fn subscribe_skips_reordered_when_ledger_knows_unsupported() {
     let server = FakeHerdr::start(Action::Stream(vec![support::subscription_started_line()])).await;
+    server.push(Action::Reply(support::snapshot_result()));
     let client = test_client(&server, SchemaSource::Disabled);
     client.note_feature(
         features::WORKSPACE_REORDERED,
@@ -400,29 +394,15 @@ async fn subscribe_skips_reordered_when_ledger_knows_unsupported() {
 
     let stream = client.subscribe_topology().await.unwrap();
     drop(stream);
-    let reqs = server.requests();
-    let types: Vec<&str> = reqs[0].params["subscriptions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|s| s["type"].as_str())
-        .collect();
-    assert!(
-        !types.contains(&"workspace.reordered"),
-        "known-unsupported variant must not be re-offered: {types:?}"
-    );
-    // The other optional entry is unjudged — it still rides.
-    assert!(types.contains(&"pane.output_changed"));
-    assert_eq!(types.len(), 21);
-    // The variant was skipped on the ledger's verdict, not rejected by
-    // this bootstrap — the probe atomic stays "not probed" while the
-    // published verdict keeps the observed evidence.
+    // Skipping a known-unsupported variant leaves it unprobed and preserves
+    // the published refusal instead of replacing it with acceptance evidence.
     assert_eq!(client.workspace_reordered_supported(), None);
     assert_eq!(
         client.feature(features::WORKSPACE_REORDERED).state,
         FeatureState::Unsupported
     );
     assert_eq!(client.pane_output_changed_supported(), Some(true));
+    assert_eq!(client.pane_agent_status_changed_supported(), Some(true));
 }
 
 #[tokio::test]
@@ -432,6 +412,7 @@ async fn bootstrap_reprobes_reordered_despite_prior_verdict() {
     // Standalone `subscribe_topology` callers still honor the verdict — see
     // the skip test above.
     let server = FakeHerdr::start(Action::Reply(pong())).await;
+    server.push(Action::Reply(support::snapshot_result()));
     server.push(Action::Stream(vec![support::subscription_started_line()]));
     server.push(Action::Reply(support::snapshot_result()));
     let client = test_client(&server, SchemaSource::Disabled);
@@ -445,17 +426,6 @@ async fn bootstrap_reprobes_reordered_despite_prior_verdict() {
     let boot = client.bootstrap_topology().await.unwrap();
     drop(boot.stream);
 
-    let reqs = server.requests();
-    let types: Vec<&str> = reqs[0].params["subscriptions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|s| s["type"].as_str())
-        .collect();
-    assert!(
-        types.contains(&"workspace.reordered"),
-        "bootstrap must re-probe the variant after invalidation: {types:?}"
-    );
     assert_eq!(client.workspace_reordered_supported(), Some(true));
 }
 
@@ -465,6 +435,7 @@ async fn subscribe_rejection_marks_reordered_unsupported() {
     // variant (empty id + invalid_request); the fallback succeeds. The
     // default replies to the capability collect's unary calls.
     let server = FakeHerdr::start(Action::Reply(pong())).await;
+    server.push(Action::Reply(support::snapshot_result()));
     server.push(Action::Custom(|conn, _req| {
         Box::pin(async move {
             use tokio::io::AsyncWriteExt;

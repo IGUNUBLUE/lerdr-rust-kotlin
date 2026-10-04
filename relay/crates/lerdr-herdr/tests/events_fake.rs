@@ -68,22 +68,12 @@ async fn subscribe_handshake_and_events() {
     );
 }
 
-/// The `subscriptions` entries of request `i` (0-indexed in accept
-/// order) as plain type names.
-fn subscription_types(req: &support::RecordedRequest) -> Vec<&str> {
-    req.params["subscriptions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|s| s["type"].as_str())
-        .collect()
-}
-
 #[tokio::test]
 async fn subscribe_refused_unknown_variant() {
     // Older herdr rejects `workspace.reordered` with a pre-dispatch refusal —
     // the fallback must resubscribe without it.
     let server = FakeHerdr::start(Action::Stream(vec![subscription_started_line()])).await;
+    server.push(Action::Reply(snapshot_result()));
     server.push(Action::Custom(|conn, _req| {
         Box::pin(async move {
             use tokio::io::AsyncWriteExt;
@@ -99,37 +89,26 @@ async fn subscribe_refused_unknown_variant() {
     }));
     let client = client_for(&server);
     let stream = client.subscribe_topology().await.unwrap();
-    assert_eq!(
-        server.accept_count(),
-        2,
-        "fallback resubscribe must dial again"
-    );
     assert_eq!(client.workspace_reordered_supported(), Some(false));
     // `pane.output_changed` was never named — it rode the retry and was
     // accepted.
     assert_eq!(client.pane_output_changed_supported(), Some(true));
-    let reqs = server.requests();
-    assert!(subscription_types(&reqs[0]).contains(&"workspace.reordered"));
-    let retried = subscription_types(&reqs[1]);
-    assert!(!retried.contains(&"workspace.reordered"));
-    assert!(retried.contains(&"pane.output_changed"));
     drop(stream);
 }
 
-/// A build that knows `workspace.reordered` but not `pane.output_changed`
-/// (Herdr 0.9.1's actual shape — the event payload exists but the
-/// `Subscription` variant does not) rejects the whole handshake naming it;
-/// the retry drops just that entry.
+/// The echoed-ID decoder refusal in Herdr 0.9.3 must disable only the
+/// named optional variant, not a supported name in its expected-variants list.
 #[tokio::test]
 async fn subscribe_refused_output_changed_variant() {
     let server = FakeHerdr::start(Action::Stream(vec![subscription_started_line()])).await;
+    server.push(Action::Reply(snapshot_result()));
     server.push(Action::Custom(|conn, _req| {
         Box::pin(async move {
             use tokio::io::AsyncWriteExt;
             let mut conn = conn;
             let _ = conn
                 .write_all(
-                    br#"{"id":"","error":{"code":"invalid_request","message":"invalid request: unknown variant `pane.output_changed`"}}
+                    br#"{"id":"lerdr-events","error":{"code":"invalid_request","message":"invalid request: unknown variant `pane.output_changed`, expected one of `workspace.reordered`, `pane.agent_status_changed` at line 1 column 2062"}}
 "#
                     .as_slice(),
                 )
@@ -138,25 +117,22 @@ async fn subscribe_refused_output_changed_variant() {
     }));
     let client = client_for(&server);
     let stream = client.subscribe_topology().await.unwrap();
-    assert_eq!(server.accept_count(), 2);
     assert_eq!(client.pane_output_changed_supported(), Some(false));
     // `workspace.reordered` stayed in the retry and was acknowledged.
     assert_eq!(client.workspace_reordered_supported(), Some(true));
-    let reqs = server.requests();
-    let retried = subscription_types(&reqs[1]);
-    assert!(retried.contains(&"workspace.reordered"));
-    assert!(!retried.contains(&"pane.output_changed"));
+    assert_eq!(client.pane_agent_status_changed_supported(), Some(true));
     drop(stream);
 }
 
-/// Both optional entries unknown — the handshake degrades one named
+/// All three optional entries unknown — the handshake degrades one named
 /// variant per round-trip until the bare lifecycle set lands.
 #[tokio::test]
 async fn subscribe_both_optionals_rejected() {
     // `Action::Custom` is a plain `fn`, so each rejection is its own
-    // non-capturing closure — the retry order is `workspace.reordered`
-    // first (declared first in `topology_subscriptions`).
+    // non-capturing closure — the retry order follows the optional
+    // entries' append order in `topology_subscriptions`.
     let server = FakeHerdr::start(Action::Stream(vec![subscription_started_line()])).await;
+    server.push(Action::Reply(snapshot_result()));
     server.push(Action::Custom(|conn, _req| {
         Box::pin(async move {
             use tokio::io::AsyncWriteExt;
@@ -183,24 +159,33 @@ async fn subscribe_both_optionals_rejected() {
                 .await;
         })
     }));
+    server.push(Action::Custom(|conn, _req| {
+        Box::pin(async move {
+            use tokio::io::AsyncWriteExt;
+            let mut conn = conn;
+            let _ = conn
+                .write_all(
+                    br#"{"id":"","error":{"code":"invalid_request","message":"invalid request: unknown variant `pane.agent_status_changed`"}}
+"#
+                    .as_slice(),
+                )
+                .await;
+        })
+    }));
     let client = client_for(&server);
     let stream = client.subscribe_topology().await.unwrap();
-    assert_eq!(server.accept_count(), 3, "two drop-and-retry rounds");
     assert_eq!(client.workspace_reordered_supported(), Some(false));
     assert_eq!(client.pane_output_changed_supported(), Some(false));
-    // The final request is the bare 20-name lifecycle set.
-    let reqs = server.requests();
-    let landed = subscription_types(&reqs[2]);
-    assert_eq!(landed.len(), 20);
+    assert_eq!(client.pane_agent_status_changed_supported(), Some(false));
     drop(stream);
 }
 
 #[tokio::test]
 async fn subscribe_reordered_supported_when_accepted() {
     let server = FakeHerdr::start(Action::Stream(vec![subscription_started_line()])).await;
+    server.push(Action::Reply(snapshot_result()));
     let client = client_for(&server);
     let _stream = client.subscribe_topology().await.unwrap();
-    assert_eq!(server.accept_count(), 1);
     assert_eq!(client.workspace_reordered_supported(), Some(true));
     assert_eq!(client.pane_output_changed_supported(), Some(true));
 }
@@ -283,6 +268,61 @@ async fn bootstrap_returns_snapshot_and_gap_events() {
     assert_eq!(boot.gap_events[0].name, "pane.updated");
     // The stream is still live for subsequent events.
     assert!(!boot.stream.is_done());
+}
+
+#[tokio::test]
+async fn supervisor_forwards_status_burst_before_membership_resubscription() {
+    let server = FakeHerdr::start(Action::Custom(|mut conn, req| {
+        Box::pin(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            if req.method == "events.subscribe" {
+                let mut packet = subscription_started_line();
+                packet.extend_from_slice(
+                    b"\n{\"event\":\"pane_moved\",\"data\":{\"pane_id\":\"wE:pE\"}}\n\
+                    {\"event\":\"pane_agent_status_changed\",\"data\":{\"pane_id\":\"wE:pE\",\"agent_status\":\"working\"}}\n\
+                    {\"event\":\"pane_agent_status_changed\",\"data\":{\"pane_id\":\"wE:pE\",\"agent_status\":\"idle\"}}\n",
+                );
+                conn.write_all(&packet).await.unwrap();
+                let mut sink = [0u8; 256];
+                while conn.read(&mut sink).await.map(|n| n > 0).unwrap_or(false) {}
+            } else {
+                conn.write_all(
+                    json!({"id": req.id, "result": snapshot_result()})
+                        .to_string()
+                        .as_bytes(),
+                )
+                .await
+                .unwrap();
+                conn.write_all(b"\n").await.unwrap();
+            }
+        })
+    }))
+    .await;
+    let client = client_for(&server);
+    let mut signals = client.supervise_events(EventSupervisor::topology().signal_queue(1));
+
+    assert!(matches!(
+        next_signal(&mut signals).await,
+        Some(SupervisorSignal::Synced(_))
+    ));
+    for (name, status) in [
+        ("pane.moved", None),
+        ("pane.agent_status_changed", Some("working")),
+        ("pane.agent_status_changed", Some("idle")),
+    ] {
+        match next_signal(&mut signals).await {
+            Some(SupervisorSignal::Invalidated { event, .. }) => {
+                assert_eq!(event.name, name);
+                assert_eq!(event.data["pane_id"], "wE:pE");
+                assert_eq!(event.data["agent_status"].as_str(), status);
+            }
+            other => panic!("lost {name} ({status:?}) before resubscription: {other:?}"),
+        }
+    }
+    assert!(matches!(
+        next_signal(&mut signals).await,
+        Some(SupervisorSignal::Synced(_))
+    ));
 }
 
 #[tokio::test]

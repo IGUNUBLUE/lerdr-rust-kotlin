@@ -99,7 +99,7 @@ data class AgentListItemUi(
     val statusLine: String,
     /** Working agents show a wavy strip with this caption ("running tests…"). */
     val activityLabel: String?,
-    /** "1:24" elapsed chip, or "idle". */
+    /** "1:24" elapsed chip, or lifecycle status when the activity time is unknown. */
     val elapsedLabel: String,
     val working: Boolean,
     /**
@@ -154,6 +154,8 @@ data class RelayCardUi(
 data class HomeUiState(
     /** All-relays-live rollup — the "live" chip on the app bar. */
     val live: Boolean = false,
+    /** At least one paired relay admits controller operations. */
+    val canLaunch: Boolean = false,
     /** "2 computers · tailscale" — subtitle under the title. */
     val relaySummary: String = "",
     val needsYou: List<AttentionCardUi> = emptyList(),

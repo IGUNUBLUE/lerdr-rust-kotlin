@@ -641,6 +641,17 @@ async fn start_in_target(
         )
         .await
         .map_err(StartErrorKind::Herdr)?;
+    // The process command is already accepted. Failures of later reads or
+    // naming cannot make this start safe to replay.
+    let after_dispatch = |err: HerdrError| {
+        StartErrorKind::Herdr(
+            if err.phase() == lerdr_herdr::DispatchPhase::DispatchedUnknown {
+                err
+            } else {
+                HerdrError::dispatched_unknown(err)
+            },
+        )
+    };
     loop {
         match ctx
             .client
@@ -677,11 +688,14 @@ async fn start_in_target(
                         )
                         .await
                         .map(|_| ())
-                        .map_err(StartErrorKind::Herdr);
+                        .map_err(after_dispatch);
                 }
             }
+            // Registration can lag the acknowledged shell input; keep the
+            // existing detection wait without sending the command again.
+            Err(err) if err.refusal_code() == Some("agent_not_found") => {}
             Err(err) if err.phase() == lerdr_herdr::DispatchPhase::Refused => {
-                return Err(StartErrorKind::Herdr(err));
+                return Err(after_dispatch(err));
             }
             Err(_) => {}
         }
@@ -709,6 +723,7 @@ async fn claim_custom_agent(
     argv: &[String],
 ) -> Result<(), StartErrorKind> {
     let resume_argv = valid_resume_argv(argv).then_some(argv);
+    let report_deadline = Instant::now() + REPORT_TIMEOUT;
     let result = ctx
         .client
         .call_with_timeout(
@@ -721,11 +736,31 @@ async fn claim_custom_agent(
                 seq: report_seq(),
                 resume_argv,
             },
-            Some(REPORT_TIMEOUT),
+            Some(remaining(report_deadline)),
         )
         .await;
     match result {
-        Ok(_) => Ok(()),
+        Ok(_) => ctx
+            .client
+            .call_with_timeout(
+                "agent.rename",
+                &AgentRenameParams {
+                    target: pane_id,
+                    name,
+                },
+                Some(remaining(report_deadline)),
+            )
+            .await
+            .map(|_| ())
+            .map_err(|err| {
+                StartErrorKind::Herdr(
+                    if err.phase() == lerdr_herdr::DispatchPhase::DispatchedUnknown {
+                        err
+                    } else {
+                        HerdrError::dispatched_unknown(err)
+                    },
+                )
+            }),
         // `pane.send_input` succeeded — the command was dispatched even
         // though its eventual agent state is unknown.
         Err(_) => Err(StartErrorKind::Herdr(HerdrError::dispatched_msg(
@@ -1290,28 +1325,98 @@ mod tests {
         (result, transport.requests())
     }
 
-    #[tokio::test]
-    async fn argv_start_claims_undetected_pane_with_resume() {
-        // Herdr never detects the custom command — the deadline claim
-        // gives the pane a `lerdr`-sourced agent identity and a resume
-        // command rebuilt from the profile argv.
-        let (result, requests) = run_argv_start(vec![], &["myagent-cli", "--fast"]).await;
-        assert!(result.is_ok(), "claim should succeed");
-
-        let claim = requests
-            .iter()
-            .find(|r| r["method"] == "pane.report_agent")
-            .expect("no pane.report_agent request");
-        let params = &claim["params"];
-        assert_eq!(params["pane_id"], "wE:p9");
-        assert_eq!(params["source"], "lerdr");
-        assert_eq!(params["agent"], "myagent");
-        assert_eq!(params["state"], "idle");
-        assert_eq!(
-            params["resume_argv"],
-            serde_json::json!(["myagent-cli", "--fast"])
+    #[tokio::test(start_paused = true)]
+    async fn argv_start_waits_for_registration_without_relaunching() {
+        let (result, requests) = run_argv_start(
+            vec![
+                (
+                    "agent.get",
+                    Step::Refuse("agent_not_found", "agent target is not registered yet"),
+                ),
+                (
+                    "agent.get",
+                    Step::Result(serde_json::json!({
+                        "agent": {"agent": "codex", "agent_status": "idle"},
+                    })),
+                ),
+            ],
+            &["audit-codex"],
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "registration should complete the original start"
         );
-        assert!(params["seq"].as_u64().unwrap_or_default() > 0);
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r["method"] == "pane.send_input")
+                .count(),
+            1,
+            "waiting for registration must not launch a second process",
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn argv_start_detection_refusal_preserves_applied_command_boundary() {
+        let (result, _) = run_argv_start(
+            vec![(
+                "agent.get",
+                Step::Refuse("unknown_method", "agent lookup is unavailable"),
+            )],
+            &["audit-codex"],
+        )
+        .await;
+        let Err(StartErrorKind::Herdr(err)) = result else {
+            panic!("expected a post-launch detection failure");
+        };
+        assert_eq!(err.phase(), lerdr_herdr::DispatchPhase::DispatchedUnknown);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn argv_start_naming_refusal_preserves_applied_command_boundary() {
+        let (result, _) = run_argv_start(
+            vec![
+                (
+                    "agent.get",
+                    Step::Result(serde_json::json!({
+                        "agent": {"agent": "codex", "agent_status": "idle"},
+                    })),
+                ),
+                (
+                    "agent.rename",
+                    Step::Refuse("invalid_request", "name is occupied"),
+                ),
+            ],
+            &["audit-codex"],
+        )
+        .await;
+        let Err(StartErrorKind::Herdr(err)) = result else {
+            panic!("expected a post-launch naming failure");
+        };
+        assert_eq!(err.phase(), lerdr_herdr::DispatchPhase::DispatchedUnknown);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn argv_start_claim_naming_refusal_preserves_applied_command_boundary() {
+        let (result, _) = run_argv_start(
+            vec![
+                (
+                    "pane.report_agent",
+                    Step::Result(serde_json::json!({"type": "ok"})),
+                ),
+                (
+                    "agent.rename",
+                    Step::Refuse("invalid_request", "name is occupied"),
+                ),
+            ],
+            &["myagent-cli"],
+        )
+        .await;
+        let Err(StartErrorKind::Herdr(err)) = result else {
+            panic!("expected a naming failure after custom admission");
+        };
+        assert_eq!(err.phase(), lerdr_herdr::DispatchPhase::DispatchedUnknown);
     }
 
     #[tokio::test]

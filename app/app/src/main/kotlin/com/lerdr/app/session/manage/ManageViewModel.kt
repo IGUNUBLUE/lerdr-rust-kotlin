@@ -1,9 +1,14 @@
 package com.lerdr.app.session.manage
 
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.lerdr.app.session.SessionRepository
+import com.lerdr.app.session.responseCopyProfileSupported
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -14,6 +19,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import lerdr.core.model.CommandResultMessage
 import lerdr.core.store.Agent
 import lerdr.core.store.AgentInventoryState
 import lerdr.core.store.WorkspaceStore
@@ -48,8 +54,8 @@ data class ManageUiState(
     val sessionName: String = "",
     /** Lerdr's `readOnly` gate — mutations render only for controllers. */
     val canControl: Boolean = false,
-    /** Name-field draft — prefilled from [title] while untouched. */
-    val nameDraft: String = "",
+    /** Available only when the relay advertises its clipboard transaction. */
+    val canCopyResponse: Boolean = false,
     /** Save affordance gate — a draft that differs from the live name. */
     val nameDirty: Boolean = false,
     val busy: Boolean = false,
@@ -63,7 +69,9 @@ data class ManageUiState(
      * The sheet writes it to the clipboard then calls `consumeClipboard`.
      */
     val clipboardText: String? = null,
-    /** Rename/stop/clear succeeded or the agent vanished — dismiss. */
+    /** Successful replacement to open, qualified by its enrolled relay. */
+    val replacementPaneId: String? = null,
+    /** Rename/stop/clear succeeded or an idle agent vanished — dismiss. */
     val shouldDismiss: Boolean = false,
 )
 
@@ -130,9 +138,14 @@ class ManageViewModel(
         val statusError: Boolean = false,
         val clipboardText: String? = null,
         val dismiss: Boolean = false,
+        val replacementPaneId: String? = null,
     )
 
     private val local = MutableStateFlow(ManageLocal())
+
+    /** Immediate IME feedback; inventory and validation flows never echo into an edited field. */
+    var nameValue by mutableStateOf(TextFieldValue())
+        private set
 
     val uiState: StateFlow<ManageUiState> = combine(
         sessions.agent(paneId),
@@ -140,7 +153,7 @@ class ManageViewModel(
         workspaces.workspaces,
         agentGone,
         local,
-    ) { agent, _, allWorkspaces, gone, local ->
+    ) { agent, connection, allWorkspaces, gone, local ->
         val workspace = agent?.workspaceId?.takeIf { it.isNotEmpty() }?.let { id ->
             allWorkspaces.firstOrNull { it.relayId == relayId && it.workspaceId == id }
         }
@@ -156,14 +169,17 @@ class ManageViewModel(
             workspaceLabel = workspace?.label ?: agent?.workspaceId.orEmpty(),
             sessionName = agent?.let(::sessionNameOf).orEmpty(),
             canControl = sessions.canControl(relayId),
-            nameDraft = draft,
+            canCopyResponse = sessions.canControl(relayId) &&
+                "agent_response_copy" in connection?.capabilities.orEmpty() &&
+                responseCopyProfileSupported(agent?.agent),
             nameDirty = draft.trim() != title && draft.isNotBlank(),
             busy = local.busy,
             confirming = local.confirming,
             status = local.status,
             statusError = local.statusError,
             clipboardText = local.clipboardText,
-            shouldDismiss = local.dismiss || gone,
+            replacementPaneId = local.replacementPaneId,
+            shouldDismiss = local.dismiss || (gone && !local.busy),
         )
     }.stateIn(
         viewModelScope,
@@ -174,6 +190,10 @@ class ManageViewModel(
     init {
         viewModelScope.launch {
             sessions.agent(paneId).collect { agent ->
+                if (agent != null && local.value.nameDraft == null) {
+                    val title = displayNameOf(agent)
+                    if (nameValue.text != title) nameValue = TextFieldValue(title)
+                }
                 if (agent != null) agentSeen = true
                 agentGone.value = agentSeen && agent == null
             }
@@ -194,21 +214,35 @@ class ManageViewModel(
         }
     }
 
-    fun onNameDraftChange(value: String) {
-        local.update { it.copy(nameDraft = value.take(MAX_NAME_RUNES)) }
+    fun onNameChange(value: TextFieldValue) {
+        val next = if (value.text.length <= MAX_NAME_RUNES) {
+            value
+        } else {
+            value.copy(text = value.text.take(MAX_NAME_RUNES))
+        }
+        val textChanged = nameValue.text != next.text
+        nameValue = next
+        if (textChanged || local.value.nameDraft == null) {
+            local.update { it.copy(nameDraft = next.text) }
+        }
+    }
+
+    /** A handled navigation result must not close the next sheet opening. */
+    fun consumeDismissal() {
+        local.update { it.copy(dismiss = false, replacementPaneId = null) }
     }
 
     /** `renameTab` — `agent_rename{name}`; Lerdr closes the dialog on success. */
     fun saveRename() {
         if (local.value.busy || !uiState.value.canControl) return
-        val name = uiState.value.nameDraft.trim()
+        val name = nameValue.text.trim()
         if (name.isEmpty()) {
             local.update {
                 it.copy(status = "Enter a new name.", statusError = true)
             }
             return
         }
-        if (!uiState.value.nameDirty) return
+        if (name == uiState.value.title) return
         local.update { it.copy(busy = true, status = null) }
         viewModelScope.launch {
             try {
@@ -234,21 +268,14 @@ class ManageViewModel(
         }
     }
 
-    /** `agent_restart` — respawn the pane's process in place. */
+    /** Restart replaces the pane; wait for its returned identity before leaving. */
     fun restart() {
         if (local.value.busy || !uiState.value.canControl) return
         local.update { it.copy(busy = true, status = null) }
         viewModelScope.launch {
             try {
                 requireInventoryReady()
-                sessions.restartAgent(paneId)
-                local.update {
-                    it.copy(
-                        busy = false,
-                        status = "Restart requested.",
-                        statusError = false,
-                    )
-                }
+                finishReplacement(sessions.restartAgent(paneId), "Agent restarted.")
             } catch (failure: Exception) {
                 local.update {
                     it.copy(
@@ -258,6 +285,25 @@ class ManageViewModel(
                     )
                 }
             }
+        }
+    }
+
+    private fun finishReplacement(result: CommandResultMessage, status: String) {
+        val data = result.data as? JsonObject
+        val rawPaneId = (data?.get("pane_id") as? JsonPrimitive)
+            ?.contentOrNull?.takeIf { it.isNotBlank() }
+            ?: throw CommandException("Replacement pane is missing from the response")
+        val warning = (data["warning"] as? JsonPrimitive)
+            ?.contentOrNull?.takeIf { it.isNotEmpty() }
+        local.update {
+            it.copy(
+                busy = false,
+                confirming = null,
+                status = warning ?: status,
+                statusError = warning != null,
+                replacementPaneId = "$relayId::$rawPaneId",
+                dismiss = true,
+            )
         }
     }
 
@@ -286,21 +332,7 @@ class ManageViewModel(
                 requireInventoryReady()
                 when (action) {
                     ManageConfirm.CLEAR -> {
-                        val result = sessions.clearAgent(paneId)
-                        val warning = (result.data as? JsonObject)
-                            ?.get("warning")
-                            ?.let { it as? JsonPrimitive }
-                            ?.contentOrNull
-                            ?.takeIf { it.isNotEmpty() }
-                        local.update {
-                            it.copy(
-                                busy = false,
-                                confirming = null,
-                                status = warning ?: "Agent cleared.",
-                                statusError = warning != null,
-                                dismiss = true,
-                            )
-                        }
+                        finishReplacement(sessions.clearAgent(paneId), "Agent cleared.")
                     }
                     ManageConfirm.STOP -> {
                         sessions.stopAgent(paneId)
@@ -334,7 +366,7 @@ class ManageViewModel(
      * Lerdr's transcript fallback is out of scope for the sheet).
      */
     fun copyResponse() {
-        if (local.value.busy || !uiState.value.canControl) return
+        if (local.value.busy || !uiState.value.canCopyResponse) return
         local.update { it.copy(busy = true, status = null) }
         viewModelScope.launch {
             try {

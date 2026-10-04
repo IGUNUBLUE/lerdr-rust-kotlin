@@ -6,8 +6,20 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.navigation3.runtime.NavBackStack
+import com.google.common.truth.Truth.assertThat
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.lerdr.app.home.AgentGroupUi
@@ -18,6 +30,7 @@ import com.lerdr.app.home.DirectoryBrowserUi
 import com.lerdr.app.home.HomeContent
 import com.lerdr.app.home.HomeFabMenu
 import com.lerdr.app.home.HomeUiState
+import com.lerdr.app.home.RelayCardUi
 import com.lerdr.app.home.LaunchRelayOption
 import com.lerdr.app.home.LaunchUiState
 import com.lerdr.app.home.LaunchWorkspaceOption
@@ -26,6 +39,8 @@ import com.lerdr.app.home.NewWorkspaceSheetContent
 import com.lerdr.app.session.DirectoryEntry
 import com.lerdr.app.session.DirectoryListing
 import com.lerdr.core.designsystem.theme.LerdrTheme
+import com.lerdr.navigation.LerdrKey
+import com.lerdr.navigation.LerdrNavigator
 import lerdr.core.model.AgentProfile
 import lerdr.core.model.Interaction
 import lerdr.core.model.Option
@@ -56,12 +71,52 @@ class HomeScreenScreenshotTest {
     )
 
     @Test
+    fun home_reader() {
+        val canLaunch = mutableStateOf(false)
+        composeRule.setContent {
+            LerdrTheme {
+                HomeContent(
+                    uiState = HomeUiState(
+                        live = true,
+                        canLaunch = canLaunch.value,
+                        relaySummary = "1 computer",
+                        relays = listOf(
+                            RelayCardUi(
+                                relayId = "reader",
+                                label = "workstation",
+                                transport = "websocket",
+                                statusLabel = "connected",
+                                agentCount = 0,
+                                connected = true,
+                            ),
+                        ),
+                    ),
+                    onOpenAgent = {},
+                    onOpenAttention = {},
+                    onSelectTopLevel = {},
+                )
+            }
+        }
+        composeRule.onNodeWithContentDescription("New agent or workspace")
+            .assertDoesNotExist()
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+        composeRule.runOnIdle { canLaunch.value = true }
+        composeRule.onNodeWithContentDescription("New agent or workspace")
+            .performClick()
+        composeRule.onNodeWithText("New agent").assertExists()
+        composeRule.runOnIdle { canLaunch.value = false }
+        composeRule.onNodeWithText("New agent").assertDoesNotExist()
+        composeRule.onNodeWithText("New workspace").assertDoesNotExist()
+    }
+
+    @Test
     fun home_agents() {
         composeRule.setContent {
             LerdrTheme {
                 HomeContent(
                     uiState = HomeUiState(
                         live = true,
+                        canLaunch = true,
                         relaySummary = "1 computer · tailscale",
                         working = listOf(
                             AgentGroupUi(
@@ -89,7 +144,7 @@ class HomeScreenScreenshotTest {
                                         title = "omp · vime",
                                         statusLine = "coordinate the timing cohort",
                                         activityLabel = "orchestrating · 2",
-                                        elapsedLabel = "45:10",
+                                        elapsedLabel = "working",
                                         working = true,
                                         controllable = true,
                                         provider = "omp",
@@ -129,7 +184,7 @@ class HomeScreenScreenshotTest {
                                         paneId = "sd::%7",
                                         relayId = "sd",
                                         title = "agent · dotfiles",
-                                        statusLine = "idle · 2h ago",
+                                        statusLine = "idle",
                                         activityLabel = null,
                                         elapsedLabel = "idle",
                                         working = false,
@@ -141,6 +196,7 @@ class HomeScreenScreenshotTest {
                         ),
                     ),
                     onOpenAgent = {},
+                    onOpenAttention = {},
                     onSelectTopLevel = {},
                 )
             }
@@ -155,6 +211,7 @@ class HomeScreenScreenshotTest {
                 HomeContent(
                     uiState = HomeUiState(
                         live = true,
+                        canLaunch = true,
                         relaySummary = "1 computer · tailscale",
                         needsYou = listOf(
                             AttentionCardUi(
@@ -226,9 +283,54 @@ class HomeScreenScreenshotTest {
                         ),
                     ),
                     onOpenAgent = {},
+                    onOpenAttention = {},
                     onSelectTopLevel = {},
                 )
             }
+        }
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun home_nativeApprovalScopeReadable() {
+        val labels = listOf(
+            "Yes, proceed (y)",
+            "Yes, and don't ask again for commands that start\n" +
+                "with `cat -- /home/l/.local/state/lerdr-audit/\n" +
+                "physical-ixsij1wu/providers/work/lerdr-audit-\n" +
+                "owned-note.txt` (p)",
+            "No, and tell Codex what to do differently (esc)",
+        )
+        composeRule.setContent {
+            LerdrTheme {
+                HomeContent(
+                    uiState = HomeUiState(
+                        needsYou = listOf(
+                            AttentionCardUi(
+                                paneId = "r1::w1T:p2",
+                                agentLabel = "codex",
+                                kind = AttentionKind.APPROVAL,
+                                metaLabel = "approval",
+                                prompt = "May I read the isolated audit note?",
+                                options = labels,
+                                controllable = true,
+                            ),
+                        ),
+                    ),
+                    onOpenAgent = {},
+                    onOpenAttention = {},
+                    onSelectTopLevel = {},
+                )
+            }
+        }
+        labels.forEach { label ->
+            val layouts = mutableListOf<TextLayoutResult>()
+            composeRule.onNodeWithText(label, useUnmergedTree = true)
+                .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+            val layout = layouts.single()
+            assertThat(layout.getLineEnd(layout.lineCount - 1, visibleEnd = true))
+                .isEqualTo(label.length)
+            assertThat(layout.didOverflowHeight).isFalse()
         }
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
@@ -240,10 +342,37 @@ class HomeScreenScreenshotTest {
                 HomeContent(
                     uiState = HomeUiState(),
                     onOpenAgent = {},
+                    onOpenAttention = {},
                     onSelectTopLevel = {},
                 )
             }
         }
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun home_large_font_navigation() {
+        composeRule.setContent {
+            val density = LocalDensity.current
+            CompositionLocalProvider(
+                LocalDensity provides Density(density.density, fontScale = 2f),
+            ) {
+                LerdrTheme {
+                    HomeContent(
+                        uiState = HomeUiState(),
+                        onOpenAgent = {},
+                        onOpenAttention = {},
+                        onSelectTopLevel = {},
+                    )
+                }
+            }
+        }
+        val layouts = mutableListOf<TextLayoutResult>()
+        composeRule.onNodeWithText("Computers", useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { action ->
+                action(layouts)
+            }
+        assertThat(layouts.single().lineCount).isEqualTo(1)
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
 
@@ -256,6 +385,7 @@ class HomeScreenScreenshotTest {
                 HomeContent(
                     uiState = HomeUiState(
                         live = true,
+                        canLaunch = true,
                         relaySummary = "1 computer · tailscale",
                         idle = listOf(
                             AgentGroupUi(
@@ -279,6 +409,7 @@ class HomeScreenScreenshotTest {
                         ),
                     ),
                     onOpenAgent = {},
+                    onOpenAttention = {},
                     onSelectTopLevel = {},
                     refreshing = true,
                 )
@@ -352,6 +483,7 @@ class HomeScreenScreenshotTest {
                     onNameChange = {},
                     onPromptChange = {},
                     onBrowseDirectories = {},
+                    onCwdChange = {},
                     onSubmit = {},
                 )
             }
@@ -369,15 +501,90 @@ class HomeScreenScreenshotTest {
                         relayId = "sd",
                         cwd = "/home/u/lerdr",
                         cwdLabel = "lerdr",
+                        directoryReady = true,
                         workspaceLabel = "lerdr",
                     ),
                     onRelaySelect = {},
                     onLabelChange = {},
                     onBrowseDirectories = {},
+                    onCwdChange = {},
                     onSubmit = {},
                 )
             }
         }
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun approvalButtonsKeepTheirOriginalWirePositions() {
+        var selectedIndex: Int? = null
+        composeRule.setContent {
+            LerdrTheme {
+                HomeContent(
+                    uiState = HomeUiState(
+                        needsYou = listOf(
+                            AttentionCardUi(
+                                paneId = "r1::%1",
+                                agentLabel = "claude",
+                                kind = AttentionKind.APPROVAL,
+                                metaLabel = "approval",
+                                prompt = "Run tests?",
+                                options = listOf("", "Allow", "Deny"),
+                                controllable = true,
+                            ),
+                        ),
+                    ),
+                    onOpenAgent = {},
+                    onOpenAttention = {},
+                    onSelectTopLevel = {},
+                    onRespond = { _, index -> selectedIndex = index },
+                )
+            }
+        }
+        composeRule.onNodeWithText("Allow").performClick()
+        composeRule.runOnIdle { assertThat(selectedIndex).isEqualTo(1) }
+        composeRule.onNodeWithText("Deny").performClick()
+        composeRule.runOnIdle { assertThat(selectedIndex).isEqualTo(2) }
+    }
+
+    @Test
+    fun fullQuestionFormOpensFeedRatherThanTerminal() {
+        val navigator = LerdrNavigator(NavBackStack<LerdrKey>(LerdrKey.Home))
+        composeRule.setContent {
+            LerdrTheme {
+                HomeContent(
+                    uiState = HomeUiState(
+                        needsYou = listOf(
+                            AttentionCardUi(
+                                paneId = "r1::%1",
+                                agentLabel = "claude",
+                                kind = AttentionKind.QUESTION,
+                                metaLabel = "question",
+                                prompt = "Pick modules",
+                                interaction = Interaction(
+                                    id = "q1",
+                                    kind = "multi_select",
+                                    question = "Pick modules",
+                                    options = listOf(
+                                        Option(index = 0, label = "store"),
+                                        Option(index = 1, label = "session"),
+                                    ),
+                                    other = Other(hidden = true),
+                                ),
+                                controllable = true,
+                            ),
+                        ),
+                    ),
+                    onOpenAgent = navigator::openAgent,
+                    onOpenAttention = navigator::openFeed,
+                    onSelectTopLevel = navigator::navigateTopLevel,
+                )
+            }
+        }
+        composeRule.onNodeWithText("Choose options (2)").performClick()
+        composeRule.runOnIdle {
+            assertThat(navigator.backStack.toList())
+                .containsExactly(LerdrKey.Home, LerdrKey.AgentFeed("r1::%1")).inOrder()
+        }
     }
 }

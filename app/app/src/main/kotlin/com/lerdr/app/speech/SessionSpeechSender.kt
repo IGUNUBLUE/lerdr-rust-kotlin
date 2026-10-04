@@ -2,13 +2,17 @@ package com.lerdr.app.speech
 
 import com.lerdr.app.session.SessionRepository
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonPrimitive
 import lerdr.core.model.CommandResultMessage
 import lerdr.core.model.Inbound
+import lerdr.core.protocol.Protocol
+import lerdr.core.store.RelayStatus
 
 /**
  * `SpeechSender` over [SessionRepository] — the wire shape Lerdr's
@@ -33,6 +37,12 @@ class SessionSpeechSender(
     override fun send(relayId: String, text: String, language: String): SpeechExchange {
         val speechRequestId = UUID.randomUUID().toString()
         val deferred: Deferred<CommandResultMessage> = scope.async {
+            val connection = sessions.connectionNow(relayId)
+            if (connection?.status != RelayStatus.CONNECTED ||
+                Protocol.SPEECH_SYNTHESIS_CAPABILITY !in connection.capabilities
+            ) {
+                throw SpeechPlaybackException("This relay cannot read aloud right now.")
+            }
             sessions.request(
                 relayId,
                 Inbound(type = SPEAK_TEXT, text = text),
@@ -51,14 +61,15 @@ class SessionSpeechSender(
         private val speechRequestId: String,
         private val deferred: Deferred<CommandResultMessage>,
     ) : SpeechExchange {
+        private val cancelled = AtomicBoolean(false)
+
         override suspend fun await(): CommandResultMessage = deferred.await()
 
         override fun cancel() {
-            // `promise.cancel` in Lerdr: raw `cancel_speech` on the
-            // same speech_request_id — the speak_text reply is abandoned,
-            // never awaited a second time.
+            if (!cancelled.compareAndSet(false, true)) return
+            deferred.cancel()
             scope.launch {
-                runCatching {
+                try {
                     sessions.request(
                         relayId,
                         Inbound(type = CANCEL_SPEECH),
@@ -66,6 +77,10 @@ class SessionSpeechSender(
                             "speech_request_id" to JsonPrimitive(speechRequestId),
                         ),
                     )
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    // Best effort: local playback and waiting already stopped.
                 }
             }
         }

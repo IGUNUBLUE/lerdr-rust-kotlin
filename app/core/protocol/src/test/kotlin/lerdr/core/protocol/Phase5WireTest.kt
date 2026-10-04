@@ -138,29 +138,44 @@ class Phase5WireTest {
     // ── §1.2 pane_search ──────────────────────────────────────────────
 
     @Test
-    fun paneSearchEncodesStructuredCursorAndPrevious() {
-        val frame = encode(
+    fun copyEngineCoordinatesRetainZeroBoundaries() {
+        val origin = PaneTextPoint(row = 0, col = 0)
+        val range = PaneTextRange(start = origin, end = PaneTextPoint(row = 3, col = 0))
+        val search = encode(
             Inbound(
                 type = "pane_search",
-                target = TargetRef(paneId = "wE:p1"),
-                query = "panic",
-                direction = "backward",
-                cursor = buildJsonObject { put("row", 3); put("col", 4) },
-                previous = buildJsonObject {
-                    putJsonObject("start") { put("row", 1); put("col", 0) }
-                    putJsonObject("end") { put("row", 2); put("col", 5) }
-                },
+                query = "needle",
+                cursor = LerdrJson.encodeToJsonElement(PaneTextPoint.serializer(), origin),
+                previous = LerdrJson.encodeToJsonElement(PaneTextRange.serializer(), range),
             ),
         )
-        // The structured point rides as an OBJECT — never a quoted string.
-        assertThat(frame["query"]!!.jsonPrimitive.content).isEqualTo("panic")
-        assertThat(frame["direction"]!!.jsonPrimitive.content).isEqualTo("backward")
-        assertThat(frame["cursor"]!!.jsonObject["row"]!!.jsonPrimitive.int).isEqualTo(3)
-        assertThat(frame["cursor"]!!.jsonObject["col"]!!.jsonPrimitive.int).isEqualTo(4)
-        assertThat(
-            frame["previous"]!!.jsonObject.getValue("start").jsonObject["row"]!!
-                .jsonPrimitive.int,
-        ).isEqualTo(1)
+        assertThat(search.getValue("cursor").jsonObject).isEqualTo(
+            buildJsonObject { put("row", 0); put("col", 0) },
+        )
+        val previous = search.getValue("previous").jsonObject
+        assertThat(previous.getValue("start").jsonObject).isEqualTo(
+            buildJsonObject { put("row", 0); put("col", 0) },
+        )
+        assertThat(previous.getValue("end").jsonObject).isEqualTo(
+            buildJsonObject { put("row", 3); put("col", 0) },
+        )
+        val selection = encode(
+            Inbound(
+                type = "pane_selection_read",
+                anchor = LerdrJson.encodeToJsonElement(
+                    PaneTextPoint.serializer(), PaneTextPoint(row = 0, col = 4),
+                ),
+                cursor = LerdrJson.encodeToJsonElement(
+                    PaneTextPoint.serializer(), PaneTextPoint(row = 2, col = 0),
+                ),
+            ),
+        )
+        assertThat(selection.getValue("anchor").jsonObject).isEqualTo(
+            buildJsonObject { put("row", 0); put("col", 4) },
+        )
+        assertThat(selection.getValue("cursor").jsonObject).isEqualTo(
+            buildJsonObject { put("row", 2); put("col", 0) },
+        )
     }
 
     @Test

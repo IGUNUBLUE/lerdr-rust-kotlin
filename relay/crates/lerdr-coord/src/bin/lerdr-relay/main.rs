@@ -985,6 +985,7 @@ async fn run(args: ServeArgs) -> Result<(), BoxError> {
     spawn_udp_ingress(&topology, &cfg, relay.shutdown());
     spawn_support_writer(&cfg, relay.shutdown());
 
+    topology.wait_for_agent_profiles().await?;
     let listener = TcpListener::bind((cfg.host.as_str(), cfg.port)).await?;
     // The retired implementation logs `instance` with the listen line.
     info!(addr = %listener.local_addr()?, instance = %cfg.instance_id, "lerdr-relay listening");
@@ -1047,6 +1048,38 @@ fn spawn_udp_ingress(
                         // not just the snapshot.
                         topology.startup_hook().await;
                     } else {
+                        // The datagram carries the transition itself —
+                        // committing it keeps bursts shorter than a
+                        // refresh's sampling window from collapsing; the
+                        // refresh reconciles every other field.
+                        let pane_id =
+                            event.get("pane_id").and_then(|v| v.as_str()).unwrap_or("");
+                        let status =
+                            event.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                        if !pane_id.is_empty() && !status.is_empty() {
+                            topology.report_agent_status(
+                                lerdr_herdr::PaneAgentStatusChangedData {
+                                    pane_id: pane_id.to_owned(),
+                                    workspace_id: event
+                                        .get("workspace_id")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or_default()
+                                        .to_owned(),
+                                    agent_status: serde_json::from_value::<
+                                        lerdr_herdr::AgentStatus,
+                                    >(serde_json::Value::String(status.to_owned()))
+                                    .unwrap_or_default(),
+                                    agent: event
+                                        .get("agent")
+                                        .and_then(|v| v.as_str())
+                                        .filter(|v| !v.is_empty())
+                                        .map(str::to_owned),
+                                    display_agent: None,
+                                    title: None,
+                                    state_labels: Default::default(),
+                                },
+                            );
+                        }
                         topology.refresh().await;
                     }
                 }

@@ -18,15 +18,15 @@ import kotlinx.serialization.Serializable
 /** Copy-engine cell — `{row,col}` (herdr `PaneTextPoint`). */
 @Serializable
 data class PaneTextPoint(
-    val row: Long = 0,
-    val col: Long = 0,
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS) val row: Long = 0,
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS) val col: Long = 0,
 )
 
 /** `{start,end}` cell pair — search-match and selection shape. */
 @Serializable
 data class PaneTextRange(
-    val start: PaneTextPoint = PaneTextPoint(),
-    val end: PaneTextPoint = PaneTextPoint(),
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS) val start: PaneTextPoint = PaneTextPoint(),
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS) val end: PaneTextPoint = PaneTextPoint(),
 )
 
 /** `pane_search` result — matches plus upstream match-position metadata. */

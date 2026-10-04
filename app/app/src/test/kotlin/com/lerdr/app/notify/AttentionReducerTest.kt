@@ -89,6 +89,44 @@ class AttentionReducerTest {
         assertThat(commands).isEmpty()
     }
 
+    @Test
+    fun `viewed question stays silent while another pane still alerts`() {
+        val commands = AttentionReducer.reduce(
+            listOf(working("p1"), working("p2")),
+            listOf(blockedQuestion("p1"), blockedApproval("p2")),
+            viewedPaneId = "r1::p1",
+        )
+        assertThat(posts(commands).map { it.notificationId })
+            .containsExactly(NotifyIds.attention("r1::p2"))
+    }
+
+    @Test
+    fun `opening a notified pane retracts its standing card`() {
+        val agents = listOf(blockedQuestion("p1"))
+        assertThat(AttentionReducer.reduce(agents, agents, viewedPaneId = "r1::p1"))
+            .containsExactly(NotificationCommand.Cancel(NotifyIds.attention("r1::p1")))
+    }
+
+    @Test
+    fun `viewing one summarized pane keeps the other visible`() {
+        val agents = listOf(blockedQuestion("p1"), blockedApproval("p2"))
+        val commands = AttentionReducer.reduce(agents, agents, viewedPaneId = "r1::p1")
+        assertThat(posts(commands).map { it.notificationId })
+            .containsExactly(NotifyIds.attention("r1::p2"))
+        assertThat(cancels(commands)).contains(NotificationCommand.Cancel(NotifyIds.SUMMARY))
+    }
+
+    @Test
+    fun `viewed completion does not alert when the screen later closes`() {
+        val completed = listOf(done("p1"))
+        assertThat(AttentionReducer.reduce(
+            listOf(working("p1")),
+            completed,
+            viewedPaneId = "r1::p1",
+        )).isEmpty()
+        assertThat(AttentionReducer.reduce(completed, completed)).isEmpty()
+    }
+
     // ── attention transitions ─────────────────────────────────────────
 
     @Test

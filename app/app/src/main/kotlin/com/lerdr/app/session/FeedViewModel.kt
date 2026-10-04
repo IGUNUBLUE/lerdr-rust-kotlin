@@ -1,19 +1,26 @@
 package com.lerdr.app.session
 
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
-import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.job
@@ -30,6 +37,7 @@ import com.lerdr.app.session.feed.parseSlashCatalog
 import com.lerdr.app.session.feed.questionDraftKey
 import com.lerdr.app.session.feed.questionSubmitAllowed
 import com.lerdr.app.session.feed.shouldRestoreQuestionDraft
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
@@ -116,7 +124,6 @@ data class FeedUiState(
     val questionDraft: QuestionDraft = QuestionDraft(),
     /** Send/answer in flight — composer + card buttons disable. */
     val responding: Boolean = false,
-    val composerDraft: String = "",
     /** Transient action failure — rendered as a snackbar/inline error. */
     val lastError: String? = null,
     /** Transient success/info line (Lerdr `showToast`) — snackbar too. */
@@ -144,7 +151,7 @@ data class FeedUiState(
 /**
  * Feed-mode mutation point — history pages, prompt submission, blocker
  * answers, composer drafts. All transport calls go through
- * [SessionRepository]; the screen stays a pure function of [FeedUiState].
+ * [SessionRepository]; native editor state updates synchronously, outside [FeedUiState].
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class FeedViewModel(
@@ -156,6 +163,10 @@ class FeedViewModel(
 ) : ViewModel() {
 
     private val relayId = paneId.substringBefore("::")
+
+    /** Immediate IME feedback; transport/store flows must not echo stale text into the editor. */
+    var composerValue by mutableStateOf(TextFieldValue())
+        private set
 
     /** Stale-run guard for picker coroutines — Lerdr's controller swap. */
     private var attachmentGeneration = 0
@@ -174,6 +185,8 @@ class FeedViewModel(
 
     /** Phase-5 §2.3 — a `convo_sub` feed is open for this pane. */
     private var convoSubscribed = false
+    private val conversationOwner = Any()
+    private var draftEditGeneration = 0L
 
     private data class FeedLocal(
         val entries: List<ConversationEntry> = emptyList(),
@@ -192,7 +205,6 @@ class FeedViewModel(
         val diagnostics: ConversationDiagnostics = ConversationDiagnostics(),
         /** Lerdr `preparationPolls` — identical-progress polls; >= max is paused. */
         val preparationPolls: Int = 0,
-        val draft: String = "",
         val sending: Boolean = false,
         val lastError: String? = null,
         val notice: String? = null,
@@ -204,12 +216,12 @@ class FeedViewModel(
         /**
          * `applyQuestionInteraction` — an `answer_question`/`navigate_question`
          * `command_result` carries the next interaction before any pane frame
-         * lands. Applies only while the store still shows [baseId], so a
-         * fresh pane frame wins automatically.
+         * lands. Applies while the store shows any preceding interaction
+         * in the command-result chain, so a fresh unrelated pane frame wins.
          */
         val interactionOverride: InteractionOverride? = null,
-        /** Id of an interaction finished via `confirmed`/`clarify` — hidden till unblocked. */
-        val clearedInteractionId: String? = null,
+        /** Resolved interaction chain — hidden until the relay reports a new question. */
+        val clearedInteractionIds: Set<String> = emptySet(),
         /** `list_slash_commands` catalog state for the composer popover. */
         val slashCommands: List<SlashCommand> = emptyList(),
         val slashLoading: Boolean = false,
@@ -221,9 +233,9 @@ class FeedViewModel(
         val uploadError: Boolean = false,
     )
 
-    /** A deferred interaction — applies while the store row still shows [baseId]. */
+    /** A deferred interaction anchored to every preceding question in its chain. */
     private data class InteractionOverride(
-        val baseId: String,
+        val baseIds: Set<String>,
         val interaction: Interaction,
     )
 
@@ -235,6 +247,8 @@ class FeedViewModel(
     private enum class HistoryLane { LATEST, OLDER }
 
     private val local = MutableStateFlow(FeedLocal())
+    private var localDraftIdentity: String? = null
+    private var localDraftEdited = false
 
     // Slash catalog state — declared before `init`: the eager combine below
     // reaches `maybeLoadSlashCatalog` during construction, so these fields
@@ -291,7 +305,6 @@ class FeedViewModel(
                 resolveQuestionDraft(it, local.questionDrafts)
             } ?: QuestionDraft(),
             responding = paneId in responding || local.sending,
-            composerDraft = local.draft,
             lastError = local.lastError,
             notice = local.notice,
             canControl = canControl,
@@ -302,12 +315,8 @@ class FeedViewModel(
             slashLoading = local.slashLoading,
             slashUnavailable = local.slashUnavailable,
             slashTruncated = local.slashTruncated,
-            // `attachmentController(agent)` gate: exact target tuple + live
-            // transport + Lerdr's `inputLocked` (blocked) analogue.
-            // The reader-role mute applies in the composer's controls lock —
-            // `canAttach` itself stays the pure capability predicate the
-            // upload tests exercise.
-            canAttach = connection?.status == RelayStatus.CONNECTED &&
+            // Attach requires a live, exact, unblocked controller target.
+            canAttach = canControl && connection?.status == RelayStatus.CONNECTED &&
                 agent != null && !rawBlocked(agent) && agent.wireTarget() != null,
             attachments = attachments,
             uploadStatus = local.uploadStatus,
@@ -316,16 +325,47 @@ class FeedViewModel(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), FeedUiState(paneId))
 
     init {
-        // Composer drafts persist per pane identity — reload once the agent
-        // row supplies the identity tuple.
+        // Restore once per identity. Persisted prefixes must never flow back
+        // over newer keystrokes, including edits made during the initial read.
         viewModelScope.launch {
             sessions.agent(paneId)
                 .filterNotNull()
                 .map { draftIdentity(it) }
                 .distinctUntilChanged()
-                .flatMapLatest { drafts.draft(it) }
-                .collect { draft ->
-                    local.value = local.value.copy(draft = draft?.text.orEmpty())
+                .collectLatest { identity ->
+                    if (localDraftIdentity == identity) return@collectLatest
+                    if (localDraftIdentity == null && localDraftEdited) {
+                        localDraftIdentity = identity
+                        val text = composerValue.text
+                        persistDraft(identity, text)
+                        return@collectLatest
+                    }
+                    localDraftIdentity = identity
+                    localDraftEdited = false
+                    composerValue = TextFieldValue()
+                    val restored = drafts.current(identity)
+                    if (localDraftIdentity == identity && !localDraftEdited) {
+                        val text = restored?.text.orEmpty()
+                        composerValue = TextFieldValue(text, TextRange(text.length))
+                    }
+                }
+        }
+        // Interaction ids are content-derived and can recur in a later flow.
+        // Resolution suppression and dirty answers belong to one blocked run.
+        viewModelScope.launch {
+            var previousTarget = sessions.agentNow(paneId)?.wireTarget()
+            sessions.agent(paneId)
+                .map { it?.wireTarget() to rawBlocked(it) }
+                .distinctUntilChanged()
+                .collect { (target, blocked) ->
+                    if (!blocked || (previousTarget != null && previousTarget != target)) {
+                        local.value = local.value.copy(
+                            interactionOverride = null,
+                            clearedInteractionIds = emptySet(),
+                            questionDrafts = emptyMap(),
+                        )
+                    }
+                    previousTarget = target
                 }
         }
         // `loadSlashCommands` — one catalog fetch per agent identity
@@ -347,29 +387,36 @@ class FeedViewModel(
                 // next agents snapshot owns the truth either way.
             }
         }
-        // Phase-5 §2.3 `convo_sub` — per-pane push while the capability is
-        // live. A mid-session `caps_update` retraction unsubscribes; the
-        // polling demand loop stays the fallback path either way.
+        // Re-arm push after reconnect and exact-target changes, not just
+        // capability changes: advertised capabilities survive a disconnect.
         viewModelScope.launch {
-            sessions.connection(relayId)
-                .map { it?.capabilityLive(ClientCapabilities.CONVO_SUB) == true }
-                .distinctUntilChanged()
-                .collect { live ->
-                    if (live && !convoSubscribed) {
-                        try {
-                            sessions.subscribeConversation(paneId)
-                            convoSubscribed = true
-                        } catch (_: Exception) {
-                            // Negotiation raced — the next state change retries.
-                        }
-                    } else if (!live && convoSubscribed) {
-                        convoSubscribed = false
-                        try {
-                            sessions.unsubscribeConversation(paneId)
-                        } catch (_: Exception) {
-                        }
+            combine(sessions.agent(paneId), sessions.connection(relayId)) { agent, connection ->
+                if (connection?.status == RelayStatus.CONNECTED &&
+                    connection.capabilityLive(ClientCapabilities.CONVO_SUB)
+                ) agent?.wireTarget() else null
+            }.distinctUntilChanged().collect { target ->
+                val wasSubscribed = convoSubscribed
+                convoSubscribed = false
+                if (target != null) {
+                    try {
+                        sessions.subscribeConversation(paneId, conversationOwner)
+                        convoSubscribed = true
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        // A new connection/target state retries the subscription.
+                    }
+                } else if (wasSubscribed &&
+                    sessions.connectionNow(relayId)?.status == RelayStatus.CONNECTED
+                ) {
+                    try {
+                        sessions.unsubscribeConversation(paneId, conversationOwner)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
                     }
                 }
+            }
         }
         viewModelScope.launch {
             sessions.frames.collect { frame ->
@@ -388,10 +435,36 @@ class FeedViewModel(
      * by id like the live-tail re-browse. Stale pane epochs drop.
      */
     private fun applyConversationUpdate(update: ConversationUpdateMessage) {
-        val targetPane = update.target?.paneId ?: return
-        if (clientPaneId(relayId, targetPane) != paneId) return
+        val target = update.target ?: return
+        if (clientPaneId(relayId, target.paneId) != paneId) return
+        val agent = sessions.agentNow(paneId)
+        if (agent == null) {
+            if (update.reset == true && (update.messages as? JsonArray)?.isEmpty() == true) {
+                historyJob?.cancel()
+                manualPreparationPause = false
+                preparationProgressKey = ""
+                local.value = local.value.copy(
+                    entries = emptyList(),
+                    loading = false,
+                    pageAvailable = false,
+                    pageReason = "This session is no longer available.",
+                    nextCursor = "",
+                    hasMore = false,
+                    browseState = ConversationBrowseState.READY,
+                    browseProgress = null,
+                    preparationPolls = 0,
+                    error = null,
+                    errorCode = "",
+                    errorRetryable = false,
+                )
+            }
+            return
+        }
+        if (target.serverSessionId != agent.serverSessionId ||
+            target.terminalId != agent.terminalId || target.generation != agent.generation
+        ) return
         val generation = update.generation
-        val agentGeneration = agentStoreGeneration()
+        val agentGeneration = agent.generation
         if (generation != null && agentGeneration != null && generation < agentGeneration) return
         val pushed = ConversationProjector.projectEntries(update.messages)
         local.value = if (update.reset == true) {
@@ -404,10 +477,12 @@ class FeedViewModel(
         } else {
             local.value.copy(entries = mergeAppendedEntries(local.value.entries, pushed))
         }
+        if (update.reset == true) {
+            // Cursors and pending pages belong to the old snapshot. Re-browse
+            // cursorless so older-history navigation obtains a valid cursor.
+            loadHistory()
+        }
     }
-
-    private fun agentStoreGeneration(): Long? =
-        sessions.agentNow(paneId)?.generation
 
     /**
      * First page — newest entries — or a PREPARING/FAILED status surface.
@@ -736,10 +811,31 @@ class FeedViewModel(
         )
     }
 
+    /** Programmatic replacement (slash command or uploaded references), with the caret at the end. */
     fun onDraftChange(text: String) {
-        local.value = local.value.copy(draft = text)
-        val agent = sessions.agents.value.firstOrNull { it.paneId == paneId } ?: return
-        viewModelScope.launch { drafts.save(draftIdentity(agent), text) }
+        composerValue = TextFieldValue(text, TextRange(text.length))
+        persistComposerEdit(text)
+    }
+
+    fun onComposerChange(value: TextFieldValue) {
+        val textChanged = composerValue.text != value.text
+        composerValue = value
+        if (textChanged) persistComposerEdit(value.text)
+    }
+
+    private fun persistComposerEdit(text: String) {
+        val agent = sessions.agents.value.firstOrNull { it.paneId == paneId }
+        val identity = agent?.let(::draftIdentity)
+        if (identity != null) localDraftIdentity = identity
+        localDraftEdited = true
+        draftEditGeneration++
+        if (identity != null) persistDraft(identity, text)
+    }
+
+    private fun persistDraft(identity: String, text: String) {
+        // Enter the store's mutation queue now, not when the app dispatcher
+        // happens to run this job after a later edit or successful send.
+        appScope.launch(start = CoroutineStart.UNDISPATCHED) { drafts.save(identity, text) }
     }
 
     // ── attachments ───────────────────────────────────────────────────
@@ -918,13 +1014,10 @@ class FeedViewModel(
             )
             return
         }
-        val draft = local.value.draft
+        val draft = composerValue.text
         val prefix = if (draft.isNotEmpty() && !draft.endsWith("\n")) "\n" else ""
         val next = draft + prefix + refs.joinToString("\n") { "Attachment: $it" } + "\n"
-        local.value = local.value.copy(draft = next)
-        sessions.agents.value.firstOrNull { it.paneId == paneId }?.let { agent ->
-            viewModelScope.launch { drafts.save(draftIdentity(agent), next) }
-        }
+        onDraftChange(next)
         val names = ready.mapNotNull { it.name }.joinToString(", ")
         setUploadStatus(
             "Attached $names" + if (rejected > 0) "; $rejected rejected" else "",
@@ -946,7 +1039,7 @@ class FeedViewModel(
         val pendingSelection = uploads.itemsNow(paneId).any {
             it.state == AttachmentItemState.SELECTED
         }
-        val text = local.value.draft.trim()
+        val text = composerValue.text.trim()
         if ((text.isEmpty() && !pendingSelection) || local.value.sending) return
         // Herdr refuses `submit_prompt` (`agent_blocked`) while a question or
         // approval dialog owns the pane — the answer paths are the question
@@ -977,13 +1070,26 @@ class FeedViewModel(
                     if (generation != attachmentGeneration) return@launch
                     appendUploadedAttachments(ready)
                 }
-                val outbound = local.value.draft.trim()
+                val submittedDraft = composerValue.text
+                val submittedEditGeneration = draftEditGeneration
+                val outbound = submittedDraft.trim()
                 if (outbound.isEmpty()) return@launch
+                val submittedIdentity = sessions.agentNow(paneId)?.let(::draftIdentity)
+                    ?: throw IllegalStateException("The agent is no longer available.")
                 sessions.submitPrompt(paneId, outbound)
-                local.value = local.value.copy(draft = "")
-                sessions.agents.value.firstOrNull { it.paneId == paneId }?.let {
-                    drafts.clear(draftIdentity(it))
+                if (localDraftIdentity != submittedIdentity ||
+                    draftEditGeneration == submittedEditGeneration
+                ) {
+                    appScope.async(start = CoroutineStart.UNDISPATCHED) {
+                        drafts.clearIfMatches(submittedIdentity, submittedDraft)
+                    }.await()
                 }
+                if (localDraftIdentity == submittedIdentity &&
+                    draftEditGeneration == submittedEditGeneration
+                ) {
+                    composerValue = TextFieldValue()
+                }
+                // Later edits and drafts for replacement targets survive this completion.
                 runCatching { uploads.clear(paneId) }
             } catch (cancelled: CancellationException) {
                 // A canceled upload reports through uploadStatus already.
@@ -1070,7 +1176,7 @@ class FeedViewModel(
                     result.phase == CommandResultMessage.PHASE_ADVANCED && fresh != null -> {
                         local.value = local.value.copy(
                             questionDrafts = local.value.questionDrafts - submittedKey,
-                            interactionOverride = InteractionOverride(interaction.id, fresh),
+                            interactionOverride = nextInteractionOverride(interaction.id, fresh),
                             notice = "Answer saved.",
                         )
                     }
@@ -1078,7 +1184,7 @@ class FeedViewModel(
                         local.value = local.value.copy(
                             questionDrafts = local.value.questionDrafts - submittedKey,
                             interactionOverride = null,
-                            clearedInteractionId = interaction.id,
+                            clearedInteractionIds = resolvedInteractionIds(interaction.id),
                             notice = "Answers submitted.",
                         )
                     }
@@ -1110,7 +1216,7 @@ class FeedViewModel(
                 val fresh = returnedInteraction(result)
                 if (result.phase == CommandResultMessage.PHASE_NAVIGATED && fresh != null) {
                     local.value = local.value.copy(
-                        interactionOverride = InteractionOverride(interaction.id, fresh),
+                        interactionOverride = nextInteractionOverride(interaction.id, fresh),
                         notice = "Opened $direction question.",
                     )
                 } else {
@@ -1140,7 +1246,7 @@ class FeedViewModel(
                 sessions.clarifyQuestion(paneId, interaction)
                 local.value = local.value.copy(
                     interactionOverride = null,
-                    clearedInteractionId = interaction.id,
+                    clearedInteractionIds = resolvedInteractionIds(interaction.id),
                     notice = "Question chat opened.",
                 )
             } catch (cancelled: CancellationException) {
@@ -1151,26 +1257,6 @@ class FeedViewModel(
         }
     }
 
-    /** Legacy one-tap path — kept for callers that submit a bare index. */
-    fun answerQuestion(
-        selectedIndices: List<Int>,
-        otherSelected: Boolean,
-        otherText: String,
-    ) {
-        val interaction = effectiveBlockedInteraction() ?: return
-        viewModelScope.launch {
-            local.value = local.value.copy(lastError = null)
-            try {
-                sessions.answerQuestion(
-                    paneId, interaction, selectedIndices, otherSelected, otherText,
-                )
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (failure: Exception) {
-                handleQuestionFailure(interaction.id, failure)
-            }
-        }
-    }
 
     /**
      * `copy_agent_response` — the relay's copy transaction returns the
@@ -1228,17 +1314,26 @@ class FeedViewModel(
     // ── slash commands ────────────────────────────────────────────────
 
     /**
-     * Lerdr `loadSlashCommands` — gated on the `slash_commands`
-     * capability AND the controller role (the fetch is a mutating-class
-     * relay action; readers never open the menu anyway), cached by
-     * `agent`+`cwd` identity, one flight at a time.
+     * Controller-only suggestions from the read-only `list_slash_commands`
+     * action, cached by agent+cwd identity.
      */
     private fun maybeLoadSlashCatalog(agent: Agent?, connection: RelayConnection?) {
-        if (agent == null || !sessions.canControl(relayId) ||
-            connection?.capabilities?.contains(SLASH_COMMANDS_CAPABILITY) != true
-        ) {
+        if (connection?.status != RelayStatus.CONNECTED) {
+            slashFailed.clear()
             return
         }
+        if (agent == null || !sessions.canControl(relayId) ||
+            SLASH_COMMANDS_CAPABILITY !in connection.capabilities
+        ) {
+            local.value = local.value.copy(
+                slashCommands = emptyList(),
+                slashLoading = false,
+                slashUnavailable = true,
+                slashTruncated = false,
+            )
+            return
+        }
+        val target = agent.wireTarget() ?: return
         val identity = "${agent.agent.orEmpty()}\u0000${agent.cwd.orEmpty()}"
         val cached = slashCache[identity]
         if (cached != null) {
@@ -1257,11 +1352,14 @@ class FeedViewModel(
         }
         if (slashFetching == identity || identity in slashFailed) return
         slashFetching = identity
-        local.value = local.value.copy(slashLoading = true, slashUnavailable = false)
+        local.value = local.value.copy(
+            slashCommands = emptyList(),
+            slashTruncated = false,
+            slashLoading = true,
+            slashUnavailable = false,
+        )
         viewModelScope.launch {
             try {
-                val target = agent.wireTarget()
-                    ?: throw IllegalStateException("This agent has no exact terminal identity.")
                 val result = sessions.request(
                     agent.relayId,
                     Inbound(type = "list_slash_commands").withPaneTarget(agent, target),
@@ -1269,24 +1367,35 @@ class FeedViewModel(
                 )
                 val catalog = parseSlashCatalog(result.data)
                 slashCache[identity] = catalog
-                local.value = local.value.copy(
-                    slashCommands = catalog.commands,
-                    slashTruncated = catalog.truncated,
-                    slashLoading = false,
-                )
+                if (currentSlashIdentity() == identity) {
+                    local.value = local.value.copy(
+                        slashCommands = catalog.commands,
+                        slashTruncated = catalog.truncated,
+                        slashLoading = false,
+                        slashUnavailable = false,
+                    )
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
                 slashFailed += identity
-                local.value = local.value.copy(
-                    slashLoading = false,
-                    slashUnavailable = true,
-                )
+                if (currentSlashIdentity() == identity) {
+                    local.value = local.value.copy(
+                        slashCommands = emptyList(),
+                        slashLoading = false,
+                        slashUnavailable = true,
+                    )
+                }
             } finally {
                 slashFetching = null
             }
         }
     }
+
+    private fun currentSlashIdentity(): String? =
+        sessions.agentNow(paneId)?.let {
+            "${it.agent.orEmpty()}\u0000${it.cwd.orEmpty()}"
+        }
 
     // ── question plumbing ─────────────────────────────────────────────
 
@@ -1294,13 +1403,11 @@ class FeedViewModel(
     private fun effectiveInteraction(agent: Agent?, local: FeedLocal): Interaction? {
         if (agent == null) return null
         val storeInteraction = agent.interaction
-        if (local.clearedInteractionId != null &&
-            storeInteraction?.id == local.clearedInteractionId
-        ) {
+        if (storeInteraction != null && storeInteraction.id in local.clearedInteractionIds) {
             return null
         }
         val override = local.interactionOverride
-        if (override != null && override.baseId == storeInteraction?.id) {
+        if (override != null && storeInteraction != null && storeInteraction.id in override.baseIds) {
             return override.interaction
         }
         return storeInteraction
@@ -1339,12 +1446,16 @@ class FeedViewModel(
         }
     }
 
-    /**
-     * Lerdr `handleQuestionError`. Lerdr also applies
-     * `error.data.interaction` — Kotlin's `CommandException` drops `data`
-     * on failure, so only the message reaches the snackbar.
-     */
+    /** Apply the current interaction returned with a refused question action. */
     private fun handleQuestionFailure(interactionId: String, failure: Exception) {
+        val element = ((failure as? CommandException)?.data as? JsonObject)
+            ?.get("interaction")
+        val fresh = element?.let {
+            runCatching {
+                LerdrJson.decodeFromJsonElement(Interaction.serializer(), it)
+            }.getOrNull()
+        }
+        applyFreshInteraction(interactionId, fresh)
         local.value = local.value.copy(
             lastError = failure.message ?: "Question failed",
         )
@@ -1353,9 +1464,21 @@ class FeedViewModel(
     private fun applyFreshInteraction(baseId: String, fresh: Interaction?) {
         if (fresh == null) return
         local.value = local.value.copy(
-            interactionOverride = InteractionOverride(baseId, fresh),
+            interactionOverride = nextInteractionOverride(baseId, fresh),
         )
     }
+
+    private fun nextInteractionOverride(baseId: String, fresh: Interaction): InteractionOverride {
+        val preceding = local.value.interactionOverride
+            ?.takeIf { it.interaction.id == baseId }
+            ?.baseIds.orEmpty()
+        return InteractionOverride(preceding + baseId, fresh)
+    }
+
+    private fun resolvedInteractionIds(interactionId: String): Set<String> =
+        local.value.interactionOverride
+            ?.takeIf { it.interaction.id == interactionId }
+            ?.baseIds.orEmpty() + interactionId
 
     private fun draftIdentity(agent: Agent): String {
         val paneIdentity = agent.terminalId?.takeIf { it.isNotEmpty() }
@@ -1385,13 +1508,11 @@ class FeedViewModel(
         uploads.discard(paneId)
         // viewModelScope is already cancelled — the unsubscribe rides the
         // app scope like TerminalViewModel's release/unwatch teardown.
-        if (convoSubscribed) {
-            convoSubscribed = false
-            appScope.launch {
-                try {
-                    sessions.unsubscribeConversation(paneId)
-                } catch (_: Exception) {
-                }
+        convoSubscribed = false
+        appScope.launch {
+            try {
+                sessions.unsubscribeConversation(paneId, conversationOwner)
+            } catch (_: Exception) {
             }
         }
         super.onCleared()
@@ -1410,7 +1531,7 @@ class FeedViewModel(
          * stale race.
          */
         const val BLOCKED_PROMPT_MESSAGE =
-            "The agent is waiting at a question — answer it in the terminal"
+            "Agent needs attention — answer the active question or check the terminal"
     }
 }
 
@@ -1443,7 +1564,7 @@ private val RESPONSE_COPY_AGENT_IDS = setOf(
 )
 
 /** Lerdr `responseCopyProfileSupported` — normalized (lowercase, no spaces/dashes). */
-private fun responseCopyProfileSupported(agentName: String?): Boolean {
+internal fun responseCopyProfileSupported(agentName: String?): Boolean {
     val normalized = agentName.orEmpty().trim()
         .lowercase().replace(Regex("\\s+"), "").replace("-", "")
     return normalized in RESPONSE_COPY_AGENT_IDS

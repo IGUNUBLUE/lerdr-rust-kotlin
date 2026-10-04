@@ -1,11 +1,19 @@
 package com.lerdr.app.session
 
+import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.Preferences
+import androidx.lifecycle.ViewModelStore
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import com.google.common.truth.Truth.assertThat
 import com.lerdr.app.session.feed.QuestionDraft
 import java.io.File
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -18,6 +26,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import lerdr.core.data.DeviceRole
 import lerdr.core.data.DraftStore
 import lerdr.core.data.RelayDeviceCredential
+import lerdr.core.data.composerDraftIdentity
 import lerdr.core.data.RelayEndpoint
 import lerdr.core.data.RelayRegistry
 import lerdr.core.protocol.LerdrJson
@@ -57,6 +66,10 @@ class FeedViewModelBehaviorTest {
     private class Harness(
         private val testScope: TestScope,
         tmpDir: File,
+        draftReads: Channel<Unit>? = null,
+        draftReadStarted: CompletableDeferred<Unit>? = null,
+        beforeDraftWrite: (suspend () -> Unit)? = null,
+        completedDraftWrites: Channel<Unit>? = null,
     ) {
         val scope = testScope.backgroundScope
         val credentials = FakeCredentialStore()
@@ -67,7 +80,25 @@ class FeedViewModelBehaviorTest {
             File(tmpDir, "drafts.preferences_pb")
         }
         val registry = RelayRegistry(relayStore, scope)
-        val drafts = DraftStore(draftStore)
+        val drafts = DraftStore(
+            object : DataStore<Preferences> {
+                override val data = if (draftReads == null) draftStore.data else {
+                    draftStore.data.onEach {
+                        draftReadStarted?.complete(Unit)
+                        draftReads.receive()
+                    }
+                }
+
+                override suspend fun updateData(
+                    transform: suspend (Preferences) -> Preferences,
+                ): Preferences {
+                    beforeDraftWrite?.invoke()
+                    return draftStore.updateData(transform).also {
+                        completedDraftWrites?.trySend(Unit)
+                    }
+                }
+            },
+        )
         val agents = AgentStore(scope)
         val workspaces = WorkspaceStore()
         val connections = ConnectionStore(clock = { 0L })
@@ -114,10 +145,10 @@ class FeedViewModelBehaviorTest {
             pump()
         }
 
-        suspend fun emitBlockedQuestion() {
+        suspend fun emitBlockedQuestion(total: Int = 1) {
             handle().emit(
                 feedJson(
-                    """{"type":"blocked","pane_id":"%1","attention_kind":"question","prompt":"Pick one","interaction":{"id":"q1","kind":"single_select","question":"Pick one","options":[{"index":0,"label":"A"},{"index":1,"label":"B"}],"other":{"hidden":true},"submit_label":"Submit","question_index":1,"question_total":1},"event_id":"ev1","server_session_id":"ss1","terminal_id":"t1","generation":3}""",
+                    """{"type":"blocked","pane_id":"%1","attention_kind":"question","prompt":"Pick one","interaction":{"id":"q1","kind":"single_select","question":"Pick one","options":[{"index":0,"label":"A"},{"index":1,"label":"B"}],"other":{"hidden":true},"submit_label":"${if (total > 1) "Next" else "Submit"}","question_index":1,"question_total":$total},"event_id":"ev1","server_session_id":"ss1","terminal_id":"t1","generation":3}""",
                 ),
             )
             pump()
@@ -280,6 +311,134 @@ class FeedViewModelBehaviorTest {
     }
 
     @Test
+    fun `question advances and resolves through multiple results before pane catches up`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.credentials.seed("r1", credential(DeviceRole.CONTROLLER))
+        h.repository.start()
+        h.pump()
+        h.connectReady(capabilities = listOf("attention_classification"))
+        h.emitBlockedQuestion(total = 3)
+        val vm = h.viewModel()
+        backgroundScope.launch { vm.uiState.collect { } }
+        h.settleDraft()
+
+        for (next in 2..3) {
+            vm.updateQuestionDraft(QuestionDraft(selected = setOf(0)))
+            vm.submitQuestion()
+            awaitState(this) { h.rawFramesOf("answer_question").size == next - 1 }
+            val frame = h.rawFramesOf("answer_question").last()
+            h.emitCommandResult(
+                frame["request_id"]!!.jsonPrimitive.content,
+                phase = "advanced",
+                data = """{"interaction":{"id":"q$next","kind":"single_select","question":"Question $next","options":[{"index":0,"label":"X"}],"other":{"hidden":true},"submit_label":"${if (next < 3) "Next" else "Submit"}","question_index":$next,"question_total":3}}""",
+            )
+            awaitState(this) { vm.uiState.value.blockedInteraction?.id == "q$next" }
+            assertThat(vm.uiState.value.questionDraft).isEqualTo(QuestionDraft())
+        }
+
+        vm.updateQuestionDraft(QuestionDraft(selected = setOf(0)))
+        vm.submitQuestion()
+        awaitState(this) { h.rawFramesOf("answer_question").size == 3 }
+        h.emitCommandResult(
+            h.rawFramesOf("answer_question").last()["request_id"]!!.jsonPrimitive.content,
+            phase = "confirmed",
+        )
+        awaitState(this) { vm.uiState.value.blocked == null }
+        assertThat(vm.uiState.value.blockedInteraction).isNull()
+
+        // A delayed intermediate pane frame cannot resurrect a resolved form.
+        h.handle().emit(
+            feedJson(
+                """{"type":"blocked","pane_id":"%1","attention_kind":"question","interaction":{"id":"q2","kind":"single_select","question":"Question 2","options":[{"index":0,"label":"X"}],"other":{"hidden":true}},"event_id":"ev2","server_session_id":"ss1","terminal_id":"t1","generation":3}""",
+            ),
+        )
+        h.pump()
+        assertThat(vm.uiState.value.blockedInteraction).isNull()
+
+        h.handle().emit(
+            feedJson(
+                """{"type":"blocked","pane_id":"%1","attention_kind":"question","interaction":{"id":"q4","kind":"single_select","question":"New question","options":[{"index":0,"label":"Y"}],"other":{"hidden":true}},"event_id":"ev4","server_session_id":"ss1","terminal_id":"t1","generation":3}""",
+            ),
+        )
+        awaitState(this) { vm.uiState.value.blockedInteraction?.id == "q4" }
+
+        // Two snapshots clear the store's transient blocked-state flicker guard.
+        repeat(2) {
+            h.handle().emit(
+                feedJson(
+                    """{"type":"agents","agents":[{"pane_id":"%1","raw_pane_id":"%1","terminal_id":"t1","server_session_id":"ss1","generation":3,"agent":"claude","status":"idle","cwd":"/home/u/lerdr","workspace_id":"w1","updated_at":102}]}""",
+                ),
+            )
+        }
+        awaitState(this) { vm.uiState.value.blocked == null }
+        h.emitBlockedQuestion()
+        // The same content-derived id can legitimately be asked again.
+        awaitState(this) { vm.uiState.value.blockedInteraction?.id == "q1" }
+        assertThat(vm.uiState.value.questionDraft.selected).isEmpty()
+    }
+
+    @Test
+    fun `a refused question applies the returned current interaction`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.credentials.seed("r1", credential(DeviceRole.CONTROLLER))
+        h.repository.start()
+        h.pump()
+        h.connectReady(capabilities = listOf("attention_classification"))
+        h.emitBlockedQuestion()
+        val vm = h.viewModel()
+        backgroundScope.launch { vm.uiState.collect { } }
+        h.settleDraft()
+        vm.updateQuestionDraft(QuestionDraft(selected = setOf(0)))
+        vm.submitQuestion()
+        val frame = h.awaitRawFrame("answer_question")
+        h.handle().emit(
+            feedJson(
+                """{"type":"command_result","request_id":"${frame["request_id"]!!.jsonPrimitive.content}","ok":false,"phase":"failed","error":"Question changed","data":{"interaction":{"id":"replacement","kind":"single_select","question":"Current question","options":[{"index":0,"label":"New answer"}],"other":{"hidden":true}}}}""",
+            ),
+        )
+        awaitState(this) { vm.uiState.value.blockedInteraction?.id == "replacement" }
+        assertThat(vm.uiState.value.blockedInteraction?.question).isEqualTo("Current question")
+        assertThat(vm.uiState.value.questionDraft.selected).isEmpty()
+        assertThat(vm.uiState.value.lastError).isNotNull()
+    }
+
+    @Test
+    fun `successful old prompt does not erase a replacement terminal draft`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.credentials.seed("r1", credential(DeviceRole.CONTROLLER))
+        h.repository.start()
+        h.pump()
+        h.connectReady()
+        val vm = h.viewModel()
+        backgroundScope.launch { vm.uiState.collect { } }
+        h.settleDraft()
+        val completion = CompletableDeferred<Unit>()
+        h.handle().responder = { message ->
+            if (message.type == "submit_prompt") completion.await()
+            lerdr.core.model.CommandResultMessage(
+                action = message.type,
+                ok = true,
+                phase = lerdr.core.model.CommandResultMessage.PHASE_COMPLETED,
+                requestId = message.requestId,
+            )
+        }
+        val replacementIdentity = composerDraftIdentity("r1", "t2", "claude", "/home/u/lerdr")
+        h.drafts.save(replacementIdentity, "replacement terminal draft")
+        vm.onDraftChange("old terminal prompt")
+        vm.sendPrompt()
+        awaitState(this) { vm.uiState.value.responding }
+        h.handle().emit(
+            feedJson(
+                """{"type":"agents","agents":[{"pane_id":"%1","raw_pane_id":"%1","terminal_id":"t2","server_session_id":"ss1","generation":4,"agent":"claude","status":"idle","cwd":"/home/u/lerdr","workspace_id":"w1","updated_at":101}]}""",
+            ),
+        )
+        awaitState(this) { vm.composerValue.text == "replacement terminal draft" }
+        completion.complete(Unit)
+        awaitState(this) { !vm.uiState.value.responding }
+        assertThat(vm.composerValue.text).isEqualTo("replacement terminal draft")
+    }
+
+    @Test
     fun `confirmed final submit clears the card`() = runTest {
         val h = Harness(this, tmp.root)
         h.credentials.seed("r1", credential(DeviceRole.CONTROLLER))
@@ -346,13 +505,11 @@ class FeedViewModelBehaviorTest {
         // `submit_prompt` is refused upstream (`agent_blocked`) — the wire
         // call never happens and the draft survives for after the unblock.
         assertThat(h.handle().requests.any { it.type == "submit_prompt" }).isFalse()
-        assertThat(vm.uiState.value.lastError)
-            .isEqualTo("The agent is waiting at a question — answer it in the terminal")
-        assertThat(vm.uiState.value.composerDraft).isEqualTo("answer from feed")
+        assertThat(vm.composerValue.text).isEqualTo("answer from feed")
     }
 
     @Test
-    fun `a mid-flight agent_blocked refusal surfaces the waiting explanation`() = runTest {
+    fun `a mid-flight agent_blocked refusal preserves the draft`() = runTest {
         val h = Harness(this, tmp.root)
         h.credentials.seed("r1", credential(DeviceRole.CONTROLLER))
         h.repository.start()
@@ -383,9 +540,207 @@ class FeedViewModelBehaviorTest {
         h.pump()
 
         assertThat(h.handle().requests.any { it.type == "submit_prompt" }).isTrue()
-        assertThat(vm.uiState.value.lastError)
-            .isEqualTo("The agent is waiting at a question — answer it in the terminal")
-        assertThat(vm.uiState.value.composerDraft).isEqualTo("queued while blocked")
+        assertThat(vm.composerValue.text).isEqualTo("queued while blocked")
+    }
+
+    @Test
+    fun `a delayed persisted prefix cannot roll back an active composer edit`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.credentials.seed("r1", credential(DeviceRole.CONTROLLER))
+        h.repository.start()
+        h.pump()
+        h.connectReady()
+        val identity = composerDraftIdentity("r1", "t1", "claude", "/home/u/lerdr")
+        h.drafts.save(identity, "saved prefix")
+        val vm = h.viewModel()
+        backgroundScope.launch { vm.uiState.collect { } }
+        awaitState(this) { vm.composerValue.text == "saved prefix" }
+
+        vm.onComposerChange(
+            TextFieldValue("saved prefix with new typing", TextRange(4), TextRange(0, 5)),
+        )
+        h.pump()
+        h.drafts.save(identity, "saved prefix")
+        h.pump()
+
+        assertThat(vm.composerValue.text).isEqualTo("saved prefix with new typing")
+        assertThat(vm.composerValue.selection).isEqualTo(TextRange(4))
+        assertThat(vm.composerValue.composition).isEqualTo(TextRange(0, 5))
+    }
+
+    @Test
+    fun `a delayed initial draft read cannot replace text already typed`() = runTest {
+        val reads = Channel<Unit>()
+        val started = CompletableDeferred<Unit>()
+        val h = Harness(this, tmp.root, reads, started)
+        h.credentials.seed("r1", credential(DeviceRole.CONTROLLER))
+        h.repository.start()
+        h.pump()
+        h.connectReady()
+        h.drafts.save(
+            composerDraftIdentity("r1", "t1", "claude", "/home/u/lerdr"),
+            "previous saved text",
+        )
+        val vm = h.viewModel()
+        backgroundScope.launch { vm.uiState.collect { } }
+        awaitState(this) { started.isCompleted }
+
+        vm.onDraftChange("new text typed while restoration is pending")
+        h.pump()
+        reads.send(Unit)
+        h.pump()
+
+        assertThat(vm.composerValue.text)
+            .isEqualTo("new text typed while restoration is pending")
+    }
+
+    @Test
+    fun `a delayed draft save cannot restore a sent prompt after teardown`() = runTest {
+        val started = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val completedWrites = Channel<Unit>(Channel.UNLIMITED)
+        var delayNextWrite = false
+        val h = Harness(this, tmp.root, completedDraftWrites = completedWrites, beforeDraftWrite = {
+            if (delayNextWrite) {
+                delayNextWrite = false
+                started.complete(Unit)
+                release.await()
+            }
+        })
+        h.credentials.seed("r1", credential(DeviceRole.CONTROLLER))
+        h.repository.start()
+        h.pump()
+        h.connectReady()
+        val identity = composerDraftIdentity("r1", "t1", "claude", "/home/u/lerdr")
+        val otherIdentity = composerDraftIdentity("r1", "t2", "codex", "/home/u/other")
+        h.drafts.save(identity, "initial draft")
+        h.drafts.save(otherIdentity, "other terminal draft")
+        repeat(2) { completedWrites.receive() }
+        val vm = h.viewModel()
+        val viewModels = ViewModelStore().apply { put("feed", vm) }
+        backgroundScope.launch { vm.uiState.collect { } }
+        awaitState(this) { vm.composerValue.text == "initial draft" }
+
+        delayNextWrite = true
+        vm.onDraftChange("sent prompt")
+        started.await()
+        vm.sendPrompt()
+        awaitState(this) { h.handle().requests.any { it.type == "submit_prompt" } }
+        viewModels.clear()
+        release.complete(Unit)
+        repeat(2) { completedWrites.receive() }
+
+        assertThat(h.drafts.current(identity)).isNull()
+        assertThat(h.drafts.current(otherIdentity)!!.text).isEqualTo("other terminal draft")
+    }
+
+    @Test
+    fun `newest queued edit remains durable after the feed is torn down`() = runTest {
+        val started = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val completedWrites = Channel<Unit>(Channel.UNLIMITED)
+        var delayNextWrite = false
+        val h = Harness(this, tmp.root, completedDraftWrites = completedWrites, beforeDraftWrite = {
+            if (delayNextWrite) {
+                delayNextWrite = false
+                started.complete(Unit)
+                release.await()
+            }
+        })
+        h.credentials.seed("r1", credential(DeviceRole.CONTROLLER))
+        h.repository.start()
+        h.pump()
+        h.connectReady()
+        val identity = composerDraftIdentity("r1", "t1", "claude", "/home/u/lerdr")
+        h.drafts.save(identity, "initial draft")
+        completedWrites.receive()
+        val vm = h.viewModel()
+        val viewModels = ViewModelStore().apply { put("feed", vm) }
+        backgroundScope.launch { vm.uiState.collect { } }
+        awaitState(this) { vm.composerValue.text == "initial draft" }
+
+        delayNextWrite = true
+        vm.onDraftChange("older prefix")
+        started.await()
+        vm.onDraftChange("newest complete draft")
+        viewModels.clear()
+        release.complete(Unit)
+        repeat(2) { completedWrites.receive() }
+
+        assertThat(h.drafts.current(identity)!!.text).isEqualTo("newest complete draft")
+    }
+
+    @Test
+    fun `successful submit preserves edits typed while the prompt was in flight`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.credentials.seed("r1", credential(DeviceRole.CONTROLLER))
+        h.repository.start()
+        h.pump()
+        h.connectReady()
+        val identity = composerDraftIdentity("r1", "t1", "claude", "/home/u/lerdr")
+        h.drafts.save(identity, "initial draft")
+        val vm = h.viewModel()
+        backgroundScope.launch { vm.uiState.collect { } }
+        awaitState(this) { vm.composerValue.text == "initial draft" }
+        val completion = CompletableDeferred<Unit>()
+        h.handle().responder = { message ->
+            if (message.type == "submit_prompt") completion.await()
+            lerdr.core.model.CommandResultMessage(
+                action = message.type,
+                ok = true,
+                phase = lerdr.core.model.CommandResultMessage.PHASE_COMPLETED,
+                requestId = message.requestId,
+            )
+        }
+
+        vm.onDraftChange("submitted prompt")
+        vm.sendPrompt()
+        awaitState(this) { vm.uiState.value.responding }
+        vm.onComposerChange(TextFieldValue("next prompt typed during send", TextRange(5)))
+        completion.complete(Unit)
+        awaitState(this) { !vm.uiState.value.responding }
+        h.drafts.prune()
+
+        assertThat(vm.composerValue.text).isEqualTo("next prompt typed during send")
+        assertThat(h.drafts.current(identity)!!.text).isEqualTo("next prompt typed during send")
+        assertThat(vm.composerValue.selection).isEqualTo(TextRange(5))
+    }
+
+    @Test
+    fun `editing back to submitted text is still a new unsent draft`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.credentials.seed("r1", credential(DeviceRole.CONTROLLER))
+        h.repository.start()
+        h.pump()
+        h.connectReady()
+        val identity = composerDraftIdentity("r1", "t1", "claude", "/home/u/lerdr")
+        h.drafts.save(identity, "initial draft")
+        val vm = h.viewModel()
+        backgroundScope.launch { vm.uiState.collect { } }
+        awaitState(this) { vm.composerValue.text == "initial draft" }
+        val completion = CompletableDeferred<Unit>()
+        h.handle().responder = { message ->
+            if (message.type == "submit_prompt") completion.await()
+            lerdr.core.model.CommandResultMessage(
+                action = message.type,
+                ok = true,
+                phase = lerdr.core.model.CommandResultMessage.PHASE_COMPLETED,
+                requestId = message.requestId,
+            )
+        }
+
+        vm.onDraftChange("submitted prompt")
+        vm.sendPrompt()
+        awaitState(this) { vm.uiState.value.responding }
+        vm.onComposerChange(TextFieldValue("revised prompt", TextRange(2)))
+        vm.onComposerChange(TextFieldValue("submitted prompt", TextRange(3)))
+        completion.complete(Unit)
+        awaitState(this) { !vm.uiState.value.responding }
+        h.drafts.prune()
+
+        assertThat(vm.composerValue.text).isEqualTo("submitted prompt")
+        assertThat(h.drafts.current(identity)!!.text).isEqualTo("submitted prompt")
+        assertThat(vm.composerValue.selection).isEqualTo(TextRange(3))
     }
 
     // ── copy response ─────────────────────────────────────────────────

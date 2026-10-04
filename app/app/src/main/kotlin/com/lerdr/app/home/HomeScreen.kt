@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -110,6 +111,7 @@ import lerdr.core.model.Option
 fun HomeScreen(
     onOpenAgent: (String) -> Unit,
     onSelectTopLevel: (LerdrKey) -> Unit,
+    onOpenAttention: (String) -> Unit,
 ) {
     // hilt-navigation-compose is absent — pull the bound repositories
     // through the singleton entry point.
@@ -130,6 +132,9 @@ fun HomeScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val refreshing by viewModel.inventoryRefreshing.collectAsStateWithLifecycle()
     var sheet by rememberSaveable { mutableStateOf<HomeSheet?>(null) }
+    LaunchedEffect(sheet, launchViewModel) {
+        launchViewModel.setSheetActive(sheet != null)
+    }
     var homeReselects by remember { mutableStateOf(0) }
     val messages = remember(viewModel, launchViewModel) {
         merge(viewModel.messages, launchViewModel.messages)
@@ -148,6 +153,7 @@ fun HomeScreen(
     HomeContent(
         uiState = uiState,
         onOpenAgent = onOpenAgent,
+        onOpenAttention = onOpenAttention,
         onSelectTopLevel = { key ->
             // Re-tapping Agents while on Home scrolls the list back to top.
             if (key == LerdrKey.Home) homeReselects++
@@ -192,6 +198,7 @@ fun HomeContent(
     uiState: HomeUiState,
     onOpenAgent: (String) -> Unit,
     onSelectTopLevel: (LerdrKey) -> Unit,
+    onOpenAttention: (String) -> Unit,
     homeReselects: Int = 0,
     onRespond: (AttentionCardUi, Int) -> Unit = { _, _ -> },
     onAnswerOption: (AttentionCardUi, Int) -> Unit = { _, _ -> },
@@ -244,12 +251,14 @@ fun HomeContent(
             )
         },
         floatingActionButton = {
-            HomeFabMenu(
-                expanded = fabExpanded,
-                onExpandedChange = { fabExpanded = it },
-                onNewAgent = onNewAgent,
-                onNewWorkspace = onNewWorkspace,
-            )
+            if (uiState.canLaunch) {
+                HomeFabMenu(
+                    expanded = fabExpanded,
+                    onExpandedChange = { fabExpanded = it },
+                    onNewAgent = onNewAgent,
+                    onNewWorkspace = onNewWorkspace,
+                )
+            }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { innerPadding ->
@@ -329,7 +338,7 @@ fun HomeContent(
                             items(uiState.needsYou, key = { it.paneId }) { card ->
                                 AttentionCard(
                                     card = card,
-                                    onOpen = { onOpenAgent(card.paneId) },
+                                    onOpen = { onOpenAttention(card.paneId) },
                                     onRespond = { index -> onRespond(card, index) },
                                     onAnswerOption = { index ->
                                         onAnswerOption(card, index)
@@ -402,6 +411,7 @@ fun HomeContent(
                     item(key = "empty-state") {
                         EmptyState(
                             hasRelays = uiState.relays.isNotEmpty(),
+                            canLaunch = uiState.canLaunch,
                             modifier = Modifier
                                 .fillParentMaxSize()
                                 .padding(horizontal = spacing.large),
@@ -497,6 +507,7 @@ private fun FabMenuItem(
         horizontalArrangement = Arrangement.spacedBy(LerdrTheme.spacing.small),
         modifier = Modifier
             .clip(MaterialTheme.shapes.medium)
+            .heightIn(min = 48.dp)
             .clickable(onClickLabel = label, role = Role.Button, onClick = onClick),
     ) {
         Surface(
@@ -562,13 +573,14 @@ private fun StatusDot(color: Color) {
 }
 
 /**
- * Empty Agents state — a quiet pointer to the launch FAB when computers are
- * paired, or to the Computers tab when nothing is. `fillParentMaxSize`
+ * Empty Agents state — points controllers to launch and unpaired devices to
+ * Computers; readers wait for the paired computer's agents. `fillParentMaxSize`
  * inside the LazyColumn centers it in the remaining viewport.
  */
 @Composable
 private fun EmptyState(
     hasRelays: Boolean,
+    canLaunch: Boolean,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -590,10 +602,10 @@ private fun EmptyState(
         )
         Spacer(Modifier.height(LerdrTheme.spacing.extraSmall))
         Text(
-            text = if (hasRelays) {
-                "Launch an agent or workspace with the + button."
-            } else {
-                "Pair a computer from the Computers tab to get started."
+            text = when {
+                canLaunch -> "Launch an agent or workspace with the + button."
+                hasRelays -> "Agents on your paired computers will appear here."
+                else -> "Pair a computer from the Computers tab to get started."
             },
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -744,16 +756,21 @@ private fun AttentionCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 card.kind == AttentionKind.APPROVAL && card.controllable &&
-                    card.options.isNotEmpty() -> Row(
-                    horizontalArrangement = Arrangement.spacedBy(LerdrTheme.spacing.small),
+                    card.options.isNotEmpty() -> Column(
+                    verticalArrangement = Arrangement.spacedBy(LerdrTheme.spacing.small),
                 ) {
-                    card.options.take(MAX_INLINE_OPTIONS).forEachIndexed { index, option ->
+                    var renderedOptions = 0
+                    for (index in card.options.indices) {
+                        val option = card.options[index]
+                        if (option.isEmpty()) continue
+                        if (renderedOptions == MAX_INLINE_OPTIONS) break
                         ApprovalButton(
-                            option = optionLabel(option),
+                            option = option,
                             tone = approvalTone(option, index, card.options.size),
                             onClick = { onRespond(index) },
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier.fillMaxWidth(),
                         )
+                        renderedOptions++
                     }
                 }
                 card.controllable && card.quickOptions.isNotEmpty() -> FlowRow(
@@ -794,28 +811,31 @@ private fun ApprovalButton(
     when (tone) {
         ApprovalTone.APPROVE -> Button(
             onClick = onClick,
+            shape = MaterialTheme.shapes.medium,
             colors = ButtonDefaults.buttonColors(
                 containerColor = colors.working,
                 contentColor = colors.onWorking,
             ),
             modifier = modifier,
-        ) { Text(option, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+        ) { Text(option) }
         ApprovalTone.TRUST -> FilledTonalButton(
             onClick = onClick,
+            shape = MaterialTheme.shapes.medium,
             colors = ButtonDefaults.filledTonalButtonColors(
                 containerColor = MaterialTheme.colorScheme.secondaryContainer,
                 contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
             ),
             modifier = modifier,
-        ) { Text(option, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+        ) { Text(option) }
         ApprovalTone.DENY -> FilledTonalButton(
             onClick = onClick,
+            shape = MaterialTheme.shapes.medium,
             colors = ButtonDefaults.filledTonalButtonColors(
                 containerColor = colors.dangerContainer,
                 contentColor = colors.onDangerContainer,
             ),
             modifier = modifier,
-        ) { Text(option, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+        ) { Text(option) }
     }
 }
 
@@ -1071,6 +1091,7 @@ private fun HomeContentPreview() {
         HomeContent(
             uiState = previewHomeUiState,
             onOpenAgent = {},
+            onOpenAttention = {},
             onSelectTopLevel = {},
         )
     }
@@ -1083,6 +1104,7 @@ private fun HomeContentEmptyPreview() {
         HomeContent(
             uiState = HomeUiState(),
             onOpenAgent = {},
+            onOpenAttention = {},
             onSelectTopLevel = {},
         )
     }
@@ -1090,6 +1112,7 @@ private fun HomeContentEmptyPreview() {
 
 private val previewHomeUiState = HomeUiState(
     live = true,
+    canLaunch = true,
     relaySummary = "2 computers · tailscale",
     needsYou = listOf(
         AttentionCardUi(

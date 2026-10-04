@@ -37,7 +37,7 @@ data class TerminalUiState(
     val breadcrumb: String = "",
     /** Normalized agent identity ("claude", "codex"…) — top-bar logo. */
     val provider: String? = null,
-    /** "lease 92×42" or the agent status — the chip in the top bar. */
+    /** Live agent lifecycle (or derived cohort activity), never viewport geometry. */
     val statusLabel: String = "",
     val connected: Boolean = false,
     /** True until the first pane frame commits. */
@@ -174,15 +174,7 @@ class TerminalViewModel(
             title = agent?.name ?: agent?.agent ?: paneId.substringAfter("::"),
             provider = agent?.agent?.takeIf { it.isNotEmpty() },
             breadcrumb = breadcrumbOf(agent),
-            statusLabel = if (display != null && display.columns > 0) {
-                if (display.rows > 0) {
-                    "lease ${display.columns}×${display.rows}"
-                } else {
-                    "lease ${display.columns} cols"
-                }
-            } else {
-                agent.orchestratingStatus(cohortBusy) ?: agent?.status ?: ""
-            },
+            statusLabel = agent.orchestratingStatus(cohortBusy) ?: agent?.status ?: "",
             connected = connection?.status == RelayStatus.CONNECTED,
             waitingForContent = display == null,
             lines = display?.lines.orEmpty(),
@@ -213,6 +205,7 @@ class TerminalViewModel(
      */
     private var leaseLoopJob: Job? = null
     private var reLeaseJob: Job? = null
+    private val paneOwner = Any()
 
     /**
      * Persisted pinch-zoom — the screen applies it to the surface state;
@@ -231,17 +224,15 @@ class TerminalViewModel(
     init {
         // push_viewed_pane: the terminal view is Lerdr's "viewed"
         // signal — entering publishes it, leaving clears it.
-        sessions.setViewedPane(paneId)
-        viewModelScope.launch { sessions.openPane(paneId) }
+        sessions.setViewedPane(paneId, paneOwner)
+        viewModelScope.launch { sessions.openPane(paneId, paneOwner) }
         leaseLoopJob = appScope.launch {
             while (true) {
                 delay(LEASE_REFRESH_MS)
-                // Lerdr gates hidden renewals on a 5 min grace — after it
-                // the relay TTL hands the pane's size back to the desktop.
                 val columns = leasedColumns
-                if (columns > 0 && sessions.paneLeaseRenewalAllowed()) {
+                if (columns > 0 && !sessions.hidden.value) {
                     try {
-                        sessions.leasePaneSize(paneId, columns, leasedRows)
+                        sessions.leasePaneSize(paneId, paneOwner, columns, leasedRows)
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (_: Exception) {
@@ -254,13 +245,8 @@ class TerminalViewModel(
             // Refocus parity: the moment the app is visible again the lease
             // re-arms instead of waiting out the renewal interval.
             sessions.hidden.collect { hidden ->
-                if (!hidden && leasedColumns > 0) {
-                    try {
-                        sessions.leasePaneSize(paneId, leasedColumns, leasedRows)
-                    } catch (cancelled: CancellationException) {
-                        throw cancelled
-                    } catch (_: Exception) {
-                    }
+                if (!hidden && !leaseBlockedByProvider && leasedColumns > 0) {
+                    acquireLease(measuredColumns, measuredRows)
                 }
             }
         }
@@ -294,18 +280,10 @@ class TerminalViewModel(
     override fun onCleared() {
         leaseLoopJob?.cancel()
         reLeaseJob?.cancel()
-        sessions.setViewedPane(null)
-        // viewModelScope is already cancelled here — release + unwatch ride
-        // the app scope, in order, so the lease drops before the runtime.
-        appScope.launch {
-            if (leasedColumns > 0) {
-                try {
-                    sessions.releasePaneSize(paneId)
-                } catch (_: Exception) {
-                }
-            }
-            sessions.closePane(paneId)
-        }
+        sessions.setViewedPane(null, paneOwner)
+        // The repository owns in-flight lease state too: even a canceled
+        // acquire whose receipt never arrived must release on final close.
+        appScope.launch { sessions.closePane(paneId, paneOwner) }
     }
 
     /**
@@ -331,10 +309,14 @@ class TerminalViewModel(
     }
 
     private suspend fun acquireLease(columns: Int, rows: Int) {
+        if (sessions.hidden.value) return
         try {
-            val (appliedColumns, appliedRows) = sessions.leasePaneSize(paneId, columns, rows)
+            val (appliedColumns, appliedRows) =
+                sessions.leasePaneSize(paneId, paneOwner, columns, rows)
             leasedColumns = appliedColumns
             leasedRows = appliedRows
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (failure: Exception) {
             lastError.value = failure.message
         }
@@ -345,7 +327,7 @@ class TerminalViewModel(
         leasedColumns = 0
         leasedRows = 0
         try {
-            sessions.releasePaneSize(paneId)
+            sessions.releasePaneSize(paneId, paneOwner)
         } catch (_: Exception) {
             // The TTL lapses the lease either way — a dropped release is cosmetic.
         }

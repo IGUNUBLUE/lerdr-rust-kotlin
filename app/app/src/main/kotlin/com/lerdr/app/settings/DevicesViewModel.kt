@@ -282,6 +282,9 @@ class DevicesViewModel(
      * advertises `invitation_qr`.
      */
     fun createInvitation(name: String, role: DeviceRole) {
+        if (_uiState.value.actionBusy || !_uiState.value.connected ||
+            !_uiState.value.canAdminister
+        ) return
         val trimmed = name.trim().take(MAX_DEVICE_NAME_CHARS)
         if (trimmed.isEmpty()) return
         viewModelScope.launch {
@@ -376,7 +379,9 @@ class DevicesViewModel(
 
     /** Lerdr `run` — busy latch, status/error plumbing, success text. */
     private fun runAction(success: String, action: suspend () -> Unit) {
-        if (_uiState.value.actionBusy) return
+        if (_uiState.value.actionBusy || !_uiState.value.connected ||
+            !_uiState.value.canAdminister
+        ) return
         viewModelScope.launch {
             _uiState.update { it.copy(actionBusy = true, status = null, statusIsError = false) }
             try {
@@ -437,8 +442,9 @@ class DevicesViewModel(
                 ),
                 fetched = true,
                 currentDeviceId = currentId,
-                canAdminister = obj?.string("role")
-                    ?.let(DeviceRole::fromWireName) == DeviceRole.CONTROLLER || it.canAdminister,
+                canAdminister = obj?.string("role")?.let {
+                    DeviceRole.fromWireName(it) == DeviceRole.CONTROLLER
+                } ?: it.canAdminister,
             )
         }
     }

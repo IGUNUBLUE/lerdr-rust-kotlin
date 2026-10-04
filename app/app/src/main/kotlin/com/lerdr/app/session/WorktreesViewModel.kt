@@ -78,6 +78,8 @@ data class WorktreesUiState(
     val linkedWorktree: Boolean = false,
     /** `worktree_management` capability gate (Lerdr `worktreeManagementAvailable`). */
     val managementAvailable: Boolean = false,
+    /** Reader devices may list worktrees but never mutate them. */
+    val canControl: Boolean = false,
     val loading: Boolean = true,
     val listing: WorktreeListing? = null,
     val error: String? = null,
@@ -145,11 +147,9 @@ internal fun parseWorktreeListing(data: JsonElement?): WorktreeListing {
  *   force escalation: a `dirty_worktree_requires_force` refusal keeps the
  *   confirm dialog open in force mode.
  *
- * The relay answers refusals as `command_result{ok:false, data:{code,
- * force_available}}` plus an `action_receipt{error.code}` — the thrown
- * [CommandException] drops `data`, so a frames collector correlates the
- * refusal by the `action_id` this VM assigns (Lerdr sends none — the
- * relay echoes it into the receipt, which is exactly what the watch needs).
+ * Refusals retain `command_result.data.force_available` in [CommandException].
+ * A correlated action-receipt watch also handles dirty refusals which
+ * arrive without that command-result payload.
  *
  * After every successful mutation `refresh_agents` fans out (Lerdr's
  * `requestAgents`) and the listing reloads.
@@ -218,6 +218,7 @@ class WorktreesViewModel(
             linkedWorktree = workspace?.worktree?.isLinkedWorktree == true,
             managementAvailable = connection?.capabilities
                 ?.contains(WORKTREE_MANAGEMENT_CAPABILITY) == true,
+            canControl = sessions.canControl(relayId),
             loading = local.loading,
             listing = local.listing,
             error = local.error,
@@ -249,9 +250,7 @@ class WorktreesViewModel(
                 workspaceGone.value = workspaceSeen && !found
             }
         }
-        // Remove-outcome watch — correlates the refusal signals the
-        // command_result exception drops (`data.force_available` /
-        // `action_receipt.error.code`).
+        // Correlate dirty-worktree receipt evidence by this removal's action id.
         viewModelScope.launch {
             sessions.frames.collect { frame ->
                 if (frame.relayId != relayId) return@collect
@@ -259,18 +258,8 @@ class WorktreesViewModel(
                 when (val message = frame.message) {
                     is ActionReceiptMessage -> {
                         val receipt = message.receipt ?: return@collect
-                        if (receipt.actionId == watch.actionId) {
-                            watch.forceAvailable.complete(
-                                receipt.error?.code == DIRTY_WORKTREE_CODE,
-                            )
-                        }
-                    }
-                    is CommandResultMessage -> {
-                        // Only a positive data signal completes here — a
-                        // bare failure must not pre-empt the receipt that
-                        // follows it on the wire.
-                        if (message.action == WORKTREE_REMOVE && message.ok == false &&
-                            forceAvailable(message.data)
+                        if (receipt.actionId == watch.actionId &&
+                            receipt.error?.code == DIRTY_WORKTREE_CODE
                         ) {
                             watch.forceAvailable.complete(true)
                         }
@@ -352,7 +341,7 @@ class WorktreesViewModel(
     /** `createWorktree` — `worktree_create`; the form clears on success. */
     fun createWorktree() {
         val branch = local.value.branchDraft.trim()
-        if (local.value.busy || branch.isEmpty()) return
+        if (local.value.busy || branch.isEmpty() || !sessions.canControl(relayId)) return
         local.update { it.copy(busy = true) }
         viewModelScope.launch {
             try {
@@ -396,7 +385,7 @@ class WorktreesViewModel(
      * without stealing focus (`focus:false` is baked into the relay).
      */
     fun openWorktree(path: String, label: String) {
-        if (local.value.busy || path.isEmpty()) return
+        if (local.value.busy || path.isEmpty() || !sessions.canControl(relayId)) return
         local.update { it.copy(busy = true) }
         viewModelScope.launch {
             try {
@@ -431,7 +420,9 @@ class WorktreesViewModel(
 
     /** Opens the remove confirm — only for a linked worktree workspace. */
     fun requestRemove() {
-        if (!uiState.value.linkedWorktree || local.value.busy) return
+        if (!uiState.value.linkedWorktree || local.value.busy ||
+            !sessions.canControl(relayId)
+        ) return
         local.update { it.copy(confirmRemove = true, confirmForce = false) }
     }
 
@@ -448,13 +439,14 @@ class WorktreesViewModel(
      */
     fun confirmRemove() {
         val state = uiState.value
-        if (local.value.busy || !state.confirmRemove) return
+        if (local.value.busy || !state.confirmRemove || !sessions.canControl(relayId)) return
         val actionId = "worktree-remove-${UUID.randomUUID()}"
         val watch = RemoveWatch(actionId, CompletableDeferred())
         removeWatch.set(watch)
         local.update { it.copy(busy = true) }
         viewModelScope.launch {
             try {
+                requireWorktreeManagement()
                 sessions.request(
                     relayId,
                     Inbound(
@@ -477,12 +469,10 @@ class WorktreesViewModel(
                     )
                 }
             } catch (failure: Exception) {
-                // The refusal frames arrive on `frames` before the request's
-                // deferred settles; the await below just hands the collector
-                // a scheduling slot.
-                val forceAvailable = withTimeoutOrNull(RECEIPT_GRACE_MS) {
-                    watch.forceAvailable.await()
-                } == true
+                val forceAvailable = forceAvailable((failure as? CommandException)?.data) ||
+                    withTimeoutOrNull(RECEIPT_GRACE_MS) {
+                        watch.forceAvailable.await()
+                    } == true
                 local.update { it.copy(busy = false) }
                 if (forceAvailable && !state.confirmForce) {
                     local.update { it.copy(confirmForce = true) }

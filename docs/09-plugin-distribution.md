@@ -18,7 +18,7 @@ minutes and rescans on default-branch head changes.
 ```toml
 id = "lerdr.events"
 name = "Lerdr"
-version = "0.0.10"          # bump per release
+version = "1.0.0"           # bump per release
 min_herdr_version = "0.7.5" # raise only when a used method requires it
 platforms = ["macos", "linux"]
 

@@ -17,11 +17,10 @@
 //! tiers because the transcript lives on local disk:
 //!
 //! - **Periodic tick** ([`POLL_INTERVAL`]) — stat the emitted source
-//!   path ([`SourceStamp`]: dev/ino/len/mtime); an identical stamp means
-//!   the page the client holds is still current. A moved stamp re-reads
-//!   page 1 through the shared [`ConversationBrowser`] on
-//!   `spawn_blocking` — bounded file I/O and the sqlite subprocesses
-//!   must not stall the executor.
+//!   path and, for native SQLite sources, its WAL. An identical pair
+//!   means the page the client holds is still current. A moved stamp
+//!   re-reads page 1 through [`ConversationBrowser`] on `spawn_blocking`.
+//!   Preserve the pre-read stamp so a concurrent commit is not swallowed.
 //! - **Invalidation fast path** — `pane.*` broadcasts naming the pane
 //!   (or global wakes) poll early once past [`READ_FRESHNESS`]; inside
 //!   the window the tick covers the change.
@@ -48,6 +47,7 @@ use std::time::Duration;
 use lerdr_core::json::{MaybeNull, RawJson};
 use lerdr_core::protocol::{ConversationUpdateMessage, Inbound, Outbound, TargetRef};
 use lerdr_herdr::AgentInfo;
+use sha2::{Digest, Sha256};
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -56,13 +56,15 @@ use tracing::{debug, warn, Instrument};
 use crate::actions::conversation::{conversation_tuple, ConversationTuple};
 use crate::actions::pane_of;
 use crate::actor::{Invalidation, TopologyHandle};
-use crate::conversation::{BrowseRequest, BrowseScope, BrowseState, ConversationBrowser, Entry};
+use crate::conversation::{
+    BrowseMode, BrowseRequest, BrowseScope, BrowseState, ConversationBrowser, Entry,
+};
 use crate::topology::Topology;
 use crate::watches::FrameSink;
 
 /// Tick period — the transcripts are local files, so this sits well
 /// under the pane-watch floor and still amortizes: a settled source
-/// costs one `stat` per tick.
+/// costs one `stat` per tick (two for SQLite).
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Invalidation fast-path freshness — a `pane.*` event inside this
@@ -217,6 +219,49 @@ impl SourceStamp {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProbeStamp {
+    source: SourceStamp,
+    wal: SourceStamp,
+}
+
+impl ProbeStamp {
+    const MISSING: Self = Self {
+        source: SourceStamp::MISSING,
+        wal: SourceStamp::MISSING,
+    };
+
+    fn of(path: &str, wal_path: &str) -> Self {
+        Self {
+            source: SourceStamp::of(path),
+            wal: if wal_path.is_empty() {
+                SourceStamp::MISSING
+            } else {
+                SourceStamp::of(wal_path)
+            },
+        }
+    }
+}
+
+struct EntryDigest(Sha256);
+
+impl std::io::Write for EntryDigest {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn entry_digest(entry: &Entry) -> [u8; 32] {
+    let mut digest = EntryDigest(Sha256::new());
+    serde_json::to_writer(&mut digest, entry).expect("Entry has infallible JSON fields");
+    digest.0.finalize().into()
+}
+
 /// What the last emission looked like — enough to decide the next
 /// frame's shape without retaining the entries.
 #[derive(Debug, Default, PartialEq)]
@@ -235,6 +280,9 @@ struct Sig {
     /// is `ids.last()`; suffix-overlap against the previous page decides
     /// whether the diff is a pure append.
     ids: Vec<String>,
+    /// SQLite rows may change in place; JSONL results also update an earlier
+    /// tool call without changing its raw-record id.
+    entry_digests: Vec<[u8; 32]>,
     total: Option<i64>,
 }
 
@@ -246,6 +294,19 @@ impl Sig {
             reason_code: page.reason_code.clone(),
             source_revision: page.source_revision.clone(),
             ids: page.entries.iter().map(|entry| entry.id.clone()).collect(),
+            entry_digests: page
+                .entries
+                .iter()
+                .map(|entry| {
+                    if page.mode == BrowseMode::Native || !entry.tools.is_empty() {
+                        entry_digest(entry)
+                    } else {
+                        // Flat text-only entries are immutable and already have
+                        // content-derived ids; do not hash their text twice.
+                        [0; 32]
+                    }
+                })
+                .collect(),
             total: page.total,
         }
     }
@@ -260,11 +321,13 @@ struct LastRead {
     /// probe-skip path and inside the mid-read fence.
     tuple: Option<ConversationTuple>,
     /// stat signature of `probe_path` captured at read time.
-    stamp: SourceStamp,
+    stamp: ProbeStamp,
     /// The file `stamp` describes — the page's reported probe path
     /// (Claude: the chain tip; flat readers: the located source). Empty
     /// disables the skip — no statable source means every tick reads.
     probe_path: String,
+    /// Prepared only for SQLite; probes allocate no sibling path each tick.
+    wal_path: String,
     /// The emitted page's signature.
     sig: Sig,
 }
@@ -335,6 +398,10 @@ async fn poll(pane_id: &str, deps: &ConvoSubDeps, last: &mut Option<LastRead>) {
         return;
     };
     let tuple = conversation_tuple(&info);
+    let probe_stamp = last
+        .as_ref()
+        .filter(|prev| !prev.probe_path.is_empty())
+        .map(|prev| ProbeStamp::of(&prev.probe_path, &prev.wal_path));
     // Probe tier: same pane epoch + same tuple + unmoved source → the
     // page the client holds is still current — no read needed.
     if let Some(prev) = last.as_ref() {
@@ -342,7 +409,7 @@ async fn poll(pane_id: &str, deps: &ConvoSubDeps, last: &mut Option<LastRead>) {
             && prev.generation == generation
             && prev.tuple.as_ref() == Some(&tuple)
             && !prev.probe_path.is_empty()
-            && SourceStamp::of(&prev.probe_path) == prev.stamp;
+            && probe_stamp == Some(prev.stamp);
         if settled {
             return;
         }
@@ -377,14 +444,31 @@ async fn poll(pane_id: &str, deps: &ConvoSubDeps, last: &mut Option<LastRead>) {
     if page.state == BrowseState::Failed {
         return;
     }
-    let stamp = SourceStamp::of(&page.probe_path);
+    let sqlite = page.mode == BrowseMode::Native && !page.probe_path.is_empty();
+    let same_probe = last.as_ref().is_some_and(|prev| {
+        prev.probe_path == page.probe_path && !prev.wal_path.is_empty() == sqlite
+    });
+    // A new source gets one confirmation read; known sources retain the
+    // stamp from before the read, never a stamp newer than the returned page.
+    let stamp = if same_probe {
+        probe_stamp.unwrap_or(ProbeStamp::MISSING)
+    } else {
+        ProbeStamp::MISSING
+    };
     let sig = Sig::of_page(&page);
     let Some((messages, reset)) = decide(last.as_ref(), generation, &sig, &page.entries) else {
         // Page unchanged since the last emission — refresh the source
         // stamp so later probes compare against what the read saw.
         if let Some(prev) = last.as_mut() {
             prev.stamp = stamp;
-            prev.probe_path = page.probe_path.clone();
+            prev.probe_path.clone_from(&page.probe_path);
+            if !same_probe {
+                prev.wal_path = if sqlite {
+                    format!("{}-wal", page.probe_path)
+                } else {
+                    String::new()
+                };
+            }
         }
         return;
     };
@@ -405,11 +489,20 @@ async fn poll(pane_id: &str, deps: &ConvoSubDeps, last: &mut Option<LastRead>) {
         );
         return;
     }
+    let wal_path = if sqlite {
+        last.as_mut()
+            .filter(|prev| same_probe && !prev.wal_path.is_empty())
+            .map(|prev| std::mem::take(&mut prev.wal_path))
+            .unwrap_or_else(|| format!("{}-wal", page.probe_path))
+    } else {
+        String::new()
+    };
     *last = Some(LastRead {
         generation,
         tuple: Some(tuple),
         stamp,
-        probe_path: page.probe_path.clone(),
+        probe_path: page.probe_path,
+        wal_path,
         sig,
     });
 }
@@ -447,8 +540,9 @@ fn emit_tombstone(pane_id: &str, deps: &ConvoSubDeps, last: &mut Option<LastRead
     *last = Some(LastRead {
         generation,
         tuple: None,
-        stamp: SourceStamp::MISSING,
+        stamp: ProbeStamp::MISSING,
         probe_path: String::new(),
+        wal_path: String::new(),
         sig,
     });
 }
@@ -498,6 +592,12 @@ fn append_delta(prev: &Sig, sig: &Sig, entries: &[Entry]) -> Option<Vec<Entry>> 
     let pos = sig.ids.iter().position(|id| id == anchor)?;
     let overlap = &sig.ids[..=pos];
     if overlap.len() > prev.ids.len() || overlap != &prev.ids[prev.ids.len() - overlap.len()..] {
+        return None;
+    }
+    if !sig.entry_digests.is_empty()
+        && prev.entry_digests.get(prev.ids.len() - overlap.len()..)
+            != Some(&sig.entry_digests[..=pos])
+    {
         return None;
     }
     let appended = entries[pos + 1..].to_vec();
@@ -1063,5 +1163,215 @@ mod tests {
             "session address maps to the live pane"
         );
         assert_eq!(unsubscribe_pane(&t, &inbound(serde_json::json!({}))), None);
+    }
+
+    struct SqliteWriter {
+        child: std::process::Child,
+        output: std::io::BufReader<std::process::ChildStdout>,
+    }
+
+    impl SqliteWriter {
+        fn open(database: &std::path::Path) -> Self {
+            use std::process::{Command, Stdio};
+            let mut child = Command::new("sqlite3")
+                .arg("-batch")
+                .arg(database)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .unwrap();
+            let output = std::io::BufReader::new(child.stdout.take().unwrap());
+            Self { child, output }
+        }
+
+        fn execute(&mut self, sql: &str) {
+            use std::io::BufRead;
+            let input = self.child.stdin.as_mut().unwrap();
+            writeln!(input, ".bail on\n{sql}\n.print lerdr-done").unwrap();
+            input.flush().unwrap();
+            let mut line = String::new();
+            loop {
+                line.clear();
+                assert!(
+                    self.output.read_line(&mut line).unwrap() > 0,
+                    "sqlite exited before commit"
+                );
+                if line.trim() == "lerdr-done" {
+                    break;
+                }
+            }
+        }
+    }
+
+    impl Drop for SqliteWriter {
+        fn drop(&mut self) {
+            drop(self.child.stdin.take());
+            let _ = self.child.wait();
+        }
+    }
+
+    #[tokio::test]
+    async fn late_jsonl_tool_result_replaces_call_with_output_and_error() {
+        for failed in [false, true] {
+            let mut h = harness();
+            let dir = h.home.path().join(".omp/agent/sessions");
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("audit.jsonl");
+            std::fs::write(
+                &path,
+                "{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"call-1\",\"name\":\"ask\",\"arguments\":{\"question\":\"Choose\"}}]}}\n",
+            )
+            .unwrap();
+            let mut info = topology(SESSION).pane_of(PANE).unwrap().clone();
+            info.agent = Some("omp".into());
+            let session = info.agent_session.as_mut().unwrap();
+            session.kind = AgentSessionRefKind::Path;
+            session.value = path.to_str().unwrap().into();
+            let mut topology = Topology::default();
+            topology.accept(SessionSnapshot {
+                agents: vec![info],
+                ..SessionSnapshot::default()
+            });
+            h.topology_tx.send(Arc::new(topology)).unwrap();
+            let mut last = None;
+            poll(PANE, &h.deps, &mut last).await;
+            let (initial, _, _) = parts(&recv_update(&mut h.rx).await);
+            let call_id = initial[0]["id"].clone();
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            writeln!(
+                file,
+                "{{\"type\":\"message\",\"message\":{{\"role\":\"toolResult\",\"toolCallId\":\"call-1\",\"content\":[{{\"type\":\"text\",\"text\":\"User selected: Beta\"}}],\"isError\":{failed}}}}}"
+            )
+            .unwrap();
+            drop(file);
+            poll(PANE, &h.deps, &mut last).await;
+            let (updated, reset, _) = parts(&recv_update(&mut h.rx).await);
+            assert!(
+                reset,
+                "a late output must replace the already-rendered call"
+            );
+            assert_eq!(updated[0]["id"], call_id);
+            assert_eq!(updated[0]["tools"][0]["output"], "User selected: Beta");
+            assert_eq!(updated[0]["tools"][0]["error"] == true, failed);
+            poll(PANE, &h.deps, &mut last).await;
+            assert!(h.rx.try_recv().is_err(), "unchanged output stays quiet");
+        }
+    }
+
+    #[tokio::test]
+    async fn native_wal_migration_stream_updates_checkpoint_and_recreation_stay_fresh() {
+        let mut h = harness();
+        let root = h._xdg.path().join("opencode");
+        let cwd = h.home.path().join("work");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+        let database = root.join("opencode.db");
+        let path = database.to_str().unwrap();
+        let mut writer = SqliteWriter::open(&database);
+        writer.execute(&format!(
+            "PRAGMA journal_mode=WAL;
+             CREATE TABLE session(id TEXT,directory TEXT,title TEXT,time_updated INTEGER,agent TEXT);
+             CREATE TABLE message(id TEXT,session_id TEXT,time_created INTEGER,data TEXT);
+             CREATE TABLE part(id TEXT,message_id TEXT,data TEXT);
+             INSERT INTO session VALUES('ses_wal1234',CAST(X'{}' AS TEXT),'legacy',0,'build');
+             INSERT INTO message VALUES('msg1','ses_wal1234',1,'{{\"role\":\"user\"}}');
+             INSERT INTO part VALUES('part1','msg1','{{\"type\":\"text\",\"text\":\"question\"}}');
+             PRAGMA wal_checkpoint(TRUNCATE);", hex::encode(cwd.to_str().unwrap())
+        ));
+        let mut info = topology(SESSION).pane_of(PANE).unwrap().clone();
+        info.agent = Some("opencode".into());
+        info.cwd = Some(cwd.to_str().unwrap().into());
+        info.agent_session.as_mut().unwrap().value = "ses_wal1234".into();
+        let mut native = Topology::default();
+        native.accept(SessionSnapshot {
+            agents: vec![info],
+            ..SessionSnapshot::default()
+        });
+        h.topology_tx.send(Arc::new(native)).unwrap();
+        let mut last = None;
+        poll(PANE, &h.deps, &mut last).await;
+        assert_eq!(
+            parts(&recv_update(&mut h.rx).await).0[0]["text"],
+            "question"
+        );
+        poll(PANE, &h.deps, &mut last).await;
+        assert!(h.rx.try_recv().is_err());
+        let main = SourceStamp::of(path);
+        writer.execute(
+            "CREATE TABLE session_v2(id TEXT,directory TEXT,title TEXT,time_updated INTEGER,agent TEXT);
+             CREATE TABLE session_message(id TEXT,session_id TEXT,type TEXT,seq INTEGER,time_created INTEGER,data TEXT,UNIQUE(session_id,seq));
+             INSERT INTO session_v2 SELECT * FROM session;
+             INSERT INTO session_message VALUES('msg1','ses_wal1234','user',4,1,'{\"text\":\"question\"}');
+             INSERT INTO session_message VALUES('msg2','ses_wal1234','assistant',5,2,'{\"content\":[{\"type\":\"text\",\"text\":\"streaming\"}]}');"
+        );
+        assert_eq!(SourceStamp::of(path), main, "migration is WAL-only");
+        poll(PANE, &h.deps, &mut last).await;
+        let (entries, reset, _) = parts(&recv_update(&mut h.rx).await);
+        assert!(!reset);
+        assert_eq!(entries[0]["id"], "msg2");
+        assert_eq!(entries[0]["text"], "streaming");
+        writer.execute("UPDATE session_message SET data='{\"content\":[{\"type\":\"text\",\"text\":\"complete\"}]}' WHERE id='msg2';");
+        assert_eq!(SourceStamp::of(path), main);
+        poll(PANE, &h.deps, &mut last).await;
+        let (entries, reset, _) = parts(&recv_update(&mut h.rx).await);
+        assert!(reset, "in-place native changes replace the old entry");
+        assert_eq!(entries[1]["id"], "msg2");
+        assert_eq!(entries[1]["text"], "complete");
+        writer.execute("PRAGMA wal_checkpoint(TRUNCATE);");
+        poll(PANE, &h.deps, &mut last).await;
+        assert!(h.rx.try_recv().is_err());
+        drop(writer);
+        poll(PANE, &h.deps, &mut last).await;
+        assert!(h.rx.try_recv().is_err());
+        let main = SourceStamp::of(path);
+        let mut writer = SqliteWriter::open(&database);
+        writer.execute("INSERT INTO session_message VALUES('msg3','ses_wal1234','user',19,3,'{\"text\":\"after reopen\"}');");
+        assert_eq!(SourceStamp::of(path), main);
+        poll(PANE, &h.deps, &mut last).await;
+        let (entries, reset, _) = parts(&recv_update(&mut h.rx).await);
+        assert!(!reset);
+        assert_eq!(entries[0]["text"], "after reopen");
+        writer.execute("PRAGMA journal_mode=DELETE; INSERT INTO session_message VALUES('msg4','ses_wal1234','assistant',25,4,'{\"content\":[{\"type\":\"text\",\"text\":\"delete mode\"}]}');");
+        poll(PANE, &h.deps, &mut last).await;
+        let (entries, reset, _) = parts(&recv_update(&mut h.rx).await);
+        assert!(!reset);
+        assert_eq!(entries[0]["text"], "delete mode");
+        assert!(!std::path::Path::new(&format!("{path}-wal")).exists());
+    }
+
+    #[tokio::test]
+    async fn commit_between_read_and_emission_is_not_marked_settled() {
+        let mut h = harness();
+        let path = transcript(&h.home, SESSION, &[user("first")]);
+        let mut last = None;
+        poll(PANE, &h.deps, &mut last).await;
+        recv_update(&mut h.rx).await;
+        poll(PANE, &h.deps, &mut last).await;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(file, "{}", assistant("trigger")).unwrap();
+        drop(file);
+        let once = AtomicBool::new(true);
+        h.deps.on_read = Some(Arc::new(move || {
+            if once.swap(false, Ordering::SeqCst) {
+                let mut file = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&path)
+                    .unwrap();
+                writeln!(file, "{}", assistant("raced")).unwrap();
+            }
+        }));
+        poll(PANE, &h.deps, &mut last).await;
+        assert_eq!(parts(&recv_update(&mut h.rx).await).0[0]["text"], "trigger");
+        poll(PANE, &h.deps, &mut last).await;
+        let (entries, reset, _) = parts(&recv_update(&mut h.rx).await);
+        assert!(!reset);
+        assert_eq!(entries[0]["text"], "raced");
     }
 }

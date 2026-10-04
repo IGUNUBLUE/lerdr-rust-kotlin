@@ -47,8 +47,7 @@ object NotifyModule {
         paneBudget: PaneBudget,
         attentionNotifier: AgentAttentionNotifier,
     ): SessionRepository {
-        attentionNotifier.start()
-        return SessionRepository(
+        val repository = SessionRepository(
             scope = scope,
             credentialStore = credentialStore,
             relayRegistry = relayRegistry,
@@ -58,5 +57,7 @@ object NotifyModule {
             sessionFactory = sessionFactory,
             budget = paneBudget,
         )
+        attentionNotifier.start(repository.visibleViewedPane)
+        return repository
     }
 }

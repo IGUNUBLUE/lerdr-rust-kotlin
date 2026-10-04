@@ -233,6 +233,7 @@ fun SpeechSectionContent(
             VoiceCatalog(
                 relayLabel = uiState.relayLabel,
                 catalog = uiState.catalog ?: SpeechCatalogUi(),
+                canManageVoices = uiState.canManageVoices,
                 onInstallVoice = onInstallVoice,
                 onRemoveVoice = onRemoveVoice,
                 modifier = Modifier.padding(horizontal = spacing.medium),
@@ -317,6 +318,7 @@ private fun SpeechHint(
 private fun VoiceCatalog(
     relayLabel: String,
     catalog: SpeechCatalogUi,
+    canManageVoices: Boolean,
     onInstallVoice: (String) -> Unit,
     onRemoveVoice: (String) -> Unit,
     modifier: Modifier = Modifier,
@@ -333,6 +335,14 @@ private fun VoiceCatalog(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        if (!canManageVoices) {
+            Spacer(Modifier.height(spacing.extraSmall))
+            Text(
+                "Voice downloads and removal require a controller.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         if (!catalog.engineInstalled) {
             Spacer(Modifier.height(spacing.extraSmall))
             Text(
@@ -357,7 +367,7 @@ private fun VoiceCatalog(
                     )
                 }
                 Spacer(Modifier.width(spacing.small))
-                if (row.installed) {
+                if (canManageVoices && row.installed) {
                     TextButton(
                         onClick = { onRemoveVoice(row.language) },
                         enabled = !row.busy,
@@ -367,7 +377,7 @@ private fun VoiceCatalog(
                             color = MaterialTheme.colorScheme.error,
                         )
                     }
-                } else {
+                } else if (canManageVoices) {
                     TextButton(
                         onClick = { onInstallVoice(row.language) },
                         enabled = !row.busy,

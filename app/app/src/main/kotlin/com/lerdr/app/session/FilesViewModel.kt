@@ -137,8 +137,8 @@ internal fun diffLineToneOf(line: String): DiffLineTone = when {
  * Files-mode mutation point — owns workspace loads and preview fetches for
  * the screen's lifetime. Generation counters drop stale results; tree and Git
  * load in parallel, a Git failure becomes `available=false`, and a tree
- * failure errors the browser. The workspace reloads when the agent's `cwd`
- * changes.
+ * failure errors the browser. Workspace, cwd, and exact-target changes
+ * invalidate the listing and any preview from the previous pane instance.
  */
 class FilesViewModel(
     private val paneId: String,
@@ -203,12 +203,12 @@ class FilesViewModel(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), FilesUiState(paneId))
 
     init {
-        // `loadedIdentity` — Lerdr keys the listing to pane+cwd and
-        // reloads when the agent moves directories.
+        // Reload for workspace/cwd moves and pane replacement, even when the
+        // replacement starts in the same directory.
         viewModelScope.launch {
             sessions.agent(paneId)
                 .filterNotNull()
-                .map { it.cwd.orEmpty() }
+                .map { Triple(it.cwd.orEmpty(), it.workspaceId, it.wireTarget()) }
                 .distinctUntilChanged()
                 .collect { loadWorkspace() }
         }

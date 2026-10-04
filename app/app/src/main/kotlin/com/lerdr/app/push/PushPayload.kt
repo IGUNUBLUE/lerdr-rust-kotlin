@@ -7,6 +7,7 @@ import com.lerdr.app.notify.NotifyIds
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import lerdr.core.store.clientPaneId
 
 /**
  * The decrypted Web Push record the relay's `push_delivery` worker seals —
@@ -54,14 +55,15 @@ data class PushEventKey(
 )
 
 /**
- * Payload → shade commands. Pure: the pane-scoped ids reuse
- * [NotifyIds.attention]/[NotifyIds.finished] so a push-rendered card and a
- * socket-driven card occupy the same slot — last write wins, never a
- * duplicate. Retractions cancel both pane slots (the retracted event's
- * category may differ from the originally posted one).
+ * Payload → shade commands after the stored enrolled device has identified
+ * exactly one relay. Unknown/ambiguous ownership is rejected before rendering:
+ * an unbound push must neither navigate into nor cancel another relay's pane.
+ * The relay supplies a raw Herdr pane id; both tap routes and shade slots use
+ * the same client-scoped identity as socket-driven notifications.
  */
-fun PushPayload.toCommands(): List<NotificationCommand> {
-    val paneId = key.paneId
+fun PushPayload.toCommands(relayId: String?): List<NotificationCommand> {
+    if (relayId.isNullOrEmpty()) return emptyList()
+    val paneId = key.paneId.takeIf { it.isNotEmpty() }?.let { clientPaneId(relayId, it) }.orEmpty()
     if (retract) {
         if (paneId.isEmpty()) return emptyList()
         return listOf(
@@ -73,7 +75,7 @@ fun PushPayload.toCommands(): List<NotificationCommand> {
     return when (category) {
         CATEGORY_FINISHED -> listOf(
             NotificationCommand.Post(
-                notificationId = NotifyIds.finished(paneId.ifEmpty { eventRef }),
+                notificationId = NotifyIds.finished(paneId.ifEmpty { clientPaneId(relayId, eventRef) }),
                 channel = NotifyChannel.AGENT_ACTIVITY,
                 title = title,
                 body = body,
@@ -103,7 +105,7 @@ fun PushPayload.toCommands(): List<NotificationCommand> {
         // attention / question / brief — the needs-you family.
         else -> listOf(
             NotificationCommand.Post(
-                notificationId = NotifyIds.attention(paneId.ifEmpty { eventRef }),
+                notificationId = NotifyIds.attention(paneId.ifEmpty { clientPaneId(relayId, eventRef) }),
                 channel = NotifyChannel.AGENT_ATTENTION,
                 title = title,
                 body = body,

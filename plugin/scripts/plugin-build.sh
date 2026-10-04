@@ -345,7 +345,6 @@ fi
 PREVIOUS_RELEASE=
 PREVIOUS_VERSION=
 PREVIOUS_REVISION=
-PREVIOUS_WEB_HASH=
 current_was_present=false
 if [ -e "$INSTALL_ROOT/current" ] || [ -L "$INSTALL_ROOT/current" ]; then
     current_was_present=true
@@ -362,7 +361,6 @@ if [ -L "$INSTALL_ROOT/current" ]; then
         if [ -f "$previous_manifest" ]; then
             PREVIOUS_VERSION=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$previous_manifest" | head -1)
             PREVIOUS_REVISION=$(sed -n 's/^[[:space:]]*"revision":[[:space:]]*"\([^"]*\)".*/\1/p' "$previous_manifest" | head -1)
-            PREVIOUS_WEB_HASH=$(sed -n 's/^[[:space:]]*"web_hash":[[:space:]]*"\([^"]*\)".*/\1/p' "$previous_manifest" | head -1)
         fi
     fi
 fi
@@ -450,10 +448,10 @@ rollback_plugin_migration() {
     rollback_env="${SOURCE_ENV:-$ENV_FILE}"
     rollback_port="$(env_file_setting "$rollback_env" RELAY_PORT)"
     rollback_port="${rollback_port:-8375}"
-    if [ -n "$PREVIOUS_VERSION" ] && [ -n "$PREVIOUS_REVISION" ] && [ -n "$PREVIOUS_WEB_HASH" ]; then
+    if [ -n "$PREVIOUS_VERSION" ] && [ -n "$PREVIOUS_REVISION" ]; then
         wait_for_relay_release_health \
             "$rollback_port" 30 1 \
-            "$PREVIOUS_VERSION" "$PREVIOUS_REVISION" "$PREVIOUS_WEB_HASH" \
+            "$PREVIOUS_VERSION" "$PREVIOUS_REVISION" \
             >/dev/null || return 1
     else
         wait_for_relay_health "$rollback_port" 30 1 >/dev/null || return 1
@@ -588,10 +586,10 @@ done
 }
 "$CURRENT_BIN" verify-release "$INSTALL_ROOT/current" >/dev/null
 MANIFEST="$INSTALL_ROOT/current/release-manifest.json"
+INSTALLED_VERSION=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$MANIFEST" | head -1)
 REVISION=$(sed -n 's/^[[:space:]]*"revision":[[:space:]]*"\([^"]*\)".*/\1/p' "$MANIFEST" | head -1)
-WEB_HASH=$(sed -n 's/^[[:space:]]*"web_hash":[[:space:]]*"\([^"]*\)".*/\1/p' "$MANIFEST" | head -1)
-[ -n "$REVISION" ] && [ -n "$WEB_HASH" ] || {
-    echo "lerdr: installed release manifest has no identity" >&2
+[ "$INSTALLED_VERSION" = "$VERSION" ] && [ -n "$REVISION" ] || {
+    echo "lerdr: installed release manifest has no matching version and revision" >&2
     exit 1
 }
 
@@ -702,7 +700,7 @@ if [ "$service_restarted" = true ]; then
     PORT="${PORT:-8375}"
     echo "lerdr: verifying replacement service identity..." >&2
     if ! wait_for_relay_release_health \
-        "$PORT" 30 1 "$VERSION" "$REVISION" "$WEB_HASH" >/dev/null; then
+        "$PORT" 30 1 "$INSTALLED_VERSION" "$REVISION" >/dev/null; then
         echo "lerdr: replacement service did not report the expected release identity" >&2
         exit 1
     fi

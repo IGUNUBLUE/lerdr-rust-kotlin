@@ -11,10 +11,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -26,6 +28,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Stop
@@ -64,15 +68,22 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lerdr.app.session.manage.ManageSheet
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import dagger.hilt.android.EntryPointAccessors
@@ -88,24 +99,21 @@ enum class SessionMode(val label: String) {
 
 /**
  * Status-chip visual variant — the mockup's "morphing" statuses:
- * lease (amber), waiting (pulsing cookie), error (sharp), neutral (pill).
+ * waiting (pulsing cookie), error (sharp), neutral (pill).
  */
 enum class SessionStatusVariant {
     NEUTRAL,
-    LEASE,
     WAITING,
     ERROR,
 }
 
 /**
- * Maps the caller-provided [statusLabel] onto a variant: terminal leases
- * render `lease 92×42`, blocked/waiting agents report `blocked`/`waiting`,
- * disconnects surface `offline`/`error`/`failed`.
+ * Maps the agent lifecycle onto a variant: blocked/waiting agents report
+ * `blocked`/`waiting`; disconnects surface `offline`/`error`/`failed`.
  */
 fun statusVariantOf(label: String): SessionStatusVariant {
     val normalized = label.trim().lowercase()
     return when {
-        normalized.startsWith("lease") -> SessionStatusVariant.LEASE
         normalized.contains("blocked") ||
             normalized.contains("waiting") ||
             normalized.contains("attention") -> SessionStatusVariant.WAITING
@@ -157,8 +165,12 @@ fun SessionTopBar(
      * menu gains the worktrees + manage entries.
      */
     tabsPaneId: String? = null,
+    /** Present only when the caller can follow a managed pane replacement. */
+    onSessionReplaced: ((String) -> Unit)? = null,
     /** Leaves the session after a confirmed `workspace_close`. */
     onSessionClosed: () -> Unit = {},
+    /** Shared action receipts and failures land in the screen's snackbar. */
+    onActionMessage: (String) -> Unit = {},
     /** Chip variant — derived from [statusLabel] by default. */
     statusVariant: SessionStatusVariant = statusVariantOf(statusLabel),
 ) {
@@ -196,6 +208,8 @@ fun SessionTopBar(
                     paneId = tabsPaneId,
                     actions = actions,
                     onSessionClosed = onSessionClosed,
+                    onSessionReplaced = onSessionReplaced,
+                    onActionMessage = onActionMessage,
                 )
                 StatusChip(
                     label = statusLabel,
@@ -443,17 +457,22 @@ private fun SessionOverflowMenu(
     paneId: String?,
     actions: List<SessionBarAction>,
     onSessionClosed: () -> Unit,
+    onSessionReplaced: ((String) -> Unit)?,
+    onActionMessage: (String) -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     var showManage by remember { mutableStateOf(false) }
     var showWorktrees by remember { mutableStateOf(false) }
     var showCloseWorkspace by remember { mutableStateOf(false) }
     var showStopAgent by remember { mutableStateOf(false) }
+    var showTabOrder by remember(paneId) { mutableStateOf(false) }
 
     var repository: SessionRepository? = null
     var paneAgent: lerdr.core.store.Agent? = null
     var canCloseWorkspace = false
     var canStopAgent = false
+    var tabOrder: TabOrderViewModel? = null
+    var tabOrderState = TabOrderUiState()
     if (paneId != null) {
         val appContext = LocalContext.current.applicationContext
         val entryPoint = remember(appContext) {
@@ -463,6 +482,18 @@ private fun SessionOverflowMenu(
             )
         }
         val repo = entryPoint.sessionRepository()
+        val order: TabOrderViewModel = viewModel(key = "tab-order:$paneId") {
+            TabOrderViewModel(paneId, repo, entryPoint.workspaceStore())
+        }
+        tabOrder = order
+        val orderState by order.uiState.collectAsStateWithLifecycle()
+        tabOrderState = orderState
+        LaunchedEffect(orderState.message) {
+            orderState.message?.let {
+                order.consumeMessage()
+                onActionMessage(it)
+            }
+        }
         repository = repo
         val agent by repo.agent(paneId)
             .collectAsStateWithLifecycle(initialValue = null)
@@ -528,16 +559,25 @@ private fun SessionOverflowMenu(
                     modifier = Modifier.testTag("session-bar:worktrees"),
                 )
             }
-            DropdownMenuItem(
-                text = { Text("Manage session") },
-                leadingIcon = {
-                    Icon(Icons.Default.Tune, contentDescription = null)
-                },
+            if (onSessionReplaced != null) {
+                DropdownMenuItem(
+                    text = { Text("Manage session") },
+                    leadingIcon = {
+                        Icon(Icons.Default.Tune, contentDescription = null)
+                    },
+                    onClick = {
+                        menuOpen = false
+                        showManage = true
+                    },
+                    modifier = Modifier.testTag("session-bar:manage"),
+                )
+            }
+            TabOrderMenuItem(
+                state = tabOrderState,
                 onClick = {
                     menuOpen = false
-                    showManage = true
+                    showTabOrder = true
                 },
-                modifier = Modifier.testTag("session-bar:manage"),
             )
             if (canStopAgent || (canCloseWorkspace && worktreesTarget != null)) {
                 HorizontalDivider()
@@ -570,11 +610,24 @@ private fun SessionOverflowMenu(
             }
         }
     }
-    if (showManage && paneId != null) {
-        ManageSheet(paneId = paneId, onDismiss = { showManage = false })
+    if (showTabOrder && tabOrderState.available) {
+        val order = tabOrder
+        TabOrderDialog(
+            state = tabOrderState,
+            onMoveLeft = { order?.moveLeft() },
+            onMoveRight = { order?.moveRight() },
+            onDismiss = { showTabOrder = false },
+        )
+    }
+    if (showManage && paneId != null && onSessionReplaced != null) {
+        ManageSheet(
+            paneId = paneId,
+            onDismiss = { showManage = false },
+            onSessionReplaced = onSessionReplaced,
+        )
     }
     if (showStopAgent && paneId != null && repository != null) {
-        val repo = repository ?: return
+        val repo = repository
         val scope = rememberCoroutineScope()
         var stopBusy by remember { mutableStateOf(false) }
         var stopError by remember { mutableStateOf<String?>(null) }
@@ -650,6 +703,71 @@ private fun SessionOverflowMenu(
     }
 }
 
+/** Omitted entirely for readers, unnegotiated relays, or unknown topology. */
+@Composable
+internal fun TabOrderMenuItem(state: TabOrderUiState, onClick: () -> Unit) {
+    if (!state.available) return
+    DropdownMenuItem(
+        text = { Text("Reorder tab") },
+        onClick = onClick,
+        modifier = Modifier
+            .heightIn(min = 48.dp)
+            .testTag("session-bar:reorder-tab"),
+    )
+}
+
+@Composable
+internal fun TabOrderDialog(
+    state: TabOrderUiState,
+    onMoveLeft: () -> Unit,
+    onMoveRight: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Reorder tab") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(LerdrTheme.spacing.small)) {
+                Text(
+                    "Position ${state.position} of ${state.tabCount} in this workspace",
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                )
+                Text("Moves this tab on the computer. Other workspaces stay in place.")
+                if (state.busy) {
+                    Text(if (state.waitingForOrder) "Waiting for updated tab order…" else "Moving tab…")
+                }
+                state.error?.let {
+                    Text(it, color = LerdrTheme.extendedColors.danger)
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(LerdrTheme.spacing.extraSmall)) {
+                    TextButton(
+                        onClick = onMoveLeft,
+                        enabled = state.canMoveLeft,
+                        modifier = Modifier.heightIn(min = 48.dp).testTag("tab-order:left"),
+                    ) {
+                        Text("Move left")
+                    }
+                    TextButton(
+                        onClick = onMoveRight,
+                        enabled = state.canMoveRight,
+                        modifier = Modifier.heightIn(min = 48.dp).testTag("tab-order:right"),
+                    ) {
+                        Text("Move right")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.heightIn(min = 48.dp).testTag("tab-order:done"),
+            ) {
+                Text("Done")
+            }
+        },
+    )
+}
+
 /**
  * Feed/Terminal/Files switch — the mockup's light-blue pill with dark text
  * for the selected segment. Uses `primary`/`onPrimary` so the flagship dark
@@ -662,23 +780,78 @@ private fun SessionModeSwitch(
     onSelectMode: (SessionMode) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    SingleChoiceSegmentedButtonRow(modifier = modifier) {
-        SessionMode.entries.forEachIndexed { index, option ->
-            SegmentedButton(
-                selected = index == mode.ordinal,
-                onClick = { onSelectMode(option) },
-                shape = SegmentedButtonDefaults.itemShape(
-                    index = index,
-                    count = SessionMode.entries.size,
-                ),
-                colors = SegmentedButtonDefaults.colors(
-                    activeContainerColor = MaterialTheme.colorScheme.primary,
-                    activeContentColor = MaterialTheme.colorScheme.onPrimary,
-                    activeBorderColor = MaterialTheme.colorScheme.primary,
-                ),
-                modifier = Modifier.testTag("session-mode:${option.label.lowercase()}"),
+    val density = LocalDensity.current
+    val textMeasurer = rememberTextMeasurer()
+    val labelStyle = MaterialTheme.typography.labelLarge
+    val widestLabel = SessionMode.entries.maxOf {
+        textMeasurer.measure(it.label, style = labelStyle).size.width
+    }
+    val padding = SegmentedButtonDefaults.ContentPadding
+    val direction = LocalLayoutDirection.current
+    val horizontalPadding = padding.calculateLeftPadding(direction) + padding.calculateRightPadding(direction)
+    // The label needs its inner padding; centered checked content must also fit the container.
+    val checkWidth = SegmentedButtonDefaults.IconSize + 8.dp
+    val minimumSegmentWidth = with(density) { widestLabel.toDp() } + maxOf(horizontalPadding, checkWidth)
+    BoxWithConstraints(modifier) {
+        if (maxWidth < minimumSegmentWidth * SessionMode.entries.size) {
+            var expanded by remember { mutableStateOf(false) }
+            Button(
+                onClick = { expanded = true },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .testTag("session-mode:${mode.label.lowercase()}")
+                    .semantics {
+                        contentDescription = "Session mode"
+                        stateDescription = mode.label
+                        selected = true
+                    },
             ) {
-                Text(option.label)
+                Text(mode.label)
+                Spacer(Modifier.width(LerdrTheme.spacing.small))
+                Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+            }
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false },
+                modifier = Modifier.width(maxWidth),
+            ) {
+                SessionMode.entries.forEach { option ->
+                    DropdownMenuItem(
+                        text = { Text(option.label) },
+                        leadingIcon = {
+                            if (option == mode) Icon(Icons.Default.Check, contentDescription = null)
+                        },
+                        onClick = {
+                            expanded = false
+                            onSelectMode(option)
+                        },
+                        modifier = Modifier
+                            .testTag("session-mode-option:${option.label.lowercase()}")
+                            .semantics { selected = option == mode },
+                    )
+                }
+            }
+        } else {
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                SessionMode.entries.forEachIndexed { index, option ->
+                    SegmentedButton(
+                        selected = index == mode.ordinal,
+                        onClick = { onSelectMode(option) },
+                        shape = SegmentedButtonDefaults.itemShape(
+                            index = index,
+                            count = SessionMode.entries.size,
+                        ),
+                        colors = SegmentedButtonDefaults.colors(
+                            activeContainerColor = MaterialTheme.colorScheme.primary,
+                            activeContentColor = MaterialTheme.colorScheme.onPrimary,
+                            activeBorderColor = MaterialTheme.colorScheme.primary,
+                        ),
+                        modifier = Modifier.testTag("session-mode:${option.label.lowercase()}"),
+                    ) {
+                        Text(option.label)
+                    }
+                }
             }
         }
     }
@@ -686,7 +859,7 @@ private fun SessionModeSwitch(
 
 /**
  * Status pill — morphs per [SessionStatusVariant]: neutral keeps the
- * caller's tint on a full pill, `lease`/`waiting` go amber, `error` goes
+ * caller's tint on a full pill, `waiting` goes amber, `error` goes
  * danger with a sharp corner; `waiting` also pulses the dot.
  */
 @Composable
@@ -697,7 +870,6 @@ private fun StatusChip(
 ) {
     val colors = LerdrTheme.extendedColors
     val accent = when (variant) {
-        SessionStatusVariant.LEASE,
         SessionStatusVariant.WAITING -> colors.attention
         SessionStatusVariant.ERROR -> colors.danger
         SessionStatusVariant.NEUTRAL -> color

@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonObject
 import lerdr.core.data.CredentialEnrollment
 import lerdr.core.data.CredentialStore
@@ -92,7 +93,7 @@ class FakeRelaySessionHandle(
         timeoutMs: Long,
     ): CommandResultMessage {
         requests += message
-        return responder(message)
+        return withTimeout(timeoutMs) { responder(message) }
     }
 
     override fun reconnect() {

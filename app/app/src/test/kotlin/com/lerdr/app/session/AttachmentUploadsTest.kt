@@ -439,6 +439,66 @@ class AttachmentUploadsTest {
     }
 
     @Test
+    fun `cancel before begin result discards the late staged session without sending chunks`() = runTest {
+        val h = Harness(
+            this,
+            tmp.root,
+            sourceOf("content://docs/a.txt" to ByteArray(32)),
+        )
+        h.connectReady()
+        h.uploads.select(h.paneId, listOf("content://docs/a.txt"))
+        val upload = backgroundScope.async { h.uploads.upload(h.paneId) }
+        val begin = h.awaitFrameCount("upload_begin", 1).last()
+        val cancelJob = backgroundScope.async { h.uploads.cancel(h.paneId) }
+        h.pump()
+        assertThat(h.uploads.state(h.paneId).value.items).isEmpty()
+
+        h.emitResult(
+            "upload_begin_result",
+            begin["request_id"]!!.jsonPrimitive.content,
+            """{"upload_id":"up-late","chunk_bytes":8,"expires_at":"2999-01-01T00:00:00Z","limits":{"max_files":8,"max_file_bytes":20971520,"max_batch_bytes":52428800}}""",
+        )
+        val cancel = h.awaitFrameCount("upload_cancel", 1).last()
+        assertThat(cancel["upload_id"]!!.jsonPrimitive.content).isEqualTo("up-late")
+        h.emitResult("upload_cancel_result", cancel["request_id"]!!.jsonPrimitive.content, "{}")
+        cancelJob.await()
+        assertThat(upload.isCancelled).isTrue()
+        assertThat(h.framesOf("upload_chunk")).isEmpty()
+        assertThat(h.framesOf("upload_finish")).isEmpty()
+        assertThat(h.uploads.state(h.paneId).value.items).isEmpty()
+    }
+
+    @Test
+    fun `cancel caller teardown still discards the late begin session`() = runTest {
+        val h = Harness(
+            this,
+            tmp.root,
+            sourceOf("content://docs/a.txt" to ByteArray(32)),
+        )
+        h.connectReady()
+        h.uploads.select(h.paneId, listOf("content://docs/a.txt"))
+        val upload = backgroundScope.async { h.uploads.upload(h.paneId) }
+        val begin = h.awaitFrameCount("upload_begin", 1).last()
+        val cancelJob = backgroundScope.async { h.uploads.cancel(h.paneId) }
+        h.pump()
+        cancelJob.cancel()
+        h.pump()
+        h.emitResult(
+            "upload_begin_result",
+            begin["request_id"]!!.jsonPrimitive.content,
+            """{"upload_id":"up-late-disposed","chunk_bytes":8,"expires_at":"2999-01-01T00:00:00Z","limits":{"max_files":8,"max_file_bytes":20971520,"max_batch_bytes":52428800}}""",
+        )
+        val cancel = h.awaitFrameCount("upload_cancel", 1).last()
+        assertThat(cancel["upload_id"]!!.jsonPrimitive.content).isEqualTo("up-late-disposed")
+        h.emitResult("upload_cancel_result", cancel["request_id"]!!.jsonPrimitive.content, "{}")
+        h.pump()
+        assertThat(cancelJob.isCancelled).isTrue()
+        assertThat(upload.isCancelled).isTrue()
+        assertThat(h.framesOf("upload_chunk")).isEmpty()
+        assertThat(h.framesOf("upload_finish")).isEmpty()
+    }
+
+    @Test
     fun `session loss marks the batch interrupted with state_unknown`() = runTest {
         val body = ByteArray(16) { it.toByte() }
         val source = sourceOf("content://docs/a.txt" to body)

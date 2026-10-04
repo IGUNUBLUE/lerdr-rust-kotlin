@@ -22,6 +22,45 @@ manifest's `version` to tag `v<version>` on the release repository, downloads
 SHA-256, extracts, and lets the binary self-verify
 (`verify-release`/`seal-release`/`activate-release`/`prune-releases`).
 
+## Omp lifecycle status
+
+Install Herdr's omp integration in the profile that actually runs the
+agent. Without it, Herdr recognizes omp but can report `idle` during
+working turns, including in-process subagent work. Lerdr preserves that
+upstream lifecycle; it does not infer it from terminal spinners.
+
+For the default omp agent directory:
+
+```sh
+env -u PI_CODING_AGENT_DIR -u PI_CONFIG_DIR herdr integration install omp
+```
+
+For a named profile, replace `<profile>` with its name:
+
+```sh
+env -u PI_CODING_AGENT_DIR PI_CONFIG_DIR=".omp/profiles/<profile>" \
+    herdr integration install omp
+```
+
+Unsetting `PI_CODING_AGENT_DIR` for the installer avoids resolving Pi and
+omp to the same extension directory, which Herdr refuses. This does not
+change the running agent's environment. New sessions load the extension
+on startup; use `/reload` in already-open omp sessions.
+
+Verify inside the intended profile's Herdr pane:
+
+```sh
+herdr integration status
+herdr agent explain "$HERDR_PANE_ID"
+```
+
+The integration should be current at that profile's extension path and
+live explain should use lifecycle reporting rather than
+`default_known_agent_idle_fallback`. Worktree-based `orchestrating`
+presentation only covers separate busy child panes, not tasks inside
+one omp process.
+
+
 ## How the setup QR is produced
 
 The chain, end to end:
@@ -155,7 +194,7 @@ The scripts assume `lerdr-relay` implements this argv surface:
 `verify-release`, `seal-release`, `activate-release`, `prune-releases`, plus
 SIGUSR1 re-arm of the setup invitation and `relay.pid` beside `relay.env`.
 `/healthz` must report `status`/`instance`/`version`/`protocol` and
-`release_version`/`revision`/`bundle_hash` for exact-release verification.
+`release_version`/`revision` for exact-release verification.
 
 ## Current plugin contract
 
@@ -167,7 +206,8 @@ SIGUSR1 re-arm of the setup invitation and `relay.pid` beside `relay.env`.
   `lerdr-relay startup-hook` to re-assert `agent.view.set` after session
   restore or `live_handoff`.
 - Release tarballs carry `scripts/` rather than a `relay/` directory.
-  `web_hash` and `bundle_hash` remain release-manifest fields defined by the
-  binary.
+  `verify-release` validates the manifest's file hashes; installation and
+  rollback health checks require the exact release version and revision.
+  Rust-only bundles do not require a frontend `web_hash` or `bundle_hash`.
 - `speech-voices` is a native binary subcommand; no wrapper script is needed.
 - `version` is `0.0.0`, synced to the workspace crates.

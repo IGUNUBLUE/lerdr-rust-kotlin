@@ -2705,9 +2705,7 @@ fn disk_record(record: &AttachmentRecord) -> DiskAttachmentRecord {
 
 // ── handlers ──────────────────────────────────────────────────────────
 
-/// `validateUploadTarget` — the claimed target must point at a live pane.
-/// The Rust topology doesn't project `generation` (the `agents` broadcast
-/// carries none — the documented projection gap), so only `0` can match.
+/// `validateUploadTarget` — match the live tuple projected by `agents`.
 fn validate_upload_target(topology: &Topology, target: &TargetRef) -> Result<(), UploadError> {
     let mismatch = || UploadError::new("upload_scope_mismatch");
     if target.server_session_id != "primary" {
@@ -2719,13 +2717,13 @@ fn validate_upload_target(topology: &Topology, target: &TargetRef) -> Result<(),
     if target.terminal_id != agent.terminal_id {
         return Err(mismatch());
     }
-    if target.generation != 0 {
+    if target.generation != topology.generation_of(&target.pane_id) {
         return Err(mismatch());
     }
     let agent_session_id = agent
         .agent_session
         .as_ref()
-        .map(|session| session.value.as_str())
+        .map(|session| session.value.trim())
         .unwrap_or("");
     if target.agent_session_id != agent_session_id {
         return Err(mismatch());
@@ -4048,12 +4046,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn full_wire_cycle_and_cancel_result_shape() {
-        let dir = tempfile::tempdir().expect("tempdir").keep();
-        let ctx = test_ctx(vec![agent()], dir);
+    async fn full_wire_cycle_after_session_replacement_rejects_stale_generation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut ctx = test_ctx(vec![agent()], dir.path().to_path_buf());
+        let mut replacement = agent();
+        replacement.terminal_id = "term-2".to_owned();
+        replacement.agent_session.as_mut().expect("session").value = " sess-2 ".to_owned();
+        Arc::get_mut(&mut ctx.topology)
+            .expect("unshared topology")
+            .accept(SessionSnapshot {
+                agents: vec![replacement],
+                ..Default::default()
+            });
+        let row = ctx.topology.agent_state_of("pane-a").expect("live agent");
+        assert_eq!(row.generation, 1);
+        let mut current_target = TargetRef {
+            terminal_id: row.terminal_id,
+            generation: row.generation,
+            agent_session_id: row.agent_session_id,
+            ..target()
+        };
+        current_target.generation -= 1;
+        let stale_begin = message(serde_json::json!({
+            "target": current_target,
+            "files": [{"name":"a.png","media_type":"image/png","bytes":4}],
+        }));
+        let frames = upload_begin(ctx.clone(), "stale", "stale", &stale_begin).await;
+        assert_eq!(
+            frame_json(&frames[0])["error"]["code"],
+            "attachment_upload_state_unknown"
+        );
+        current_target.generation += 1;
         let body = png_body();
         let begin = message(serde_json::json!({
-            "target": target_json(),
+            "target": current_target,
             "files": [{"name":"a.png","media_type":"image/png","bytes":body.len() as i64}],
         }));
         let frames = upload_begin(ctx.clone(), "r1", "a1", &begin).await;
@@ -4062,7 +4088,7 @@ mod tests {
             .expect("id")
             .to_owned();
         let chunk = message(serde_json::json!({
-            "target": target_json(),
+            "target": current_target,
             "upload_id": upload_id,
             "file_index": 0,
             "sequence": 0,
@@ -4075,7 +4101,7 @@ mod tests {
         assert_eq!(frame["result"]["next_sequence"].as_i64(), Some(1));
         assert_eq!(frame["result"]["received_bytes"], body.len() as i64);
         let finish = message(serde_json::json!({
-            "target": target_json(),
+            "target": current_target,
             "upload_id": upload_id,
             "files": [{"file_index": 0, "sha256": sha(&body)}],
         }));
@@ -4086,10 +4112,17 @@ mod tests {
             .as_str()
             .expect("ref")
             .to_owned();
-        assert!(valid_attachment_reference(&reference));
+        let attachment = ctx
+            .uploads
+            .resolve(&current_target, &reference)
+            .expect("published attachment");
+        assert_eq!(
+            std::fs::read(attachment.path).expect("attachment bytes"),
+            body
+        );
         // cancel on a finished (discarded) id is idempotent
         let cancel = message(serde_json::json!({
-            "target": target_json(),
+            "target": current_target,
             "upload_id": upload_id,
         }));
         let frames = upload_cancel(ctx.clone(), "r4", "a4", &cancel).await;

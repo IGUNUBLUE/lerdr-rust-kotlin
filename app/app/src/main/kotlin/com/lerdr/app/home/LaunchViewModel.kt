@@ -128,6 +128,7 @@ class LaunchViewModel(
         val relayId: String = "",
         val profileId: String = "",
         val name: String = "",
+        val nameEdited: Boolean = false,
         val prompt: String = "",
         val workspaceId: String = "",
         val workspaceLabel: String = "",
@@ -181,17 +182,24 @@ class LaunchViewModel(
         }
     }
 
+    /** Re-arm a restored sheet without clearing its retained form. */
+    fun setSheetActive(active: Boolean) {
+        sheetActive = active
+        if (active) ensureRelay() else closeDirectoryBrowser()
+    }
+
     /** Sheet opened for `agent_start` — fresh fields, warm directory. */
     fun beginAgent() {
         sheetActive = true
+        if (draft.value.submitting) return
         draft.update {
             it.copy(
                 name = "",
+                nameEdited = false,
                 prompt = "",
                 workspaceId = "",
                 status = null,
                 statusError = false,
-                submitting = false,
             )
         }
         ensureRelay()
@@ -200,12 +208,12 @@ class LaunchViewModel(
     /** Sheet opened for `workspace_create` — label seeds from the cwd. */
     fun beginWorkspace() {
         sheetActive = true
+        if (draft.value.submitting) return
         draft.update {
             it.copy(
                 workspaceLabel = it.workspaceLabel.ifBlank { pathBase(it.cwd) },
                 status = null,
                 statusError = false,
-                submitting = false,
             )
         }
         ensureRelay()
@@ -219,10 +227,12 @@ class LaunchViewModel(
                 relayId = relayId,
                 profileId = "",
                 name = "",
+                nameEdited = false,
                 workspaceId = "",
                 workspaceLabel = "",
                 cwd = "",
                 cwdLabel = "",
+                directory = DirectoryBrowserUi(open = it.directory.open),
                 directoryRelayId = "",
                 status = null,
             )
@@ -234,7 +244,7 @@ class LaunchViewModel(
         draft.update {
             it.copy(
                 profileId = profileId,
-                name = suggestedLaunchName(it.cwd, profileId),
+                name = if (it.nameEdited) it.name else suggestedLaunchName(it.cwd, profileId),
                 status = null,
             )
         }
@@ -246,11 +256,30 @@ class LaunchViewModel(
 
     /** Lerdr's name field: maxlength 32, `[a-z][a-z0-9_-]{0,31}`. */
     fun onNameChange(value: String) {
-        draft.update { it.copy(name = value.take(NAME_MAX), status = null) }
+        draft.update {
+            it.copy(name = value.take(NAME_MAX), nameEdited = true, status = null)
+        }
     }
 
     fun onPromptChange(value: String) {
         draft.update { it.copy(prompt = value.take(PROMPT_MAX), status = null) }
+    }
+
+    /** Plain-cwd fallback for relays without `directory_browser`. */
+    fun onCwdChange(value: String) {
+        val state = uiState.value
+        if (state.directory.supported || state.submitting || state.relayId.isEmpty()) return
+        directoryLoadGeneration++
+        draft.update {
+            it.copy(
+                cwd = value,
+                cwdLabel = "",
+                directoryRelayId = state.relayId,
+                directory = it.directory.copy(listing = null, loading = false, error = null),
+                name = if (it.nameEdited) it.name else suggestedLaunchName(value, state.profileId),
+                status = null,
+            )
+        }
     }
 
     fun onWorkspaceLabelChange(value: String) {
@@ -278,9 +307,7 @@ class LaunchViewModel(
             return
         }
         draft.update { it.copy(directory = it.directory.copy(open = true)) }
-        if (draft.value.directoryRelayId != state.relayId &&
-            !draft.value.directory.loading
-        ) {
+        if (!draft.value.directory.loading) {
             loadDirectory(draft.value.cwd)
         }
     }
@@ -290,8 +317,8 @@ class LaunchViewModel(
     }
 
     /**
-     * `list_directories` — Lerdr `loadDirectory`: the browsed folder becomes
-     * the selected cwd on success; the suggested name follows it.
+     * `list_directories` — the browsed folder becomes the selected cwd on
+     * success; only an unedited suggested name follows it.
      */
     fun loadDirectory(path: String) {
         val relayId = draft.value.relayId.ifEmpty { uiState.value.relayId }
@@ -322,7 +349,11 @@ class LaunchViewModel(
                         cwd = listing.currentPath,
                         cwdLabel = listing.currentLabel,
                         directoryRelayId = relayId,
-                        name = suggestedLaunchName(listing.currentPath, profileId(d)),
+                        name = if (d.nameEdited) {
+                            d.name
+                        } else {
+                            suggestedLaunchName(listing.currentPath, profileId(d))
+                        },
                         workspaceLabel = d.workspaceLabel.ifBlank {
                             pathBase(listing.currentPath)
                         },
@@ -387,6 +418,7 @@ class LaunchViewModel(
                         status = status,
                         statusError = warning.isNotEmpty(),
                         name = "",
+                        nameEdited = false,
                         prompt = "",
                     )
                 }
@@ -415,6 +447,7 @@ class LaunchViewModel(
     fun submitWorkspace() {
         val state = uiState.value
         if (state.relayId.isEmpty() || state.readOnly || state.submitting ||
+            state.directory.loading || !state.directoryReady ||
             state.cwdIsHome ||
             state.cwd.isEmpty() || state.workspaceLabel.isBlank()
         ) {
@@ -484,7 +517,11 @@ class LaunchViewModel(
         val ready = readyRelays(sessions.relays.value, sessions.connections.value)
         when {
             ready.any { it.id == draft.value.relayId } -> {
-                if (draft.value.directoryRelayId != draft.value.relayId) loadDirectory("")
+                if (draft.value.directoryRelayId != draft.value.relayId &&
+                    !draft.value.directory.loading
+                ) {
+                    loadDirectory("")
+                }
             }
             ready.isNotEmpty() -> selectRelay(ready.first().id)
         }
@@ -546,7 +583,7 @@ class LaunchViewModel(
                 .firstOrNull { it.workspaceId == workspaceId }?.label.orEmpty(),
             cwd = d.cwd,
             cwdLabel = d.cwdLabel,
-            directoryReady = d.directoryRelayId == relayId && d.cwd.isNotEmpty(),
+            directoryReady = d.directoryRelayId == relayId && d.cwd.isNotBlank(),
             cwdIsHome = d.directory.listing?.let { listing ->
                 listing.parent.isEmpty() && listing.currentPath.isNotEmpty()
             } == true,
