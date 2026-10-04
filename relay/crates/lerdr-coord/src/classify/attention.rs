@@ -945,7 +945,7 @@ mod tests {
 
     #[test]
     fn codex_approval_keeps_wrapped_permission_scope() {
-        // Captured genuine Codex 0.160.0 approval, including its hanging wraps.
+        // Genuine Codex 0.160.0 framing with synthetic paths and hanging wraps.
         let frame = "\
   Would you like to run the following command?
 
@@ -954,14 +954,14 @@ mod tests {
   Reason: May I read the isolated audit note?
 
   $ cat --
-  /home/l/.local/state/lerdr-audit/physical-ixsij1wu
-  /providers/work/lerdr-audit-owned-note.txt
+  /home/example/.local/state/lerdr-demo/example-scope-001
+  /providers/work/example-note-content.txt
 
 › 1. Yes, proceed (y)
   2. Yes, and don't ask again for commands that start
-     with `cat -- /home/l/.local/state/lerdr-audit/
-     physical-ixsij1wu/providers/work/lerdr-audit-
-     owned-note.txt` (p)
+     with `cat -- /home/example/.local/state/lerdr-demo/
+     example-scope-001/providers/work/example-note-
+     content.txt` (p)
   3. No, and tell Codex what to do differently (esc)
 
   Press enter to confirm or esc to cancel";
@@ -970,9 +970,9 @@ mod tests {
         assert_eq!(
             options[1],
             "Yes, and don't ask again for commands that start\n\
-with `cat -- /home/l/.local/state/lerdr-audit/\n\
-physical-ixsij1wu/providers/work/lerdr-audit-\n\
-owned-note.txt` (p)"
+with `cat -- /home/example/.local/state/lerdr-demo/\n\
+example-scope-001/providers/work/example-note-\n\
+content.txt` (p)"
         );
         assert_eq!(
             options[2],

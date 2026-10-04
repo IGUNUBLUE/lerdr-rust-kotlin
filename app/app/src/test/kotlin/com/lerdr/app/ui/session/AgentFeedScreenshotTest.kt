@@ -268,9 +268,9 @@ class AgentFeedScreenshotTest {
         val labels = listOf(
             "Yes, proceed (y)",
             "Yes, and don't ask again for commands that start\n" +
-                "with `cat -- /home/l/.local/state/lerdr-audit/\n" +
-                "physical-ixsij1wu/providers/work/lerdr-audit-\n" +
-                "owned-note.txt` (p)",
+                "with `cat -- /home/example/.local/state/lerdr-demo/\n" +
+                "example-scope-001/providers/work/example-note-\n" +
+                "content.txt` (p)",
             "No, and tell Codex what to do differently (esc)",
         )
         show(

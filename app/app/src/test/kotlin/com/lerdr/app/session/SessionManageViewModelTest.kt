@@ -234,7 +234,7 @@ class SessionManageViewModelTest {
         val vm = h.viewModel()
         h.pump()
         val edited = TextFieldValue(
-            "codex-audit-ixsij1wu-reopen",
+            "example-agent-reopen",
             selection = TextRange(5),
             composition = TextRange(0, 5),
         )
