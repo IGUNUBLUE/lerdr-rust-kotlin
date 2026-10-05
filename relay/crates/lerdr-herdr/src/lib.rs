@@ -34,6 +34,7 @@
 pub mod capabilities;
 mod cli;
 mod client;
+pub mod control;
 mod error;
 mod events;
 pub mod observe;

@@ -939,34 +939,24 @@ pub(crate) async fn pane_read_fresh(
     unreachable!("loop returns or iterates twice")
 }
 
-/// Herdr's observer crops its native VT grid to the requested surface.
-/// A stty lease changes the process's window size, not that grid, so known
-/// native dimensions take precedence. Lease dimensions are a fallback;
-/// an unresolved dimension leaves the observer at Herdr's default size.
+/// Native control leases resize both the process PTY and Herdr's VT grid.
+/// The confirmed lease geometry therefore takes precedence over the desktop
+/// layout; without a lease, capture the native layout without cropping it.
 fn merge_stream_size(
-    lease_cols: Option<i64>,
-    lease_rows: Option<i64>,
-    topo_size: Option<(u16, u16)>,
+    controlled: Option<(u16, u16)>,
+    native: Option<(u16, u16)>,
 ) -> Option<(u16, u16)> {
-    let dim = |lease: Option<i64>, topo: u16| {
-        if topo > 0 {
-            Some(topo)
-        } else {
-            lease.and_then(|v| u16::try_from(v).ok().filter(|v| *v > 0))
-        }
-    };
-    let (topo_cols, topo_rows) = topo_size.unwrap_or_default();
-    Some((dim(lease_cols, topo_cols)?, dim(lease_rows, topo_rows)?))
+    let valid = |(cols, rows): &(u16, u16)| *cols > 0 && *rows > 0;
+    controlled.filter(valid).or_else(|| native.filter(valid))
 }
 
-/// Resolve the observer's native grid independently of the process TTY lease.
+/// Resolve the confirmed phone grid, falling back to unleased native layout.
 /// Everything is in-memory state (topology borrow + lease locks), so
 /// this is cheap enough to re-resolve every poll.
 async fn resolve_stream_size(deps: &WatchDeps, pane_id: &str) -> Option<(u16, u16)> {
     let topo = deps.handle.topology.borrow().pane_cell_size(pane_id);
-    let lease_cols = deps.leases.active_columns(pane_id).await;
-    let lease_rows = deps.leases.active_rows(pane_id).await;
-    merge_stream_size(lease_cols, lease_rows, topo)
+    let controlled = deps.leases.capture_size(pane_id).await;
+    merge_stream_size(controlled, topo)
 }
 
 /// The observe surface is fixed at spawn. Re-resolve the native layout
@@ -1702,11 +1692,10 @@ mod tests {
     use tokio::sync::broadcast;
 
     #[test]
-    fn smaller_phone_lease_cannot_crop_a_native_hidden_prompt() {
-        // A stty lease changes the process's window size, not Herdr's VT grid.
-        let mut native = vt100::Parser::new(42, 129, 0);
-        native.process(b"\x1b[1;1Hready\x1b[32;76H\x1b[32mPassword:");
-        let (cols, rows) = merge_stream_size(Some(54), Some(10), Some((129, 42))).unwrap();
+    fn phone_control_geometry_retains_prompt_despite_larger_desktop_layout() {
+        let mut native = vt100::Parser::new(10, 54, 0);
+        native.process(b"\x1b[1;1Hready\x1b[10;40H\x1b[32mPassword:");
+        let (cols, rows) = merge_stream_size(Some((54, 10)), Some((129, 42))).unwrap();
         let mut bytes = Vec::new();
         for (row, cells) in native
             .screen()
@@ -1729,7 +1718,7 @@ mod tests {
         assert_eq!(
             crate::classify::store::no_echo_semantics(&content),
             (true, Some("Password:".to_owned())),
-            "the rendered phone frame must retain the native bottom/right prompt"
+            "the phone-sized native VT must retain its bottom/right prompt"
         );
     }
 
