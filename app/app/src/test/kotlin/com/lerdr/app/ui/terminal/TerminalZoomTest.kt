@@ -83,4 +83,22 @@ class TerminalZoomTest {
         state.applyFontScale(1f, fit = true)
         assertEquals(false, state.widthFitted)
     }
+
+    @Test
+    fun `font controls share bounds and report only applied changes`() {
+        val (state, applied) = state()
+        state.adjustFontScale(-10f)
+        assertEquals(0.25f, state.fontScale, 0.0001f)
+        assertEquals(false, state.canDecreaseFontScale)
+        assertEquals(true, state.canIncreaseFontScale)
+
+        state.adjustFontScale(-0.1f)
+        assertEquals(listOf(0.25f), applied)
+
+        state.adjustFontScale(10f)
+        assertEquals(2.5f, state.fontScale, 0.0001f)
+        assertEquals(true, state.canDecreaseFontScale)
+        assertEquals(false, state.canIncreaseFontScale)
+        assertEquals(listOf(0.25f, 2.5f), applied)
+    }
 }

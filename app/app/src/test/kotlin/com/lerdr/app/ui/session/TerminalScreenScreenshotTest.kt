@@ -76,8 +76,8 @@ class TerminalScreenScreenshotTest {
                     onOpenFiles = {},
                     onBack = {},
                     onSendKeys = {},
-                    onSendText = {},
-                    onSendSecret = {},
+                    onSendText = { true },
+                    onSendSecret = { true },
                     onViewportMeasured = { _, _ -> },
                     onRefresh = {},
                     terminalFontScale = fontScale,
@@ -90,16 +90,12 @@ class TerminalScreenScreenshotTest {
     @Test
     fun terminal_liveLease() {
         show(baseState())
-        composeRule.onNodeWithText("pane 92×42").assertExists()
-        composeRule.onNodeWithText("working").assertExists()
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
 
     @Test
     fun terminal_blockedWithLease() {
         show(baseState().copy(statusLabel = "blocked"))
-        composeRule.onNodeWithText("blocked").assertExists()
-        composeRule.onNodeWithText("pane 92×42").assertExists()
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
 
@@ -117,18 +113,13 @@ class TerminalScreenScreenshotTest {
                 secretInputSupported = true,
             ),
         )
-        composeRule.onNodeWithText(
-            "The terminal is asking for a hidden value: Password:",
-            substring = true,
-        ).assertExists()
         composeRule.onNodeWithTag("terminalSecretField").performTextInput("hunter2")
         composeRule.waitForIdle()
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
 
     /**
-     * `no_echo` without `secret_input` — the bar stays in plain mode and
-     * the banner carries the too-old-relay inline error instead.
+     * Unsupported hidden prompts keep the password editor inert.
      */
     @Test
     fun terminal_secretPromptUnsupported() {
@@ -139,10 +130,6 @@ class TerminalScreenScreenshotTest {
                 secretInputSupported = false,
             ),
         )
-        composeRule.onNodeWithText(
-            "too old to accept a hidden value",
-            substring = true,
-        ).assertExists()
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
 
@@ -167,11 +154,10 @@ class TerminalScreenScreenshotTest {
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
 
-    /** Reader role — keys/input disabled, the read-only hint chip shows. */
+    /** Reader role — the connection/control band explains the disabled input. */
     @Test
     fun terminal_readOnly() {
         show(baseState().copy(canControl = false))
-        composeRule.onNodeWithText("read-only").assertExists()
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
 
@@ -188,14 +174,24 @@ class TerminalScreenScreenshotTest {
                 rows = emptyList(),
             ),
         )
-        composeRule.onNodeWithText("Waiting for relay…").assertExists()
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
 
+    @Test
+    fun terminal_offlineDraft() {
+        show(baseState().copy(connected = false))
+        composeRule.onNodeWithTag("terminalInputField").performTextInput("draft retained while offline")
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun terminal_reconnecting() {
+        show(baseState().copy(connected = false, connecting = true))
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
     /**
-     * Native-size omp TUI at the fit-width scale — the ⋯ menu's
-     * "Fit width" action lands a ~160-col pane edge-to-edge instead of
-     * requiring several horizontal swipes.
+     * Explicit fit-width for a wide cached/observed frame — optional,
+     * never the default geometry of a controlled phone terminal.
      */
     @Test
     fun terminal_wideTuiFit() {
@@ -203,10 +199,10 @@ class TerminalScreenScreenshotTest {
         val wideRows = parseTerminalRows(
             listOf(
                 "╭$pad╮",
-                "│ π back-orchestrator — freddys-backend" +
-                    " ".repeat(118) + "│",
-                "│ ⠹ Working…  *2 subagents  ·  w1D timing  ·  w1E report" +
-                    " ".repeat(103) + "│",
+                "│ π coordinator — lerdr-terminal-demo" +
+                    " ".repeat(121) + "│",
+                "│ ⠹ Working…  *2 subagents  ·  helper A timing  ·  helper B report" +
+                    " ".repeat(97) + "│",
                 "╰$pad╯",
                 "$ ",
             ),

@@ -5,17 +5,20 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextInputSelection
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.lerdr.core.designsystem.theme.LerdrTheme
+import kotlinx.coroutines.CompletableDeferred
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -47,7 +50,7 @@ class TerminalInputBarScreenshotTest {
     fun inputBar_idle() {
         composeRule.setContent {
             LerdrTheme {
-                TerminalInputBar(onSendText = {})
+                TerminalInputBar(onSendText = { true })
             }
         }
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
@@ -57,9 +60,10 @@ class TerminalInputBarScreenshotTest {
     fun inputBar_withDraft() {
         composeRule.setContent {
             LerdrTheme {
-                TerminalInputBar(onSendText = {})
+                TerminalInputBar(onSendText = { true })
             }
         }
+        composeRule.onNodeWithTag("terminalInputField").performTextInput("git status")
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
 
@@ -69,9 +73,9 @@ class TerminalInputBarScreenshotTest {
         composeRule.setContent {
             LerdrTheme {
                 TerminalInputBar(
-                    onSendText = {},
+                    onSendText = { true },
                     secretMode = true,
-                    onSendSecret = {},
+                    onSendSecret = { true },
                 )
             }
         }
@@ -85,7 +89,7 @@ class TerminalInputBarScreenshotTest {
         val restoration = StateRestorationTester(composeRule)
         restoration.setContent {
             LerdrTheme {
-                TerminalInputBar(onSendText = {})
+                TerminalInputBar(onSendText = { true })
             }
         }
         val field = composeRule.onNodeWithTag("terminalInputField")
@@ -101,7 +105,7 @@ class TerminalInputBarScreenshotTest {
         val restoration = StateRestorationTester(composeRule)
         restoration.setContent {
             LerdrTheme {
-                TerminalInputBar(onSendText = {}, secretMode = true)
+                TerminalInputBar(onSendText = { true }, secretMode = true)
             }
         }
         val field = composeRule.onNodeWithTag("terminalSecretField")
@@ -118,12 +122,40 @@ class TerminalInputBarScreenshotTest {
         composeRule.setContent {
             LerdrTheme {
                 TerminalInputBar(
-                    onSendText = {},
+                    onSendText = { true },
                     enabled = false,
                     hint = "Read-only session",
                 )
             }
         }
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun inputBar_sending() {
+        val acknowledgement = CompletableDeferred<Boolean>()
+        composeRule.setContent {
+            LerdrTheme {
+                TerminalInputBar(onSendText = { acknowledgement.await() })
+            }
+        }
+        composeRule.onNodeWithTag("terminalInputField").performTextInput("git status")
+        composeRule.onNodeWithContentDescription("Send text").performClick()
+        composeRule.mainClock.autoAdvance = false
+        composeRule.mainClock.advanceTimeByFrame()
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+        acknowledgement.complete(false)
+        composeRule.mainClock.autoAdvance = true
+    }
+
+    @Test
+    fun inputBar_offlineDraft() {
+        composeRule.setContent {
+            LerdrTheme {
+                TerminalInputBar(onSendText = { true }, canSend = false)
+            }
+        }
+        composeRule.onNodeWithTag("terminalInputField").performTextInput("git status")
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
 }

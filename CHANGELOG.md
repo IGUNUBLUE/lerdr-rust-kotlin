@@ -9,6 +9,21 @@ The `protocol v3` / `herdr-e2ee-v2` wire contract remains frozen.
 
 ## [Unreleased]
 
+### Changed
+
+- Terminal geometry follows the phone for OpenCode, Codex, omp and other
+  providers through Herdr's native VT/PTY controller, rather than desktop
+  split size or PTY-only `stty` mutation. Readers never claim geometry;
+  native ownership releases back to the current desktop layout.
+- Paused Terminal reading holds its frame through TUI redraws, selection
+  dismissal and Find, with new-output and explicit return-to-live controls.
+- Terminal editing stays above the keyboard and preserves draft, caret and
+  selection. Only completed delivery clears an unchanged draft; offline or
+  unconfirmed input is retained without automatic resend.
+- Terminal shows connection/control state, compact accessible special keys,
+  guarded Ctrl+C/Ctrl+D, and persisted reading-size controls. Search and copy
+  use the displayed frame without flattening the transcript during rendering.
+
 ## [1.0.0] — 2026-10-04
 
 ### Known limits
