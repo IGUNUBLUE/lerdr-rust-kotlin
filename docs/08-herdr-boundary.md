@@ -55,15 +55,30 @@ truncated}}`.
 `pane.send_input` params: `{pane_id, text?, keys?}` — routed through
 Herdr's input method so paste-mode is honored (send_input.go).
 
-`herdr terminal session observe <pane_id>` (CLI subprocess, one per
-watch) — pushes NDJSON `terminal.frame` records (`seq`, `full`,
-base64 ANSI `bytes`, `width`/`height`) rendered at the pane's real
-geometry, read-only; `terminal.closed` reports pane exit. The relay
-feeds the bytes to a `vt100` screen emulator and renders the same
-`(source, format, lines)` text `pane.read` produces — push instead of
-poll, no mouse-scroll scrollback harvesting. `LERDR_PANE_STREAM=off`
-disables it; spawn failure/EOF/`closed` fall back to `pane.read`
-polling.
+`herdr terminal session observe <pane_id> --cols C --rows R` (CLI
+subprocess, one per watch) pushes NDJSON `terminal.frame` records (`seq`,
+`full`, base64 ANSI `bytes`, `width`/`height`); `terminal.closed` reports
+pane exit. Capture uses the confirmed native controller geometry when a
+size lease owns the grid, otherwise the desktop's native geometry.
+The relay feeds bytes to a `vt100` screen emulator and renders the same
+`(source, format, lines)` text `pane.read` produces — push instead of poll,
+without mouse-scroll harvesting. `LERDR_PANE_STREAM=off` disables it;
+spawn failure/EOF/`closed` fall back to `pane.read` polling.
+
+Size leases own one `herdr terminal session control <pane_id> --cols C
+--rows R` subprocess per pane, without `--takeover`. This resizes both
+Herdr's native VT grid and the process PTY; `stty` alone resizes only the
+PTY and can clip a full-screen CLI's prompt/footer in captured frames.
+The controller receives `{"type":"terminal.resize","cols":C,"rows":R}`
+and confirms a newer matching geometry frame before reporting success.
+Unchanged live renewals do not repaint. Grace expiry, disconnect expiry
+and relay shutdown release only the owned controller using
+`{"type":"terminal.release"}`, returning geometry to the latest desktop
+layout. An existing external controller is never forcibly replaced.
+
+For live verification, build the executable with
+`cargo build -p lerdr-coord --bin lerdr-relay`. The `lerdr-relay` package is
+the transport library; building it alone does not refresh the executable.
 
 ### Event stream — the reactive spine
 
@@ -273,13 +288,11 @@ runtime schema is the capability-discovery input.
   status-preserving on the Event path; the `agent_event` UDP datagram
   stays as a wake but now also commits its carried `status`/`pane_id`
   instead of being reduced to a sampling poke.
-- **`terminal session control`** is NOT a socket RPC — it is a raw
-  terminal-stream takeover surface for bridge clients that own the
-  terminal UI (it accepts `terminal.mouse` events upstream of 0.9.2).
-  The relay's one-request-per-connection client cannot host it, and
-  injecting mouse escape sequences into a pane the user is watching is
-  out of bounds; remote terminal-input surfaces must not pretend to be
-  this channel.
+- **`terminal session control`** is a persistent CLI terminal stream, not
+  a socket RPC. The relay's separate bounded driver uses it only for
+  native geometry ownership and release; ordinary text/key input still
+  uses `pane.send_input`. It does not forward `terminal.input`, scroll or
+  mouse commands, inject mouse escape sequences, or force takeover.
 - **`plugin.pane.open` placements**: `overlay|popup|split|tab|zoomed`;
   popup supports `width`/`height` — setup pickers become modals.
 - **Socket paths**: `~/.config/herdr/herdr.sock` or

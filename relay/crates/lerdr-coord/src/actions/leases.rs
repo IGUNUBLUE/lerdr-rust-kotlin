@@ -1,12 +1,10 @@
-//! Pane-size leasing — the `panesize.Manager` port.
+//! Pane-size leasing through Herdr's native terminal controller.
 //!
-//! This subsystem is local-OS, not Herdr: `pane.process_info` locates the
-//! foreground process, `ps -o tty=` resolves its TTY, and `stty` reads and
-//! applies terminal dimensions (the relay is co-located with Herdr, so the
-//! device nodes are shared). Leases are per client: the narrowest active
-//! column request wins, `Release` lapses into a grace window so a phone
-//! stepping away and back does not double-SIGWINCH the agent, and a 1s
-//! sweeper restores baselines when leases expire.
+//! One persistent controller per leased pane owns both the VT grid and PTY
+//! dimensions. Read-only process/TTY resolution captures the height for
+//! width-only clients; releasing the controller restores host layout ownership.
+//! The narrowest active request wins, release keeps a 10s grace window, and
+//! the 1s sweeper expires abandoned leases.
 //!
 //! Wire surface: `lease_pane_size`/`release_pane_size` answer with a bare
 //! `command_result` (the retired implementation emits no `action_receipt` for them), and
@@ -41,7 +39,7 @@ const LEASE_TTL: Duration = Duration::from_secs(120);
 const RELEASE_GRACE: Duration = Duration::from_secs(10);
 /// `sweepInterval`.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
-/// `commandTimeout` — every `ps`/`stty` exec.
+/// Deadline for baseline resolution and native controller operations.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 /// `paneResizeSettleWindow` — `read_pane` flags `resize_settling` inside it
 /// (`pane_watch.go:29` — 3 s; observed up to ~2 s for omp under load).
@@ -68,9 +66,8 @@ struct Lease {
 
 /// Per-pane bookkeeping — `paneState`.
 struct PaneState {
-    tty: String,
+    controller: Option<Box<dyn PaneController>>,
     baseline_rows: i64,
-    baseline_columns: i64,
     applied_rows: i64,
     applied_columns: i64,
     resized_at: Option<Instant>,
@@ -138,8 +135,7 @@ impl ProcessInfoProvider for lerdr_herdr::Client {
     }
 }
 
-/// `commandRunner` — `ps`/`stty` exec. Production runs the real binaries;
-/// tests record calls and return scripted output.
+/// Read-only `ps`/`stty size` execution for width-only baseline compatibility.
 pub(crate) trait ExecRunner: Send + Sync {
     fn output<'a>(
         &'a self,
@@ -156,10 +152,11 @@ impl ExecRunner for SystemRunner {
         name: &'a str,
         args: &'a [String],
     ) -> Pin<Box<dyn Future<Output = io::Result<Vec<u8>>> + Send + 'a>> {
-        let args: Vec<String> = args.to_vec();
-        let name = name.to_owned();
         Box::pin(async move {
-            let child = tokio::process::Command::new(&name).args(&args).output();
+            let child = tokio::process::Command::new(name)
+                .args(args)
+                .kill_on_drop(true)
+                .output();
             match tokio::time::timeout(COMMAND_TIMEOUT, child).await {
                 Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "exec timeout")),
                 Ok(Err(err)) => Err(err),
@@ -173,10 +170,76 @@ impl ExecRunner for SystemRunner {
 type SharedProvider = Arc<dyn ProcessInfoProvider>;
 type SharedRunner = Arc<dyn ExecRunner>;
 
+type ControlFuture<'a, T> = Pin<Box<dyn Future<Output = io::Result<T>> + Send + 'a>>;
+
+trait PaneController: Send {
+    fn is_live(&self) -> bool;
+    fn resize(&mut self, columns: u16, rows: u16) -> ControlFuture<'_, ()>;
+    fn release(self: Box<Self>) -> ControlFuture<'static, ()>;
+}
+
+impl PaneController for lerdr_herdr::control::ControlStream {
+    fn is_live(&self) -> bool {
+        self.is_live()
+    }
+
+    fn resize(&mut self, columns: u16, rows: u16) -> ControlFuture<'_, ()> {
+        Box::pin(self.resize(columns, rows))
+    }
+
+    fn release(self: Box<Self>) -> ControlFuture<'static, ()> {
+        Box::pin((*self).release())
+    }
+}
+
+trait ControlProvider: Send + Sync {
+    fn spawn<'a>(
+        &'a self,
+        pane_id: &'a str,
+        columns: u16,
+        rows: u16,
+    ) -> ControlFuture<'a, Box<dyn PaneController>>;
+}
+
+struct NativeControlProvider {
+    bin: std::path::PathBuf,
+    socket: Option<std::path::PathBuf>,
+}
+
+impl ControlProvider for NativeControlProvider {
+    fn spawn<'a>(
+        &'a self,
+        pane_id: &'a str,
+        columns: u16,
+        rows: u16,
+    ) -> ControlFuture<'a, Box<dyn PaneController>> {
+        Box::pin(async move {
+            let controller = lerdr_herdr::control::ControlStream::spawn_sized(
+                &self.bin,
+                pane_id,
+                self.socket.as_deref(),
+                columns,
+                rows,
+            )
+            .await?;
+            Ok(Box::new(controller) as Box<dyn PaneController>)
+        })
+    }
+}
+
+impl PaneState {
+    fn is_live(&self) -> bool {
+        self.controller
+            .as_ref()
+            .is_some_and(|control| control.is_live())
+    }
+}
+
 struct LeaseInner {
     state: Mutex<LeaseState>,
     provider: SharedProvider,
     runner: SharedRunner,
+    controls: Arc<dyn ControlProvider>,
     ttl: Duration,
     grace: Duration,
     now: fn() -> Instant,
@@ -202,6 +265,10 @@ impl Leases {
                 state: Mutex::new(LeaseState {
                     panes: HashMap::new(),
                 }),
+                controls: Arc::new(NativeControlProvider {
+                    bin: client.resolved_herdr_bin(),
+                    socket: client.socket_path_hint(),
+                }),
                 provider: Arc::new(client),
                 runner: Arc::new(SystemRunner),
                 ttl: LEASE_TTL,
@@ -217,6 +284,7 @@ impl Leases {
     fn with_parts(
         provider: SharedProvider,
         runner: SharedRunner,
+        controls: Arc<dyn ControlProvider>,
         ttl: Duration,
         grace: Duration,
         now: fn() -> Instant,
@@ -228,6 +296,7 @@ impl Leases {
                 }),
                 provider,
                 runner,
+                controls,
                 ttl,
                 grace,
                 now,
@@ -248,7 +317,7 @@ impl Leases {
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tokio::select! {
-                    _ = cancel.cancelled() => return,
+                    _ = cancel.cancelled() => break,
                     _ = ticker.tick() => {
                         if let Err(err) = leases.sweep_expired().await {
                             tracing::warn!(error = %err, "pane size lease expiry sweep failed");
@@ -256,11 +325,14 @@ impl Leases {
                     }
                 }
             }
+            if let Err(err) = leases.shutdown().await {
+                tracing::warn!(error = %err, "native pane controller shutdown failed");
+            }
         });
     }
 
-    /// `Manager.Acquire` — validate, resolve or refresh the pane state,
-    /// record the lease, apply the minimum via `stty`.
+    /// Validate, resolve the baseline, and confirm the native controller's
+    /// minimum effective geometry before recording success.
     ///
     /// `owner_alive` is the client connection's cancellation token — the
     /// retired implementation checks `ctx.Err()` before and after pane resolution.
@@ -291,27 +363,14 @@ impl Leases {
         }
 
         let now = (inner.now)();
-        let new_state = !state.panes.contains_key(pane_id);
-        let current: TerminalSize;
-        if new_state {
-            let pane = self.resolve_pane(pane_id).await?;
-            current = TerminalSize {
-                rows: pane.applied_rows,
-                columns: pane.applied_columns,
+        if !state.panes.contains_key(pane_id) {
+            let pane = tokio::select! {
+                _ = owner_alive.cancelled() => return Err(ERR_OWNER_GONE),
+                result = self.resolve_pane(pane_id) => result?,
             };
             state.panes.insert(pane_id.to_owned(), pane);
         } else {
-            let pane = state.panes.get_mut(pane_id).expect("checked above");
-            remove_expired(pane, now);
-            current = self.read_size(&pane.tty).await?;
-            // A local terminal resize while the lease is active becomes the
-            // new restore point, per dimension.
-            if current.columns != pane.applied_columns {
-                pane.baseline_columns = current.columns;
-            }
-            if current.rows != pane.applied_rows {
-                pane.baseline_rows = current.rows;
-            }
+            remove_expired(state.panes.get_mut(pane_id).expect("checked above"), now);
         }
         if owner_alive.is_cancelled() {
             return Err(ERR_OWNER_GONE);
@@ -327,40 +386,33 @@ impl Leases {
             },
         );
         let (target_columns, _) = minimum_columns(&pane.leases);
-        let mut target_rows = minimum_rows(&pane.leases);
-        let constrained_rows = target_rows > 0;
-        if !constrained_rows {
-            target_rows = pane.baseline_rows;
-        }
-        // A width-only pane never gets its height touched: rows reach stty
-        // only while a row lease constrains them or a lapsed one must be
-        // undone.
-        let mut stty_rows = target_rows;
-        if !constrained_rows && target_rows == pane.applied_rows {
-            stty_rows = 0;
-        }
-        // A renewal extends the lease only — calling stty with unchanged
-        // dimensions still hits the resize syscall and some stacks repaint.
-        let mut resize_needed = target_columns != current.columns;
-        if stty_rows > 0 && target_rows != current.rows {
-            resize_needed = true;
-        }
-        if resize_needed {
-            if let Err(err) = self.set_size(&pane.tty, target_columns, stty_rows).await {
-                match previous {
-                    Some(prev) => {
-                        pane.leases.insert(client_id.to_owned(), prev);
-                    }
-                    None => {
-                        pane.leases.remove(client_id);
-                    }
+        let target_rows = match minimum_rows(&pane.leases) {
+            0 => pane.baseline_rows,
+            rows => rows,
+        };
+        let result = tokio::select! {
+            _ = owner_alive.cancelled() => Err(ERR_OWNER_GONE),
+            result = self.apply_size(pane, pane_id, target_columns, target_rows) => result,
+        };
+        let result = if owner_alive.is_cancelled() {
+            Err(ERR_OWNER_GONE)
+        } else {
+            result
+        };
+        if let Err(err) = result {
+            match previous {
+                Some(previous) => {
+                    pane.leases.insert(client_id.to_owned(), previous);
                 }
-                return Err(err);
+                None => {
+                    pane.leases.remove(client_id);
+                }
             }
-            pane.resized_at = Some(now);
+            // A cancelled/failed resize may have reached Herdr. Release this
+            // controller rather than trusting its previous confirmed size.
+            let _ = self.release_control(pane).await;
+            return Err(err);
         }
-        pane.applied_columns = target_columns;
-        pane.applied_rows = target_rows;
         Ok((target_columns, target_rows))
     }
 
@@ -452,6 +504,7 @@ impl Leases {
                 }
                 if !removed
                     && active
+                    && pane.is_live()
                     && pane.applied_columns == target
                     && pane.applied_rows == target_rows
                 {
@@ -469,6 +522,24 @@ impl Leases {
         }
     }
 
+    /// Atomic geometry confirmed by the native controller. A grace-held or
+    /// expired-but-unswept controller remains authoritative until released.
+    pub(crate) async fn capture_size(&self, pane_id: &str) -> Option<(u16, u16)> {
+        let inner = &*self.inner;
+        let state = inner.state.lock().await;
+        if inner.closed.load(Ordering::SeqCst) {
+            return None;
+        }
+        let pane = state.panes.get(pane_id)?;
+        if !pane.is_live() {
+            return None;
+        }
+        Some((
+            u16::try_from(pane.applied_columns).ok()?,
+            u16::try_from(pane.applied_rows).ok()?,
+        ))
+    }
+
     /// `Manager.ActiveColumns` — the narrowest unexpired lease for a pane.
     pub(crate) async fn active_columns(&self, pane_id: &str) -> Option<i64> {
         let inner = &*self.inner;
@@ -477,6 +548,9 @@ impl Leases {
             return None;
         }
         let pane = state.panes.get(pane_id)?;
+        if !pane.is_live() {
+            return None;
+        }
         let now = (inner.now)();
         let mut minimum = 0i64;
         for lease in pane.leases.values() {
@@ -490,8 +564,8 @@ impl Leases {
         (minimum != 0).then_some(minimum)
     }
 
-    /// `Manager.ActiveRows` — smallest unexpired row lease, else the
-    /// baseline height while any lease is active.
+    /// Smallest unexpired row lease, else the baseline height while any
+    /// lease is active. Capture geometry is queried atomically separately.
     pub(crate) async fn active_rows(&self, pane_id: &str) -> Option<i64> {
         let inner = &*self.inner;
         let state = inner.state.lock().await;
@@ -499,6 +573,9 @@ impl Leases {
             return None;
         }
         let pane = state.panes.get(pane_id)?;
+        if !pane.is_live() {
+            return None;
+        }
         let now = (inner.now)();
         let mut active = false;
         let mut minimum = 0i64;
@@ -538,8 +615,7 @@ impl Leases {
         (inner.now)().saturating_duration_since(resized_at) < window
     }
 
-    /// `Manager.Shutdown` — restore every pane; used on relay teardown.
-    #[allow(dead_code)] // invoked when the relay gains a shutdown path
+    /// Release only controllers owned by this manager on relay teardown.
     pub(crate) async fn shutdown(&self) -> Result<(), String> {
         let inner = &*self.inner;
         let mut state = inner.state.lock().await;
@@ -563,8 +639,8 @@ impl Leases {
 
     // ── internals ────────────────────────────────────────────────────────
 
-    /// `resolvePane` — process info → foreground pid → `ps` tty → `stty`
-    /// size → baseline pane state.
+    /// Read the initial terminal height for width-only compatibility. Native
+    /// controller release, not this baseline, restores desktop geometry.
     async fn resolve_pane(&self, pane_id: &str) -> Result<PaneState, &'static str> {
         let info = self
             .inner
@@ -585,9 +661,8 @@ impl Leases {
         let tty = tty_path(&output)?;
         let size = self.read_size(&tty).await?;
         Ok(PaneState {
-            tty,
+            controller: None,
             baseline_rows: size.rows,
-            baseline_columns: size.columns,
             applied_rows: size.rows,
             applied_columns: size.columns,
             resized_at: None,
@@ -617,121 +692,85 @@ impl Leases {
         Ok(TerminalSize { rows, columns })
     }
 
-    /// `setSize` — `stty -F <tty> cols C [rows R]`; `rows == 0` leaves the
-    /// height alone.
-    async fn set_size(&self, tty: &str, columns: i64, rows: i64) -> Result<(), &'static str> {
-        let flag = stty_device_flag()?;
-        let mut args = vec![
-            flag.into(),
-            tty.to_owned(),
-            "cols".into(),
-            columns.to_string(),
-        ];
-        if rows > 0 {
-            args.push("rows".into());
-            args.push(rows.to_string());
+    /// Ensure there is one live controller at the confirmed effective size.
+    async fn apply_size(
+        &self,
+        pane: &mut PaneState,
+        pane_id: &str,
+        columns: i64,
+        rows: i64,
+    ) -> Result<(), &'static str> {
+        let columns_u16 = u16::try_from(columns).map_err(|_| ERR_RESIZE_FAILED)?;
+        let rows_u16 = u16::try_from(rows).map_err(|_| ERR_RESIZE_FAILED)?;
+        if pane.is_live() && pane.applied_columns == columns && pane.applied_rows == rows {
+            return Ok(());
         }
-        self.inner
-            .runner
-            .output("stty", &args)
+        if !pane.is_live() {
+            let _ = self.release_control(pane).await;
+            let controller = tokio::time::timeout(
+                COMMAND_TIMEOUT,
+                self.inner.controls.spawn(pane_id, columns_u16, rows_u16),
+            )
             .await
+            .map_err(|_| ERR_RESIZE_FAILED)?
             .map_err(|_| ERR_RESIZE_FAILED)?;
+            pane.controller = Some(controller);
+        } else {
+            let result = tokio::time::timeout(
+                COMMAND_TIMEOUT,
+                pane.controller
+                    .as_mut()
+                    .expect("live controller")
+                    .resize(columns_u16, rows_u16),
+            )
+            .await;
+            if !matches!(result, Ok(Ok(()))) {
+                let _ = self.release_control(pane).await;
+                return Err(ERR_RESIZE_FAILED);
+            }
+        }
+        if !pane.is_live() {
+            let _ = self.release_control(pane).await;
+            return Err(ERR_RESIZE_FAILED);
+        }
+        // A fresh claim can rebuild the VT grid even when the read-only PTY
+        // baseline already matched. Only unchanged live renewals skip above.
+        pane.resized_at = Some((self.inner.now)());
+        pane.applied_columns = columns;
+        pane.applied_rows = rows;
         Ok(())
     }
 
-    /// `reconcile` — apply the minimum active lease or `restore` the
-    /// baseline (which deletes the pane entry, like the retired implementation's `delete`).
-    async fn reconcile(&self, state: &mut LeaseState, pane_id: &str) -> Result<(), String> {
-        enum Step {
-            /// No active leases: apply the baseline and drop the entry.
-            Restore {
-                tty: String,
-                columns: i64,
-                stty_rows: i64,
-                baseline_rows: i64,
-            },
-            /// Apply the narrowest lease.
-            Apply {
-                tty: String,
-                columns: i64,
-                stty_rows: i64,
-                applied_rows: i64,
-            },
-        }
-        let step = {
-            let Some(pane) = state.panes.get_mut(pane_id) else {
-                return Ok(());
-            };
-            let (target, active) = minimum_columns(&pane.leases);
-            if !active {
-                // The height was never leased away → leave the tty's rows
-                // alone (`stty_rows == 0`).
-                let stty_rows = if pane.applied_rows == pane.baseline_rows {
-                    0
-                } else {
-                    pane.baseline_rows
-                };
-                Step::Restore {
-                    tty: pane.tty.clone(),
-                    columns: pane.baseline_columns,
-                    stty_rows,
-                    baseline_rows: pane.baseline_rows,
-                }
-            } else {
-                let mut target_rows = minimum_rows(&pane.leases);
-                let constrained_rows = target_rows > 0;
-                if !constrained_rows {
-                    target_rows = pane.baseline_rows;
-                }
-                if target == pane.applied_columns && target_rows == pane.applied_rows {
-                    return Ok(());
-                }
-                let stty_rows = if !constrained_rows && target_rows == pane.applied_rows {
-                    0
-                } else {
-                    target_rows
-                };
-                Step::Apply {
-                    tty: pane.tty.clone(),
-                    columns: target,
-                    stty_rows,
-                    applied_rows: target_rows,
-                }
-            }
+    /// Taking the controller before awaiting prevents timed-out or failed
+    /// operations from leaving an apparently reusable ownership handle.
+    async fn release_control(&self, pane: &mut PaneState) -> Result<(), &'static str> {
+        let Some(controller) = pane.controller.take() else {
+            return Ok(());
         };
-        match step {
-            Step::Restore {
-                tty,
-                columns,
-                stty_rows,
-                baseline_rows,
-            } => {
-                self.set_size(&tty, columns, stty_rows)
-                    .await
-                    .map_err(str::to_owned)?;
-                if let Some(pane) = state.panes.get_mut(pane_id) {
-                    pane.applied_columns = columns;
-                    pane.applied_rows = baseline_rows;
-                }
-                state.panes.remove(pane_id);
-            }
-            Step::Apply {
-                tty,
-                columns,
-                stty_rows,
-                applied_rows,
-            } => {
-                self.set_size(&tty, columns, stty_rows)
-                    .await
-                    .map_err(str::to_owned)?;
-                if let Some(pane) = state.panes.get_mut(pane_id) {
-                    pane.resized_at = Some((self.inner.now)());
-                    pane.applied_columns = columns;
-                    pane.applied_rows = applied_rows;
-                }
-            }
+        match tokio::time::timeout(COMMAND_TIMEOUT, controller.release()).await {
+            Ok(Ok(())) => Ok(()),
+            _ => Err(ERR_RESIZE_FAILED),
         }
-        Ok(())
+    }
+
+    /// Apply the remaining minimum or release native ownership entirely.
+    async fn reconcile(&self, state: &mut LeaseState, pane_id: &str) -> Result<(), String> {
+        let Some(pane) = state.panes.get_mut(pane_id) else {
+            return Ok(());
+        };
+        let (columns, active) = minimum_columns(&pane.leases);
+        if !active {
+            let result = self.release_control(pane).await.map_err(str::to_owned);
+            state.panes.remove(pane_id);
+            return result;
+        }
+        let rows = match minimum_rows(&pane.leases) {
+            0 => pane.baseline_rows,
+            rows => rows,
+        };
+        self.apply_size(pane, pane_id, columns, rows)
+            .await
+            .map_err(str::to_owned)
     }
 }
 
@@ -896,7 +935,6 @@ fn lease_result(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex as StdMutex;
 
     struct StubProvider {
         info: PaneProcessInfo,
@@ -922,43 +960,110 @@ mod tests {
         }
     }
 
-    struct StubRunner {
-        calls: StdMutex<Vec<(String, Vec<String>)>>,
-        ps_output: &'static str,
-        size_output: &'static str,
-        fail_set: bool,
-    }
+    struct StubRunner;
 
     impl ExecRunner for StubRunner {
         fn output<'a>(
             &'a self,
             name: &'a str,
-            args: &'a [String],
+            _args: &'a [String],
         ) -> Pin<Box<dyn Future<Output = io::Result<Vec<u8>>> + Send + 'a>> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push((name.to_owned(), args.to_vec()));
-            let result: io::Result<Vec<u8>> = match name {
-                "ps" => Ok(self.ps_output.as_bytes().to_vec()),
-                "stty" if args.last().map(String::as_str) == Some("size") => {
-                    Ok(self.size_output.as_bytes().to_vec())
+            Box::pin(async move {
+                match name {
+                    "ps" => Ok(b"pts/4\n".to_vec()),
+                    "stty" => Ok(b"24 80\n".to_vec()),
+                    _ => Err(io::Error::new(io::ErrorKind::NotFound, name.to_owned())),
                 }
-                "stty" if self.fail_set => Err(io::Error::other("stty failed")),
-                "stty" => Ok(Vec::new()),
-                _ => Err(io::Error::new(io::ErrorKind::NotFound, name.to_owned())),
-            };
-            Box::pin(async move { result })
+            })
         }
     }
 
-    fn test_leases() -> (Leases, Arc<StubRunner>) {
-        let runner = Arc::new(StubRunner {
-            calls: StdMutex::new(Vec::new()),
-            ps_output: "pts/4\n",
-            size_output: "24 80\n",
-            fail_set: false,
-        });
+    #[derive(Debug, PartialEq)]
+    enum ControlEvent {
+        Claimed(String, u16, u16),
+        Resized(String, u16, u16),
+        Released(String),
+    }
+
+    #[derive(Default)]
+    struct StubControls {
+        events: Mutex<Vec<ControlEvent>>,
+        refuse_claim: AtomicBool,
+        fail_resize: AtomicBool,
+        live: AtomicBool,
+        cancel_claim: Mutex<Option<tokio_util::sync::CancellationToken>>,
+    }
+
+    struct StubController {
+        controls: Arc<StubControls>,
+        pane_id: String,
+    }
+
+    impl PaneController for StubController {
+        fn is_live(&self) -> bool {
+            self.controls.live.load(Ordering::SeqCst)
+        }
+
+        fn resize(&mut self, columns: u16, rows: u16) -> ControlFuture<'_, ()> {
+            Box::pin(async move {
+                if self.controls.fail_resize.load(Ordering::SeqCst) {
+                    return Err(io::Error::other("resize not confirmed"));
+                }
+                self.controls
+                    .events
+                    .lock()
+                    .await
+                    .push(ControlEvent::Resized(self.pane_id.clone(), columns, rows));
+                Ok(())
+            })
+        }
+
+        fn release(self: Box<Self>) -> ControlFuture<'static, ()> {
+            Box::pin(async move {
+                self.controls
+                    .events
+                    .lock()
+                    .await
+                    .push(ControlEvent::Released(self.pane_id));
+                Ok(())
+            })
+        }
+    }
+
+    impl ControlProvider for Arc<StubControls> {
+        fn spawn<'a>(
+            &'a self,
+            pane_id: &'a str,
+            columns: u16,
+            rows: u16,
+        ) -> ControlFuture<'a, Box<dyn PaneController>> {
+            Box::pin(async move {
+                if self.refuse_claim.load(Ordering::SeqCst) {
+                    return Err(io::Error::other("external controller is busy"));
+                }
+                self.live.store(true, Ordering::SeqCst);
+                self.events.lock().await.push(ControlEvent::Claimed(
+                    pane_id.to_owned(),
+                    columns,
+                    rows,
+                ));
+                if let Some(token) = self.cancel_claim.lock().await.take() {
+                    token.cancel();
+                }
+                Ok(Box::new(StubController {
+                    controls: self.clone(),
+                    pane_id: pane_id.to_owned(),
+                }) as Box<dyn PaneController>)
+            })
+        }
+    }
+
+    fn virtual_now() -> Instant {
+        tokio::time::Instant::now().into_std()
+    }
+
+    fn test_leases() -> (Leases, Arc<StubControls>) {
+        let controls = Arc::new(StubControls::default());
         let provider = Arc::new(StubProvider {
             info: PaneProcessInfo {
                 pane_id: "p1".to_owned(),
@@ -969,71 +1074,267 @@ mod tests {
         (
             Leases::with_parts(
                 provider,
-                runner.clone(),
-                Duration::from_secs(120),
-                Duration::from_secs(10),
-                Instant::now,
+                Arc::new(StubRunner),
+                Arc::new(controls.clone()),
+                LEASE_TTL,
+                RELEASE_GRACE,
+                virtual_now,
             ),
-            runner,
+            controls,
         )
     }
 
-    #[tokio::test]
-    async fn acquire_resizes_to_minimum_and_renews() {
-        let (leases, runner) = test_leases();
+    #[tokio::test(start_paused = true)]
+    async fn acquire_resizes_to_minimum_and_renews_without_repainting() {
+        let (leases, controls) = test_leases();
         let alive = tokio_util::sync::CancellationToken::new();
-        // Baseline is 80x24 — a wider lease still narrows the pane.
-        let (cols, rows) = leases
-            .acquire(&alive, "c1", "p1", 70, 0)
-            .await
-            .expect("acquire");
-        assert_eq!((cols, rows), (70, 24));
-        // Second, narrower client wins; baseline height is preserved.
-        let (cols, rows) = leases
-            .acquire(&alive, "c2", "p1", 60, 0)
-            .await
-            .expect("acquire c2");
-        assert_eq!((cols, rows), (60, 24));
-        let calls = runner.calls.lock().unwrap();
-        let sets: Vec<_> = calls
-            .iter()
-            .filter(|(n, a)| n == "stty" && a.iter().any(|x| x == "cols"))
-            .collect();
-        assert_eq!(sets.len(), 2);
-        assert!(sets[0].1.contains(&"70".to_owned()));
-        assert!(sets[1].1.contains(&"60".to_owned()));
+        assert_eq!(
+            leases.acquire(&alive, "c1", "p1", 70, 0).await,
+            Ok((70, 24))
+        );
+        assert_eq!(
+            leases.acquire(&alive, "c2", "p1", 60, 0).await,
+            Ok((60, 24))
+        );
+        assert_eq!(leases.active_rows("p1").await, Some(24));
+        assert_eq!(leases.capture_size("p1").await, Some((60, 24)));
+        let events = controls.events.lock().await.len();
+        tokio::time::advance(Duration::from_secs(4)).await;
+        assert_eq!(
+            leases.acquire(&alive, "c2", "p1", 60, 0).await,
+            Ok((60, 24))
+        );
+        assert_eq!(
+            leases.acquire(&alive, "c3", "p1", 90, 0).await,
+            Ok((60, 24))
+        );
+        assert_eq!(controls.events.lock().await.len(), events);
+        assert!(!leases.resized_within("p1", RESIZE_SETTLE_WINDOW).await);
+        assert_eq!(
+            *controls.events.lock().await,
+            vec![
+                ControlEvent::Claimed("p1".into(), 70, 24),
+                ControlEvent::Resized("p1".into(), 60, 24),
+            ],
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn native_claim_marks_settling_even_when_pty_baseline_matches() {
+        let (leases, controls) = test_leases();
+        let alive = tokio_util::sync::CancellationToken::new();
+        leases.acquire(&alive, "c1", "p1", 80, 24).await.unwrap();
+        assert!(leases.resized_within("p1", RESIZE_SETTLE_WINDOW).await);
+        tokio::time::advance(RESIZE_SETTLE_WINDOW).await;
+        leases.acquire(&alive, "c1", "p1", 80, 24).await.unwrap();
+        assert!(!leases.resized_within("p1", RESIZE_SETTLE_WINDOW).await);
+        assert_eq!(controls.events.lock().await.len(), 1);
     }
 
     #[tokio::test]
-    async fn release_lapses_then_restores() {
-        let (leases, _) = test_leases();
+    async fn phone_height_changes_and_mixed_leases_restore_width_only_height() {
+        let (leases, controls) = test_leases();
         let alive = tokio_util::sync::CancellationToken::new();
-        leases
-            .acquire(&alive, "c1", "p1", 60, 0)
-            .await
-            .expect("acquire");
-        // Release keeps the lease (grace) — still active.
-        leases.release("c1", "p1").await.expect("release");
+        assert_eq!(
+            leases.acquire(&alive, "phone", "p1", 57, 36).await,
+            Ok((57, 36))
+        );
+        assert_eq!(
+            leases.acquire(&alive, "phone", "p1", 57, 12).await,
+            Ok((57, 12))
+        );
+        assert_eq!(
+            leases.acquire(&alive, "width", "p1", 70, 0).await,
+            Ok((57, 12))
+        );
+        assert_eq!(
+            leases.acquire(&alive, "other", "p1", 65, 20).await,
+            Ok((57, 12))
+        );
+        leases.release_client("phone").await.unwrap();
+        assert_eq!(leases.active_columns("p1").await, Some(65));
+        assert_eq!(leases.active_rows("p1").await, Some(20));
+        leases.release_client("other").await.unwrap();
+        assert_eq!(leases.active_rows("p1").await, Some(24));
+        assert_eq!(leases.capture_size("p1").await, Some((70, 24)));
+        assert_eq!(
+            *controls.events.lock().await,
+            vec![
+                ControlEvent::Claimed("p1".into(), 57, 36),
+                ControlEvent::Resized("p1".into(), 57, 12),
+                ControlEvent::Resized("p1".into(), 65, 20),
+                ControlEvent::Resized("p1".into(), 70, 24),
+            ],
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn release_grace_and_ttl_release_owned_controller() {
+        let (leases, controls) = test_leases();
+        let alive = tokio_util::sync::CancellationToken::new();
+        leases.acquire(&alive, "c1", "p1", 60, 0).await.unwrap();
+        leases.release("c1", "p1").await.unwrap();
         assert_eq!(leases.active_columns("p1").await, Some(60));
+        assert_eq!(leases.capture_size("p1").await, Some((60, 24)));
+        tokio::time::advance(RELEASE_GRACE - Duration::from_secs(1)).await;
+        leases.sweep_expired().await.unwrap();
+        assert_eq!(controls.events.lock().await.len(), 1);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        leases.sweep_expired().await.unwrap();
+        assert_eq!(leases.active_columns("p1").await, None);
+        assert_eq!(leases.capture_size("p1").await, None);
+        assert_eq!(
+            controls.events.lock().await.last(),
+            Some(&ControlEvent::Released("p1".into()))
+        );
+        leases.acquire(&alive, "c1", "p1", 60, 0).await.unwrap();
+        tokio::time::advance(LEASE_TTL).await;
+        leases.sweep_expired().await.unwrap();
+        assert_eq!(leases.active_rows("p1").await, None);
+        assert_eq!(controls.events.lock().await.len(), 4);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn same_size_renewal_extends_ttl_and_cancels_release_grace() {
+        let (leases, controls) = test_leases();
+        let alive = tokio_util::sync::CancellationToken::new();
+        leases.acquire(&alive, "c1", "p1", 57, 12).await.unwrap();
+        leases.release("c1", "p1").await.unwrap();
+        tokio::time::advance(RELEASE_GRACE - Duration::from_secs(1)).await;
+        leases.acquire(&alive, "c1", "p1", 57, 12).await.unwrap();
+        tokio::time::advance(LEASE_TTL - Duration::from_secs(1)).await;
+        leases.sweep_expired().await.unwrap();
+        assert_eq!(leases.capture_size("p1").await, Some((57, 12)));
+        assert_eq!(controls.events.lock().await.len(), 1);
+        leases.acquire(&alive, "c1", "p1", 57, 12).await.unwrap();
+        tokio::time::advance(Duration::from_secs(1)).await;
+        leases.sweep_expired().await.unwrap();
+        assert_eq!(leases.capture_size("p1").await, Some((57, 12)));
+        tokio::time::advance(LEASE_TTL - Duration::from_secs(1)).await;
+        assert_eq!(leases.active_rows("p1").await, None);
+        // Native ownership, unlike query TTL metadata, is authoritative until
+        // the sweep releases it.
+        assert_eq!(leases.capture_size("p1").await, Some((57, 12)));
+        leases.sweep_expired().await.unwrap();
+        assert_eq!(leases.capture_size("p1").await, None);
+        assert_eq!(controls.events.lock().await.len(), 2);
     }
 
     #[tokio::test]
-    async fn release_client_restores_immediately() {
-        let (leases, runner) = test_leases();
+    async fn release_client_and_shutdown_release_only_owned_panes() {
+        let (leases, controls) = test_leases();
         let alive = tokio_util::sync::CancellationToken::new();
-        leases
-            .acquire(&alive, "c1", "p1", 60, 0)
-            .await
-            .expect("acquire");
-        leases.release_client("c1").await.expect("release_client");
+        leases.acquire(&alive, "c1", "p1", 60, 0).await.unwrap();
+        leases.acquire(&alive, "c2", "p2", 70, 20).await.unwrap();
+        leases.release_client("unknown").await.unwrap();
+        leases.release("c1", "unowned").await.unwrap();
+        assert_eq!(controls.events.lock().await.len(), 2);
+        leases.release_client("c1").await.unwrap();
         assert_eq!(leases.active_columns("p1").await, None);
-        let calls = runner.calls.lock().unwrap();
-        // Last stty restores baseline 80.
-        let sets: Vec<_> = calls
-            .iter()
-            .filter(|(n, a)| n == "stty" && a.iter().any(|x| x == "cols"))
-            .collect();
-        assert!(sets.last().unwrap().1.contains(&"80".to_owned()));
+        assert_eq!(leases.active_columns("p2").await, Some(70));
+        leases.shutdown().await.unwrap();
+        leases.shutdown().await.unwrap();
+        assert_eq!(
+            *controls.events.lock().await,
+            vec![
+                ControlEvent::Claimed("p1".into(), 60, 24),
+                ControlEvent::Claimed("p2".into(), 70, 20),
+                ControlEvent::Released("p1".into()),
+                ControlEvent::Released("p2".into()),
+            ],
+        );
+        assert_eq!(
+            leases.acquire(&alive, "c2", "p2", 70, 20).await,
+            Err(ERR_CLOSED)
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_resize_rolls_back_and_replaces_poisoned_controller() {
+        let (leases, controls) = test_leases();
+        let alive = tokio_util::sync::CancellationToken::new();
+        leases.acquire(&alive, "c1", "p1", 70, 20).await.unwrap();
+        controls.fail_resize.store(true, Ordering::SeqCst);
+        assert_eq!(
+            leases.acquire(&alive, "c1", "p1", 57, 12).await,
+            Err(ERR_RESIZE_FAILED)
+        );
+        assert_eq!(leases.active_columns("p1").await, None);
+        assert_eq!(leases.capture_size("p1").await, None);
+        assert_eq!(
+            leases.inner.state.lock().await.panes["p1"].leases["c1"].columns,
+            70
+        );
+        controls.fail_resize.store(false, Ordering::SeqCst);
+        leases.sweep_expired().await.unwrap();
+        assert_eq!(leases.active_columns("p1").await, Some(70));
+        assert_eq!(
+            *controls.events.lock().await,
+            vec![
+                ControlEvent::Claimed("p1".into(), 70, 20),
+                ControlEvent::Released("p1".into()),
+                ControlEvent::Claimed("p1".into(), 70, 20),
+            ],
+        );
+        controls.fail_resize.store(true, Ordering::SeqCst);
+        assert_eq!(
+            leases.acquire(&alive, "c2", "p1", 60, 12).await,
+            Err(ERR_RESIZE_FAILED)
+        );
+        assert!(!leases.inner.state.lock().await.panes["p1"]
+            .leases
+            .contains_key("c2"));
+    }
+
+    #[tokio::test]
+    async fn busy_claim_never_creates_owned_controller() {
+        let (leases, controls) = test_leases();
+        let alive = tokio_util::sync::CancellationToken::new();
+        controls.refuse_claim.store(true, Ordering::SeqCst);
+        assert_eq!(
+            leases.acquire(&alive, "c1", "p1", 57, 12).await,
+            Err(ERR_RESIZE_FAILED)
+        );
+        leases.shutdown().await.unwrap();
+        assert!(controls.events.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dead_controller_cannot_satisfy_same_size_renewal() {
+        let (leases, controls) = test_leases();
+        let alive = tokio_util::sync::CancellationToken::new();
+        leases.acquire(&alive, "c1", "p1", 57, 12).await.unwrap();
+        controls.live.store(false, Ordering::SeqCst);
+        assert_eq!(leases.active_columns("p1").await, None);
+        assert_eq!(leases.capture_size("p1").await, None);
+        controls.refuse_claim.store(true, Ordering::SeqCst);
+        assert_eq!(
+            leases.acquire(&alive, "c1", "p1", 57, 12).await,
+            Err(ERR_RESIZE_FAILED)
+        );
+        assert_eq!(controls.events.lock().await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn owner_cancellation_after_claim_rolls_back_and_releases() {
+        let (leases, controls) = test_leases();
+        let alive = tokio_util::sync::CancellationToken::new();
+        *controls.cancel_claim.lock().await = Some(alive.clone());
+        assert_eq!(
+            leases.acquire(&alive, "c1", "p1", 57, 12).await,
+            Err(ERR_OWNER_GONE)
+        );
+        assert_eq!(leases.active_columns("p1").await, None);
+        assert!(leases.inner.state.lock().await.panes["p1"]
+            .leases
+            .is_empty());
+        assert_eq!(
+            *controls.events.lock().await,
+            vec![
+                ControlEvent::Claimed("p1".into(), 57, 12),
+                ControlEvent::Released("p1".into()),
+            ],
+        );
     }
 
     #[tokio::test]
