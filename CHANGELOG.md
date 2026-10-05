@@ -9,6 +9,8 @@ The `protocol v3` / `herdr-e2ee-v2` wire contract remains frozen.
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-10-05
+
 ### Added
 
 - `lerdr-relay pairing qr` discovers the installed user service and its actual
