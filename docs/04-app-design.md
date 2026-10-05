@@ -97,30 +97,38 @@ Data: `get_conversation_history` pages + `question`/attention events +
 
 ### Terminal mode — *the machine itself*
 
-- `LazyColumn` of ANSI-parsed `AnnotatedString` rows (monospace, bundled
-  font), keyed virtualization, delta-applied — 60 fps scrolling.
-- **Special-keys bar** (single, horizontally scrollable): `Esc Tab ← ↓ ↑ →
-  Enter ⌫ | Ctrl` — key names are the Herdr semantic vocabulary
-  (`Left`/`Enter`/`Escape`/`Ctrl+…`), passed through `send_keys`
-  verbatim. Ctrl is a latching modifier (tap then letter = `C-x`).
-  Long-press Ctrl opens the combos sheet (`C-c C-d C-z C-l C-r`).
-- **IME behavior**: tap screen → keyboard up, typing sends `send_text`;
-  suggestion bar hidden (terminal context); Enter = `send_keys [Enter]`.
-- **Size lease**: measure grid → `lease_pane_size`; on keyboard-open,
-  `adjustResize` shrinks the grid and re-leases rows — pane reflows like a
-  real terminal resize. Release on background/hide.
-- Pinch-to-zoom adjusts font → re-leases columns. Two-finger only —
-  single-finger drags stay with scroll; scale is clamped 0.25–2.5×.
-- **Fit width** (⋯ menu) scales the widest committed row edge-to-edge —
-  the answer for native-size TUIs (omp panes keep host geometry) that
-  run several viewports wide; tapping again restores actual size.
-  Horizontal scroll + pinch remain for panning.
-- Scrollback stays readable while live: pause-follow button ("scroll to
-  live" pill, Telegram-style) when scrolled up; deltas still apply.
-- Long-press a row → context menu at the touch point: copy line / copy
-  transcript / share transcript, plus open-link / copy-link for each URL
-  in the row (linkified spans already carry normalized `href`s — the
-  menu is their touch surface).
+- **Rendering**: cached ANSI row layouts on a Canvas; draw and expose only
+  the visible viewport. Incoming frames continue to commit offscreen.
+- **Live reading**: scrolling away, Find, selection, or **Pause live output**
+  holds the displayed frame, including in-place TUI redraws. Clearing a
+  selection keeps that reading frame. **New output · Return to live**
+  resumes the latest frame; keyboard/font changes follow settled bounds.
+- **Special keys**: pinned Ctrl and horizontally scrollable Esc, Tab, arrows,
+  Enter and Backspace. **More terminal keys** exposes every key and Ctrl
+  combinations without horizontal hunting. Ctrl then an ASCII letter
+  sends the chord without altering the draft; Ctrl+C and Ctrl+D require
+  confirmation. Disconnecting clears pending chords and confirmations.
+- **Editor**: local text, caret and selection survive keyboard hide/show.
+  Send is single-flight and clears only the unchanged submitted draft
+  after completed delivery. Failed or unconfirmed delivery retains it;
+  nothing queues for automatic resend. Secret drafts remain masked,
+  non-saveable, and never fall back to ordinary text submission.
+- **Connection state**: Controlling, Observing (read-only), Connecting,
+  Reconnecting and Offline remain visible. Offline controllers can edit a
+  draft, but sending and terminal keys are disabled; Readers cannot edit.
+- **Phone geometry**: `adjustResize` preserves the header and editor above
+  the IME. Measured columns/rows lease the native VT and PTY together for
+  OpenCode, Codex, omp and other providers, independent of desktop split
+  size. Renew the requested phone grid, not a temporary peer minimum.
+  Observers do not resize. Release on hide/background; see doc 08 for
+  arbitration and the shared-PTY desktop reflow tradeoff.
+- **Reading size**: pinch and **Text size** share persisted 0.25–2.5× bounds.
+  **Fit width** is optional for wide cached/observed output; **Actual size**
+  restores the normal scale. Horizontal scrolling remains available.
+- **Selection and Find** use the displayed frame. Copy selection/line,
+  copy/share transcript and row URL actions remain local. Closed or empty
+  Find and ordinary context-menu opening do not flatten the transcript;
+  whole-transcript text is built only for an explicit search or copy/share.
 
 ### Details mode
 
@@ -134,9 +142,10 @@ Data: `get_conversation_history` pages + `question`/attention events +
 Autosize field, per-agent drafts, attach button (camera/gallery/files →
 chunked `upload_*` with progress cards), slash-command autocomplete
 (bottom-sheet picker with search — `list_slash_commands`), voice input
-(STT → text). Send = `submit_prompt` for feed, `send_text`+Enter for
-terminal. Reader role hides mutating affordances entirely — not disabled,
-gone.
+(STT → text). Send = `submit_prompt` for Feed. Terminal uses its local
+draft editor and completed-delivery policy above. Reader role hides
+mutating Feed affordances; Terminal retains inert controls and an explicit
+read-only state.
 
 ## Notifications → deep links
 

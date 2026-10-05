@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -40,6 +41,7 @@ data class TerminalUiState(
     /** Live agent lifecycle (or derived cohort activity), never viewport geometry. */
     val statusLabel: String = "",
     val connected: Boolean = false,
+    val connecting: Boolean = false,
     /** True until the first pane frame commits. */
     val waitingForContent: Boolean = true,
     val lines: List<String> = emptyList(),
@@ -114,20 +116,12 @@ class TerminalViewModel(
     @Volatile
     private var leasedRows = 0
 
-    /** The last grid the view measured — a late provider resolution re-leases. */
+    /** Last phone grid — reapply after returning to the foreground. */
     @Volatile
     private var measuredColumns = 0
 
     @Volatile
     private var measuredRows = 0
-
-    /**
-     * The current provider keeps its native pane size — leasing is skipped
-     * or dropped ([keepsNativeSize]). Volatile for the same reason as
-     * [leasedColumns]: set on viewModelScope, honored by the appScope jobs.
-     */
-    @Volatile
-    private var leaseBlockedByProvider = false
 
     // Parse cache keyed on the committed content — a metadata-only delta
     // bumps revision without touching `lines`, so the row list survives
@@ -138,8 +132,8 @@ class TerminalViewModel(
     private var parsedCursor: TerminalCursorUi? = null
 
     /**
-     * Last committed frame outside `resize_settling` — a lease-driven
-     * `stty` makes the TUI repaint mid-frame, so settling frames carry
+     * Last committed frame outside `resize_settling` — resizing the native
+     * terminal makes the TUI repaint mid-frame. Settling frames may carry
      * stale cells mixed into the new layout. They still commit to
      * [PaneSurface] (the delta chain and acks must not skip); only the
      * display holds the previous settled frame until the flag clears.
@@ -176,6 +170,7 @@ class TerminalViewModel(
             breadcrumb = breadcrumbOf(agent),
             statusLabel = agent.orchestratingStatus(cohortBusy) ?: agent?.status ?: "",
             connected = connection?.status == RelayStatus.CONNECTED,
+            connecting = connection?.status == RelayStatus.CONNECTING,
             waitingForContent = display == null,
             lines = display?.lines.orEmpty(),
             rows = parsedRows,
@@ -230,9 +225,15 @@ class TerminalViewModel(
             while (true) {
                 delay(LEASE_REFRESH_MS)
                 val columns = leasedColumns
-                if (columns > 0 && !sessions.hidden.value) {
+                if (columns > 0 && !sessions.hidden.value && sessions.canControl(relayId) &&
+                    sessions.connectionNow(relayId)?.status == RelayStatus.CONNECTED
+                ) {
                     try {
-                        sessions.leasePaneSize(paneId, paneOwner, columns, leasedRows)
+                        // Renew our requested grid, not a smaller peer's temporary minimum.
+                        val (appliedColumns, appliedRows) =
+                            sessions.leasePaneSize(paneId, paneOwner, measuredColumns, measuredRows)
+                        leasedColumns = appliedColumns
+                        leasedRows = appliedRows
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (_: Exception) {
@@ -245,7 +246,7 @@ class TerminalViewModel(
             // Refocus parity: the moment the app is visible again the lease
             // re-arms instead of waiting out the renewal interval.
             sessions.hidden.collect { hidden ->
-                if (!hidden && !leaseBlockedByProvider && leasedColumns > 0) {
+                if (!hidden && leasedColumns > 0) {
                     acquireLease(measuredColumns, measuredRows)
                 }
             }
@@ -257,21 +258,14 @@ class TerminalViewModel(
                 appPreferences.setTerminalFontScale(it)
             }
         }
-        // Provider late-resolution: the agent row can land after the view
-        // measured — drop or arm the lease to match the provider's policy.
-        // A null row carries no information: the block state stays as-is,
-        // so a reconnect's empty snapshot doesn't lease an omp pane.
+        // A restored terminal may measure before inventory or authenticated control is ready.
         viewModelScope.launch {
-            sessions.agent(paneId).collect { agent ->
-                when {
-                    agent.keepsNativeSize() -> {
-                        leaseBlockedByProvider = true
-                        releaseLease()
-                    }
-                    agent != null && leaseBlockedByProvider && measuredColumns > 0 -> {
-                        leaseBlockedByProvider = false
-                        acquireLease(measuredColumns, measuredRows)
-                    }
+            combine(sessions.agent(paneId), sessions.connection(relayId)) { agent, connection ->
+                agent != null && connection?.status == RelayStatus.CONNECTED &&
+                    sessions.canControl(relayId)
+            }.distinctUntilChanged().collect { available ->
+                if (available && measuredColumns > 0 && leasedColumns == 0) {
+                    acquireLease(measuredColumns, measuredRows)
                 }
             }
         }
@@ -286,30 +280,19 @@ class TerminalViewModel(
         appScope.launch { sessions.closePane(paneId, paneOwner) }
     }
 
-    /**
-     * The view measured its grid — negotiate the lease with the relay.
-     * Providers in [keepsNativeSize] draw fixed-width chrome (omp's status
-     * strip carries its spinner/task indicators at the right edge) — a
-     * phone-sized `stty` truncates exactly that region, so their pane is
-     * rendered at native size and scrolled/zoomed instead.
-     */
+    /** Negotiate the phone grid for every provider, including full-screen CLIs. */
     fun onViewportMeasured(columns: Int, rows: Int) {
         if (columns <= 0) return
         measuredColumns = columns
         measuredRows = rows
-        viewModelScope.launch {
-            val blocked = sessions.agentNow(paneId).keepsNativeSize()
-            leaseBlockedByProvider = blocked
-            if (blocked) {
-                releaseLease()
-            } else {
-                acquireLease(columns, rows)
-            }
-        }
+        if (sessions.agentNow(paneId) == null) return
+        viewModelScope.launch { acquireLease(columns, rows) }
     }
 
     private suspend fun acquireLease(columns: Int, rows: Int) {
-        if (sessions.hidden.value) return
+        if (sessions.hidden.value || !sessions.canControl(relayId) ||
+            sessions.connectionNow(relayId)?.status != RelayStatus.CONNECTED
+        ) return
         try {
             val (appliedColumns, appliedRows) =
                 sessions.leasePaneSize(paneId, paneOwner, columns, rows)
@@ -322,69 +305,43 @@ class TerminalViewModel(
         }
     }
 
-    private suspend fun releaseLease() {
-        if (leasedColumns <= 0) return
-        leasedColumns = 0
-        leasedRows = 0
-        try {
-            sessions.releasePaneSize(paneId, paneOwner)
-        } catch (_: Exception) {
-            // The TTL lapses the lease either way — a dropped release is cosmetic.
-        }
-    }
 
     /** Special-keys bar — Esc/arrows/Ctrl chords ride `send_keys`. */
     fun sendKeys(keys: List<String>, label: String = keys.joinToString(", ")) {
         viewModelScope.launch {
-            try {
-                sessions.sendKeys(paneId, keys, label)
-            } catch (failure: Exception) {
-                lastError.value = failure.message
-            }
+            deliverInput { sessions.sendKeys(paneId, keys, label) }
         }
     }
 
     /** Typed text + Enter — terminal mode's composer path (`send_input`). */
-    fun sendText(text: String) {
-        if (text.isEmpty()) return
-        viewModelScope.launch {
-            try {
-                sessions.sendTerminalText(paneId, text)
-            } catch (failure: Exception) {
-                lastError.value = failure.message
-            }
-        }
-    }
+    suspend fun sendText(text: String): Boolean =
+        text.isNotEmpty() && deliverInput { sessions.sendTerminalText(paneId, text) }
 
-    /**
-     * `send_text` — literal injection at the pane cursor, no Enter. The
-     * input bar's Send/IME-Send action; the pane's own echo (or lack of
-     * it) reflects the text back.
-     */
-    fun sendLiteralText(text: String) {
-        if (text.isEmpty()) return
-        viewModelScope.launch {
-            try {
-                sessions.sendText(paneId, text)
-            } catch (failure: Exception) {
-                lastError.value = failure.message
-            }
-        }
-    }
+    /** Hidden-prompt delivery succeeds only after the relay acknowledges it. */
+    suspend fun sendSecret(text: String): Boolean =
+        text.isNotEmpty() && deliverInput { sessions.sendSecret(paneId, text) }
 
-    /**
-     * `send_secret` — the hidden-prompt answer. The relay never journals
-     * it; a missing `secret_input` capability fails locally with
-     * [CommandException] before anything leaves the device.
-     */
-    fun sendSecret(text: String) {
-        if (text.isEmpty()) return
-        viewModelScope.launch {
-            try {
-                sessions.sendSecret(paneId, text)
-            } catch (failure: Exception) {
-                lastError.value = failure.message
+    private suspend fun deliverInput(send: suspend () -> Unit): Boolean {
+        if (!sessions.canControl(relayId)) {
+            lastError.value = "This device can only observe the terminal."
+            return false
+        }
+        if (sessions.connectionNow(relayId)?.status != RelayStatus.CONNECTED) {
+            lastError.value = "Relay offline. Input was not sent."
+            return false
+        }
+        return try {
+            send()
+            true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            lastError.value = if (failure is CommandException && failure.dispatchedUnknown) {
+                "Delivery unconfirmed. Check the terminal before sending again."
+            } else {
+                failure.message ?: "Terminal input failed."
             }
+            false
         }
     }
 
@@ -441,17 +398,6 @@ class TerminalViewModel(
         viewModelScope.launch { sessions.refreshPane(paneId) }
     }
 
-    /**
-     * Providers whose pane is served at its native size — no size lease.
-     * omp's TUI draws a persistent status strip spanning the full host
-     * width (spinner, task/subagent counters, model, context gauge); a
-     * lease-driven `stty` to phone dimensions truncates exactly those
-     * indicators and squashes the desktop terminal the pane lives in.
-     * Scrolled and pinch-zoomed instead.
-     */
-    private fun Agent?.keepsNativeSize(): Boolean =
-        this?.agent?.lowercase() in NATIVE_SIZE_PROVIDERS
-
     private fun breadcrumbOf(agent: Agent?): String {
         if (agent == null) return ""
         val project = agent.project ?: agent.cwd?.substringAfterLast('/')
@@ -469,7 +415,5 @@ class TerminalViewModel(
         /** Settle window before a pinch-zoom value lands in preferences. */
         const val FONT_SCALE_PERSIST_MS = 400L
 
-        /** Providers rendered at native size — see [keepsNativeSize]. */
-        val NATIVE_SIZE_PROVIDERS = setOf("omp")
     }
 }

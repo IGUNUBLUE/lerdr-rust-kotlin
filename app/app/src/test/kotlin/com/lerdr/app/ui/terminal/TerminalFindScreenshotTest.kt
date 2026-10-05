@@ -82,7 +82,7 @@ class TerminalFindScreenshotTest {
     )
 
     @Test
-    fun accessibleOutput_tracksViewportAndLiveContent() {
+    fun accessibleOutput_tracksTheHeldReadingFrameAndLiveReturn() {
         val state = TerminalSurfaceState(ScrollState(0), onFontScaleChanged = {})
         val content = mutableStateOf(List(40) { "native_row_${it.toString().padStart(2, '0')}" })
         composeRule.setContent {
@@ -116,10 +116,17 @@ class TerminalFindScreenshotTest {
                 this[0] = "updated_native_head"
             }
         }
-        val updated = accessibleText()
-        assertTrue(updated.contains("updated_native_head"))
-        assertFalse(updated.contains("native_row_00"))
-        assertFalse(updated.contains("native_row_39"))
+        assertTrue(accessibleText().contains("native_row_00"))
+        assertFalse(accessibleText().contains("updated_native_head"))
+        composeRule.runOnIdle {
+            runBlocking {
+                state.scrollToLive()
+                state.revealRow(0)
+            }
+        }
+        assertTrue(accessibleText().contains("updated_native_head"))
+        assertFalse(accessibleText().contains("native_row_00"))
+        assertFalse(accessibleText().contains("native_row_39"))
     }
 
     @Test
@@ -132,7 +139,7 @@ class TerminalFindScreenshotTest {
                     onOpenFiles = {},
                     onBack = {},
                     onSendKeys = {},
-                    onSendText = {},
+                    onSendText = { true },
                     onViewportMeasured = { _, _ -> },
                     onRefresh = {},
                 )
@@ -197,7 +204,7 @@ class TerminalFindScreenshotTest {
                     onOpenFiles = {},
                     onBack = {},
                     onSendKeys = {},
-                    onSendText = {},
+                    onSendText = { true },
                     onViewportMeasured = { _, _ -> },
                     onRefresh = {},
                     onPaneSearch = { PaneSearchResult(total = 47) },
@@ -483,7 +490,7 @@ class TerminalFindScreenshotTest {
                     onOpenFiles = {},
                     onBack = {},
                     onSendKeys = {},
-                    onSendText = {},
+                    onSendText = { true },
                     onViewportMeasured = { _, _ -> },
                     onRefresh = {},
                 )

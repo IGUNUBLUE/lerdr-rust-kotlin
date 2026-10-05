@@ -59,6 +59,16 @@ lease vs local terminal resize vs second controller) and expiry/freeze
 semantics — the code comments encode hard-won mobile behavior (hidden-tab
 clamping) that must not be lost.
 
+**Current size-backend decision**: a control-capable phone leases its
+measured grid for every provider, including OpenCode, Codex and omp.
+Herdr's native control stream resizes the VT grid and PTY together;
+desktop subdivision does not force smaller text on the phone. The
+existing lease bounds, minimum arbitration, TTL/grace and width-only
+wire replies remain unchanged. Native release restores the latest host
+layout rather than writing a historical PTY size. A CLI has one PTY:
+its desktop content also reflects phone sizing while leased, but split
+ratios and other panes are not changed. Observers do not claim geometry.
+
 ### 5. Pairing + credential store format — ~~migration hinge~~ resolved
 QR payload fields, invitation→credential exchange, device-file layout
 (`HERDR_PLUGIN_CONFIG_DIR`), `credential_version` monotonicity.
@@ -92,9 +102,15 @@ items (conversation Entries + `agent_status` + `detection` buffer +
 UX intention, not a projection spec.
 
 ### 10. App offline/reconnect state machine
-Draft persistence exists; **pending-action queue** doesn't (does a
-prompt sent while reconnecting queue or fail?). States, retries, resync
-UX, and what the UI shows at each rung.
+**Terminal decision**: no pending-input queue or automatic resend.
+Connected control authority is required at dispatch; a completed result
+clears only the unchanged submitted draft. A dispatched but unconfirmed
+result keeps the draft and warns to inspect the terminal before retrying.
+Offline controllers may edit; Readers cannot. Disconnect clears Ctrl and
+pending destructive-key confirmations. Secret drafts are never saved.
+Terminal reading freezes the displayed frame while paused (including
+selection and Find), not merely its scroll offset; explicit return to live
+reveals the latest committed output. Feed uses its separate send policy.
 
 ### 11. Version negotiation policy
 `protocol v3` field exists; the app↔relay min-version matrix, capability

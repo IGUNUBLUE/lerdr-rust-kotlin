@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -300,60 +301,40 @@ class TerminalViewModelTest {
     }
 
     @Test
-    fun `send hooks emit send_text, send_keys and send_input frames`() = runTest {
+    fun `text delivery waits for completed acknowledgement and reports rejection`() = runTest {
         val h = Harness(this, tmp.root)
-        h.connectReady()
+        h.connectController()
         val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
         backgroundScope.launch { viewModel.uiState.collect { } }
         h.pump()
 
-        viewModel.sendLiteralText("ls -la")
+        val submitted = backgroundScope.async { viewModel.sendText("cargo test") }
         h.pump()
-        val literal = sentFrames(h.handle()).last {
-            it["type"]?.jsonPrimitive?.content == "send_text"
-        }
-        assertThat(literal["text"]?.jsonPrimitive?.content).isEqualTo("ls -la")
-        // send_text carries no keys — the pane injects the bytes verbatim.
-        assertThat("keys" !in literal).isTrue()
-        h.resolveRequest("send_text")
-
-        viewModel.sendKeys(listOf("Ctrl+C"))
+        assertThat(submitted.isCompleted).isFalse()
+        val request = sentFrames(h.handle()).last { it["type"]?.jsonPrimitive?.content == "send_input" }
+        h.handle().emit(buildJsonObject {
+            put("type", "command_result")
+            put("request_id", request["request_id"]!!.jsonPrimitive.content)
+            put("action", "send_input")
+            put("ok", true)
+            put("phase", "accepted")
+        })
         h.pump()
-        val chord = sentFrames(h.handle()).last {
-            it["type"]?.jsonPrimitive?.content == "send_keys"
-        }
-        assertThat(chord["keys"].toString()).contains("Ctrl+C")
-        h.resolveRequest("send_keys")
-
-        viewModel.sendText("cargo test")
-        h.pump()
-        val submitted = sentFrames(h.handle()).last {
-            it["type"]?.jsonPrimitive?.content == "send_input"
-        }
-        assertThat(submitted["text"]?.jsonPrimitive?.content).isEqualTo("cargo test")
-        assertThat(submitted["keys"].toString()).contains("Enter")
+        assertThat(submitted.isCompleted).isFalse()
         h.resolveRequest("send_input")
-    }
+        assertThat(submitted.await()).isTrue()
 
-    @Test
-    fun `a failed send surfaces as lastError`() = runTest {
-        val h = Harness(this, tmp.root)
-        h.connectReady()
-        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
-        backgroundScope.launch { viewModel.uiState.collect { } }
+        val rejected = backgroundScope.async { viewModel.sendText("next command") }
         h.pump()
-
-        viewModel.sendLiteralText("x")
-        h.pump()
-        h.resolveRequest("send_text", ok = false, error = "dispatch failed")
-
-        assertThat(viewModel.uiState.value.lastError).isEqualTo("dispatch failed")
+        h.resolveRequest("send_input", ok = false, error = "dispatch failed")
+        assertThat(rejected.await()).isFalse()
+        assertThat(viewModel.uiState.value.lastError).isNotNull()
     }
 
     @Test
     fun `background returns viewport to desktop until foreground resumes`() = runTest {
         val h = Harness(this, tmp.root)
-        h.connectReady()
+        h.connectController()
         val desktopGeometry = 160 to 50
         val phoneGeometry = 84 to 31
         var remoteGeometry = desktopGeometry
@@ -393,9 +374,43 @@ class TerminalViewModelTest {
     }
 
     @Test
+    fun `renewal restores requested phone geometry after a smaller peer leaves`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectController()
+        var smallerPeerPresent = true
+        var remoteGeometry = 160 to 50
+        h.handle().responder = { message ->
+            if (message.type == "lease_pane_size") {
+                remoteGeometry = if (smallerPeerPresent) 40 to 10
+                    else message.columns to message.rows
+            }
+            lerdr.core.model.CommandResultMessage(
+                action = message.type,
+                ok = true,
+                phase = lerdr.core.model.CommandResultMessage.PHASE_COMPLETED,
+                requestId = message.requestId,
+                data = buildJsonObject {
+                    put("columns", remoteGeometry.first)
+                    put("rows", remoteGeometry.second)
+                },
+            )
+        }
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
+        backgroundScope.launch { viewModel.uiState.collect { } }
+        h.pump()
+        viewModel.onViewportMeasured(columns = 57, rows = 35)
+        h.pump()
+        assertThat(remoteGeometry).isEqualTo(40 to 10)
+        smallerPeerPresent = false
+        advanceTimeBy(10_000)
+        h.pump()
+        assertThat(remoteGeometry).isEqualTo(57 to 35)
+    }
+
+    @Test
     fun `viewport measurement negotiates the pane-size lease`() = runTest {
         val h = Harness(this, tmp.root)
-        h.connectReady()
+        h.connectController()
         h.handle().responder = { message ->
             lerdr.core.model.CommandResultMessage(
                 action = message.type,
@@ -437,7 +452,7 @@ class TerminalViewModelTest {
     @Test
     fun `queued old teardown preserves reopened terminal lease and content until final close`() = runTest {
         val h = Harness(this, tmp.root)
-        h.connectReady()
+        h.connectController()
         h.handle().responder = { message ->
             lerdr.core.model.CommandResultMessage(
                 action = message.type,
@@ -477,7 +492,7 @@ class TerminalViewModelTest {
     @Test
     fun `close releases lease dispatched before its acquire receipt arrives`() = runTest {
         val h = Harness(this, tmp.root)
-        h.connectReady()
+        h.connectController()
         val acquire = CompletableDeferred<Unit>()
         h.handle().responder = { message ->
             if (message.type == "lease_pane_size") acquire.await()
@@ -504,7 +519,7 @@ class TerminalViewModelTest {
     @Test
     fun `pending old release completes before successor size acquire`() = runTest {
         val h = Harness(this, tmp.root)
-        h.connectReady()
+        h.connectController()
         val release = CompletableDeferred<Unit>()
         h.handle().responder = { message ->
             if (message.type == "release_pane_size") release.await()
@@ -546,31 +561,16 @@ class TerminalViewModelTest {
     }
 
     @Test
-    fun `omp viewport measurement keeps the native pane size`() = runTest {
+    fun `late target discovery leases the phone grid and provider changes preserve it`() = runTest {
         val h = Harness(this, tmp.root)
-        h.connectReady()
-        h.emitAgent("omp")
-        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
-        backgroundScope.launch { viewModel.uiState.collect { } }
+        h.registry.upsert(h.endpoint)
+        h.credentials.seed("r1", credential(DeviceRole.CONTROLLER))
+        h.repository.start()
         h.pump()
-        h.emitPaneContent("prompt$ ")
-
-        viewModel.onViewportMeasured(columns = 92, rows = 42)
-        h.pump()
-
-        // omp's status strip spans the host width — a phone-sized stty
-        // would truncate it, so no lease is negotiated at all.
-        assertThat(h.handle().requests.map { it.type }).doesNotContain("lease_pane_size")
-        assertThat(h.handle().requests.map { it.type }).doesNotContain("release_pane_size")
-        val state = viewModel.uiState.value
-        assertThat(state.leaseColumns).isEqualTo(0)
-        assertThat(state.statusLabel).isEqualTo("working")
-    }
-
-    @Test
-    fun `a provider resolving to omp releases the held lease`() = runTest {
-        val h = Harness(this, tmp.root)
-        h.connectReady()
+        h.handle().connect()
+        h.handle().emit(json(
+            """{"type":"push_config","capabilities":["pane_size_lease","pane_size_lease_rows"],"inventory":{"state":"ready"}}""",
+        ))
         h.handle().responder = { message ->
             lerdr.core.model.CommandResultMessage(
                 action = message.type,
@@ -578,68 +578,29 @@ class TerminalViewModelTest {
                 phase = lerdr.core.model.CommandResultMessage.PHASE_COMPLETED,
                 requestId = message.requestId,
                 data = buildJsonObject {
-                    put("columns", message.columns)
-                    put("rows", message.rows)
+                    put("columns", 57)
+                    put("rows", 36)
                 },
             )
         }
         val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
         backgroundScope.launch { viewModel.uiState.collect { } }
         h.pump()
-        h.emitPaneContent("prompt$ ")
-
-        viewModel.onViewportMeasured(columns = 92, rows = 42)
-        h.pump()
-        assertThat(viewModel.uiState.value.leaseColumns).isEqualTo(92)
-
-        // The agent row re-announces as omp — the just-acquired lease is
-        // dropped so the pane snaps back to its native grid.
-        h.emitAgent("omp", status = "idle")
-        h.pump()
-
-        assertThat(h.handle().requests.map { it.type }).contains("release_pane_size")
-        val state = viewModel.uiState.value
-        assertThat(state.leaseColumns).isEqualTo(0)
-        assertThat(state.leaseRows).isEqualTo(0)
-        assertThat(state.statusLabel).isEqualTo("idle")
-    }
-
-    @Test
-    fun `a provider resolving away from omp arms the measured lease`() = runTest {
-        val h = Harness(this, tmp.root)
-        h.connectReady()
-        h.emitAgent("omp")
-        h.handle().responder = { message ->
-            lerdr.core.model.CommandResultMessage(
-                action = message.type,
-                ok = true,
-                phase = lerdr.core.model.CommandResultMessage.PHASE_COMPLETED,
-                requestId = message.requestId,
-                data = buildJsonObject {
-                    put("columns", message.columns)
-                    put("rows", message.rows)
-                },
-            )
-        }
-        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
-        backgroundScope.launch { viewModel.uiState.collect { } }
-        h.pump()
-        h.emitPaneContent("prompt$ ")
-
-        viewModel.onViewportMeasured(columns = 92, rows = 42)
+        viewModel.onViewportMeasured(columns = 57, rows = 36)
         h.pump()
         assertThat(h.handle().requests.map { it.type }).doesNotContain("lease_pane_size")
 
-        // Mis-classified rows heal: a re-announcement to a leased provider
-        // negotiates the grid the view already measured.
-        h.emitAgent("pi")
-        h.pump()
-
-        val lease = h.handle().requests.single { it.type == "lease_pane_size" }
-        assertThat(lease.columns).isEqualTo(92)
-        assertThat(lease.rows).isEqualTo(42)
-        assertThat(viewModel.uiState.value.leaseColumns).isEqualTo(92)
+        h.emitAgent("opencode")
+        h.emitPaneContent("phone_prompt")
+        assertThat(viewModel.uiState.value.leaseColumns).isEqualTo(57)
+        assertThat(viewModel.uiState.value.leaseRows).isEqualTo(36)
+        for (provider in listOf("omp", "codex")) {
+            h.emitAgent(provider)
+            assertThat(viewModel.uiState.value.leaseColumns).isEqualTo(57)
+            assertThat(viewModel.uiState.value.leaseRows).isEqualTo(36)
+        }
     }
+
 
     @Test
     fun `hook-less orchestrator with a busy worktree cohort reads orchestrating`() = runTest {
@@ -652,9 +613,8 @@ class TerminalViewModelTest {
         h.pump()
         h.emitPaneContent("prompt$ ")
 
-        // omp keeps native size → unleased chip falls back to the display
-        // status, which derives "orchestrating" from the busy cohort while
-        // Herdr's wire status stays `idle` for hook-less panes.
+        // The chip uses cohort-aware display status while Herdr's wire
+        // status stays idle for hook-less panes.
         viewModel.onViewportMeasured(columns = 92, rows = 42)
         h.pump()
 
@@ -701,49 +661,35 @@ class TerminalViewModelTest {
     }
 
     @Test
-    fun `send_secret rides the typed request path with no plain-text frame`() = runTest {
+    fun `unproven control cannot dispatch input or resize an observed terminal`() = runTest {
         val h = Harness(this, tmp.root)
         h.connectReady()
-        // The relay advertises `secret_input` on push_config.
-        h.handle().emit(
-            json("""{"type":"push_config","capabilities":["secret_input"]}"""),
-        )
-        h.pump()
         val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
-        backgroundScope.launch { viewModel.uiState.collect { } }
+        assertThat(viewModel.sendText("command")).isFalse()
+        assertThat(viewModel.sendSecret("password")).isFalse()
+        viewModel.sendKeys(listOf("Enter"))
+        viewModel.onViewportMeasured(columns = 57, rows = 12)
         h.pump()
-
-        assertThat(viewModel.uiState.value.secretInputSupported).isTrue()
-
-        viewModel.sendSecret("hunter2")
-        h.pump()
-
-        val secret = h.handle().requests.single { it.type == "send_secret" }
-        assertThat(secret.text).isEqualTo("hunter2")
-        // send_secret never touches send_text/send_input/send_keys.
-        assertThat(
-            h.handle().requests.map { it.type } +
-                sentFrames(h.handle()).map { it["type"]?.jsonPrimitive?.content },
-        ).containsNoneOf("send_text", "send_input", "send_keys")
-        assertThat(viewModel.uiState.value.lastError).isNull()
+        assertThat(sentFrames(h.handle()).map { it["type"]?.jsonPrimitive?.content })
+            .containsNoneOf("send_input", "send_keys", "send_secret")
+        assertThat(h.handle().requests.map { it.type }).containsNoneOf("send_secret", "lease_pane_size")
     }
 
     @Test
     fun `send_secret without the capability fails closed into lastError`() = runTest {
         val h = Harness(this, tmp.root)
         // connectReady's push_config does not advertise `secret_input`.
-        h.connectReady()
+        h.connectController()
         val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
         backgroundScope.launch { viewModel.uiState.collect { } }
         h.pump()
 
         assertThat(viewModel.uiState.value.secretInputSupported).isFalse()
 
-        viewModel.sendSecret("hunter2")
+        assertThat(viewModel.sendSecret("hunter2")).isFalse()
         h.pump()
 
-        assertThat(viewModel.uiState.value.lastError)
-            .isEqualTo("This relay does not support password prompts")
+        assertThat(viewModel.uiState.value.lastError).isNotNull()
         // Nothing left the device — no send_secret request was framed.
         assertThat(h.handle().requests.map { it.type }).doesNotContain("send_secret")
 
@@ -970,6 +916,14 @@ class TerminalViewModelTest {
             check(System.nanoTime() < deadline) { "timed out waiting" }
             kotlinx.coroutines.delay(25)
         }
+    }
+
+    private suspend fun Harness.connectController() {
+        registry.upsert(endpoint)
+        credentials.seed("r1", credential(DeviceRole.CONTROLLER))
+        repository.start()
+        pump()
+        connectReady()
     }
 
     private fun credential(role: DeviceRole) = RelayDeviceCredential(

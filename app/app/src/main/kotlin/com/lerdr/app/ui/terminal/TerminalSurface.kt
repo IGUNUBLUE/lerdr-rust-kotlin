@@ -150,13 +150,9 @@ fun TerminalSurface(
         )
     }
 
-    // Copy-mode freeze: while a selection is marked the grid renders the
-    // rows it was marked against — live commits would shift the index
-    // space under the highlight (truncated scrollback drops leading
-    // lines). On clear, [renderRows] snaps back to the latest frame.
-    val renderRows = state.frozenRows ?: rows
-    // Find marks map to live row indices — they would paint the wrong
-    // cells over a frozen buffer, so they are suppressed until unfreeze.
+    // Reading and selection keep the immutable frame they started against.
+    // Full-screen CLIs can replace rows in place rather than append history.
+    val renderRows = state.frozenRows ?: state.readingRows ?: rows
     val renderFindRanges = if (state.frozenRows == null) findRanges else emptyMap()
 
     // Row layouts — measured per row *content*, not per frame. A live
@@ -223,6 +219,7 @@ fun TerminalSurface(
     SideEffect {
         state.rowHeightPx = metrics.rowHeight
         state.stickThresholdPx = with(density) { STICK_THRESHOLD_DP.dp.toPx() }
+        state.observeCommittedRows(rows)
     }
 
     // Lerdr's handleScroll: scrolling up into history releases the
@@ -271,7 +268,7 @@ fun TerminalSurface(
         // committed row edge-to-edge in this viewport (metrics are at
         // the current fontScale, so the ratio rescales it). Fitting
         // never enlarges a pane that already fits — the cap is 1.0.
-        val widestRowCells = renderRows.maxOfOrNull { it.cells } ?: 0
+        val widestRowCells = remember(renderRows) { renderRows.maxOfOrNull { it.cells } ?: 0 }
         SideEffect {
             state.fitWidthScale = if (widestRowCells > 0 && metrics.cellWidth > 0f) {
                 (state.fontScale * viewportWidth / (widestRowCells * metrics.cellWidth))
@@ -281,10 +278,21 @@ fun TerminalSurface(
             }
         }
 
-        // Follow-live: each commit keeps the write edge in view while the
-        // pin holds — a find reveal or a scroll into history releases it.
-        LaunchedEffect(revision) {
-            if (state.stickToBottom) state.scrollToBottom()
+        // Scroll bounds update during layout, after a commit or viewport /
+        // font resize. Observe those settled bounds instead of racing layout
+        // with a revision-only scroll. A paused or frozen reader never moves.
+        LaunchedEffect(state) {
+            snapshotFlow {
+                if (state.stickToBottom && state.frozenRows == null &&
+                    state.scrollState.viewportSize > 0
+                ) {
+                    state.scrollState.maxValue
+                } else {
+                    null
+                }
+            }.collect { bottom ->
+                if (bottom != null) state.scrollToBottom()
+            }
         }
 
         var contextMenu by remember { mutableStateOf<TerminalMenuTarget?>(null) }
@@ -539,7 +547,7 @@ fun TerminalSurface(
                 metrics = metrics,
                 // The write cursor tracks live output — meaningless on a
                 // frozen copy-mode buffer.
-                cursor = if (state.frozenRows == null) cursor else null,
+                cursor = if (state.frozenRows == null && state.readingRows == null) cursor else null,
                 cursorOn = cursorOn,
                 cursorColor = cursorColor,
                 viewportWidthPx = viewportWidth,
@@ -549,7 +557,9 @@ fun TerminalSurface(
 
         val menu = contextMenu
         if (menu != null) {
-            val transcript = renderRows.joinToString("\n") { it.plainText() }.trimEnd()
+            val hasTranscript = remember(renderRows) {
+                renderRows.any { row -> row.spans.any { it.text.isNotBlank() } }
+            }
             DropdownMenu(
                 expanded = true,
                 onDismissRequest = { contextMenu = null },
@@ -613,10 +623,11 @@ fun TerminalSurface(
                         },
                     )
                 }
-                if (transcript.isNotBlank()) {
+                if (hasTranscript) {
                     DropdownMenuItem(
                         text = { Text("Copy transcript") },
                         onClick = {
+                            val transcript = renderRows.joinToString("\n") { it.plainText() }.trimEnd()
                             menuScope.launch {
                                 clipboard.setClipEntry(ClipEntry(android.content.ClipData.newPlainText("terminal transcript", transcript)))
                             }
@@ -626,6 +637,7 @@ fun TerminalSurface(
                     DropdownMenuItem(
                         text = { Text("Share transcript") },
                         onClick = {
+                            val transcript = renderRows.joinToString("\n") { it.plainText() }.trimEnd()
                             val send = Intent(Intent.ACTION_SEND)
                                 .setType("text/plain")
                                 .putExtra(Intent.EXTRA_TEXT, transcript)
@@ -700,7 +712,7 @@ private fun TerminalGrid(
     verticalScroll: ScrollState,
 ) {
     val density = LocalDensity.current
-    val maxCells = rows.maxOfOrNull { it.cells } ?: 0
+    val maxCells = remember(rows) { rows.maxOfOrNull { it.cells } ?: 0 }
     val viewportWidth = viewportWidthPx
     val contentWidth = max(viewportWidth, maxCells * metrics.cellWidth)
     val contentHeight = rows.size * metrics.rowHeight
@@ -830,8 +842,8 @@ private fun TerminalGrid(
 class TerminalSurfaceState internal constructor(
     internal val scrollState: ScrollState,
     /**
-     * Fires on pinch-driven zoom changes only — a persisted scale applied
-     * from preferences must not echo back as a fresh write.
+     * Fires on user-driven zoom changes — persisted scale restoration
+     * must not echo back as a fresh preference write.
      */
     internal val onFontScaleChanged: (Float) -> Unit = {},
 ) {
@@ -862,16 +874,21 @@ class TerminalSurfaceState internal constructor(
      * The rows a live selection was marked against — pane commits keep
      * arriving while a selection is open, and in a truncated scrollback
      * every appended line shifts the index space under the highlight.
-     * Freezing the rendered rows is the copy-mode contract: the view
-     * holds still until the selection clears, then snaps to live.
+     * A completed selection pauses reading; clearing its highlight retains
+     * that frame until the reader explicitly returns to live.
      */
     internal var frozenRows by mutableStateOf<List<TerminalRowUi>?>(null)
+
+    /** The frame held while reading; shared by reference, never copied. */
+    internal var readingRows by mutableStateOf<List<TerminalRowUi>?>(null)
+        private set
 
     /** A selection is committed or in flight — a tap should dismiss it. */
     val hasSelection: Boolean
         get() = selectionAnchor != null && selectionCursor != null
 
     internal fun clearSelection() {
+        if (!following && readingRows == null) readingRows = frozenRows
         selectionAnchor = null
         selectionCursor = null
         selectionCommitted = false
@@ -881,9 +898,40 @@ class TerminalSurfaceState internal constructor(
         frozenRows = null
     }
 
+    private var following by mutableStateOf(true)
+
     /** Follow-live pin — new commits keep the write edge in view while set. */
-    var stickToBottom by mutableStateOf(true)
-        internal set
+    var stickToBottom: Boolean
+        get() = following
+        internal set(value) {
+            if (value && hasSelection) return
+            if (!value && readingRows == null && frozenRows == null) {
+                readingRows = lastCommittedRows?.takeIf { it.isNotEmpty() }
+            }
+            following = value
+            if (value) {
+                readingRows = null
+                hasNewOutput = false
+            }
+        }
+
+    /** Committed text changed since follow-live was paused; metadata does not count. */
+    var hasNewOutput by mutableStateOf(false)
+        private set
+
+    private var lastCommittedRows: List<TerminalRowUi>? = null
+
+    internal fun observeCommittedRows(rows: List<TerminalRowUi>) {
+        val previous = lastCommittedRows
+        if (!stickToBottom && readingRows == null && frozenRows == null && rows.isNotEmpty()) {
+            readingRows = previous?.takeIf { it.isNotEmpty() } ?: rows
+        }
+        if (previous === rows) return
+        lastCommittedRows = rows
+        if (previous != null && previous != rows && !stickToBottom) {
+            hasNewOutput = true
+        }
+    }
 
     /**
      * Pinch-zoom factor on the terminal font — rescales the cell grid,
@@ -894,12 +942,23 @@ class TerminalSurfaceState internal constructor(
 
     /**
      * The scale that would draw the widest committed row edge-to-edge in
-     * the current viewport — the surface recomputes it each frame and
+     * the current viewport — recomputed for row / viewport / metric changes;
      * the toolbar's fit-width action applies it. A ~200-col TUI needs
      * well under 1.0 to be fully visible on a phone.
      */
     var fitWidthScale by mutableFloatStateOf(1f)
         internal set
+
+    /** Toolbar controls share the pinch bounds rather than duplicating them. */
+    val canDecreaseFontScale: Boolean
+        get() = fontScale > MIN_FONT_SCALE
+
+    val canIncreaseFontScale: Boolean
+        get() = fontScale < MAX_FONT_SCALE
+
+    fun adjustFontScale(delta: Float) {
+        applyFontScale(fontScale + delta)
+    }
 
     /**
      * Held while the last applied scale was the fit-width value — the
@@ -931,9 +990,9 @@ class TerminalSurfaceState internal constructor(
     }
 
     /**
-     * `revealFindMatch`'s scroll — center [row] in the viewport, release
-     * the pin, then re-derive it from the landed position (a match already
-     * at the bottom edge keeps follow-live).
+     * Center a Find match in the held reading frame. Even a match at the
+     * bottom stays paused: only explicit return-to-live may replace the
+     * corpus while the user is searching.
      */
     suspend fun revealRow(row: Int) {
         val rowHeight = rowHeightPx
@@ -946,13 +1005,12 @@ class TerminalSurfaceState internal constructor(
             // Instant like Lerdr's `scrollTop =` assignment — stepping
             // through matches shouldn't animate between jumps.
             scrollState.scrollTo(target.toInt())
-            stickToBottom = scrollState.maxValue - scrollState.value < stickThresholdPx
         } finally {
             programmaticScrolls -= 1
         }
     }
 
-    /** Follow-live tick — the revision effect pins to the write edge. */
+    /** Follow-live scroll — called after layout publishes the write-edge bounds. */
     internal suspend fun scrollToBottom() {
         programmaticScrolls += 1
         try {
@@ -967,8 +1025,9 @@ class TerminalSurfaceState internal constructor(
      * the follow-live pin (Lerdr's scrollToBottom button).
      */
     suspend fun scrollToLive() {
+        clearSelection()
+        stickToBottom = true
         scrollToBottom()
-        stickToBottom = scrollState.maxValue - scrollState.value < stickThresholdPx
     }
 }
 
