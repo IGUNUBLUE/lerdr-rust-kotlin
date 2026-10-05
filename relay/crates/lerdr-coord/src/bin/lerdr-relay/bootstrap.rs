@@ -47,7 +47,7 @@ pub fn os_fill(buf: &mut [u8]) {
         .expect("OS RNG failure is unrecoverable");
 }
 
-fn now_ms() -> i64 {
+pub(super) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)

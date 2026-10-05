@@ -9,6 +9,12 @@ The `protocol v3` / `herdr-e2ee-v2` wire contract remains frozen.
 
 ## [Unreleased]
 
+### Added
+
+- `lerdr-relay pairing qr` discovers the installed user service and its actual
+  Tailscale HTTPS or TCP route, rearms one ten-minute invitation, and prints
+  the native Android QR/link without rotating keys or revoking existing phones.
+
 ### Changed
 
 - Terminal geometry follows the phone for OpenCode, Codex, omp and other

@@ -63,7 +63,24 @@ one omp process.
 
 ## How the setup QR is produced
 
-The chain, end to end:
+With the installed user service running, print another QR directly:
+
+```sh
+lerdr-relay pairing qr
+```
+
+The native command reads the running systemd service configuration on Linux,
+or the shipped LaunchAgent's environment file on macOS. It detects an existing
+Tailscale HTTPS root proxy or TCP forward to the relay's actual port, sends
+`SIGUSR1`, and waits for the fresh invitation before printing `lerdr://pair`.
+It does not configure Tailscale, restart the relay, rotate its key, or revoke
+phones. Missing or ambiguous TCP routes fail before rearming. A valid HTTPS
+root proxy takes precedence over TCP; subpath proxies and `/ws` overrides
+are not supported.
+Treat the QR and link as secrets. This command is unreleased; published 1.0.0
+does not include it.
+
+The existing plugin action's script chain:
 
 1. `tailscale-serve.sh start` (Setup menu → Tailscale Serve, or the
    `tailscale-setup` action) publishes the relay on this machine's tailnet

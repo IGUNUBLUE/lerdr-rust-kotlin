@@ -10,6 +10,7 @@
 mod bootstrap;
 mod config;
 mod hooks;
+mod pairing;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -49,6 +50,11 @@ enum Commands {
     /// Flags override the environment; LERDR_* variables override the
     /// legacy HERDR_* spellings (see config.rs for the full list).
     Serve(ServeArgs),
+    /// Manage invitations through the installed user service.
+    Pairing {
+        #[command(subcommand)]
+        command: PairingCommand,
+    },
     /// Print version (optionally as JSON).
     Version {
         /// Emit `{"version":…,"revision":…}` JSON.
@@ -208,6 +214,12 @@ enum Commands {
         #[command(subcommand)]
         command: IntegrationCommand,
     },
+}
+
+#[derive(Subcommand)]
+enum PairingCommand {
+    /// Rearm one invitation and print its QR using the actual Tailscale route.
+    Qr,
 }
 
 #[derive(Subcommand)]
@@ -384,6 +396,9 @@ fn run_hook(command: Commands) -> ExitCode {
             }
             Ok(())
         }
+        Commands::Pairing {
+            command: PairingCommand::Qr,
+        } => pairing::qr(),
         Commands::EventHook => hooks::event_hook().map_err(Into::into),
         Commands::StartupHook => hooks::startup_hook().map_err(Into::into),
         Commands::SetupFragment {
