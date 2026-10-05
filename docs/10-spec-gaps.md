@@ -1714,3 +1714,17 @@ negotiated, and exercised end-to-end on both sides.
 - **Contract unchanged**: protocol v3, E2EE v2 and committed vectors remain
   frozen. Audit observations do not authorize new wire fields or fallback
   session identities.
+
+## Native pairing QR command
+
+- `pairing qr` targets the running `lerdr.service` user unit on Linux or the
+  shipped `com.lerdr.service` LaunchAgent on macOS. Linux resolves the live
+  process environment and serve flags; macOS loads the LaunchAgent's trusted
+  environment file using its wrapper's shell convention.
+- Tailscale route discovery prefers a same-node HTTPS root proxy to the relay
+  port, otherwise requires one matching loopback TCP forward. Subpath-only,
+  unrelated, missing, and ambiguous TCP routes are not guessed or changed.
+- Only the daemon mutates the store, through its existing `SIGUSR1` handler.
+  The CLI reads the persisted fresh, unredeemed invitation and rejects expiry
+  or a concurrent service restart. Credentials, bootstrap keys, and the frozen
+  wire contract are unchanged.

@@ -111,10 +111,15 @@ tailscale serve --bg --tcp=8377 tcp://localhost:8377
 
 ### Pair the app
 
+With the installed user service running and a Tailscale Serve route configured:
+
 ```sh
-./target/release/lerdr-relay qr        # prints a one-shot link/QR
-kill -USR1 <relay-pid>                 # re-arm a fresh invitation
+./target/release/lerdr-relay pairing qr
 ```
+
+The command discovers the service's relay port and published HTTPS or TCP route,
+rearms one invitation, and prints its QR and private `lerdr://pair` link.
+Existing phone credentials and the bootstrap key remain unchanged.
 
 Scan in the app → `1 computer · live`.
 
