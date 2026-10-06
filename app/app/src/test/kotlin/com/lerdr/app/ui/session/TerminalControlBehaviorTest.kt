@@ -9,8 +9,10 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.click
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTouchInput
 import com.lerdr.app.session.TerminalContent
 import com.lerdr.app.session.TerminalUiState
 import com.lerdr.core.designsystem.theme.LerdrTheme
@@ -64,6 +66,16 @@ class TerminalControlBehaviorTest {
         composeRule.runOnIdle { assertEquals(emptyList<List<String>>(), keys) }
         composeRule.onNodeWithText("Send Ctrl+D").performClick()
         composeRule.runOnIdle { assertEquals(listOf(listOf("Ctrl+D")), keys) }
+    }
+
+    @Test
+    fun enterSendsDirectlyFromKeyBarWithoutOpeningSheet() {
+        val keys = mutableListOf<List<String>>()
+        show(mutableStateOf(controller()), keys)
+        composeRule.onNodeWithText("Enter").assertIsEnabled().performTouchInput { click(center) }
+        composeRule.onNodeWithText("Esc").performTouchInput { click(center) }
+        composeRule.runOnIdle { assertEquals(listOf(listOf("Enter"), listOf("Escape")), keys) }
+        composeRule.onNodeWithText("C-c").assertDoesNotExist()
     }
 
     @Test
