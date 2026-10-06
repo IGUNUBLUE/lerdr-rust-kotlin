@@ -767,7 +767,7 @@ internal fun SessionFindBar(
 }
 
 /**
- * Esc Tab arrows Enter ⌫ Ctrl ⌨ — the mockup's single special-keys bar.
+ * Esc Tab arrows Enter Backspace Ctrl ⌨ — the mockup's single special-keys bar.
  * Every chip enforces the 48 dp touch target; [enabled] is the reader
  * gate (`readOnly` in Lerdr — mutating affordances stay reachable
  * but inert so the bar's layout doesn't jump between roles).
@@ -819,10 +819,17 @@ private fun SpecialKeysBar(
                 horizontalArrangement = Arrangement.spacedBy(spacing.extraSmall),
                 modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
             ) {
-                SPECIAL_KEYS.forEach { (label, key) ->
+                // Enter stays pinned beside ⋯/⌨ — interactive prompts
+                // (arrows + Enter) need it in one tap, not scrolled away.
+                SPECIAL_KEYS.filter { it.second != "Enter" }.forEach { (label, key) ->
                     KeyButton(label = label, onClick = { onSendKeys(listOf(key)) }, enabled = enabled)
                 }
             }
+            KeyButton(
+                label = "Enter",
+                onClick = { onSendKeys(listOf("Enter")) },
+                enabled = enabled,
+            )
             KeyButton(label = null, onClick = onCtrlLongPress, enabled = enabled) {
                 Icon(Icons.Default.MoreHoriz, contentDescription = "More terminal keys")
             }
@@ -950,7 +957,7 @@ private val SPECIAL_KEYS = listOf(
     "↑" to "Up",
     "→" to "Right",
     "Enter" to "Enter",
-    "⌫" to "Backspace",
+    "Backspace" to "Backspace",
 )
 
 private val CTRL_COMBOS = listOf("C-c", "C-d", "C-z", "C-l", "C-r")
