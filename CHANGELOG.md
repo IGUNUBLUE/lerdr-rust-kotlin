@@ -9,6 +9,15 @@ The `protocol v3` / `herdr-e2ee-v2` wire contract remains frozen.
 
 ## [Unreleased]
 
+## [1.1.1] — 2026-10-05
+
+### Fixed
+
+- Terminal key bar keeps `Enter` pinned beside the ⋯ overflow and ⌨ keyboard
+  buttons — interactive prompts (arrows + Enter) no longer require opening
+  the overflow sheet — and `Backspace` is labeled in text so its glyph is
+  not confused with the software-keyboard affordance.
+
 ## [1.1.0] — 2026-10-05
 
 ### Added
