@@ -1728,3 +1728,32 @@ negotiated, and exercised end-to-end on both sides.
   The CLI reads the persisted fresh, unredeemed invitation and rejects expiry
   or a concurrent service restart. Credentials, bootstrap keys, and the frozen
   wire contract are unchanged.
+
+## Terminal control density (2026-10)
+
+- The scrolling key strip hid prompt navigation behind Esc/Tab while four
+  fixed controls consumed the phone width. The compact bar now keeps Ctrl,
+  Up, Down, Enter and More visible. Every other key remains in the additional
+  panel; both layouts wrap at larger system text sizes. Arrow icons have
+  spoken direction labels. Tapping the editor or terminal opens the IME.
+- Connection authority and viewport dimensions share one wrapping caption.
+  Reader sessions omit the inert editor and key bar, preserving the terminal
+  for scrolling, selection and Find. Offline controllers retain editable
+  drafts and disabled dispatch. Secret handling and Ctrl+C/D confirmation
+  retain their existing boundaries.
+- Before correction, the Compose regressions reproduced an offscreen Up key
+  and the Reader's unwanted editor. They passed afterward. Roborazzi covers
+  ordinary, read-only, offline, reconnecting and secret states, plus 200%
+  system text. `./gradlew test` completed 1206 tests with no failures and two
+  skipped live gates; debug/release builds and all app Roborazzi checks passed.
+- The separate signed/minified test package on a physical Moto G85 used the
+  real Rust relay and an owned interactive terminal. Native logs confirmed
+  Down, Up, Enter, Escape and exact `alpha omega` delivery. Hiding/reopening
+  the IME retained that draft; completed delivery cleared it. Explicit Pause
+  held the same visible text across a native output update, and Return to live
+  exposed that update. Ctrl+C cancellation sent nothing. Controls remained
+  visible at 200% system text; the original scale was restored. Reader and
+  offline coverage here is local, not additional physical acceptance.
+- Rollback is limited to TerminalScreen, its control/screenshot tests and
+  corresponding goldens, plus these design decisions. No relay, transport,
+  persisted draft policy or frozen protocol vector changed.

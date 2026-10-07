@@ -5,6 +5,7 @@ import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -73,9 +74,24 @@ class TerminalControlBehaviorTest {
         val keys = mutableListOf<List<String>>()
         show(mutableStateOf(controller()), keys)
         composeRule.onNodeWithText("Enter").assertIsEnabled().performTouchInput { click(center) }
-        composeRule.onNodeWithText("Esc").performTouchInput { click(center) }
-        composeRule.runOnIdle { assertEquals(listOf(listOf("Enter"), listOf("Escape")), keys) }
+        composeRule.onNodeWithContentDescription("Up").assertIsDisplayed().performTouchInput { click(center) }
+        composeRule.onNodeWithContentDescription("Down").assertIsDisplayed().performTouchInput { click(center) }
+        composeRule.runOnIdle {
+            assertEquals(listOf(listOf("Enter"), listOf("Up"), listOf("Down")), keys)
+        }
         composeRule.onNodeWithText("C-c").assertDoesNotExist()
+    }
+
+    @Test
+    fun extraKeysRemainReachableWithoutHorizontalScrolling() {
+        val keys = mutableListOf<List<String>>()
+        show(mutableStateOf(controller()), keys)
+        composeRule.onNodeWithContentDescription("More terminal keys").performClick()
+        composeRule.onNodeWithText("Esc").assertIsDisplayed().performClick()
+        composeRule.runOnIdle { assertEquals(listOf(listOf("Escape")), keys) }
+        composeRule.onNodeWithContentDescription("More terminal keys").performClick()
+        composeRule.onNodeWithText("Tab").assertIsDisplayed().performClick()
+        composeRule.runOnIdle { assertEquals(listOf(listOf("Escape"), listOf("Tab")), keys) }
     }
 
     @Test
@@ -100,8 +116,9 @@ class TerminalControlBehaviorTest {
         val keys = mutableListOf<List<String>>()
         val state = mutableStateOf(controller().copy(canControl = false))
         show(state, keys)
-        composeRule.onNodeWithTag("terminalInputField").assertIsNotEnabled()
-        composeRule.onNodeWithContentDescription("More terminal keys").assertIsNotEnabled()
+        composeRule.onNodeWithTag("terminalInputField").assertDoesNotExist()
+        composeRule.onNodeWithContentDescription("More terminal keys").assertDoesNotExist()
+        composeRule.onNodeWithText("Observing · read-only").assertIsDisplayed()
         composeRule.runOnIdle { state.value = controller().copy(noEcho = true, secretInputSupported = false) }
         composeRule.onNodeWithTag("terminalInputField").assertDoesNotExist()
         composeRule.onNodeWithTag("terminalSecretField").assertIsNotEnabled()

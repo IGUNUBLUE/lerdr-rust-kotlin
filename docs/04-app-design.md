@@ -103,9 +103,11 @@ Data: `get_conversation_history` pages + `question`/attention events +
   holds the displayed frame, including in-place TUI redraws. Clearing a
   selection keeps that reading frame. **New output · Return to live**
   resumes the latest frame; keyboard/font changes follow settled bounds.
-- **Special keys**: pinned Ctrl and horizontally scrollable Esc, Tab, arrows,
-  Enter and Backspace. **More terminal keys** exposes every key and Ctrl
-  combinations without horizontal hunting. Ctrl then an ASCII letter
+- **Special keys**: a compact Ctrl, Up, Down, Enter and **More terminal keys**
+  row keeps prompt navigation visible without scrolling. The additional panel
+  exposes Esc, Tab, horizontal arrows, Backspace and Ctrl combinations. Both
+  layouts wrap when larger system text needs room. Tap the editor or terminal
+  to open the keyboard; no duplicate keyboard button. Ctrl then an ASCII letter
   sends the chord without altering the draft; Ctrl+C and Ctrl+D require
   confirmation. Disconnecting clears pending chords and confirmations.
 - **Editor**: local text, caret and selection survive keyboard hide/show.
@@ -114,8 +116,10 @@ Data: `get_conversation_history` pages + `question`/attention events +
   nothing queues for automatic resend. Secret drafts remain masked,
   non-saveable, and never fall back to ordinary text submission.
 - **Connection state**: Controlling, Observing (read-only), Connecting,
-  Reconnecting and Offline remain visible. Offline controllers can edit a
-  draft, but sending and terminal keys are disabled; Readers cannot edit.
+  Reconnecting and Offline share one caption with viewport dimensions above
+  the terminal. The caption wraps at larger text sizes. Offline controllers can edit a
+  draft, but sending and terminal keys are disabled. Readers have the full
+  reading viewport, without an inert editor or key bar.
 - **Phone geometry**: `adjustResize` preserves the header and editor above
   the IME. Measured columns/rows lease the native VT and PTY together for
   OpenCode, Codex, omp and other providers, independent of desktop split
@@ -143,9 +147,9 @@ Autosize field, per-agent drafts, attach button (camera/gallery/files →
 chunked `upload_*` with progress cards), slash-command autocomplete
 (bottom-sheet picker with search — `list_slash_commands`), voice input
 (STT → text). Send = `submit_prompt` for Feed. Terminal uses its local
-draft editor and completed-delivery policy above. Reader role hides
-mutating Feed affordances; Terminal retains inert controls and an explicit
-read-only state.
+  draft editor and completed-delivery policy above. Reader role hides
+  mutating Feed affordances and Terminal input controls, retaining an explicit
+  read-only state.
 
 ## Notifications → deep links
 
