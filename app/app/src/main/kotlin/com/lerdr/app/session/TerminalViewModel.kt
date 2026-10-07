@@ -9,16 +9,13 @@ import com.lerdr.app.ui.terminal.TerminalRowUi
 import com.lerdr.app.ui.terminal.parseTerminalRows
 import com.lerdr.app.ui.terminal.terminalCursor
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import lerdr.core.model.ClientCapabilities
@@ -93,7 +90,6 @@ data class TerminalUiState(
  * lifetime, forwards key/input actions, and negotiates the size lease when
  * the view reports its measured grid.
  */
-@OptIn(FlowPreview::class)
 class TerminalViewModel(
     private val paneId: String,
     private val sessions: SessionRepository,
@@ -209,11 +205,15 @@ class TerminalViewModel(
     val terminalFontScale: StateFlow<Float> = appPreferences.terminalFontScale
         .stateIn(viewModelScope, SharingStarted.Eagerly, 1f)
 
-    /** Raw zoom reports — conflated to the latest, then debounced. */
-    private val fontScaleWrites = MutableStateFlow<Float?>(null)
+    /** A finite write outlives a quick exit without retaining a closed screen forever. */
+    private var fontScaleWriteJob: Job? = null
 
     fun persistFontScale(scale: Float) {
-        fontScaleWrites.value = scale
+        fontScaleWriteJob?.cancel()
+        fontScaleWriteJob = appScope.launch {
+            delay(FONT_SCALE_PERSIST_MS)
+            appPreferences.setTerminalFontScale(scale)
+        }
     }
 
     init {
@@ -249,13 +249,6 @@ class TerminalViewModel(
                 if (!hidden && leasedColumns > 0) {
                     acquireLease(measuredColumns, measuredRows)
                 }
-            }
-        }
-        // appScope, like the lease jobs: a fast back-out must not drop the
-        // write the pinch just produced.
-        appScope.launch {
-            fontScaleWrites.filterNotNull().debounce(FONT_SCALE_PERSIST_MS).collect {
-                appPreferences.setTerminalFontScale(it)
             }
         }
         // A restored terminal may measure before inventory or authenticated control is ready.
