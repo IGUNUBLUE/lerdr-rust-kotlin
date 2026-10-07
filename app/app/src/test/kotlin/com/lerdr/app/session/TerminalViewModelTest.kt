@@ -7,6 +7,7 @@ import com.google.common.truth.Truth.assertThat
 import com.lerdr.app.ui.terminal.TerminalCursorUi
 import java.io.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
@@ -907,6 +908,29 @@ class TerminalViewModelTest {
         advanceTimeBy(1_000)
         runCurrent()
         await { h.preferences.terminalFontScale.first() == 1.8f }
+    }
+
+    @Test
+    fun `closing terminal saves latest zoom and finishes its background jobs`() = runTest {
+        val h = Harness(this, tmp.root)
+        h.connectReady()
+        val scopeJob = backgroundScope.coroutineContext[Job]!!
+        val before = scopeJob.children.toSet()
+        val viewModel = TerminalViewModel(h.paneId, h.repository, backgroundScope, h.preferences)
+        val store = ViewModelStore().apply { put("terminal", viewModel) }
+        h.pump()
+        viewModel.persistFontScale(1.2f)
+        h.pump()
+        advanceTimeBy(200)
+        viewModel.persistFontScale(1.6f)
+        h.pump()
+        val screenJobs = scopeJob.children.filter { it !in before }.toList()
+        store.clear()
+        h.pump()
+        advanceTimeBy(1000)
+        h.pump()
+        assertThat(h.preferences.terminalFontScale.first()).isEqualTo(1.6f)
+        assertThat(screenJobs.filter { it.isActive }).isEmpty()
     }
 
     /** Real-clock poll — DataStore writes are off the test scheduler. */

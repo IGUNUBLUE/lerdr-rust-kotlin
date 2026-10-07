@@ -5,10 +5,14 @@ import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.click
 import androidx.compose.ui.unit.dp
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import kotlinx.coroutines.runBlocking
@@ -251,5 +255,31 @@ class TerminalSurfaceBehaviorTest {
             assertFalse(state.hasNewOutput)
             assertEquals(position, state.scrollState.value)
         }
+    }
+
+    @Test
+    fun tapsUseCurrentCallbackAfterRecomposition() {
+        val allowed = mutableStateOf(true)
+        var controlTaps = 0
+        composeRule.setContent {
+            val canControl = allowed.value
+            LerdrTheme {
+                TerminalSurface(
+                    rows = parseTerminalRows(listOf("native prompt"), TERMINAL_FORMAT_ANSI),
+                    cursor = null,
+                    revision = 1,
+                    state = state,
+                    onTapSurface = { if (canControl) controlTaps++ },
+                    modifier = Modifier.fillMaxWidth().height(240.dp).testTag("surface"),
+                )
+            }
+        }
+        composeRule.onNodeWithTag("surface").performTouchInput { click(center) }
+        composeRule.runOnIdle {
+            assertEquals(1, controlTaps)
+            allowed.value = false
+        }
+        composeRule.onNodeWithTag("surface").performTouchInput { click(center) }
+        composeRule.runOnIdle { assertEquals(1, controlTaps) }
     }
 }

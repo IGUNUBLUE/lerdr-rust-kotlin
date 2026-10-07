@@ -1757,3 +1757,30 @@ negotiated, and exercised end-to-end on both sides.
 - Rollback is limited to TerminalScreen, its control/screenshot tests and
   corresponding goldens, plus these design decisions. No relay, transport,
   persisted draft policy or frozen protocol vector changed.
+## Terminal interaction lifecycle (2026-10)
+
+- A long-lived pointer-input handler must read the current surface-tap
+  callback after recomposition. Its previous capture retained the earlier
+  control decision when the screen changed to Reader. `rememberUpdatedState`
+  updates that callback without restarting an in-progress gesture. A Compose
+  regression reproduced two control callbacks instead of one before the fix,
+  then passed with the current callback.
+- Zoom persistence keeps the existing 400ms debounce and survives a quick
+  screen exit. Each change now replaces a finite application-scope write;
+  the old indefinite flow collector retained a closed TerminalViewModel.
+  The lifecycle regression reproduced an active job after clearing the
+  ViewModelStore. After correction, the latest zoom is saved and the
+  screen's background jobs finish. Process-death durability before a pending
+  write completes is not added by this change.
+- Full Android tests completed 1208 tests with no failures and two skipped
+  live gates; the debug build and all Roborazzi checks passed. These lifecycle
+  fixes do not require new screenshot goldens. Role-transition callback and
+  job-retention acceptance is local; no live credential role was changed.
+- The updated separate signed/minified test package on the Moto G85 retained
+  110% terminal zoom after leaving and reopening an owned live pane. Zoom was
+  restored to 100% and the owned workspace closed. The native Back sequence
+  dismissed the sheet before leaving the screen, so sub-400ms exit acceptance
+  comes from the local lifecycle regression, not this physical observation.
+- Rollback for this follow-up comprises TerminalSurface, TerminalViewModel,
+  their two regression tests and this note. Wire fields, fixtures, relay
+  behavior and stored preference formats remain unchanged.

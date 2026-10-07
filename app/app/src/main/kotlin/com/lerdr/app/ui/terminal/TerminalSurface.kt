@@ -129,6 +129,7 @@ fun TerminalSurface(
     val context = LocalContext.current
     val viewConfiguration = LocalViewConfiguration.current
     val menuScope = rememberCoroutineScope()
+    val currentOnTapSurface by rememberUpdatedState(onTapSurface)
     val baseStyle: TextStyle = LerdrTextStyles.terminal.let { style ->
         // Pinch zoom rescales the font — the metrics re-probe below turns
         // it into a new grid, which re-leases the pane size.
@@ -386,7 +387,7 @@ fun TerminalSurface(
                             when {
                                 insideText != null -> openMenu(point, insideText)
                                 state.hasSelection -> state.clearSelection()
-                                else -> onTapSurface()
+                                else -> currentOnTapSurface()
                             }
                         },
                     )
