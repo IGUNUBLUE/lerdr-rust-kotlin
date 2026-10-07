@@ -57,8 +57,9 @@ Everything else stacks on top with predictive back.
 
 - **Computers tab**: one row per connected relay — label, transport,
   live status/RTT, agent count; FAB pairs a new device. Read-only glance:
-  fine management (reconnect/forget/rename/revoke) stays in Settings →
-  Devices. Replaces the old relays carousel at the bottom of Home.
+  tapping a row opens that computer's management detail, shared with
+  Settings. Back returns to Computers. Replaces the old relays carousel at
+  the bottom of Home.
 - Empty state: expressive illustration + "pair your first computer" CTA
   → QR scanner.
 
@@ -204,7 +205,10 @@ Current reachability is narrower than that product checklist:
 - Question clarification needs a genuine provider form exposing `can_chat`;
   the audited Codex multi-question form supports answer/next/back, not clarify.
 - Activity is a bounded refresh/filter view, not a paginated or clear-history
-  screen. Response copy is omitted when the peer lacks its capability.
+  screen. Per-computer filtering remains available with one computer, alongside
+  All for retained local events. Event headlines and details wrap so recovery
+  instructions stay readable at larger text sizes. Response copy is omitted
+  when the peer lacks its capability.
 - Diagnostics export has no production UI entry.
 
 These gaps are not feature acceptance or permission to synthesize capabilities.

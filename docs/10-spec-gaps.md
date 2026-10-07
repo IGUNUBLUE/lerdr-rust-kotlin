@@ -1757,6 +1757,7 @@ negotiated, and exercised end-to-end on both sides.
 - Rollback is limited to TerminalScreen, its control/screenshot tests and
   corresponding goldens, plus these design decisions. No relay, transport,
   persisted draft policy or frozen protocol vector changed.
+
 ## Terminal interaction lifecycle (2026-10)
 
 - A long-lived pointer-input handler must read the current surface-tap
@@ -1784,3 +1785,51 @@ negotiated, and exercised end-to-end on both sides.
 - Rollback for this follow-up comprises TerminalSurface, TerminalViewModel,
   their two regression tests and this note. Wire fields, fixtures, relay
   behavior and stored preference formats remain unchanged.
+
+## App navigation and readable controls (2026-10)
+
+- Computers rows now pass the selected relay ID to the existing RelayDetail
+  destination, instead of replacing Computers with generic Settings. Back
+  retains the originating Computers list. A two-computer Compose/navigation
+  regression covers selecting the offline and online rows independently.
+  The previous extra Settings step was also reproduced on the physical phone.
+- Editing the pairing link explicitly replaces an inherited deep-link target.
+  The preview, validity and Connect callback use the same source. Invalid or
+  cleared replacement text does not silently restore the earlier target; a
+  changed navigation setup link resets this editing decision. An untouched
+  deep link still requires Connect. Two regressions reproduced ignored edits
+  before correction; all three pairing interaction tests pass afterward.
+- Activity retains All and per-computer filters with one enrolled computer,
+  since local history may include older, removed computers. Its headlines and
+  details wrap rather than ellipsizing recovery instructions. Regressions
+  reproduced the missing single-computer filter and a clipped re-pair
+  instruction at 200% text, then passed after correction.
+- The Files working-directory copy control reserves at least 48dp in both
+  dimensions and centers its label. The previous control measured below 48dp
+  vertically; its regression now passes. Passive metadata keeps compact
+  geometry. Existing file navigation, preview Back and clipboard payload are
+  unchanged.
+- Full local validation completed 1215 tests with no failures and two skipped
+  live gates (1213 executed), debug assembly and all Roborazzi checks. New
+  screenshots cover pairing replacement, single-computer filtering and 200%
+  recovery text; affected Files browser and Activity goldens were reviewed.
+  Agents, Feed and Settings were reviewed against their current implementations
+  and existing empty/reader/attention/attachment/error/large-text coverage;
+  no additional defect was reproduced in this pass. This is a bounded audit,
+  not acceptance of every provider or device state.
+- The separate signed/minified test package on the Moto G85 reproduced the
+  old Computers-to-Settings detour before update. After update it opened the
+  selected computer detail and returned to Computers. Native Activity exposed
+  a checked single-computer filter at 200% text. Files read an owned directory,
+  opened a text file and returned to that directory; the working-directory
+  control measured 120px high at 400dpi (48dp). A synthetic pairing replacement
+  removed the inherited preview and showed the new computer/origin without
+  enrollment. Raw-pane Feed correctly reported absent conversation history;
+  genuine provider conversations remain locally covered in this pass. System
+  font scale and stay-awake settings were restored and the owned workspace
+  closed. No existing device credential was revoked or replaced.
+- This work adds no navigation framework, UI dependency, wire action, relay
+  change or protocol vector. Rollback comprises the Computers/MainActivity
+  callback, pairing edit state, Activity row/filter layout, Files copy target,
+  their tests/goldens and these design notes. Earlier terminal changes remain
+  a separate review unit.
