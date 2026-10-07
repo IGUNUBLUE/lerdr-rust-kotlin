@@ -20,7 +20,7 @@ id = "lerdr.events"
 name = "Lerdr"
 # Synced to the Rust workspace crates (relay/crates/*/Cargo.toml). Release PRs
 # bump it; the [[build]] hook resolves the matching v<version> release tag.
-version = "1.1.1"
+version = "1.1.2"
 
 # Herdr 0.7.5 introduced the live-agent facade used for atomic starts and prompts.
 min_herdr_version = "0.7.5"

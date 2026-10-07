@@ -9,6 +9,21 @@ The `protocol v3` / `herdr-e2ee-v2` wire contract remains frozen.
 
 ## [Unreleased]
 
+## [1.1.2] — 2026-10-07
+
+### Fixed
+
+- Terminal controls use a compact wrapping row and extra-key sheet. Reader
+  mode omits the inactive editor, and controls remain usable at 200% font.
+- Terminal taps use the current control decision after recomposition. Zoom
+  preference writes finish after screen exit without retaining closed screens.
+- Computers opens the selected relay details and returns to the list on Back.
+- Editing a setup link consistently replaces the original pairing target;
+  invalid or cleared input cannot silently restore it.
+- Activity keeps the computer filter with one relay and shows full recovery
+  instructions at large font sizes. Files directory actions meet the 48dp
+  touch target.
+
 ## [1.1.1] — 2026-10-05
 
 ### Fixed
