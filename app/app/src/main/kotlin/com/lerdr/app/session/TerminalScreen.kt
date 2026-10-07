@@ -3,10 +3,10 @@ package com.lerdr.app.session
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
@@ -28,7 +28,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FitScreen
-import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Lock
@@ -40,7 +39,6 @@ import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -77,6 +75,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -406,54 +405,40 @@ fun TerminalContent(
                         .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom),
                 ),
             ) {
-                Text(
-                    when {
-                        uiState.connected -> if (uiState.canControl) "Controlling" else "Observing · read-only"
-                        uiState.connecting -> if (uiState.waitingForContent) "Connecting…" else "Reconnecting… · input paused"
-                        else -> "Offline · input paused"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .semantics { liveRegion = LiveRegionMode.Polite }
-                        .padding(horizontal = spacing.medium, vertical = spacing.extraSmall),
-                )
-                if (secretActive) {
-                    SecretPromptBanner(
-                        prompt = secretPrompt,
-                        supported = uiState.secretInputSupported,
-                        modifier = Modifier.fillMaxWidth(),
+                if (uiState.canControl) {
+                    if (secretActive) {
+                        SecretPromptBanner(
+                            prompt = secretPrompt,
+                            supported = uiState.secretInputSupported,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    SpecialKeysBar(
+                        onSendKeys = ::requestKeys,
+                        ctrlLatched = ctrlLatched,
+                        enabled = controlReady,
+                        onCtrlTap = {
+                            ctrlLatched = !ctrlLatched
+                            if (ctrlLatched) showKeyboard()
+                        },
+                        onCtrlLongPress = { combosOpen = true },
+                    )
+                    TerminalInputBar(
+                        onSendText = onSendText,
+                        enabled = canEdit,
+                        canSend = controlReady,
+                        hint = when {
+                            !canEdit -> "Password input unsupported"
+                            !uiState.connected -> "Draft…"
+                            else -> "Text + Enter…"
+                        },
+                        focusRequester = inputFocus,
+                        ctrlLatched = ctrlLatched,
+                        onCtrlChord = ::sendCtrlChord,
+                        secretMode = secretActive,
+                        onSendSecret = onSendSecret,
                     )
                 }
-                SpecialKeysBar(
-                    onSendKeys = ::requestKeys,
-                    ctrlLatched = ctrlLatched,
-                    enabled = controlReady,
-                    keyboardEnabled = canEdit,
-                    onCtrlTap = {
-                        ctrlLatched = !ctrlLatched
-                        if (ctrlLatched) showKeyboard()
-                    },
-                    onCtrlLongPress = { combosOpen = true },
-                    onShowKeyboard = ::showKeyboard,
-                )
-                TerminalInputBar(
-                    onSendText = onSendText,
-                    enabled = canEdit,
-                    canSend = controlReady,
-                    hint = when {
-                        !uiState.canControl -> "Read-only session"
-                        !canEdit -> "Password input unsupported"
-                        !uiState.connected -> "Offline draft — sending paused"
-                        else -> "Text + Enter…"
-                    },
-                    focusRequester = inputFocus,
-                    ctrlLatched = ctrlLatched,
-                    onCtrlChord = ::sendCtrlChord,
-                    secretMode = secretActive,
-                    onSendSecret = onSendSecret,
-                )
             }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -486,21 +471,17 @@ fun TerminalContent(
                     modifier = Modifier.fillMaxSize(),
                 ) {
                     Column {
-                        // The mockup's pane meta row — the lease grid as a
-                        // ── pane N×M ── divider inside the surface card,
-                        // with the truncated / hidden-input markers.
-                        val metaLabel = paneMetaLabel(uiState)
-                        if (metaLabel != null) {
-                            PaneMetaRow(
-                                label = metaLabel,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(
-                                        horizontal = spacing.small,
-                                        vertical = spacing.extraSmall,
-                                    ),
-                            )
-                        }
+                        // One status row keeps connection authority and geometry
+                        // visible without taking another row from the editor.
+                        PaneMetaRow(
+                            label = paneMetaLabel(uiState),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(
+                                    horizontal = spacing.small,
+                                    vertical = spacing.extraSmall,
+                                ),
+                        )
                         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                             if (uiState.waitingForContent) {
                                 Column(modifier = Modifier.padding(spacing.medium)) {
@@ -777,16 +758,14 @@ private fun SpecialKeysBar(
     onSendKeys: (List<String>) -> Unit,
     ctrlLatched: Boolean,
     enabled: Boolean,
-    keyboardEnabled: Boolean,
     onCtrlTap: () -> Unit,
     onCtrlLongPress: () -> Unit,
-    onShowKeyboard: () -> Unit,
 ) {
     val spacing = LerdrTheme.spacing
     Surface(color = MaterialTheme.colorScheme.surfaceContainerLow) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
+        FlowRow(
             horizontalArrangement = Arrangement.spacedBy(spacing.extraSmall),
+            verticalArrangement = Arrangement.spacedBy(spacing.extraSmall),
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = spacing.small, vertical = spacing.extraSmall),
@@ -815,26 +794,25 @@ private fun SpecialKeysBar(
                     Text(if (ctrlLatched) "Ctrl ●" else "Ctrl", style = MaterialTheme.typography.labelLarge)
                 }
             }
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(spacing.extraSmall),
-                modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
-            ) {
-                // Enter stays pinned beside ⋯/⌨ — interactive prompts
-                // (arrows + Enter) need it in one tap, not scrolled away.
-                SPECIAL_KEYS.filter { it.second != "Enter" }.forEach { (label, key) ->
-                    KeyButton(label = label, onClick = { onSendKeys(listOf(key)) }, enabled = enabled)
-                }
+            // Prompt navigation and confirmation stay visible on a phone.
+            // Esc, Tab and editing keys live in the complete keys sheet.
+            listOf("↑" to "Up", "↓" to "Down", "Enter" to "Enter").forEach { (label, key) ->
+                KeyButton(
+                    label = if (key == "Enter") label else null,
+                    onClick = { onSendKeys(listOf(key)) },
+                    enabled = enabled,
+                    content = if (key == "Enter") null else {
+                        {
+                            Icon(
+                                if (key == "Up") Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                contentDescription = key,
+                            )
+                        }
+                    },
+                )
             }
-            KeyButton(
-                label = "Enter",
-                onClick = { onSendKeys(listOf("Enter")) },
-                enabled = enabled,
-            )
             KeyButton(label = null, onClick = onCtrlLongPress, enabled = enabled) {
                 Icon(Icons.Default.MoreHoriz, contentDescription = "More terminal keys")
-            }
-            KeyButton(label = null, onClick = onShowKeyboard, enabled = keyboardEnabled) {
-                Icon(Icons.Default.Keyboard, contentDescription = "Show keyboard")
             }
         }
     }
@@ -864,7 +842,17 @@ private fun KeyButton(
         enabled = enabled,
         modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp),
     ) {
-        Box(contentAlignment = Alignment.Center) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.semantics {
+                when (label) {
+                    "↑" -> contentDescription = "Up"
+                    "↓" -> contentDescription = "Down"
+                    "←" -> contentDescription = "Left"
+                    "→" -> contentDescription = "Right"
+                }
+            },
+        ) {
             if (content != null) {
                 content()
             } else {
@@ -898,25 +886,23 @@ private fun TerminalKeysSheet(
                 style = MaterialTheme.typography.titleLarge,
                 modifier = Modifier.padding(horizontal = LerdrTheme.spacing.medium),
             )
-            for (start in SPECIAL_KEYS.indices step 4) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(LerdrTheme.spacing.small),
-                    modifier = Modifier.padding(
-                        horizontal = LerdrTheme.spacing.medium,
-                        vertical = LerdrTheme.spacing.extraSmall,
-                    ),
-                ) {
-                    for (index in start until minOf(start + 4, SPECIAL_KEYS.size)) {
-                        val (label, key) = SPECIAL_KEYS[index]
-                        KeyButton(
-                            label = label,
-                            enabled = true,
-                            onClick = {
-                                onSendKeys(listOf(key))
-                                onDismiss()
-                            },
-                        )
-                    }
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(LerdrTheme.spacing.small),
+                verticalArrangement = Arrangement.spacedBy(LerdrTheme.spacing.extraSmall),
+                modifier = Modifier.padding(
+                    horizontal = LerdrTheme.spacing.medium,
+                    vertical = LerdrTheme.spacing.extraSmall,
+                ),
+            ) {
+                SPECIAL_KEYS.forEach { (label, key) ->
+                    KeyButton(
+                        label = label,
+                        enabled = true,
+                        onClick = {
+                            onSendKeys(listOf(key))
+                            onDismiss()
+                        },
+                    )
                 }
             }
             CTRL_COMBOS.forEach { combo ->
@@ -947,7 +933,7 @@ private fun TerminalKeysSheet(
  * label → wire key name (`send_keys` passes names through; Herdr's
  * vocabulary is Up/Down/Left/Right/Esc/Enter/Tab/Backspace — Lerdr's
  * `sendTerminalKey` spellings). Ctrl is not here — it's the latching
- * modifier pinned before the scrollable keys.
+ * modifier pinned beside the prompt navigation keys.
  */
 private val SPECIAL_KEYS = listOf(
     "Esc" to "Escape",
@@ -963,49 +949,37 @@ private val SPECIAL_KEYS = listOf(
 private val CTRL_COMBOS = listOf("C-c", "C-d", "C-z", "C-l", "C-r")
 
 /**
- * The mockup's `─── pane 92×42 ───` divider row — session meta as a
- * terminal-styled caption flanked by rules inside the surface card.
- * Shows the leased grid, then the markers the frame flagged.
+ * A quiet status caption above the terminal. It can wrap at larger system
+ * text sizes so connection and read-only notices remain fully readable.
  */
 @Composable
 private fun PaneMetaRow(label: String, modifier: Modifier = Modifier) {
     val colors = LerdrTheme.extendedColors
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier) {
-        HorizontalDivider(
-            modifier = Modifier.weight(1f),
-            color = colors.terminalAccent.copy(alpha = 0.25f),
-        )
-        Text(
-            label,
-            style = MaterialTheme.typography.labelSmall,
-            color = colors.terminalAccent.copy(alpha = 0.8f),
-            maxLines = 1,
-            modifier = Modifier.padding(horizontal = LerdrTheme.spacing.small),
-        )
-        HorizontalDivider(
-            modifier = Modifier.weight(1f),
-            color = colors.terminalAccent.copy(alpha = 0.25f),
-        )
-    }
+    Text(
+        label,
+        style = MaterialTheme.typography.labelSmall,
+        color = colors.terminalAccent.copy(alpha = 0.8f),
+        modifier = modifier.semantics { liveRegion = LiveRegionMode.Polite },
+    )
 }
 
-/** `pane 92×42` + `truncated` + `hidden input` — null when nothing applies. */
-private fun paneMetaLabel(uiState: TerminalUiState): String? {
-    val parts = buildList {
-        if (uiState.leaseColumns > 0) {
-            add(
-                if (uiState.leaseRows > 0) {
-                    "pane ${uiState.leaseColumns}×${uiState.leaseRows}"
-                } else {
-                    "pane ${uiState.leaseColumns} cols"
-                },
-            )
-        }
-        if (uiState.truncated) add("truncated")
-        if (uiState.noEcho) add("hidden input")
+/** Connection authority and frame metadata share one line above the viewport. */
+private fun paneMetaLabel(uiState: TerminalUiState): String = buildList {
+    add(
+        when {
+            uiState.connected -> if (uiState.canControl) "Controlling" else "Observing · read-only"
+            uiState.connecting -> if (uiState.waitingForContent) "Connecting…" else "Reconnecting… · input paused"
+            else -> "Offline · input paused"
+        },
+    )
+    if (uiState.leaseColumns > 0 && uiState.connected) {
+        add(
+            if (uiState.leaseRows > 0) "${uiState.leaseColumns}×${uiState.leaseRows}"
+            else "${uiState.leaseColumns} cols",
+        )
     }
-    return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
-}
+    if (uiState.truncated) add("truncated")
+}.joinToString(" · ")
 
 /**
  * Lerdr's `.secret-prompt` section — explains that the pane is asking

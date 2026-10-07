@@ -5,7 +5,12 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.lerdr.app.session.TerminalContent
@@ -67,21 +72,24 @@ class TerminalScreenScreenshotTest {
         revision = 1,
     )
 
-    private fun show(uiState: TerminalUiState, fontScale: Float = 1f) {
+    private fun show(uiState: TerminalUiState, fontScale: Float = 1f, systemFontScale: Float = 1f) {
         composeRule.setContent {
-            LerdrTheme {
-                TerminalContent(
-                    uiState = uiState,
-                    onOpenFeed = {},
-                    onOpenFiles = {},
-                    onBack = {},
-                    onSendKeys = {},
-                    onSendText = { true },
-                    onSendSecret = { true },
-                    onViewportMeasured = { _, _ -> },
-                    onRefresh = {},
-                    terminalFontScale = fontScale,
-                )
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density, systemFontScale)) {
+                LerdrTheme {
+                    TerminalContent(
+                        uiState = uiState,
+                        onOpenFeed = {},
+                        onOpenFiles = {},
+                        onBack = {},
+                        onSendKeys = {},
+                        onSendText = { true },
+                        onSendSecret = { true },
+                        onViewportMeasured = { _, _ -> },
+                        onRefresh = {},
+                        terminalFontScale = fontScale,
+                    )
+                }
             }
         }
     }
@@ -187,6 +195,22 @@ class TerminalScreenScreenshotTest {
     @Test
     fun terminal_reconnecting() {
         show(baseState().copy(connected = false, connecting = true))
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun terminal_largeTextControls() {
+        show(baseState().copy(connected = false, connecting = true), systemFontScale = 2f)
+        composeRule.onNodeWithText("Enter").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("More terminal keys").assertIsDisplayed()
+        composeRule.onNodeWithText("Reconnecting… · input paused").assertIsDisplayed()
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun terminal_largeTextReadOnly() {
+        show(baseState().copy(canControl = false), systemFontScale = 2f)
+        composeRule.onNodeWithTag("terminalInputField").assertDoesNotExist()
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
     /**
