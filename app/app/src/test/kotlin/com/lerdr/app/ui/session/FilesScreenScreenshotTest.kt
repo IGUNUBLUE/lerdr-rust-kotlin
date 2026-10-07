@@ -4,6 +4,8 @@ import android.graphics.Bitmap
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.assertHeightIsAtLeast
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
@@ -21,6 +23,7 @@ import com.lerdr.app.session.WorkspaceTree
 import com.lerdr.app.session.WorkspaceTreeEntry
 import com.lerdr.core.designsystem.theme.LerdrTheme
 import java.io.ByteArrayOutputStream
+import androidx.compose.ui.unit.dp
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -107,6 +110,12 @@ class FilesScreenScreenshotTest {
                 )
             }
         }
+    }
+
+    @Test
+    fun files_workingDirectoryHasReliableTouchTarget() {
+        show(baseState())
+        composeRule.onNodeWithTag("files:cwd").assertHeightIsAtLeast(48.dp)
     }
 
     @Test

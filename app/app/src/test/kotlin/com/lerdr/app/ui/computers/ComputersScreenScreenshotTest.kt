@@ -3,6 +3,12 @@ package com.lerdr.app.ui.computers
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.navigation3.runtime.NavBackStack
+import com.lerdr.navigation.LerdrKey
+import com.lerdr.navigation.LerdrNavigator
+import org.junit.Assert.assertEquals
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.lerdr.app.computers.ComputersContent
@@ -42,7 +48,7 @@ class ComputersScreenScreenshotTest {
                     relaySummary = "",
                     onSelectTopLevel = {},
                     onPairDevice = {},
-                    onManageDevices = {},
+                    onOpenRelay = {},
                 )
             }
         }
@@ -104,10 +110,35 @@ class ComputersScreenScreenshotTest {
                     relaySummary = "5 computers · 1 offline",
                     onSelectTopLevel = {},
                     onPairDevice = {},
-                    onManageDevices = {},
+                    onOpenRelay = {},
                 )
             }
         }
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
+    @Test
+    fun computerSelectionOpensItsDetailAndBackReturnsToComputers() {
+        val navigator = LerdrNavigator(NavBackStack(LerdrKey.Home, LerdrKey.Computers))
+        composeRule.setContent {
+            LerdrTheme {
+                ComputersContent(
+                    relays = listOf(
+                        RelayCardUi("one", "First computer", "tailscale", "12ms", 1, true, 12),
+                        RelayCardUi("two", "Second computer", "tailscale", "offline", 0, false, -1),
+                    ),
+                    relaySummary = "2 computers",
+                    onSelectTopLevel = {},
+                    onPairDevice = {},
+                    onOpenRelay = { navigator.navigate(LerdrKey.RelayDetail(it)) },
+                )
+            }
+        }
+        composeRule.onNodeWithText("Second computer").performClick()
+        assertEquals(LerdrKey.RelayDetail("two"), navigator.backStack.last())
+        navigator.goBack()
+        assertEquals(LerdrKey.Computers, navigator.backStack.last())
+        composeRule.onNodeWithText("First computer").performClick()
+        assertEquals(LerdrKey.RelayDetail("one"), navigator.backStack.last())
+    }
+
 }

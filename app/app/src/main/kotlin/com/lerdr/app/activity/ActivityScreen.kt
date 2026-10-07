@@ -46,7 +46,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.PreviewLightDark
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -126,7 +125,7 @@ fun ActivityContent(
                 .fillMaxSize()
                 .padding(innerPadding),
         ) {
-            if (uiState.filters.size > 1) {
+            if (uiState.filters.isNotEmpty()) {
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(spacing.small),
                     modifier = Modifier
@@ -188,7 +187,7 @@ private fun ActivityRow(item: ActivityItemUi) {
             liveRegion = LiveRegionMode.Polite
         },
         headlineContent = {
-            Text(item.headline, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(item.headline)
         },
         supportingContent = {
             Text(
@@ -197,8 +196,6 @@ private fun ActivityRow(item: ActivityItemUi) {
                     item.detail.takeIf { it.isNotEmpty() },
                     item.timestampLabel,
                 ).joinToString(" · "),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
             )
         },
         leadingContent = {

@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -313,7 +315,7 @@ private fun MetaChip(
                         onClickLabel = "Copy $description",
                         role = Role.Button,
                         onClick = onClick,
-                    )
+                    ).sizeIn(minWidth = 48.dp, minHeight = 48.dp)
                 } else {
                     Modifier
                 },
@@ -324,7 +326,7 @@ private fun MetaChip(
             style = MaterialTheme.typography.labelMedium,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(
+            modifier = Modifier.wrapContentHeight(Alignment.CenterVertically).padding(
                 horizontal = LerdrTheme.spacing.small,
                 vertical = LerdrTheme.spacing.extraSmall,
             ),

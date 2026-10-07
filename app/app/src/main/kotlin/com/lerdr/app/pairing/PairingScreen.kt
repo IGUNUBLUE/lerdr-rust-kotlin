@@ -93,9 +93,10 @@ fun PairingContent(
     onBack: () -> Unit,
 ) {
     val spacing = LerdrTheme.spacing
-    var pastedLink by rememberSaveable { mutableStateOf("") }
+    var pastedLink by rememberSaveable(setupLink) { mutableStateOf("") }
+    var useSetupLink by rememberSaveable(setupLink) { mutableStateOf(setupLink != null) }
     var scanning by rememberSaveable { mutableStateOf(false) }
-    val parsed = setupLink ?: LerdrDeepLinks.parseSetupLink(pastedLink)
+    val parsed = if (useSetupLink) setupLink else LerdrDeepLinks.parseSetupLink(pastedLink)
     val connecting = uiState.phase == PairingUiState.Phase.CONNECTING
 
     // A decode (or any other path) starting a pairing attempt collapses
@@ -161,7 +162,10 @@ fun PairingContent(
 
             OutlinedTextField(
                 value = pastedLink,
-                onValueChange = { pastedLink = it },
+                onValueChange = {
+                    useSetupLink = false
+                    pastedLink = it
+                },
                 label = { Text("Setup link") },
                 placeholder = { Text("lerdr://pair?setup=…", style = LerdrTextStyles.code) },
                 textStyle = LerdrTextStyles.code,
@@ -192,7 +196,7 @@ fun PairingContent(
 
             Button(
                 onClick = {
-                    if (setupLink != null) {
+                    if (useSetupLink && setupLink != null) {
                         onConnectLink(setupLink)
                     } else {
                         onConnectPasted(pastedLink)

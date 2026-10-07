@@ -3,6 +3,16 @@ package com.lerdr.app.ui.activity
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.semantics.SemanticsActions
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.lerdr.app.activity.ActivityContent
@@ -114,4 +124,52 @@ class ActivityScreenScreenshotTest {
         }
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
+    @Test
+    fun activity_singleComputerRemainsFilterable() {
+        var selected: String? = null
+        composeRule.setContent {
+            LerdrTheme {
+                ActivityContent(
+                    uiState = ActivityUiState(
+                        filters = listOf(RelayFilterUi("desk", "Desk", selected = false)),
+                    ),
+                    onSelectTopLevel = {},
+                    onSelectFilter = { selected = it },
+                    onRefresh = {},
+                )
+            }
+        }
+        composeRule.onNodeWithText("Desk").performClick()
+        assertEquals("desk", selected)
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    @Config(qualifiers = "w393dp-h851dp")
+    fun activity_largeTextKeepsRecoveryInstructionsReadable() {
+        val headline = "Authorization rejected — re-pair required"
+        composeRule.setContent {
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density, 2f)) {
+                LerdrTheme {
+                    ActivityContent(
+                        uiState = ActivityUiState(items = listOf(item(
+                            "auth", ActivityItemKind.AUTH_REJECTED, headline,
+                            detail = "Pair this device again to reconnect",
+                        ))),
+                        onSelectTopLevel = {},
+                        onSelectFilter = {},
+                        onRefresh = {},
+                    )
+                }
+            }
+        }
+        val layouts = mutableListOf<TextLayoutResult>()
+        composeRule.onNodeWithText(headline, useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+        assertFalse(layouts.single().hasVisualOverflow)
+        assertFalse(layouts.single().isLineEllipsized(layouts.single().lineCount - 1))
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
 }

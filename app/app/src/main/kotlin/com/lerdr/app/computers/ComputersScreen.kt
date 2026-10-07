@@ -61,14 +61,14 @@ import dagger.hilt.android.EntryPointAccessors
  * Computers tab — the connected Herdr relays as a first-class destination
  * (the mission-control carousel promoted to a real tab; see docs/04
  * §Navigation model). Read-only glance: fine management (reconnect /
- * forget / rename / revoke) stays on Settings → Devices. Pairing is the
+ * forget / rename / revoke) opens the selected relay detail shared with Settings. Pairing is the
  * FAB; an empty relay list renders the "pair your first computer" CTA.
  */
 @Composable
 fun ComputersScreen(
     onSelectTopLevel: (LerdrKey) -> Unit,
     onPairDevice: () -> Unit,
-    onManageDevices: () -> Unit,
+    onOpenRelay: (String) -> Unit,
 ) {
     val appContext = LocalContext.current.applicationContext
     val viewModel: HomeViewModel = viewModel {
@@ -82,7 +82,7 @@ fun ComputersScreen(
         relaySummary = uiState.relaySummary,
         onSelectTopLevel = onSelectTopLevel,
         onPairDevice = onPairDevice,
-        onManageDevices = onManageDevices,
+        onOpenRelay = onOpenRelay,
         badges = rememberLerdrNavBadges(),
     )
 }
@@ -94,7 +94,7 @@ fun ComputersContent(
     relaySummary: String,
     onSelectTopLevel: (LerdrKey) -> Unit,
     onPairDevice: () -> Unit,
-    onManageDevices: () -> Unit,
+    onOpenRelay: (String) -> Unit,
     badges: LerdrNavBadges = LerdrNavBadges(),
 ) {
     val spacing = LerdrTheme.spacing
@@ -150,7 +150,7 @@ fun ComputersContent(
                 items(relays, key = { it.relayId }) { relay ->
                     ComputerRow(
                         relay = relay,
-                        onClick = onManageDevices,
+                        onClick = { onOpenRelay(relay.relayId) },
                         modifier = Modifier.padding(horizontal = spacing.medium),
                     )
                 }
@@ -361,7 +361,7 @@ private fun ComputersContentPreview() {
             relaySummary = "4 computers · 1 offline",
             onSelectTopLevel = {},
             onPairDevice = {},
-            onManageDevices = {},
+            onOpenRelay = {},
         )
     }
 }
@@ -375,7 +375,7 @@ private fun ComputersEmptyPreview() {
             relaySummary = "",
             onSelectTopLevel = {},
             onPairDevice = {},
-            onManageDevices = {},
+            onOpenRelay = {},
         )
     }
 }

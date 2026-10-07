@@ -165,7 +165,7 @@ private fun EntryProviderScope<LerdrKey>.lerdrEntries(
         ComputersScreen(
             onSelectTopLevel = navigator::navigateTopLevel,
             onPairDevice = { navigator.openPairing() },
-            onManageDevices = { navigator.navigateTopLevel(LerdrKey.Settings) },
+            onOpenRelay = { navigator.navigate(LerdrKey.RelayDetail(it)) },
         )
     }
     entry<LerdrKey.Activity> {
