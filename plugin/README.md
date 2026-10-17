@@ -77,14 +77,17 @@ It does not configure Tailscale, restart the relay, rotate its key, or revoke
 phones. Missing or ambiguous TCP routes fail before rearming. A valid HTTPS
 root proxy takes precedence over TCP; subpath proxies and `/ws` overrides
 are not supported.
-Treat the QR and link as secrets. This command is unreleased; published 1.0.0
-does not include it.
+Treat the QR and link as secrets. Available since 1.1.0.
 
 The existing plugin action's script chain:
 
 1. `tailscale-serve.sh start` (Setup menu → Tailscale Serve, or the
    `tailscale-setup` action) publishes the relay on this machine's tailnet
-   HTTPS name, then calls `setup-link.sh <fqdn>`.
+   HTTPS name, then calls `setup-link.sh <fqdn>`. On a fresh install the
+   pane first runs `install-tailscale-service.sh`, so the relay is running
+   and `relay.env` holds its token. The relay port comes from `relay.env`
+   (default 8375). An existing TCP forward to that port is kept, and its QR
+   comes from `lerdr-relay pairing qr` instead of steps 2–4.
 2. `setup-link.sh` loads `relay.env` and asks the binary for the pairing
    fragment: `lerdr-relay setup-fragment <token> <host-label> <wss-url>`.
    The fragment carries the bootstrap payload for `https://<tailnet>/#<fragment>`.
@@ -112,7 +115,7 @@ herdr plugin link plugin/        # from the repo root
 and hooks run from this checkout. To point them at a locally built binary:
 
 ```sh
-cd relay && cargo build --release -p lerdr-relay
+cd relay && cargo build --release -p lerdr-coord --bin lerdr-relay
 LERDR_RELAY_BIN=relay/target/release/lerdr-relay \
     herdr plugin action invoke setup --plugin lerdr.events
 ```
@@ -124,18 +127,18 @@ LERDR_RELAY_BIN=relay/target/release/lerdr-relay \
 
 ```sh
 cd relay
-cargo build --release -p lerdr-relay          # native dev build
+cargo build --release -p lerdr-coord --bin lerdr-relay   # native dev build
 ```
 
 Distribution builds must be **single-file static**: musl on Linux.
 
 ```sh
 rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
-cargo build --release -p lerdr-relay --target x86_64-unknown-linux-musl
-cargo build --release -p lerdr-relay --target aarch64-unknown-linux-musl
+cargo build --release -p lerdr-coord --bin lerdr-relay --target x86_64-unknown-linux-musl
+cargo build --release -p lerdr-coord --bin lerdr-relay --target aarch64-unknown-linux-musl
 # macOS (from Apple SDK hosts):
-cargo build --release -p lerdr-relay --target x86_64-apple-darwin
-cargo build --release -p lerdr-relay --target aarch64-apple-darwin
+cargo build --release -p lerdr-coord --bin lerdr-relay --target x86_64-apple-darwin
+cargo build --release -p lerdr-coord --bin lerdr-relay --target aarch64-apple-darwin
 ```
 
 ## Cutting a release
