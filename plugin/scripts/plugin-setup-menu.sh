@@ -6,7 +6,7 @@ cd "$SCRIPT_DIR"
 # shellcheck source=common.sh
 . "$SCRIPT_DIR/common.sh"
 
-ENV_FILE="$(relay_env_file "$SCRIPT_DIR")"
+ENV_FILE="$(active_relay_env_file "$SCRIPT_DIR")"
 load_relay_env "$ENV_FILE"
 
 # The menu opens after every install, so it has to answer "what do I have" before
@@ -20,8 +20,9 @@ installed_release_version() {
 }
 
 running_health() {
-    local port="${LERDR_RELAY_PORT:-${HERDR_RELAY_PORT:-8375}}"
+    local port
 
+    port="$(relay_port "$ENV_FILE")"
     curl -fsS --max-time 2 "http://127.0.0.1:$port/healthz" 2>/dev/null
 }
 
@@ -103,8 +104,8 @@ render_menu() {
     echo "Connection"
     echo ""
     menu_item 1 "Tailscale Serve"
-    echo "     Publish the relay on this machine's tailnet HTTPS name via"
-    echo "     tailscale serve (Linux and macOS), then print the private setup QR."
+    echo "     Install the background relay service if needed, publish it on this"
+    echo "     machine's tailnet HTTPS name via tailscale serve, then print the QR."
     echo ""
     menu_item 2 "Show Phone Setup QR"
     echo "     Reprint the private setup link and QR for the tailnet endpoint."

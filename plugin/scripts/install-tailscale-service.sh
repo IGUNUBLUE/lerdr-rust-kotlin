@@ -21,8 +21,24 @@ export PATH="$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:/home/linuxbrew/.
 # shellcheck source=common.sh
 . "$SCRIPT_DIR/common.sh"
 
+# Run outside a Herdr pane, the env file would default to this script's
+# directory, which is read-only inside an installed release. A reinstall keeps
+# the running service's configuration; a first install uses the plugin's
+# config directory, where the build hook and the Setup pane look for it.
+if [ -z "$(relay_env RELAY_ENV)" ] && [ -z "${HERDR_PLUGIN_CONFIG_DIR:-}" ]; then
+    EXISTING_SERVICE_ENV="$(installed_service_env_file)"
+    if [ -n "$EXISTING_SERVICE_ENV" ]; then
+        export LERDR_RELAY_ENV="$EXISTING_SERVICE_ENV"
+    elif command -v herdr >/dev/null 2>&1; then
+        PLUGIN_CONFIG_DIR="$(herdr plugin config-dir lerdr.events 2>/dev/null || true)"
+        if [ -n "$PLUGIN_CONFIG_DIR" ]; then
+            export HERDR_PLUGIN_CONFIG_DIR="$PLUGIN_CONFIG_DIR"
+        fi
+    fi
+fi
+
 ENV_FILE="$(relay_env_file "$SCRIPT_DIR")"
-PORT="${LERDR_RELAY_PORT:-${HERDR_RELAY_PORT:-8375}}"
+PORT="$(relay_port "$ENV_FILE")"
 
 finish_install() {
     echo "Waiting for relay health on 127.0.0.1:$PORT..."
@@ -39,6 +55,8 @@ finish_install() {
         exit 1
     fi
     echo "Relay health: $HEALTH"
+    # The Setup pane publishes the relay right after installing the service.
+    [ "$(relay_env SERVICE_INSTALL_CHAINED)" != 1 ] || return 0
     echo ""
     echo "Publish it on the tailnet and print the phone QR with:"
     echo "  scripts/tailscale-serve.sh start"

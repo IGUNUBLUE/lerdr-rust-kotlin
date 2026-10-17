@@ -11,7 +11,7 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:$HO
 # shellcheck source=common.sh
 . "$SCRIPT_DIR/common.sh"
 
-ENV_FILE="$(relay_env_file "$SCRIPT_DIR")"
+ENV_FILE="$(active_relay_env_file "$SCRIPT_DIR")"
 load_relay_env "$ENV_FILE"
 
 echo "🐑 Lerdr status"
@@ -20,7 +20,7 @@ echo "  Config file:  $ENV_FILE"
 if [ -f "$ENV_FILE" ] && grep -qE '^(LERDR|HERDR)_RELAY_TOKEN=..*' "$ENV_FILE"; then
     echo "  Relay token:  present"
 else
-    echo "  Relay token:  missing — run the Quick Start action once"
+    echo "  Relay token:  missing — run Lerdr: Setup → Tailscale Serve once"
 fi
 
 case "$(uname -s)" in
@@ -69,7 +69,7 @@ if [ -n "$SERVICE_ENV" ]; then
     echo "  Service env:  $SERVICE_ENV"
 fi
 
-PORT="${LERDR_RELAY_PORT:-${HERDR_RELAY_PORT:-8375}}"
+PORT="$(relay_port "$ENV_FILE")"
 if HEALTH="$(curl -fsS --max-time 3 "http://127.0.0.1:$PORT/healthz" 2>/dev/null)"; then
     echo "  Relay health: $HEALTH"
 else
