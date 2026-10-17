@@ -9,6 +9,25 @@ The `protocol v3` / `herdr-e2ee-v2` wire contract remains frozen.
 
 ## [Unreleased]
 
+### Fixed
+
+- First-time setup works on a fresh Linux or macOS machine: **Lerdr: Setup →
+  Tailscale Serve** now installs and starts the background relay service
+  when none exists, instead of failing with "relay not answering" / "No relay
+  token".
+- Plugin scripts read the relay port from `relay.env` instead of assuming
+  8375, so status, health checks, and Serve detection find relays on other
+  ports.
+- An existing Tailscale Serve TCP forward to the relay is recognized:
+  `start`, `link`, and **Show Phone Setup QR** print its QR through
+  `lerdr-relay pairing qr` instead of reporting that Serve is not forwarding.
+- `install-tailscale-service.sh` run outside Herdr keeps an existing service's
+  `relay.env` or uses the plugin config directory, instead of writing into
+  the read-only release directory.
+- README: complete prerequisites (Tailscale on the phone, MagicDNS, HTTPS
+  certificates, Linux operator), a working quick start, troubleshooting, and
+  the correct relay build command (`-p lerdr-coord --bin lerdr-relay`).
+
 ## [1.1.2] — 2026-10-07
 
 ### Fixed

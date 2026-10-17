@@ -551,6 +551,34 @@ load_relay_env() {
     HERDR_RELAY_INSTANCE_ID="${LERDR_RELAY_INSTANCE_ID:-${HERDR_RELAY_INSTANCE_ID:-}}"
 }
 
+# relay_port [ENV_FILE] prints the port the relay listens on: an explicit
+# LERDR_/HERDR_RELAY_PORT wins, then the relay env file, then the binary's
+# default. Guessing the default alone reports a relay configured on another
+# port as down and looks for the wrong Tailscale route.
+relay_port() {
+    local env_file="${1:-}"
+    local port
+
+    port="$(relay_env RELAY_PORT)"
+    if [ -z "$port" ] && [ -n "$env_file" ]; then
+        port="$(env_file_setting "$env_file" RELAY_PORT)"
+    fi
+    printf '%s\n' "${port:-8375}"
+}
+
+# The installed service's env file is the configuration actually running;
+# fall back to the plugin's own resolution before any service exists.
+active_relay_env_file() {
+    local service_env
+
+    service_env="$(installed_service_env_file)"
+    if [ -n "$service_env" ]; then
+        printf '%s\n' "$service_env"
+        return
+    fi
+    relay_env_file "$1"
+}
+
 wait_for_relay_health() {
     local port="${1:-8375}"
     local attempts="${2:-15}"

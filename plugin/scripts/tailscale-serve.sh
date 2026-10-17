@@ -10,6 +10,10 @@ set -euo pipefail
 #   scripts/tailscale-serve.sh status    show serve config and endpoint health
 #   scripts/tailscale-serve.sh link      reprint the setup QR without changes
 #
+# An existing TCP forward to the relay (`tailscale serve --tcp=N
+# tcp://localhost:<port>`) is kept as is; its QR comes from
+# `lerdr-relay pairing qr`. The relay port is read from relay.env.
+#
 # Linux and macOS: works against a Homebrew tailscaled or the Tailscale.app
 # GUI client. The phone side works on any Tailscale client.
 
@@ -21,7 +25,7 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:$HO
 . "$SCRIPT_DIR/common.sh"
 
 ENV_FILE="$(relay_env_file "$SCRIPT_DIR")"
-PORT="${LERDR_RELAY_PORT:-${HERDR_RELAY_PORT:-8375}}"
+PORT="$(relay_port "$ENV_FILE")"
 COMMAND="${1:-start}"
 
 # The CLI ships standalone (Homebrew/package manager) and inside Tailscale.app.
@@ -72,6 +76,46 @@ tailscale_fqdn() {
 serve_proxies_relay() {
     "$TAILSCALE_BIN" serve status 2>/dev/null |
         grep -qE "proxy https?://(127\.0\.0\.1|localhost):$PORT([/:[:space:]]|$)"
+}
+
+# A raw TCP forward (`tailscale serve --tcp=N tcp://localhost:$PORT`) also
+# reaches the relay; the phone then dials ws://<tailnet-name>:N.
+serve_tcp_forwards_relay() {
+    "$TAILSCALE_BIN" serve status 2>/dev/null |
+        grep -qE "tcp://(127\.0\.0\.1|localhost|\[::1\]):$PORT([[:space:]]|$)"
+}
+
+# The HTTPS link built by setup-link.sh assumes wss://<tailnet-name>. Any other
+# route goes through the native command, which reads the running service's
+# real port and the exact Serve route, and rearms the invitation itself.
+print_native_pairing() {
+    local relay_bin
+
+    relay_bin="$(relay_binary)" || return 1
+    if [ -z "$(installed_service_env_file)" ]; then
+        echo "✗ This relay route needs the installed background service to print a QR." >&2
+        echo "  Install it with: scripts/install-tailscale-service.sh" >&2
+        return 1
+    fi
+    "$relay_bin" pairing qr
+}
+
+relay_answers() {
+    curl -fsS --max-time 3 "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1
+}
+
+print_relay_down_hint() {
+    echo "▸ The relay is not answering on 127.0.0.1:$PORT."
+    if [ -z "$(installed_service_env_file)" ]; then
+        echo "  Install and start the background service, then rerun:"
+        echo "  scripts/install-tailscale-service.sh"
+    elif [ "$(uname -s)" = "Darwin" ]; then
+        echo "  Start the background service, then rerun:"
+        echo "  launchctl kickstart -k gui/$(id -u)/com.lerdr.service"
+    else
+        echo "  Start the background service, then rerun:"
+        echo "  systemctl --user restart lerdr.service"
+    fi
 }
 
 configure_serve() {
@@ -136,11 +180,21 @@ case "$COMMAND" in
         FQDN="$(tailscale_fqdn)"
         if serve_proxies_relay; then
             echo "▸ Tailscale Serve already proxies tailnet HTTPS to 127.0.0.1:$PORT"
+        elif serve_tcp_forwards_relay; then
+            echo "▸ Tailscale Serve already forwards a TCP route to 127.0.0.1:$PORT; keeping it."
+            if ! relay_answers; then
+                print_relay_down_hint
+                exit 1
+            fi
+            echo ""
+            print_native_pairing
+            exit $?
         elif "$TAILSCALE_BIN" serve status 2>/dev/null | grep -q .; then
             echo "✗ tailscale serve is already configured for a different target:"
             "$TAILSCALE_BIN" serve status
             echo ""
-            echo "  Refusing to replace it. Free the tailnet listener first:"
+            echo "  The relay listens on 127.0.0.1:$PORT. Refusing to replace the"
+            echo "  existing config. Free the tailnet listener first:"
             echo "  scripts/tailscale-serve.sh off    (or: tailscale serve --https=443 off)"
             exit 1
         else
@@ -148,10 +202,9 @@ case "$COMMAND" in
             configure_serve
         fi
 
-        if ! curl -fsS --max-time 3 "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then
-            echo "▸ The relay is not answering on 127.0.0.1:$PORT yet."
-            echo "  Start it first (setup menu or the background service), then rerun"
-            echo "  this command for the HTTPS check and a freshly armed QR."
+        if ! relay_answers; then
+            print_relay_down_hint
+            exit 1
         elif ! wait_for_https "$FQDN"; then
             echo "✗ https://$FQDN did not become healthy within 30s."
             echo "  Inspect with: tailscale serve status"
@@ -165,12 +218,17 @@ case "$COMMAND" in
         ;;
     link)
         FQDN="$(tailscale_fqdn)"
-        if ! serve_proxies_relay; then
-            echo "✗ Tailscale Serve is not forwarding to the relay; run: scripts/tailscale-serve.sh start"
+        if serve_proxies_relay; then
+            require_relay_binary
+            print_setup_link "$FQDN"
+        elif serve_tcp_forwards_relay; then
+            print_native_pairing
+        else
+            echo "✗ Tailscale Serve has no route to the relay on 127.0.0.1:$PORT."
+            echo "  Publish it first: Lerdr: Setup → Tailscale Serve"
+            echo "  (or: scripts/tailscale-serve.sh start)"
             exit 1
         fi
-        require_relay_binary
-        print_setup_link "$FQDN"
         ;;
     off)
         if ! "$TAILSCALE_BIN" serve status 2>/dev/null | grep -q .; then
@@ -194,6 +252,8 @@ case "$COMMAND" in
             echo ""
             if curl -fsS --max-time 5 "https://$FQDN/healthz" >/dev/null 2>&1; then
                 echo "Endpoint: https://$FQDN healthy"
+            elif serve_tcp_forwards_relay; then
+                echo "Endpoint: TCP route to 127.0.0.1:$PORT (QR: lerdr-relay pairing qr)"
             else
                 echo "Endpoint: https://$FQDN not answering"
             fi

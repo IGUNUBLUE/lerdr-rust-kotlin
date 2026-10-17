@@ -1,6 +1,6 @@
 # lerdr
 
-> **Status: 1.0.0.** Native Android app and Rust relay with the frozen
+> **Status: 1.1.2.** Native Android app and Rust relay with the frozen
 > `protocol v3` / `herdr-e2ee-v2` contract. This release does not imply full
 > audit acceptance; see the [release limits](CHANGELOG.md#100--2026-10-04)
 > and [specification gaps](docs/10-spec-gaps.md).
@@ -47,81 +47,147 @@ The name: the iguana is an animal I've always found curious.
 
 ## Quick start
 
-Requires [Herdr](https://github.com/0cv/herdr) ≥ 0.7.5 on macOS or Linux,
-Tailscale, and an Android phone.
+You need:
 
-### 1 · Install the plugin — on the machine running Herdr
+- [Herdr](https://github.com/0cv/herdr) ≥ 0.7.5 on macOS or Linux — the
+  "computer" below.
+- [Tailscale](https://tailscale.com/download) on the computer **and** on the
+  Android phone, both signed in to the same tailnet. The phone reaches the
+  relay only through the tailnet; there is no public endpoint.
+- In the [tailnet DNS settings](https://login.tailscale.com/admin/dns):
+  **MagicDNS** and **HTTPS Certificates** enabled.
+- Linux only: let your user configure Tailscale Serve without `sudo`:
+
+  ```sh
+  sudo tailscale set --operator="$USER"
+  ```
+
+### 1 · Install the plugin — computer
 
 ```sh
 herdr plugin install IGUNUBLUE/lerdr-rust-kotlin/plugin
 ```
 
-Herdr clones the repo, runs the `[[build]]` hook, and registers the
-`lerdr.events` plugin. The hook downloads the checksum-verified
-`lerdr-relay` bundle from the matching GitHub release — no Rust toolchain
-required — then opens the **Lerdr: Setup** pane.
+Herdr clones the repo and runs the build hook, which downloads the
+checksum-verified `lerdr-relay` release into `~/.local/share/lerdr/` and
+links `~/.local/bin/lerdr-relay`. No Rust toolchain is needed. Herdr then
+opens the **Lerdr: Setup** pane.
 
 For omp, also install its [profile-scoped lifecycle integration](plugin/README.md#omp-lifecycle-status)
 so working turns and in-process subagents do not appear idle.
 
-### 2 · Print the setup QR — same machine
+### 2 · Start the relay, publish it, print the QR — computer
 
-In the **Lerdr: Setup** pane choose **Tailscale Serve**: it publishes the
-relay on this machine's tailnet HTTPS name and prints a terminal QR plus
-the private setup link. To print it again later:
+In the **Lerdr: Setup** pane choose **1 · Tailscale Serve**. If the pane is
+closed, open it with:
 
 ```sh
-herdr plugin action invoke setup-link --plugin lerdr.events
+herdr plugin action invoke setup --plugin lerdr.events
 ```
 
-The QR encodes a one-shot pairing link (relay token + tailnet address),
-armed fresh on every print and good for one phone within ~10 minutes —
-the full generation chain is documented in
-[plugin/README.md](plugin/README.md#how-the-setup-qr-is-produced).
+On the first run it does three things:
 
-### 3 · Install the app — on your phone
+1. **Installs the relay as a background service.** It creates `relay.env`
+   (relay token + instance id) in the plugin's config directory, installs
+   the `lerdr.service` systemd user unit (Linux) or the `com.lerdr.service`
+   LaunchAgent (macOS), and starts the relay on `127.0.0.1:8375`. Plugin
+   upgrades keep this service up to date.
+2. **Publishes it on your tailnet.** It runs `tailscale serve --bg 8375`,
+   which exposes the relay at `https://<computer>.<tailnet>.ts.net` to
+   your tailnet only. The first time, Tailscale may print an approval URL
+   to enable Serve for your tailnet. Open it and approve, and the command
+   continues.
+3. **Prints the QR** and the private setup link once that HTTPS endpoint
+   is healthy.
+
+The QR contains the relay token. Do not share it or screenshots of it.
+Each print arms a fresh one-shot invitation that pairs **one phone within
+~10 minutes**.
+
+On Linux, user services stop when you log out. To keep the relay running
+while you are away from the computer:
+
+```sh
+loginctl enable-linger "$USER"
+```
+
+### 3 · Install the app — phone
 
 Download `lerdr_<version>_universal.apk` from the
 [latest release](https://github.com/IGUNUBLUE/lerdr-rust-kotlin/releases/latest)
-and open it — Android asks once to allow installs from the source app.
-From v0.0.12 the app checks GitHub releases on its own and can update
-in place (Settings → App update).
+and open it. Android asks once to allow installs from the source app.
+After that, the app checks GitHub releases on its own and can update in
+place (Settings → App update).
 
-### 4 · Pair
+### 4 · Pair — phone
 
-Scan the setup QR from the app's pairing screen — or paste the
-`lerdr://pair` link — and the phone shows `1 computer · live`.
+Make sure Tailscale is connected on the phone. Open Lerdr, go to the
+pairing screen, and scan the QR from step 2 with the **in-app scanner**
+(or paste the link). The phone shows `1 computer · live`.
+
+### Pair another phone / reprint the QR
+
+```sh
+lerdr-relay pairing qr
+```
+
+Or use **2 · Show Phone Setup QR** in the Setup pane. Both read the running
+service's real port and Tailscale Serve route (HTTPS or TCP), arm a fresh
+invitation, and print the QR. Neither changes Tailscale, restarts the relay,
+or revokes phones that are already paired.
+
+### Troubleshooting
+
+Start with **3 · Show Full Status** in the Setup pane, or
+`herdr plugin action invoke status --plugin lerdr.events`.
+
+| Message | Cause → fix |
+|---|---|
+| `The relay is not answering on 127.0.0.1:<port>` | The service is installed but stopped. Run the command printed below the message, then step 2 again. |
+| `Tailscale Serve has no route to the relay` | Nothing publishes the relay on the tailnet yet. Do step 2. |
+| `tailscale serve is already configured for a different target` | Something else already uses this machine's tailnet HTTPS listener. Lerdr will not replace it. Free it with `tailscale serve --https=443 off`, or add your own TCP route to the relay port (`tailscale serve --bg --tcp=<N> tcp://localhost:<port>`), which step 2 then uses as is. |
+| `This node has no tailnet DNS name` | Enable MagicDNS (see "You need"). |
+| Permission error from `tailscale serve` (Linux) | Run `sudo tailscale set --operator="$USER"`. |
+| The app can't connect after scanning | Tailscale is off on the phone, or the invitation expired (>10 min or already used). Reprint the QR. |
 
 ## Build from source
 
 ### Relay
 
+The binary lives in the `lerdr-coord` crate. `-p lerdr-relay` builds only a
+library and produces no executable.
+
 ```sh
-cd relay && cargo build --release -p lerdr-relay
-./target/release/lerdr-relay serve \
+cd relay && cargo build --release -p lerdr-coord --bin lerdr-relay
+```
+
+To run the checkout's binary as the background service, run from the repo
+root (Linux: `plugin/scripts/deploy-relay.sh` rebuilds and restarts it later):
+
+```sh
+LERDR_RELAY_BIN="$PWD/relay/target/release/lerdr-relay" \
+    plugin/scripts/install-tailscale-service.sh
+```
+
+The installer keeps an existing service's `relay.env` (token, port); a first
+install uses `herdr plugin config-dir lerdr.events`. Then continue with
+step 2 of the quick start.
+
+For local plugin development, `herdr plugin link plugin/` runs the actions
+from this checkout. See [plugin/README.md](plugin/README.md#local-development-link).
+
+### Foreground relay (tests only)
+
+The interop and probe gates in [AGENTS.md](AGENTS.md#verification) use a
+foreground relay on port 8377:
+
+```sh
+./relay/target/release/lerdr-relay serve \
     --host 127.0.0.1 --port 8377 --token <32-byte-secret>
 ```
 
-### Tailscale transport
-
-```sh
-tailscale serve --bg --tcp=8377 tcp://localhost:8377
-# or the managed scripts: plugin/scripts/tailscale-serve.sh start
-```
-
-### Pair the app
-
-With the installed user service running and a Tailscale Serve route configured:
-
-```sh
-./target/release/lerdr-relay pairing qr
-```
-
-The command discovers the service's relay port and published HTTPS or TCP route,
-rearms one invitation, and prints its QR and private `lerdr://pair` link.
-Existing phone credentials and the bootstrap key remain unchanged.
-
-Scan in the app → `1 computer · live`.
+A foreground relay is not a user service. `lerdr-relay pairing qr` and
+the Setup pane cannot pair a phone against it.
 
 ### Android app
 
