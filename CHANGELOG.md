@@ -27,6 +27,12 @@ The `protocol v3` / `herdr-e2ee-v2` wire contract remains frozen.
 - README: complete prerequisites (Tailscale on the phone, MagicDNS, HTTPS
   certificates, Linux operator), a working quick start, troubleshooting, and
   the correct relay build command (`-p lerdr-coord --bin lerdr-relay`).
+- The Setup QR is a `lerdr://pair` link from `lerdr-relay pairing qr` for
+  every Serve route. It replaces `https://<tailnet-name>/#…`, which opened a
+  dead page when scanned with the phone camera. The https link remains only
+  as a fallback, and its instructions now point at the app's scanner. The
+  macOS Tailscale.app CLI is supported through a PATH wrapper.
+- `lerdr-relay pairing qr` tells the user to scan in the Lerdr app.
 
 ## [1.1.2] — 2026-10-07
 

@@ -125,8 +125,9 @@ place (Settings → App update).
 ### 4 · Pair — phone
 
 Make sure Tailscale is connected on the phone. Open Lerdr, go to the
-pairing screen, and scan the QR from step 2 with the **in-app scanner**
-(or paste the link). The phone shows `1 computer · live`.
+pairing screen, and tap **Scan QR code** to scan the QR from step 2. You
+can also paste the printed `lerdr://pair` link there, or open it on the
+phone, which launches the app. The phone shows `1 computer · live`.
 
 ### Pair another phone / reprint the QR
 

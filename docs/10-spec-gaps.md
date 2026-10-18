@@ -1862,15 +1862,27 @@ Unspecified onboarding behavior, decided while fixing fresh-host setup
   Setup → Show QR → Status end to end. Not verified: macOS, and a real
   Tailscale Serve approval flow.
 
-### Still open
+### Setup-link shape (resolved)
 
-- **Two setup-link shapes.** The HTTPS path (`setup-link.sh`) prints
-  `https://<tailnet-name>/#setup=<relay token>&label=…&relay=wss://…`.
-  `pairing qr` prints `lerdr://pair#…` carrying a one-time invitation.
-  The in-app scanner and paste field accept both. But the relay serves no
-  page at `/` (404), and the app registers only `lerdr://` intent filters,
-  so scanning the HTTPS QR with the phone camera opens a dead page, even
-  though the script tells the user to scan with the camera. The HTTPS link
-  also embeds the long-lived relay token, where `pairing qr` embeds a
-  one-time secret. Candidate fix: route the HTTPS path through
-  `pairing qr` too, which already discovers HTTPS root proxies.
+- The HTTPS path (`setup-link.sh`) printed
+  `https://<tailnet-name>/#setup=<relay token>&label=…&relay=wss://…`. The
+  relay serves no page at `/` (404) and the app registers only `lerdr://`
+  intent filters, so scanning that QR with the phone camera opened a dead
+  page, while the script said to scan with the camera.
+- With the background service installed, every route (HTTPS root proxy or
+  TCP forward) now prints through `lerdr-relay pairing qr`: a
+  `lerdr://pair#…` link that opens the app, with the same armed one-shot
+  window. Both shapes carry the relay key as the bootstrap `setup=` secret.
+  That is unchanged; only the link scheme differs.
+- The `https://…/#…` link remains only as a fallback. It is used when no
+  service is installed (a foreground relay), or when `pairing qr` fails.
+  Its text now points at the app's scanner and paste field instead of the
+  camera. The native output says to scan in the app as well.
+- `pairing qr` runs `tailscale` from PATH, so the Tailscale.app CLI
+  (`Contents/MacOS/Tailscale`) is exposed through a temporary shell
+  wrapper.
+- **Verified:** the sandboxed fresh-host run (18 checks). It covered the
+  Setup QR through `pairing qr` with the HTTPS route discovered, re-arm
+  through the service, the Tailscale.app-named CLI through the wrapper, and
+  the fallback when `pairing qr` fails. **Not verified:** a camera scan on a
+  real phone, and macOS.
