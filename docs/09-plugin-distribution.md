@@ -37,7 +37,9 @@ Plugin rules that shape Lerdr packaging:
 - Changing `herdr-plugin.toml` during build aborts install — version bump
   happens in the release PR, not at build time.
 - `plugin link plugin/` skips `[[build]]`; local development uses the checkout.
-- Managed-plugin refresh is performed by reinstalling the subdirectory.
+- Managed plugins update with `herdr plugin update lerdr.events`, which
+  refetches the ref recorded at install (Herdr 0.9.5 plugin docs).
+  Installing over a linked checkout is refused.
 - The manifest is re-read at every server start.
 
 ## Runtime environment Herdr injects

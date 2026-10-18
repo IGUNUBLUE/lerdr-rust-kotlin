@@ -1833,3 +1833,44 @@ negotiated, and exercised end-to-end on both sides.
   callback, pairing edit state, Activity row/filter layout, Files copy target,
   their tests/goldens and these design notes. Earlier terminal changes remain
   a separate review unit.
+
+
+## Plugin first-run setup (2026-10)
+
+Unspecified onboarding behavior, decided while fixing fresh-host setup
+(PRs #77, #78):
+
+- **Setup → Tailscale Serve installs the service.** `plugin install` only
+  downloads the release. When no `lerdr.service` / `com.lerdr.service`
+  exists, `plugin-tailscale-setup.sh` runs `install-tailscale-service.sh`
+  first, then publishes the relay. An installed but stopped service is not
+  restarted; `start` exits with the platform's restart command.
+- **Port resolution.** Plugin scripts use `LERDR_/HERDR_RELAY_PORT`, then
+  the active `relay.env`, then 8375 (`relay_port` in `common.sh`). The
+  active env is the installed service's (`active_relay_env_file`), so the
+  menu, status, and Serve checks see what is actually running.
+- **Existing Serve config is never replaced.** An HTTPS root proxy to the
+  relay port is reused. A TCP forward to that port is reused and paired
+  through `lerdr-relay pairing qr`. Any other config makes `start` refuse.
+- **Installer env outside Herdr.** With no `LERDR_RELAY_ENV` and no
+  `HERDR_PLUGIN_CONFIG_DIR`, the installer keeps the existing service's
+  env file, else uses `herdr plugin config-dir lerdr.events`; never the
+  read-only release directory.
+- **Verified:** a sandboxed fresh Linux host (throwaway `HOME`, real
+  release download and verification through `plugin-build.sh`, the real
+  1.1.2 relay on 8375, stubbed systemd/tailscale/herdr) ran install →
+  Setup → Show QR → Status end to end. Not verified: macOS, and a real
+  Tailscale Serve approval flow.
+
+### Still open
+
+- **Two setup-link shapes.** The HTTPS path (`setup-link.sh`) prints
+  `https://<tailnet-name>/#setup=<relay token>&label=…&relay=wss://…`.
+  `pairing qr` prints `lerdr://pair#…` carrying a one-time invitation.
+  The in-app scanner and paste field accept both. But the relay serves no
+  page at `/` (404), and the app registers only `lerdr://` intent filters,
+  so scanning the HTTPS QR with the phone camera opens a dead page, even
+  though the script tells the user to scan with the camera. The HTTPS link
+  also embeds the long-lived relay token, where `pairing qr` embeds a
+  one-time secret. Candidate fix: route the HTTPS path through
+  `pairing qr` too, which already discovers HTTPS root proxies.
