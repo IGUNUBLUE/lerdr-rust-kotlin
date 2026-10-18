@@ -750,6 +750,8 @@ print_phone_setup_url() {
 
 # Shared tail of the setup-link output: QR code when possible,
 # always the link. Invalid values fail before either output sink sees them.
+# The https://<tailnet-name>/#… link opens no page in a browser (the relay
+# serves none), so the instructions point at the app's scanner and paste field.
 print_phone_setup() {
     local phone_url="$1"
     local qr_code
@@ -757,15 +759,15 @@ print_phone_setup() {
     phone_setup_url_is_safe "$phone_url" || return 1
     qr_code="$(render_setup_qr "$phone_url")"
     if [ -n "$qr_code" ]; then
-        echo "  Scan this QR code with your phone camera:"
+        echo "  Scan this QR code in the Lerdr app (Pairing → Scan QR code):"
         echo ""
         printf '%s\n' "$qr_code"
         echo ""
         echo "  This code contains your relay token; do not share screenshots of it."
         echo ""
-        echo "  Or open this private setup link on your phone:"
+        echo "  Or paste this private setup link into the Lerdr app's pairing screen:"
     else
-        echo "  Open this private setup link on your phone:"
+        echo "  Paste this private setup link into the Lerdr app's pairing screen:"
     fi
     emit_phone_setup_url "$phone_url"
 }

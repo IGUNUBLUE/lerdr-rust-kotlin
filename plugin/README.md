@@ -79,29 +79,33 @@ root proxy takes precedence over TCP; subpath proxies and `/ws` overrides
 are not supported.
 Treat the QR and link as secrets. Available since 1.1.0.
 
-The existing plugin action's script chain:
+The plugin actions' script chain:
 
 1. `tailscale-serve.sh start` (Setup menu → Tailscale Serve, or the
    `tailscale-setup` action) publishes the relay on this machine's tailnet
-   HTTPS name, then calls `setup-link.sh <fqdn>`. On a fresh install the
-   pane first runs `install-tailscale-service.sh`, so the relay is running
-   and `relay.env` holds its token. The relay port comes from `relay.env`
-   (default 8375). An existing TCP forward to that port is kept, and its QR
-   comes from `lerdr-relay pairing qr` instead of steps 2–4.
-2. `setup-link.sh` loads `relay.env` and asks the binary for the pairing
-   fragment: `lerdr-relay setup-fragment <token> <host-label> <wss-url>`.
-   The fragment carries the bootstrap payload for `https://<tailnet>/#<fragment>`.
-3. The same binary renders the code: `lerdr-relay qr --columns <n> <url>`
-   draws a terminal QR sized to the pane (skipped when the pane is too
-   narrow — the plain link is always printed too, as an OSC 8 hyperlink).
-4. `arm_setup_link` sends `SIGUSR1` to the pid in `relay.pid` — printing a
-   QR is asking for one more pairing, so the running relay arms a fresh
-   **one-shot invitation** (one phone, ~10 minutes) before the link is shown.
+   HTTPS name. On a fresh install the pane first runs
+   `install-tailscale-service.sh`, so the relay is running and `relay.env`
+   holds its token. The relay port comes from `relay.env` (default 8375).
+   An existing HTTPS root proxy or TCP forward to that port is kept.
+2. With the service installed, the QR comes from `lerdr-relay pairing qr`
+   (above) for either route: a `lerdr://pair#…` link that opens the app.
+   On macOS a Tailscale.app-only CLI is exposed to it through a temporary
+   `tailscale` wrapper on PATH.
+3. Fallback, for HTTPS only, when no service is installed or `pairing qr`
+   fails: `setup-link.sh` asks the binary for the fragment
+   (`lerdr-relay setup-fragment <token> <host-label> <wss-url>`), renders
+   `https://<tailnet>/#<fragment>` with `lerdr-relay qr --columns <n>`, and
+   `arm_setup_link` sends `SIGUSR1` to the pid in `relay.pid`. The relay
+   serves no page at that URL, so the output points at the app's scanner
+   and paste field.
 
-Reprinting (`tailscale-serve.sh link`, the **Lerdr: Show Phone Setup QR**
-action, or `kill -USR1 <relay-pid>`) repeats steps 2–4. The QR embeds the
-relay token — that is why the scripts warn against sharing screenshots of
-it. The invitation/credential handshake itself is wire-level and lives in
+Reprinting (`tailscale-serve.sh link`, or the **Lerdr: Show Phone Setup
+QR** action) repeats step 2, or step 3 when step 2 is unavailable. Every
+print re-arms the **one-shot invitation** (one phone, ~10 minutes). Both
+link shapes carry the relay key as the bootstrap `setup=` secret, which is
+why the output warns against sharing screenshots.
+
+The invitation/credential handshake itself is wire-level and lives in
 `docs/03-protocol.md`.
 
 ## Local development (link)

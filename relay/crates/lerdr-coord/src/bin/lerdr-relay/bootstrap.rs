@@ -234,7 +234,7 @@ pub fn print_setup_link(link: &str) {
     eprintln!();
     match terminal_qr(link) {
         Some(qr) => {
-            eprintln!("  Scan this QR code with your phone camera:");
+            eprintln!("  Scan this QR code in the Lerdr app (Pairing → Scan QR code):");
             eprintln!();
             for line in qr.lines() {
                 eprintln!("  {line}");
@@ -244,10 +244,10 @@ pub fn print_setup_link(link: &str) {
                 "  This code pairs one phone with this relay; do not share screenshots of it."
             );
             eprintln!();
-            eprintln!("  Or open this private setup link on your phone:");
+            eprintln!("  Or open this private link on the phone; it opens the Lerdr app:");
         }
         None => {
-            eprintln!("  Open this private setup link on your phone:");
+            eprintln!("  Open this private link on the phone; it opens the Lerdr app:");
         }
     }
     eprintln!("  {link}");
