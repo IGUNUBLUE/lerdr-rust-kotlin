@@ -11,8 +11,9 @@ set -euo pipefail
 #   scripts/tailscale-serve.sh link      reprint the setup QR without changes
 #
 # An existing TCP forward to the relay (`tailscale serve --tcp=N
-# tcp://localhost:<port>`) is kept as is; its QR comes from
-# `lerdr-relay pairing qr`. The relay port is read from relay.env.
+# tcp://localhost:<port>`) is kept as is. With the background service
+# installed, every QR comes from `lerdr-relay pairing qr` (a one-time
+# lerdr://pair invitation). The relay port is read from relay.env.
 #
 # Linux and macOS: works against a Homebrew tailscaled or the Tailscale.app
 # GUI client. The phone side works on any Tailscale client.
@@ -85,19 +86,51 @@ serve_tcp_forwards_relay() {
         grep -qE "tcp://(127\.0\.0\.1|localhost|\[::1\]):$PORT([[:space:]]|$)"
 }
 
-# The HTTPS link built by setup-link.sh assumes wss://<tailnet-name>. Any other
-# route goes through the native command, which reads the running service's
-# real port and the exact Serve route, and rearms the invitation itself.
+# The phone QR comes from the native command: it reads the running service's
+# real port and exact Serve route (HTTPS root proxy or TCP forward), rearms a
+# one-time invitation, and prints a lerdr://pair link that opens the app. It
+# runs `tailscale` by name from PATH, so a CLI under another name
+# (Tailscale.app's Contents/MacOS/Tailscale) is exposed through a small shell
+# wrapper, the scripted equivalent of the alias Tailscale documents for macOS.
 print_native_pairing() {
     local relay_bin
+    local shim
+    local rc
 
     relay_bin="$(relay_binary)" || return 1
     if [ -z "$(installed_service_env_file)" ]; then
-        echo "✗ This relay route needs the installed background service to print a QR." >&2
+        echo "✗ Printing a pairing QR needs the installed background service." >&2
         echo "  Install it with: scripts/install-tailscale-service.sh" >&2
         return 1
     fi
-    "$relay_bin" pairing qr
+    if [ "$(basename "$TAILSCALE_BIN")" = tailscale ]; then
+        PATH="$(dirname "$TAILSCALE_BIN"):$PATH" "$relay_bin" pairing qr
+        return
+    fi
+    shim="$(mktemp -d "${TMPDIR:-/tmp}/lerdr-tailscale.XXXXXX")"
+    printf '#!/bin/sh\nexec "%s" "$@"\n' "$TAILSCALE_BIN" > "$shim/tailscale"
+    chmod 700 "$shim/tailscale"
+    rc=0
+    PATH="$shim:$PATH" "$relay_bin" pairing qr || rc=$?
+    rm -rf "$shim"
+    return "$rc"
+}
+
+# HTTPS route: the native QR, or — when no service is installed, as with a
+# foreground relay — the legacy https://<tailnet-name>/#… link, which only the
+# app's in-app scanner and paste field accept.
+print_https_pairing() {
+    local fqdn="$1"
+
+    if [ -n "$(installed_service_env_file)" ]; then
+        if print_native_pairing; then
+            return 0
+        fi
+        echo "" >&2
+        echo "▸ The native pairing QR failed (see above); printing the legacy setup link." >&2
+    fi
+    require_relay_binary
+    print_setup_link "$fqdn"
 }
 
 relay_answers() {
@@ -213,14 +246,12 @@ case "$COMMAND" in
             echo "▸ Tailnet endpoint healthy: https://$FQDN"
         fi
         echo ""
-        require_relay_binary
-        print_setup_link "$FQDN"
+        print_https_pairing "$FQDN"
         ;;
     link)
         FQDN="$(tailscale_fqdn)"
         if serve_proxies_relay; then
-            require_relay_binary
-            print_setup_link "$FQDN"
+            print_https_pairing "$FQDN"
         elif serve_tcp_forwards_relay; then
             print_native_pairing
         else
