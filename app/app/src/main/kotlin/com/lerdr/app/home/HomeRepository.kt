@@ -30,8 +30,8 @@ import lerdr.core.store.orchestratingStatus
 import lerdr.core.store.sortedAgents
 
 /**
- * Home data seam — repositories expose `Flow`, never suspend-gets
- * (see .devin/skills/android-app). [RealHomeRepository] folds
+ * Home data seam — repositories expose `Flow`, never suspend-gets.
+ * [RealHomeRepository] folds
  * `core:store`'s AgentStore + ConnectionStore + WorkspaceStore +
  * RelayRegistry into [HomeUiState]; [FakeHomeRepository] survives only as a
  * test fixture.

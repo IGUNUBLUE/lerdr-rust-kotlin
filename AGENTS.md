@@ -62,15 +62,6 @@ questions; record unspecified behavior in `docs/10-spec-gaps.md`.
 
 ## Skills
 
-Repo-local (authored, `.devin/skills/`):
-
-| Skill | When |
-|---|---|
-| `protocol-parity` | Wire bytes, codecs, crypto, fixtures |
-| `herdr-api` | Herdr socket/CLI boundary, events, capabilities |
-| `rust-relay` | Crate work under `relay/crates/` |
-| `android-app` | Gradle modules, Compose, M3E |
-
 Installed via `npx skills add` (`.agents/skills/`, lockfile
 `skills-lock.json` — restore with `npx skills experimental_install`):
 
