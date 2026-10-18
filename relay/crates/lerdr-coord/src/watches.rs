@@ -76,7 +76,7 @@ use crate::actor::{Invalidation, TopologyHandle};
 use crate::classify::store::{prepare_pane_response, PaneSemantics};
 use crate::fingerprint::content_fingerprint;
 use crate::history::Manager as HistoryManager;
-use crate::pane_stream::{PaneStream, StreamOutcome};
+use crate::pane_stream::{split_host_history, PaneStream, StreamOutcome};
 
 /// `paneWatchAckTimeout` — the retired implementation's gate reset window.
 pub const ACK_TIMEOUT: Duration = Duration::from_secs(4);
@@ -1111,10 +1111,7 @@ async fn try_poll_stream(
     if state.pending_ack {
         return;
     }
-    let Some(stream) = slot.stream.as_ref() else {
-        return;
-    };
-    if !stream.is_initialized() {
+    if !slot.stream.as_ref().is_some_and(PaneStream::is_initialized) {
         return;
     }
     let classification_agent = deps.handle.topology.borrow().classification_agent(pane_id);
@@ -1124,7 +1121,8 @@ async fn try_poll_stream(
     if !slot.dirty && !metadata_moved {
         return;
     }
-    match read_watch_frame(pane_id, spec, deps, state, Some(stream)).await {
+    refresh_stream_history(pane_id, spec, deps, slot).await;
+    match read_watch_frame(pane_id, spec, deps, state, slot.stream.as_ref()).await {
         FrameRead::Frame(frame) => {
             slot.dirty = false;
             send_frame(pane_id, spec, deps.sink.as_ref(), state, *frame);
@@ -1133,6 +1131,67 @@ async fn try_poll_stream(
         // tick retries. `Gone` cannot arise here: stream reads never
         // produce it; `terminal.closed` drives `send_gone` instead.
         FrameRead::Retry | FrameRead::Gone => {}
+    }
+}
+
+/// Keep the live stream's copy of Herdr's history current for `recent`
+/// watches. The emulator renders the screen push-driven, but it holds no
+/// usable scrollback (see [`crate::pane_stream::HostHistory`]), so without
+/// this the phone receives only the visible rows and has nothing to scroll
+/// back to. Paced by [`PaneStream::history_due`]; ansi `recent`/`visible`
+/// reads never trigger Herdr's scroll harvest. A failed or unlocatable
+/// read, or a pane replaced mid-read, keeps the previous history.
+async fn refresh_stream_history(
+    pane_id: &str,
+    spec: &WatchSpec,
+    deps: &WatchDeps,
+    slot: &mut StreamSlot,
+) {
+    let now = std::time::Instant::now();
+    if !slot
+        .stream
+        .as_ref()
+        .is_some_and(|stream| stream.is_initialized() && stream.history_due(now))
+    {
+        return;
+    }
+    let viewport_only = deps.leases.active_columns(pane_id).await.is_some();
+    let (generation, agent) = {
+        let topology = deps.handle.topology.borrow();
+        (
+            topology.generation_of(pane_id),
+            topology
+                .pane_of(pane_id)
+                .and_then(|a| a.agent.clone())
+                .unwrap_or_default(),
+        )
+    };
+    if display_source(spec.format, viewport_only, &agent) != ReadSource::Recent {
+        return;
+    }
+    let client = &deps.handle.client;
+    let history = match client
+        .pane_read(pane_id, ReadSource::Recent, spec.lines, spec.format)
+        .await
+    {
+        Ok(recent) => match client
+            .pane_read(pane_id, ReadSource::Visible, spec.lines, spec.format)
+            .await
+        {
+            Ok(visible) => split_host_history(&recent.text, recent.truncated, &visible.text),
+            Err(_) => None,
+        },
+        Err(_) => None,
+    }
+    .filter(|_| deps.handle.topology.borrow().generation_of(pane_id) == generation);
+    if history.is_none() {
+        debug!(
+            pane_id,
+            "host history unavailable — keeping the previous rows"
+        );
+    }
+    if let Some(stream) = slot.stream.as_mut() {
+        stream.note_history(history, now);
     }
 }
 
