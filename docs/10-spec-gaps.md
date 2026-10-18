@@ -1886,3 +1886,29 @@ Unspecified onboarding behavior, decided while fixing fresh-host setup
   through the service, the Tailscale.app-named CLI through the wrapper, and
   the fallback when `pairing qr` fails. **Not verified:** a camera scan on a
   real phone, and macOS.
+
+## Terminal scrollback under the live stream (2026-10)
+
+- **Symptom:** in the app's Terminal tab only the visible screen could be
+  read; there was nothing to scroll back to.
+- **Cause:** once `herdr terminal session observe` delivers its first frame,
+  the watch renders from the relay's `vt100` emulator instead of
+  `pane.read`. The emulator starts empty, the alternate screen keeps no
+  scrollback, rows scrolled inside a DECSTBM region are dropped, and every
+  geometry respawn (the phone's size lease) starts over. Herdr still held the
+  history (`recent` returned ~1000 rows against 51 `visible`).
+- **Decision:** for `recent` watches, render Herdr's history (an ansi
+  `recent` read minus its screen, located via a back-to-back `visible` read
+  and a plain-text row match) above the emulator's live screen. The emulator's
+  own scrollback is not used. The history is re-read on screen change (at
+  most every 200 ms) and at least once per second. A failed or unlocatable
+  read keeps the previous history. `recent-unwrapped` (Claude without a lease)
+  is unchanged.
+- **Verified live:** a throwaway relay on the real Herdr socket, driven by
+  `lerdr-shadow`. The test pane ran a scroll-region TUI with a 60×20 lease,
+  like the phone. The 1.1.2 relay sent 20 rows. The fix sent 400 rows, and
+  numbered output stayed contiguous and unduplicated on every delta while it
+  grew. On an unleased kiro pane, 1.1.2 fell from 399 to 51 rows once the
+  stream attached; the fix stayed at 400.
+- **Open:** Claude's `recent-unwrapped` stream path still shows only what the
+  emulator holds; logical-line history would need an unwrapped seam.

@@ -11,6 +11,12 @@ The `protocol v3` / `herdr-e2ee-v2` wire contract remains frozen.
 
 ### Fixed
 
+- The Terminal tab can scroll back again. Once the relay's live stream took
+  over, the phone only received the rows on screen, because the stream's
+  terminal emulator kept no usable history. This was most visible with
+  full-screen agent TUIs at phone size. The relay now sends Herdr's own
+  history above the live screen, up to the 400 rows the app requests.
+
 - First-time setup works on a fresh Linux or macOS machine: **Lerdr: Setup →
   Tailscale Serve** now installs and starts the background relay service
   when none exists, instead of failing with "relay not answering" / "No relay

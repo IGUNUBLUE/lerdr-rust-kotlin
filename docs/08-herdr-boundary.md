@@ -65,6 +65,16 @@ The relay feeds bytes to a `vt100` screen emulator and renders the same
 without mouse-scroll harvesting. `LERDR_PANE_STREAM=off` disables it;
 spawn failure/EOF/`closed` fall back to `pane.read` polling.
 
+The emulator alone has no usable scrollback: it starts empty at attach, the
+alternate screen keeps none, rows scrolled inside a scroll region (a TUI with
+a fixed input box) never reach it, and each geometry respawn starts over. For
+`recent` watches the relay therefore renders Herdr's own history above the
+live screen. The history comes from an ansi `pane.read` `recent` read minus
+its screen, located with a `visible` read taken right after it. It is
+re-read when the screen changes (at most every 200 ms) and at least once a
+second. Ansi reads do not trigger the scroll harvest. Claude's
+`recent-unwrapped` (no lease) still renders from the emulator.
+
 Size leases own one `herdr terminal session control <pane_id> --cols C
 --rows R` subprocess per pane, without `--takeover`. This resizes both
 Herdr's native VT grid and the process PTY; `stty` alone resizes only the
