@@ -21,6 +21,8 @@
 //!
 //! `LERDR_PANE_STREAM=off` disables the stream entirely (reads always poll).
 
+use std::time::{Duration, Instant};
+
 use lerdr_herdr::observe::{ObserveEvent, ObserveStream, TerminalFrame};
 use lerdr_herdr::ReadSource;
 use tracing::warn;
@@ -30,6 +32,29 @@ use crate::watches::cap_pane_content_lines;
 /// Scrollback kept by the emulator — comfortably past any `lines` budget
 /// the router clamps to (`MAX_PANE_LINES` is far below this).
 const SCROLLBACK_ROWS: usize = 4096;
+
+/// Re-read Herdr's history at least this often while the stream is live,
+/// even when the screen looks unchanged (a row can scroll off and be
+/// replaced by an identical one).
+pub(crate) const HOST_HISTORY_REFRESH: Duration = Duration::from_secs(1);
+
+/// Minimum spacing between history reads when the screen changes, so a
+/// spinner redrawing every frame costs no more reads than the old snapshot
+/// poll did. Rows scrolled off inside this window reappear at the next read.
+pub(crate) const HOST_HISTORY_MIN_INTERVAL: Duration = Duration::from_millis(200);
+
+/// Rows of Herdr's own scrollback, above the live screen, captured with
+/// `pane.read` (`recent`, ansi). The emulator cannot supply them: it
+/// starts empty at attach, the alternate screen keeps no scrollback, rows
+/// scrolled inside a scroll region (a TUI with a fixed input box) never
+/// reach it, and every geometry respawn starts it over.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct HostHistory {
+    /// History rows oldest-first, each terminated by `\n`.
+    pub(crate) text: String,
+    /// Herdr dropped older rows to fit the read budget.
+    pub(crate) truncated: bool,
+}
 
 /// Env kill-switch for the stream path.
 const DISABLE_ENV: &str = "LERDR_PANE_STREAM";
@@ -54,6 +79,13 @@ pub(crate) struct PaneStream {
     /// The `(cols, rows)` the observer was spawned with — `None` took
     /// Herdr's fixed default surface.
     size: Option<(u16, u16)>,
+    /// Herdr's scrollback above the screen; `recent` renders prepend it.
+    history: Option<HostHistory>,
+    /// Last history fetch attempt — the [`HOST_HISTORY_REFRESH`] bound.
+    history_attempt: Option<Instant>,
+    /// The emulator screen at that attempt, as plain rows. A different
+    /// screen may mean rows scrolled into Herdr's history since then.
+    history_screen: Option<String>,
 }
 
 /// The stream's next meaningful outcome.
@@ -92,7 +124,42 @@ impl PaneStream {
             stream: ObserveStream::spawn_sized(&bin, pane_id, &socket_path, cols, rows)?,
             emu: PaneEmulator::new(),
             size,
+            history: None,
+            history_attempt: None,
+            history_screen: None,
         })
+    }
+
+    /// A history refresh is due before the next render: never attempted on
+    /// this stream (a fresh attach or geometry respawn),
+    /// [`HOST_HISTORY_REFRESH`] passed, or the screen changed and
+    /// [`HOST_HISTORY_MIN_INTERVAL`] passed. Following screen changes keeps
+    /// rows that just scrolled off from staying missing; a quiet pane costs
+    /// one read pair per second.
+    pub(crate) fn history_due(&self, now: Instant) -> bool {
+        history_refresh_due(
+            self.history_attempt.map(|at| now.duration_since(at)),
+            || self.history_screen.as_deref() != Some(self.screen_text().as_str()),
+        )
+    }
+
+    /// Record a history fetch attempt. `None` (a failed read or an
+    /// unlocatable screen) keeps the previous history rather than
+    /// dropping rows the phone already shows.
+    pub(crate) fn note_history(&mut self, history: Option<HostHistory>, now: Instant) {
+        self.history_attempt = Some(now);
+        self.history_screen = Some(self.screen_text());
+        if history.is_some() {
+            self.history = history;
+        }
+    }
+
+    /// The emulator's screen as plain rows — the change detector for
+    /// [`Self::history_due`].
+    fn screen_text(&self) -> String {
+        self.emu
+            .render_parts(ReadSource::Visible, false, u32::MAX)
+            .0
     }
 
     /// The surface geometry this stream was spawned with — the watch
@@ -126,13 +193,22 @@ impl PaneStream {
     /// scrollback rows; `recent-unwrapped` additionally joins soft-wrapped
     /// rows into logical lines. `lines` caps via the same
     /// `capPaneContentLines` the snapshot reads run through.
+    ///
+    /// With Herdr history captured, `recent` is that history plus the live
+    /// screen; the emulator's own scrollback is not used, since the
+    /// history already covers it.
     pub(crate) fn render_parts(
         &self,
         source: ReadSource,
         ansi: bool,
         lines: u32,
     ) -> (String, bool) {
-        self.emu.render_parts(source, ansi, lines)
+        match (&self.history, source) {
+            (Some(history), ReadSource::Recent) => {
+                self.emu.render_with_history(history, ansi, lines)
+            }
+            _ => self.emu.render_parts(source, ansi, lines),
+        }
     }
 }
 
@@ -205,6 +281,148 @@ impl PaneEmulator {
         };
         render_parser(parser, source, ansi, lines)
     }
+
+    /// `recent` as Herdr's history followed by the live screen, capped
+    /// at `lines` from the tail.
+    pub(crate) fn render_with_history(
+        &self,
+        history: &HostHistory,
+        ansi: bool,
+        lines: u32,
+    ) -> (String, bool) {
+        let (screen, _) = self.render_parts(ReadSource::Visible, ansi, lines);
+        let mut content = String::with_capacity(history.text.len() + screen.len());
+        content.push_str(&history.text);
+        content.push_str(&screen);
+        let capped = cap_pane_content_lines(&content, lines);
+        let truncated = history.truncated || capped.len() < content.len();
+        (capped.to_string(), truncated)
+    }
+}
+
+/// [`PaneStream::history_due`]'s pacing on its inputs: time since the last
+/// attempt (`None` = never) and, lazily, whether the screen changed.
+fn history_refresh_due(elapsed: Option<Duration>, screen_changed: impl FnOnce() -> bool) -> bool {
+    match elapsed {
+        None => true,
+        Some(elapsed) if elapsed >= HOST_HISTORY_REFRESH => true,
+        Some(elapsed) => elapsed >= HOST_HISTORY_MIN_INTERVAL && screen_changed(),
+    }
+}
+
+/// One row reduced for comparison: escape sequences, carriage returns and
+/// trailing blanks removed. Herdr's `pane.read` rows and the screen rows
+/// carry the same text but not always the same escapes.
+fn comparable_row(row: &str) -> String {
+    let mut out = String::with_capacity(row.len());
+    let mut chars = row.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{1b}' => match chars.next() {
+                // CSI: parameters/intermediates up to a final byte.
+                Some('[') => {
+                    for c in chars.by_ref() {
+                        if ('@'..='~').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                // OSC: up to BEL or ST (`ESC \\`).
+                Some(']') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\u{7}' {
+                            break;
+                        }
+                        if c == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                // Two-byte escapes (charset selects, keypad modes, ...).
+                _ => {}
+            },
+            '\r' => {}
+            c => out.push(c),
+        }
+    }
+    out.truncate(out.trim_end().len());
+    out
+}
+
+/// Rows of `text`, oldest-first, without the empty element a trailing
+/// newline leaves.
+fn text_rows(text: &str) -> Vec<&str> {
+    let mut rows: Vec<&str> = text.split('\n').collect();
+    if rows.last().is_some_and(|row| row.is_empty()) {
+        rows.pop();
+    }
+    rows
+}
+
+/// Rows compared when locating the screen inside `recent`.
+const SCREEN_MATCH_ROWS: usize = 3;
+
+/// Split Herdr's history out of a `recent` read using a `visible` read
+/// taken right after it. `recent` is the scrollback followed by the
+/// screen (trailing blank rows trimmed), so the screen normally starts
+/// `visible.len()` rows from the end. Output between the two reads can
+/// shift it, so nearby offsets are tried too, nearest first. `None` when
+/// the screen cannot be located; the caller keeps its previous history.
+pub(crate) fn split_host_history(
+    recent: &str,
+    recent_truncated: bool,
+    visible: &str,
+) -> Option<HostHistory> {
+    let recent_rows = text_rows(recent);
+    let mut screen: Vec<String> = text_rows(visible).into_iter().map(comparable_row).collect();
+    while screen.last().is_some_and(String::is_empty) {
+        screen.pop();
+    }
+    let cut = if screen.is_empty() {
+        // A blank screen: everything Herdr returned is history.
+        Some(recent_rows.len())
+    } else {
+        // Anchor on the first non-blank screen rows (with their offsets
+        // into the screen): leading blank rows match anywhere.
+        let probe: Vec<(usize, &String)> = screen
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| !row.is_empty())
+            .take(SCREEN_MATCH_ROWS)
+            .collect();
+        // Rows past the end of `recent` are output that arrived after
+        // that read; they cannot be checked, but at least one row must.
+        let matches_at = |start: usize| {
+            let mut checked = 0;
+            let all = probe.iter().all(|&(offset, expected)| {
+                recent_rows.get(start + offset).is_none_or(|row| {
+                    checked += 1;
+                    comparable_row(row) == *expected
+                })
+            });
+            all && checked > 0
+        };
+        let expected = recent_rows.len().checked_sub(screen.len())?;
+        (0..=screen.len()).find_map(|distance| {
+            [
+                expected.checked_sub(distance),
+                expected.checked_add(distance),
+            ]
+            .into_iter()
+            .flatten()
+            .find(|&start| matches_at(start))
+        })
+    }?;
+    let mut text = String::new();
+    for row in &recent_rows[..cut] {
+        text.push_str(row);
+        text.push('\n');
+    }
+    Some(HostHistory {
+        text,
+        truncated: recent_truncated,
+    })
 }
 
 /// `render` on a bare parser — kept separate so tests can drive `vt100`
@@ -444,5 +662,96 @@ mod tests {
         emu.apply(&frame(2, 10, 4, b"wider\r\n"));
         let (text, _) = emu.render_parts(ReadSource::Visible, false, 10);
         assert_eq!(text, "abcde\nwider\n");
+    }
+
+    #[test]
+    fn history_refresh_pacing() {
+        let ms = Duration::from_millis;
+        assert!(history_refresh_due(None, || false), "first render reads");
+        assert!(
+            !history_refresh_due(Some(ms(50)), || true),
+            "min interval holds"
+        );
+        assert!(history_refresh_due(Some(ms(250)), || true), "screen moved");
+        assert!(
+            !history_refresh_due(Some(ms(250)), || false),
+            "quiet screen waits"
+        );
+        assert!(
+            history_refresh_due(Some(ms(1000)), || false),
+            "periodic bound"
+        );
+    }
+
+    #[test]
+    fn comparable_row_strips_escapes_and_carriage_returns() {
+        assert_eq!(
+            comparable_row("\x1b[0m\x1b[38;2;0;95;255m  hi\x1b[0m \r"),
+            "  hi"
+        );
+        assert_eq!(
+            comparable_row("\x1b]8;;https://x\x1b\\link\x1b]8;;\x07!"),
+            "link!"
+        );
+        assert_eq!(comparable_row("   \r"), "");
+    }
+
+    #[test]
+    fn host_history_is_recent_minus_the_screen() {
+        // Herdr's `recent`: three history rows, then the screen with its
+        // trailing blank rows trimmed; `visible` keeps them.
+        let recent = "old 1\r\n\x1b[1mold 2\x1b[0m\nold 3\n\nscreen a\nscreen b\n";
+        let visible = "\nscreen a\r\nscreen b\n\n\n";
+        let history = split_host_history(recent, true, visible).unwrap();
+        assert_eq!(history.text, "old 1\r\n\x1b[1mold 2\x1b[0m\nold 3\n");
+        assert!(history.truncated);
+    }
+
+    #[test]
+    fn host_history_tolerates_rows_scrolled_between_reads() {
+        // One row scrolled off between the two reads: the screen now
+        // starts one row later than `recent` placed it.
+        let recent = "h1\nh2\nh3\ns1\ns2\ns3\n";
+        let visible = "s2\ns3\ns4\n";
+        let history = split_host_history(recent, false, visible).unwrap();
+        assert_eq!(history.text, "h1\nh2\nh3\ns1\n");
+    }
+
+    #[test]
+    fn host_history_blank_screen_and_unlocatable_screen() {
+        let all = split_host_history("h1\nh2\n", false, "\n\n").unwrap();
+        assert_eq!(all.text, "h1\nh2\n");
+        // The screen never appears in `recent`: no history at all rather
+        // than a guessed cut.
+        assert_eq!(split_host_history("h1\nh2\nh3\n", false, "zz\n"), None);
+    }
+
+    #[test]
+    fn recent_with_history_is_history_then_live_screen() {
+        let mut emu = PaneEmulator::new();
+        // A scroll region (rows 1-2) keeps scrolled rows out of the
+        // emulator's scrollback, like a TUI with a fixed input box.
+        emu.apply(&frame(
+            1,
+            10,
+            3,
+            b"\x1b[1;2r\x1b[1;1Hone\r\ntwo\r\nthree\x1b[3;1Hinput",
+        ));
+        let (without, _) = emu.render_parts(ReadSource::Recent, false, 50);
+        assert_eq!(
+            without, "two\nthree\ninput\n",
+            "no scrollback without history"
+        );
+        let history = HostHistory {
+            text: "zero\none\n".to_owned(),
+            truncated: false,
+        };
+        let (with, truncated) = emu.render_with_history(&history, false, 50);
+        assert_eq!(with, "zero\none\ntwo\nthree\ninput\n");
+        assert!(!truncated);
+        // The cap keeps the tail and reports the drop.
+        let (capped, truncated) = emu.render_with_history(&history, false, 2);
+        assert_eq!(capped, "three\ninput\n");
+        assert!(truncated);
     }
 }
