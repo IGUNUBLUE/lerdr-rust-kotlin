@@ -76,6 +76,9 @@ opens the **Lerdr: Setup** pane.
 For omp, also install its [profile-scoped lifecycle integration](plugin/README.md#omp-lifecycle-status)
 so working turns and in-process subagents do not appear idle.
 
+To update later: `herdr plugin update lerdr.events`. The service, the
+relay token, and paired phones are kept.
+
 ### 2 · Start the relay, publish it, print the QR — computer
 
 In the **Lerdr: Setup** pane choose **1 · Tailscale Serve**. If the pane is
