@@ -212,14 +212,6 @@ module inventory and dependencies.
 - Screen ViewModels own screen state; transport and synchronized store state
   survive configuration and navigation changes.
 
-## Repository skills
-
-The repository provides `herdr-api` (boundary rules), `protocol-parity`
-(fixture/vector workflow), `rust-relay` (actor topology + error taxonomy), and
-`android-app` (module + Compose rules). The legacy skill name
-`protocol-parity` means conformance to this repository's frozen contract, not
-comparison with another implementation.
-
 ## Recorded Herdr integration findings
 
 The following are the Herdr API facts Lerdr relies on. They are recorded here
