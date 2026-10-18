@@ -164,7 +164,7 @@ require_relay_binary() {
         echo "  LERDR_RELAY_BIN=relay/target/release/lerdr-relay scripts/tailscale-serve.sh start"
     else
         echo "  Install the plugin release, or build one:"
-        echo "  cargo build --release -p lerdr-relay   # from relay/"
+        echo "  cargo build --release -p lerdr-coord --bin lerdr-relay   # from relay/"
     fi
     return 1
 }
