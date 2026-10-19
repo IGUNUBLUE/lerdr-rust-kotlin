@@ -47,9 +47,11 @@ class AgentAttentionNotifier @Inject constructor(
         notifier.ensureChannels()
         scope.launch {
             var previous = emptyList<Agent>()
+            var previousViewedPane: String? = null
             agentStore.agents.combine(visibleViewedPane) { current, viewedPane ->
-                val commands = AttentionReducer.reduce(previous, current, viewedPane)
+                val commands = AttentionReducer.reduce(previous, current, viewedPane, previousViewedPane)
                 previous = current
+                previousViewedPane = viewedPane
                 commands
             }.collect { commands ->
                 if (commands.isNotEmpty()) notifier.execute(commands)

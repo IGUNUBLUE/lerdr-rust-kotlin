@@ -1912,3 +1912,33 @@ Unspecified onboarding behavior, decided while fixing fresh-host setup
   stream attached; the fix stayed at 400.
 - **Open:** Claude's `recent-unwrapped` stream path still shows only what the
   emulator holds; logical-line history would need an unwrapped seam.
+
+## Attention notification lifecycle (2026-10)
+
+- Keep the previous viewed pane alongside the previous agent snapshot. Event
+  deduplication uses all agents; summary membership uses only agents outside
+  the viewed pane. Opening one of several blocked agents retracts its card,
+  and leaving restores the summary without leaving a stale individual behind.
+- Restoring an existing blocker after a summary collapses is explicitly silent,
+  including when Android already canceled its former notification. A new event
+  ID remains eligible to alert. Viewing a lone blocker consumes that event;
+  simply leaving its screen does not notify again.
+- Agent notifications use private lock-screen visibility and a generic public
+  version without agent names, workspace labels, commands, or question text.
+  The unlocked shade retains the preview and expands long text. Attention uses
+  the reminder category; an agent is not modeled as a human conversation.
+  Android and the user's lock-screen settings retain final display control.
+- On Android 15+ the fallback dataSync service stops itself immediately when
+  the OS invokes its timeout callback. It does not try to restart with an
+  exhausted budget. UnifiedPush remains the dead-process delivery path; this
+  does not promise an indefinitely pinned background socket.
+- Verification is local: reducer transitions, platform notification objects,
+  public RemoteViews screenshot, and the service timeout callback. Physical
+  lock-screen rendering, OEM notification behavior and a real six-hour timeout
+  still require device acceptance. Rollback comprises the notify sources/tests,
+  their screenshot golden and this note; wire fields and fixtures are unchanged.
+- Notification permission is offered after pairing, inside the unlocked app.
+  Only Enable notifications launches Android's request; Not now and dismissal
+  persist across opens. Settings remains the recovery path. Granted permission
+  and pre-Android-13 devices skip the offer. Compose interaction tests and a
+  Roborazzi rationale screenshot cover this flow.

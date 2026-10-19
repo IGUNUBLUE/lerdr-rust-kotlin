@@ -127,6 +127,54 @@ class AttentionReducerTest {
         assertThat(AttentionReducer.reduce(completed, completed)).isEmpty()
     }
 
+    @Test
+    fun `viewing one summarized pane does not alert its existing survivor`() {
+        val agents = listOf(blockedQuestion("p1"), blockedApproval("p2"))
+        val commands = AttentionReducer.reduce(agents, agents, viewedPaneId = "r1::p1")
+        assertThat(posts(commands).single().silent).isTrue()
+    }
+
+    @Test
+    fun `unchanged viewed pane does not repeatedly rebuild survivor card`() {
+        val agents = listOf(blockedQuestion("p1"), blockedApproval("p2"))
+        assertThat(AttentionReducer.reduce(
+            agents, agents, viewedPaneId = "r1::p1", previousViewedPaneId = "r1::p1",
+        )).isEmpty()
+    }
+
+    @Test
+    fun `leaving a viewed pane restores the full summary silently`() {
+        val agents = listOf(blockedQuestion("p1"), blockedApproval("p2"))
+        val commands = AttentionReducer.reduce(
+            agents, agents, previousViewedPaneId = "r1::p1",
+        )
+        val summary = posts(commands).single()
+        assertThat(summary.notificationId).isEqualTo(NotifyIds.SUMMARY)
+        assertThat(summary.inboxLines).hasSize(2)
+        assertThat(summary.silent).isTrue()
+        assertThat(cancels(commands)).contains(
+            NotificationCommand.Cancel(NotifyIds.attention("r1::p2")),
+        )
+    }
+
+    @Test
+    fun `leaving a lone viewed blocker does not re-notify the same event`() {
+        val agents = listOf(blockedApproval("p1"))
+        assertThat(AttentionReducer.reduce(
+            agents, agents, previousViewedPaneId = "r1::p1",
+        )).isEmpty()
+    }
+
+    @Test
+    fun `fresh blocking event after leaving the viewed pane still alerts`() {
+        val commands = AttentionReducer.reduce(
+            listOf(blockedApproval("p1", "old")),
+            listOf(blockedApproval("p1", "new")),
+            previousViewedPaneId = "r1::p1",
+        )
+        assertThat(posts(commands).single().silent).isFalse()
+    }
+
     // ── attention transitions ─────────────────────────────────────────
 
     @Test
@@ -333,6 +381,7 @@ class AttentionReducerTest {
                 title = "claude needs approval",
                 body = "workstation",
                 deepLink = "lerdr://agent?pane_id=r1%3A%3Ap1",
+                silent = true,
             ),
         )
     }

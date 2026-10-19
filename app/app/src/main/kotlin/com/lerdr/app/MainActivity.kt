@@ -77,8 +77,6 @@ class MainActivity : FragmentActivity() {
                 themeMode?.let { applyThemeMode(this@MainActivity, it) }
             }
             LerdrTheme(darkTheme = darkTheme) {
-                RequestPostNotificationsPermission()
-
                 val navigator = rememberLerdrNavigator(
                     *remember {
                         buildList {
@@ -97,6 +95,8 @@ class MainActivity : FragmentActivity() {
                 // App-lock gate — Lerdr "verifies before it will
                 // connect at open"; locked content is never composed.
                 LockGate {
+                    val pairedComputers by sessions.relays.collectAsStateWithLifecycle()
+                    RequestPostNotificationsPermission(hasPairedComputer = pairedComputers.isNotEmpty())
                     // Opaque backdrop behind NavDisplay: the tab-switch
                     // fade-through and shared-axis specs briefly leave both
                     // scenes translucent, so without this the dip lands on
