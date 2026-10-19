@@ -66,6 +66,8 @@ sealed interface NotificationCommand {
         val inboxLines: List<String> = emptyList(),
         /** True for in-place summary refreshes that must not re-alert. */
         val onlyAlertOnce: Boolean = false,
+        /** Layout restoration must stay quiet even after a card was canceled. */
+        val silent: Boolean = false,
     ) : NotificationCommand
 
     data class Cancel(override val notificationId: Int) : NotificationCommand
@@ -149,19 +151,24 @@ object AttentionReducer {
         previous: List<Agent>,
         current: List<Agent>,
         viewedPaneId: String? = null,
+        previousViewedPaneId: String? = null,
     ): List<NotificationCommand> {
         val prev = signals(previous)
         val curr = signals(current, viewedPaneId)
         val prevPaneIds = previous.mapTo(HashSet()) { it.paneId }
         val commands = mutableListOf<NotificationCommand>()
 
-        val prevAttention = prev.filterValues { it.signal != AttentionSignal.FINISHED }
+        // Event identity includes viewed agents; shade membership does not.
+        // Retaining both projections avoids repeated uncollapse alerts and
+        // lets leaving a viewed pane restore the complete summary.
+        val prevVisible = signals(previous, previousViewedPaneId)
+        val prevAttention = prevVisible.filterValues { it.signal != AttentionSignal.FINISHED }
         val currAttention = curr.filterValues { it.signal != AttentionSignal.FINISHED }
 
         // 1. Exits — a pane that left its notified state loses its entry.
         //    attention↔attention kind changes are NOT exits (same shade slot;
         //    the post below updates it in place), while attention→finished is.
-        for ((paneId, prevRow) in prev) {
+        for ((paneId, prevRow) in prevVisible) {
             val currRow = curr[paneId]
             val exited = when {
                 currRow == null -> true
@@ -203,7 +210,9 @@ object AttentionReducer {
                     commands += NotificationCommand.Cancel(NotifyIds.SUMMARY)
                 }
                 if (prev[paneId]?.key != row.key || prevAttention.size >= 2) {
-                    commands += postAttention(row.agent, row.signal)
+                    commands += postAttention(row.agent, row.signal).copy(
+                        silent = prev[paneId]?.key == row.key,
+                    )
                 }
             }
             else -> {
@@ -216,6 +225,9 @@ object AttentionReducer {
                     }
                     commands += postSummary(
                         currAttention.values.map { it.agent to it.signal },
+                        silent = currAttention.none { (paneId, row) ->
+                            prev[paneId]?.key != row.key
+                        },
                     )
                 }
             }
@@ -317,6 +329,7 @@ object AttentionReducer {
 
     private fun postSummary(
         rows: List<Pair<Agent, AttentionSignal>>,
+        silent: Boolean,
     ): NotificationCommand.Post {
         val lines = rows.map { (agent, signal) ->
             "${displayName(agent)} — ${signalLabel(signal)}"
@@ -329,6 +342,7 @@ object AttentionReducer {
             deepLink = NotifyDeepLinks.AGENTS,
             inboxLines = lines,
             onlyAlertOnce = true,
+            silent = silent,
         )
     }
 }

@@ -101,7 +101,22 @@ class LerdrNotifier @Inject constructor(
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
             .setOnlyAlertOnce(command.onlyAlertOnce)
+            .setSilent(command.silent)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(
+                NotificationCompat.Builder(context, command.channel.id)
+                    .setSmallIcon(com.lerdr.app.R.drawable.ic_notification)
+                    .setContentTitle("Lerdr")
+                    .setContentText("Open Lerdr to view agent updates")
+                    .setShowWhen(false)
+                    .setContentIntent(pendingIntent)
+                    .setAutoCancel(true)
+                    .build(),
+            )
             .apply {
+                if (command.channel == NotifyChannel.AGENT_ATTENTION) {
+                    setCategory(NotificationCompat.CATEGORY_REMINDER)
+                }
                 if (command.channel == NotifyChannel.AGENT_ACTIVITY) {
                     setCategory(NotificationCompat.CATEGORY_STATUS)
                 }
@@ -109,6 +124,8 @@ class LerdrNotifier @Inject constructor(
                     val style = NotificationCompat.InboxStyle()
                     command.inboxLines.forEach(style::addLine)
                     setStyle(style)
+                } else {
+                    setStyle(NotificationCompat.BigTextStyle().bigText(command.body))
                 }
             }
             .build()

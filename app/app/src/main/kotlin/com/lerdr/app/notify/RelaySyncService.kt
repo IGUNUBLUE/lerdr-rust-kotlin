@@ -135,6 +135,13 @@ class RelaySyncService : Service() {
         if (!pushSubscriptions.uiState.value.deliversWhileDead) start(this)
     }
 
+    // Android 15+ gives dataSync services a background-time budget. Once
+    // exhausted, stop promptly; restarting here would just exhaust it again.
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        serviceScope.cancel()
+        stopSelf()
+    }
+
     override fun onDestroy() {
         serviceScope.cancel()
         super.onDestroy()

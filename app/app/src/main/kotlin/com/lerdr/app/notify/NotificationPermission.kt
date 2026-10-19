@@ -7,7 +7,14 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.core.content.edit
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 
@@ -19,28 +26,58 @@ fun Context.hasPostNotificationsPermission(): Boolean =
             Manifest.permission.POST_NOTIFICATIONS,
         ) == PackageManager.PERMISSION_GRANTED
 
-/**
- * One-shot, non-blocking POST_NOTIFICATIONS request — fires the system
- * prompt once on first composition when the permission is missing, and is
- * a permanent no-op below API 33 or once granted.
- *
- * Drop into the composition root (`MainActivity.setContent`) or the Home
- * screen; placement is a judgment call for the UI owner, so this stays a
- * leaf composable with no side conditions beyond the permission check.
- */
+/** Ask in context, after pairing and unlock, and only after an explicit tap. */
 @Composable
 fun RequestPostNotificationsPermission(
+    hasPairedComputer: Boolean,
     onResult: (granted: Boolean) -> Unit = {},
 ) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+    val context = LocalContext.current
+    val preferences = remember(context) {
+        context.getSharedPreferences("notification_permission", Context.MODE_PRIVATE)
+    }
+    var offered by remember { mutableStateOf(preferences.getBoolean("offered", false)) }
+    var granted by remember { mutableStateOf(context.hasPostNotificationsPermission()) }
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
-        onResult,
-    )
-    val context = LocalContext.current
-    LaunchedEffect(Unit) {
-        if (!context.hasPostNotificationsPermission()) {
-            launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
-        }
+    ) { result ->
+        granted = result
+        onResult(result)
     }
+    if (!hasPairedComputer || offered || granted) return
+
+    fun dismissOffer() {
+        offered = true
+        preferences.edit { putBoolean("offered", true) }
+    }
+    NotificationPermissionPrompt(
+        onEnable = {
+            dismissOffer()
+            if (!context.hasPostNotificationsPermission()) {
+                launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        },
+        onDismiss = ::dismissOffer,
+    )
+}
+
+@Composable
+internal fun NotificationPermissionPrompt(onEnable: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Know when an agent needs you") },
+        text = {
+            Text(
+                "Get alerts for approvals, questions and completed work while you're away. " +
+                    "You can change notifications in Settings at any time.",
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onEnable) { Text("Enable notifications") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Not now") }
+        },
+    )
 }
