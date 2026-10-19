@@ -9,6 +9,13 @@ The `protocol v3` / `herdr-e2ee-v2` wire contract remains frozen.
 
 ## [Unreleased]
 
+### Fixed
+
+- Plugin updates on Linux now migrate the service unit that
+  `install-tailscale-service.sh` writes (`ExecStart=<relay> serve`).
+  `plugin-build.sh` used to refuse it as "unrecognized", so services
+  installed from the Setup pane could never be upgraded.
+
 ## [1.1.3] — 2026-10-17
 
 ### Fixed

@@ -112,6 +112,17 @@ if [ -n "$SERVICE_FILE" ] && [ -f "$SERVICE_FILE" ]; then
     cp "$SERVICE_FILE" "$SERVICE_BACKUP"
 fi
 
+# A Lerdr systemd unit execs either a shipped service wrapper (written by
+# earlier releases and by the cutover below) or the relay binary itself with
+# `serve` (written by install-tailscale-service.sh, which the Setup pane runs
+# on first use). Anything else is not ours to rewrite.
+systemd_exec_is_ours() {
+    grep -E '^ExecStart=.*(lerdr|herdr-(mobile-relay|remote)|tailscale)-service\.sh([[:space:]]|$)' \
+        "$1" >/dev/null ||
+        grep -E '^ExecStart=/[^[:space:]]*/(lerdr-relay|lerdr|herdr-mobile-relay) serve[[:space:]]*$' \
+            "$1" >/dev/null
+}
+
 validate_migration_source() {
     local source_env="$1"
     local source_canonical
@@ -139,8 +150,7 @@ validate_migration_source() {
         Linux)
             service_env_path="$(sed -nE 's/^Environment=(LERDR|HERDR)_RELAY_ENV=//p' "$SERVICE_FILE" | tail -1)"
             [ "$service_env_path" = "$source_env" ] &&
-                grep -E '^ExecStart=.*(lerdr|herdr-(mobile-relay|remote)|tailscale)-service\.sh([[:space:]]|$)' \
-                    "$SERVICE_FILE" >/dev/null || {
+                systemd_exec_is_ours "$SERVICE_FILE" || {
                     echo "lerdr: refusing to migrate an unrecognized systemd service" >&2
                     return 1
                 }
@@ -160,8 +170,7 @@ recognized_service_definition() {
     case "$PLATFORM" in
         Linux)
             grep -E '^Environment=(LERDR|HERDR)_RELAY_ENV=/.+' "$SERVICE_FILE" >/dev/null &&
-                grep -E '^ExecStart=.*(lerdr|herdr-(mobile-relay|remote)|tailscale)-service\.sh([[:space:]]|$)' \
-                    "$SERVICE_FILE" >/dev/null
+                systemd_exec_is_ours "$SERVICE_FILE"
             ;;
         Darwin)
             grep -E '<string>com\.(lerdr|herdr-mobile-relay)\.service</string>' "$SERVICE_FILE" >/dev/null &&
