@@ -27,6 +27,9 @@ import com.lerdr.app.session.TerminalUiState
 import com.lerdr.app.ui.terminal.TERMINAL_FORMAT_ANSI
 import com.lerdr.app.ui.terminal.parseTerminalRows
 import com.lerdr.core.designsystem.theme.LerdrTheme
+import org.junit.After
+import org.robolectric.RuntimeEnvironment
+import androidx.compose.ui.test.performScrollTo
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -47,6 +50,8 @@ class TerminalScreenScreenshotTest {
 
     @get:Rule
     val composeRule = createAndroidComposeRule<ComponentActivity>()
+
+    @After fun restoreFontScale() { RuntimeEnvironment.setFontScale(1f) }
 
     private val options = RoborazziOptions(
         // Dump (the JVM default) paints a semantics-tree overlay whose
@@ -106,6 +111,28 @@ class TerminalScreenScreenshotTest {
                 }
             }
         }
+    }
+
+    @Test
+    fun terminal_extraKeys() {
+        show(baseState())
+        composeRule.onNodeWithContentDescription("More terminal keys").performClick()
+        composeRule.onNodeWithText("Interrupt").performScrollTo().assertIsDisplayed()
+        composeRule.mainClock.advanceTimeBy(1000)
+        composeRule.waitForIdle()
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    @Config(qualifiers = "w393dp-h851dp")
+    fun terminal_extraKeysLargeText() {
+        RuntimeEnvironment.setFontScale(2f)
+        show(baseState(), systemFontScale = 2f)
+        composeRule.onNodeWithContentDescription("More terminal keys").performClick()
+        composeRule.onNodeWithText("End input").performScrollTo().assertIsDisplayed()
+        composeRule.mainClock.advanceTimeBy(1000)
+        composeRule.waitForIdle()
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
 
     /** Lease geometry stays in the meta row while the header shows lifecycle. */

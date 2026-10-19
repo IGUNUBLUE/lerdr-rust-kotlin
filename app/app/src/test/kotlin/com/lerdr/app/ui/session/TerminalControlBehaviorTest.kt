@@ -13,6 +13,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import com.lerdr.app.session.TerminalContent
@@ -59,12 +60,12 @@ class TerminalControlBehaviorTest {
         val keys = mutableListOf<List<String>>()
         show(mutableStateOf(controller()), keys)
         composeRule.onNodeWithContentDescription("More terminal keys").performClick()
-        composeRule.onNodeWithText("C-c").performClick()
+        composeRule.onNodeWithText("Interrupt").performScrollTo().performClick()
         composeRule.runOnIdle { assertEquals(emptyList<List<String>>(), keys) }
         composeRule.onNodeWithText("Cancel").performClick()
         composeRule.runOnIdle { assertEquals(emptyList<List<String>>(), keys) }
         composeRule.onNodeWithContentDescription("More terminal keys").performClick()
-        composeRule.onNodeWithText("C-d").performClick()
+        composeRule.onNodeWithText("End input").performScrollTo().performClick()
         composeRule.runOnIdle { assertEquals(emptyList<List<String>>(), keys) }
         composeRule.onNodeWithText("Send Ctrl+D").performClick()
         composeRule.runOnIdle { assertEquals(listOf(listOf("Ctrl+D")), keys) }
@@ -82,6 +83,17 @@ class TerminalControlBehaviorTest {
     }
 
     @Test
+    fun extraKeyDispatchDoesNotSubmitOrClearTheDraft() {
+        val keys = mutableListOf<List<String>>()
+        show(mutableStateOf(controller()), keys)
+        composeRule.onNodeWithTag("terminalInputField").performTextInput("not submitted")
+        composeRule.onNodeWithContentDescription("More terminal keys").performClick()
+        composeRule.onNodeWithText("Tab").performClick()
+        composeRule.onNodeWithTag("terminalInputField").assertTextEquals("not submitted")
+        composeRule.runOnIdle { assertEquals(listOf(listOf("Tab")), keys) }
+    }
+
+    @Test
     fun enterSendsDirectlyFromKeyBarWithoutOpeningSheet() {
         val keys = mutableListOf<List<String>>()
         show(mutableStateOf(controller()), keys)
@@ -91,7 +103,7 @@ class TerminalControlBehaviorTest {
         composeRule.runOnIdle {
             assertEquals(listOf(listOf("Enter"), listOf("Up"), listOf("Down")), keys)
         }
-        composeRule.onNodeWithText("C-c").assertDoesNotExist()
+        composeRule.onNodeWithText("Interrupt").assertDoesNotExist()
     }
 
     @Test
@@ -112,7 +124,7 @@ class TerminalControlBehaviorTest {
         val state = mutableStateOf(controller())
         show(state, keys)
         composeRule.onNodeWithContentDescription("More terminal keys").performClick()
-        composeRule.onNodeWithText("C-c").performClick()
+        composeRule.onNodeWithText("Interrupt").performScrollTo().performClick()
         composeRule.runOnIdle { state.value = state.value.copy(connected = false, connecting = true) }
         composeRule.onNodeWithText("Send Ctrl+C").assertDoesNotExist()
         composeRule.onNodeWithTag("terminalInputField").assertIsEnabled().performTextInput("offline draft")
