@@ -1966,3 +1966,26 @@ Unspecified onboarding behavior, decided while fixing fresh-host setup
 - The preceding notification unit passed `./gradlew test :app:assembleDebug
   :app:verifyRoborazziDebug`: 1228 tests recorded, zero failures, two skipped
   live gates; native RemoteViews and rationale goldens were visually inspected.
+
+## Terminal input dock (2026-10)
+
+- Keep the keyboard shortcuts and editor on one rounded tonal dock. Arrow
+  controls share available width at ordinary text size; Enter reserves its
+  label width. Larger system text uses the existing wrapping layout. The
+  keyboard glyph opens additional terminal keys, distinguishing it from the
+  session's overflow control.
+- The filled editor and primary send button distinguish composing from key
+  dispatch. Sending still means text plus Enter, remains single-flight, and
+  clears only an unchanged draft after acknowledged delivery. Secret masking,
+  non-saveable secret drafts, offline editing and Reader omission are unchanged.
+- Local gate: `:app:verifyRoborazziDebug` filtered to
+  `*TerminalScreenScreenshotTest`, `*TerminalInputBarScreenshotTest`,
+  `*TerminalInputBarBehaviorTest`, `*TerminalControlBehaviorTest`, followed by
+  `:app:assembleDebug`, passed 39 tests with zero failures. Screenshots cover
+  normal/large text, offline, read-only, secrets and pending sends. Interaction
+  tests exercise real Compose callbacks, protected chords and draft retention;
+  these are component results, not a new physical delivery claim.
+- Rollback comprises TerminalScreen, TerminalInputBar, the terminal screenshot
+  test and their affected goldens, plus this note. No transport or wire action
+  changed. The local regression checks that Enter stays on one line and its
+  painted text fits, as well as minimum 48dp targets.
