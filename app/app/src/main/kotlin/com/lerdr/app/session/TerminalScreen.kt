@@ -367,11 +367,14 @@ fun TerminalContent(
                     listOf(
                         SessionBarAction(
                             label = "Find in terminal",
+                            description = "Search terminal output and history",
                             icon = Icons.Default.Search,
                             onClick = { findOpen = true },
                         ),
                         SessionBarAction(
                             label = if (surfaceState.stickToBottom) "Pause live output" else "Return to live",
+                            description = if (surfaceState.stickToBottom) "Hold the current frame while reading"
+                                else "Follow the latest output",
                             icon = if (surfaceState.stickToBottom) Icons.Default.Pause else Icons.Default.KeyboardArrowDown,
                             onClick = {
                                 if (surfaceState.stickToBottom) surfaceState.stickToBottom = false
@@ -380,11 +383,14 @@ fun TerminalContent(
                         ),
                         SessionBarAction(
                             label = "Text size",
+                            description = "Adjust terminal reading size",
                             icon = Icons.Default.ZoomIn,
                             onClick = { textSizeOpen = true },
                         ),
                         SessionBarAction(
                             label = if (fitted) "Actual size" else "Fit width",
+                            description = if (fitted) "Restore the normal terminal scale"
+                                else "Fit wide output to this screen",
                             icon = if (fitted) Icons.Default.ZoomIn else Icons.Default.FitScreen,
                             onClick = {
                                 surfaceState.applyFontScale(
@@ -395,6 +401,7 @@ fun TerminalContent(
                         ),
                         SessionBarAction(
                             label = "Refresh",
+                            description = "Get the latest terminal output",
                             icon = Icons.Default.Refresh,
                             onClick = onRefresh,
                         ),

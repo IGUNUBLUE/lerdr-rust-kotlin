@@ -4,6 +4,7 @@ import androidx.activity.ComponentActivity
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -67,6 +68,17 @@ class TerminalControlBehaviorTest {
         composeRule.runOnIdle { assertEquals(emptyList<List<String>>(), keys) }
         composeRule.onNodeWithText("Send Ctrl+D").performClick()
         composeRule.runOnIdle { assertEquals(listOf(listOf("Ctrl+D")), keys) }
+    }
+
+    @Test
+    fun openingSessionToolsPreservesTheTerminalDraft() {
+        val keys = mutableListOf<List<String>>()
+        show(mutableStateOf(controller()), keys)
+        composeRule.onNodeWithTag("terminalInputField").performTextInput("keep this draft")
+        composeRule.onNodeWithContentDescription("Session actions").performClick()
+        composeRule.onNodeWithText("Find in terminal").performClick()
+        composeRule.onNodeWithTag("terminalInputField").assertTextEquals("keep this draft")
+        composeRule.runOnIdle { assertEquals(emptyList<List<String>>(), keys) }
     }
 
     @Test

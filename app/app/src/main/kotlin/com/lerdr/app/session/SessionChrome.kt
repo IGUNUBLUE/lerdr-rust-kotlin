@@ -35,13 +35,13 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -69,6 +69,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
@@ -136,6 +138,10 @@ data class SessionBarAction(
     val label: String,
     val icon: ImageVector,
     val onClick: () -> Unit,
+    val description: String? = null,
+    val group: String = "View",
+    val destructive: Boolean = false,
+    val tag: String? = null,
 )
 
 /**
@@ -531,9 +537,15 @@ private fun SessionOverflowMenu(
     }
 
     if (actions.isEmpty() && paneId == null) return
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
 
     IconButton(
-        onClick = { menuOpen = true },
+        onClick = {
+            focusManager.clearFocus()
+            keyboard?.hide()
+            menuOpen = true
+        },
         modifier = Modifier.testTag("session-bar:overflow"),
     ) {
         Icon(
@@ -542,87 +554,56 @@ private fun SessionOverflowMenu(
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
-    DropdownMenu(
-        expanded = menuOpen,
-        onDismissRequest = { menuOpen = false },
-    ) {
-        actions.forEach { action ->
-            DropdownMenuItem(
-                text = { Text(action.label) },
-                leadingIcon = {
-                    Icon(action.icon, contentDescription = null)
-                },
-                onClick = {
-                    menuOpen = false
-                    action.onClick()
-                },
-            )
-        }
-        if (paneId != null) {
-            if (actions.isNotEmpty()) HorizontalDivider()
-            worktreesTarget?.let {
-                DropdownMenuItem(
-                    text = { Text("Manage worktrees") },
-                    leadingIcon = {
-                        Icon(Icons.Default.AccountTree, contentDescription = null)
-                    },
-                    onClick = {
-                        menuOpen = false
-                        showWorktrees = true
-                    },
-                    modifier = Modifier.testTag("session-bar:worktrees"),
-                )
-            }
-            if (onSessionReplaced != null) {
-                DropdownMenuItem(
-                    text = { Text("Manage agent") },
-                    leadingIcon = {
-                        Icon(Icons.Default.Tune, contentDescription = null)
-                    },
-                    onClick = {
-                        menuOpen = false
-                        showManage = true
-                    },
-                    modifier = Modifier.testTag("session-bar:manage"),
-                )
-            }
-            TabOrderMenuItem(
-                state = tabOrderState,
-                onClick = {
-                    menuOpen = false
-                    showTabOrder = true
-                },
-            )
-            if (canStopAgent || (canCloseWorkspace && worktreesTarget != null)) {
-                HorizontalDivider()
+    if (menuOpen) {
+        val sheetActions = buildList {
+            addAll(actions)
+            if (paneId != null) {
+                if (onSessionReplaced != null) {
+                    add(SessionBarAction(
+                        label = "Manage agent",
+                        description = "Rename, restart and transcript options",
+                        icon = Icons.Default.Tune,
+                        group = "Agent",
+                        tag = "session-bar:manage",
+                        onClick = { showManage = true },
+                    ))
+                }
+                worktreesTarget?.let {
+                    add(SessionBarAction(
+                        label = "Manage worktrees",
+                        description = "Browse and manage working copies",
+                        icon = Icons.Default.AccountTree,
+                        group = "Workspace",
+                        tag = "session-bar:worktrees",
+                        onClick = { showWorktrees = true },
+                    ))
+                }
+                tabOrderAction(tabOrderState) { showTabOrder = true }?.let { add(it) }
                 if (canStopAgent) {
-                    DropdownMenuItem(
-                        text = { Text("Stop agent") },
-                        leadingIcon = {
-                            Icon(Icons.Default.Stop, contentDescription = null)
-                        },
-                        onClick = {
-                            menuOpen = false
-                            showStopAgent = true
-                        },
-                        modifier = Modifier.testTag("session-bar:stop"),
-                    )
+                    add(SessionBarAction(
+                        label = "Stop agent",
+                        description = "Closes this agent's pane on the computer",
+                        icon = Icons.Default.Stop,
+                        group = "End session",
+                        destructive = true,
+                        tag = "session-bar:stop",
+                        onClick = { showStopAgent = true },
+                    ))
                 }
                 if (canCloseWorkspace && worktreesTarget != null) {
-                    DropdownMenuItem(
-                        text = { Text("Close workspace") },
-                        leadingIcon = {
-                            Icon(Icons.Default.Close, contentDescription = null)
-                        },
-                        onClick = {
-                            menuOpen = false
-                            showCloseWorkspace = true
-                        },
-                        modifier = Modifier.testTag("session-bar:close-workspace"),
-                    )
+                    add(SessionBarAction(
+                        label = "Close workspace",
+                        description = "Closes every pane in this workspace",
+                        icon = Icons.Default.Close,
+                        group = "End session",
+                        destructive = true,
+                        tag = "session-bar:close-workspace",
+                        onClick = { showCloseWorkspace = true },
+                    ))
                 }
             }
         }
+        SessionActionsSheet(actions = sheetActions, onDismiss = { menuOpen = false })
     }
     if (showTabOrder && tabOrderState.available) {
         val order = tabOrder
@@ -720,15 +701,18 @@ private fun SessionOverflowMenu(
 /** Omitted entirely for readers, unnegotiated relays, or unknown topology. */
 @Composable
 internal fun TabOrderMenuItem(state: TabOrderUiState, onClick: () -> Unit) {
-    if (!state.available) return
-    DropdownMenuItem(
-        text = { Text("Reorder tab") },
-        onClick = onClick,
-        modifier = Modifier
-            .heightIn(min = 48.dp)
-            .testTag("session-bar:reorder-tab"),
-    )
+    tabOrderAction(state, onClick)?.let { SessionActionRow(it) }
 }
+
+private fun tabOrderAction(state: TabOrderUiState, onClick: () -> Unit): SessionBarAction? =
+    if (!state.available) null else SessionBarAction(
+        label = "Reorder tab",
+        description = "Change this tab's position on the computer",
+        icon = Icons.Default.SwapHoriz,
+        group = "Workspace",
+        tag = "session-bar:reorder-tab",
+        onClick = onClick,
+    )
 
 @Composable
 internal fun TabOrderDialog(

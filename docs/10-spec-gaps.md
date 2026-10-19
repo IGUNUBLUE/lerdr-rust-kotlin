@@ -1989,3 +1989,24 @@ Unspecified onboarding behavior, decided while fixing fresh-host setup
   test and their affected goldens, plus this note. No transport or wire action
   changed. The local regression checks that Enter stays on one line and its
   painted text fits, as well as minimum 48dp targets.
+
+## Grouped session tools (2026-10)
+
+- Session overflow opens a scrollable bottom sheet with View, Agent, Workspace
+  and End session groups. Icon rows explain their effects; destructive entries
+  retain their existing confirmation paths. Existing role/capability checks
+  still determine which entries exist, including tab reorder and workspace close.
+- Opening tools releases editor focus and hides the IME. The sheet is removed
+  before a selected tool or confirmation opens. A Compose interaction regression
+  verifies that opening Find from this surface retains an unsent terminal draft.
+- The sheet uses native font scaling, wrapped labels and at least 56dp rows.
+  Its 200% screenshot sets the platform font scale: changing only a parent
+  composition's density does not reliably scale a separate dialog window.
+- Local gate: `:app:verifyRoborazziDebug` filtered to
+  `*SessionActionsSheetTest`, `*SessionChromeScreenshotTest`, `*TabOrderUiTest`
+  and `*TerminalControlBehaviorTest`, then `:app:assembleDebug`, passed 19
+  tests with zero failures. Both sheet goldens were inspected, including the
+  scrolled destructive group at 200%. These are component runtime results.
+- Rollback comprises SessionActionsSheet, the SessionChrome menu/model and
+  tab-order row, TerminalScreen action descriptions, their tests/goldens and
+  this note. Repository mutations, receipts and wire fields are unchanged.
