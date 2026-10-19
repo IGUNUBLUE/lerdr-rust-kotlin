@@ -47,6 +47,11 @@ impl StreamState {
 }
 
 enum ControlCommand {
+    HistoryScroll {
+        up: bool,
+        events: u8,
+        reply: oneshot::Sender<io::Result<()>>,
+    },
     Resize {
         cols: u16,
         rows: u16,
@@ -156,6 +161,22 @@ impl ControlStream {
                 let state = self.state.borrow();
                 state.latest.is_some() && state.failure.is_none()
             }
+    }
+
+    /// A small centered wheel batch through this stream's existing authority. Used by
+    /// bounded idle-history recovery; never claims or takes over a controller.
+    /// Completion confirms dispatch, not that the application has redrawn.
+    /// Events are clamped to 1..=3; grids shorter than 24 rows use one event.
+    pub async fn history_scroll(&mut self, up: bool, events: u8) -> io::Result<()> {
+        if !self.is_live() {
+            return Err(self.stream_error());
+        }
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(ControlCommand::HistoryScroll { up, events, reply })
+            .await
+            .map_err(|_| self.stream_error())?;
+        response.await.map_err(|_| self.stream_error())?
     }
 
     /// Resize the native VT and process PTY, awaiting a newer matching frame.
@@ -320,6 +341,23 @@ async fn drive_control(
             }
             request = requests.recv(), if pending.is_none() && !releasing => {
                 match request.ok_or_else(|| ended("terminal controller owner dropped"))? {
+                    ControlCommand::HistoryScroll { up, events, reply } => {
+                        let geometry = states.borrow().latest
+                            .ok_or_else(|| ended("terminal controller has no geometry"))?;
+                        let mut bytes = serde_json::to_vec(&serde_json::json!({
+                            "type": "terminal.scroll", "direction": if up { "up" } else { "down" },
+                            "lines": 3, "source": "wheel", "column": geometry.cols.saturating_sub(1) / 2,
+                            "row": geometry.rows.saturating_sub(1) / 2,
+                        })).map_err(io::Error::other)?;
+                        bytes.push(b'\n');
+                        // Mouse-report routing treats each command as one
+                        // event. Preserve enough overlap on short phone grids.
+                        for _ in 0..if geometry.rows >= 24 { events.clamp(1, 3) } else { 1 } {
+                            stdin.write_all(&bytes).await?;
+                        }
+                        stdin.flush().await?;
+                        let _ = reply.send(Ok(()));
+                    }
                     ControlCommand::Resize { cols, rows, reply } => {
                         if states.borrow().confirms(cols, rows, None)? {
                             let _ = reply.send(Ok(()));
@@ -460,6 +498,51 @@ fn copy_error(error: &io::Error) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn history_wheels_preserve_the_existing_controller_and_geometry() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("herdr");
+        std::fs::write(
+            &binary,
+            r#"#!/usr/bin/env python3
+import json, sys
+assert sys.argv[1:] == ['terminal','session','control','p','--cols','57','--rows','37']
+print(json.dumps({'type':'terminal.frame','seq':1,'width':57,'height':37}), flush=True)
+for line in sys.stdin:
+    with open(__file__ + '.commands', 'a') as log: log.write(line)
+    command = json.loads(line)
+    if command['type'] == 'terminal.release': sys.exit(0)
+    assert command['type'] == 'terminal.scroll'
+    assert command['lines'] == 3 and command['source'] == 'wheel'
+    assert command['column'] == 28 and command['row'] == 18
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut control = ControlStream::spawn_sized(&binary, "p", None, 57, 37)
+                .await
+                .unwrap();
+            control.history_scroll(true, 3).await.unwrap();
+            control.history_scroll(false, 1).await.unwrap();
+            control.resize(57, 37).await.unwrap();
+            control.release().await.unwrap();
+        })
+        .await
+        .unwrap();
+        let commands = std::fs::read_to_string(binary.with_extension("commands")).unwrap();
+        let commands: Vec<serde_json::Value> = commands
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(commands.len(), 5);
+        assert_eq!(commands[0]["direction"], "up");
+        assert_eq!(commands[3]["direction"], "down");
+        assert_eq!(commands[4]["type"], "terminal.release");
+    }
 
     #[test]
     fn stale_geometry_cannot_confirm_or_replace_newer_state() {
