@@ -955,7 +955,7 @@ fun StopAgentDialog(
                     contentColor = LerdrTheme.extendedColors.onDanger,
                 ),
             ) {
-                Text("Confirm Stop")
+                Text("Stop agent")
             }
         },
         dismissButton = {

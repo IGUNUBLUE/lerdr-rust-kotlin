@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Stop
@@ -78,6 +79,7 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -157,7 +159,7 @@ fun SessionTopBar(
     onSelectMode: (SessionMode) -> Unit,
     onBack: () -> Unit,
     provider: String? = null,
-    /** Pulses the avatar ring while the agent works / the pane is live. */
+    /** Pulses the avatar ring only while the agent is working. */
     active: Boolean = false,
     actions: List<SessionBarAction> = emptyList(),
     /**
@@ -173,6 +175,8 @@ fun SessionTopBar(
     onActionMessage: (String) -> Unit = {},
     /** Chip variant — derived from [statusLabel] by default. */
     statusVariant: SessionStatusVariant = statusVariantOf(statusLabel),
+    /** Opens the pending request without dispatching a response. */
+    onReviewAttention: (() -> Unit)? = null,
 ) {
     val spacing = LerdrTheme.spacing
     Column {
@@ -186,21 +190,28 @@ fun SessionTopBar(
                 }
             },
             title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    com.lerdr.app.ui.ProviderBadge(
-                        provider = provider,
-                        label = title,
-                        size = 40.dp,
-                        prominent = true,
-                        active = active,
-                    )
-                    Spacer(Modifier.width(spacing.small))
-                    SessionTitle(
-                        paneId = tabsPaneId,
-                        title = title,
-                        breadcrumb = breadcrumb,
-                        modifier = Modifier.weight(1f),
-                    )
+                BoxWithConstraints {
+                    val showProvider = maxWidth >= 96.dp
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        // Preserve the agent name before decorative identity
+                        // when status/actions leave a narrow title slot.
+                        if (showProvider) {
+                            com.lerdr.app.ui.ProviderBadge(
+                                provider = provider,
+                                label = title,
+                                size = 40.dp,
+                                prominent = true,
+                                active = active,
+                            )
+                            Spacer(Modifier.width(spacing.small))
+                        }
+                        SessionTitle(
+                            paneId = tabsPaneId,
+                            title = title,
+                            breadcrumb = breadcrumb,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                 }
             },
             actions = {
@@ -215,6 +226,7 @@ fun SessionTopBar(
                     label = statusLabel,
                     color = statusColor,
                     variant = statusVariant,
+                    onClick = onReviewAttention.takeIf { statusVariant == SessionStatusVariant.WAITING },
                 )
                 Spacer(Modifier.width(spacing.medium))
             },
@@ -336,7 +348,7 @@ private fun TitleColumn(
     Column(
         modifier = if (editable) {
             modifier.clickable(
-                onClickLabel = "Rename session",
+                onClickLabel = "Rename agent",
                 role = Role.Button,
                 onClick = onEdit,
             )
@@ -349,6 +361,7 @@ private fun TitleColumn(
                 title,
                 style = MaterialTheme.typography.titleMedium,
                 maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             if (editable) {
                 Spacer(Modifier.width(LerdrTheme.spacing.extraSmall))
@@ -365,6 +378,7 @@ private fun TitleColumn(
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
@@ -394,7 +408,7 @@ fun SessionTitleEditor(
             verticalArrangement = Arrangement.spacedBy(LerdrTheme.spacing.medium),
         ) {
             Text(
-                "Rename session",
+                "Rename agent",
                 style = MaterialTheme.typography.titleLarge,
             )
             OutlinedTextField(
@@ -443,7 +457,7 @@ fun SessionTitleEditor(
  *
  * "Manage worktrees" resolves the pane's agent for its relay + workspace
  * ids and hides while they are absent (e.g. inventory loading).
- * "Manage session" opens [ManageSheet] — Lerdr's `ManageDialog` behavior
+ * "Manage agent" opens [ManageSheet] — Lerdr's `ManageDialog` behavior
  * (`agent_rename` / `agent_restart` / `agent_clear` / `agent_stop` /
  * `copy_agent_response` + pane metadata). The sheet hides mutations for
  * readers itself, so the entry renders for every role.
@@ -561,7 +575,7 @@ private fun SessionOverflowMenu(
             }
             if (onSessionReplaced != null) {
                 DropdownMenuItem(
-                    text = { Text("Manage session") },
+                    text = { Text("Manage agent") },
                     leadingIcon = {
                         Icon(Icons.Default.Tune, contentDescription = null)
                     },
@@ -583,7 +597,7 @@ private fun SessionOverflowMenu(
                 HorizontalDivider()
                 if (canStopAgent) {
                     DropdownMenuItem(
-                        text = { Text("Stop session") },
+                        text = { Text("Stop agent") },
                         leadingIcon = {
                             Icon(Icons.Default.Stop, contentDescription = null)
                         },
@@ -635,7 +649,7 @@ private fun SessionOverflowMenu(
             ?: paneId.substringAfter("::")
         AlertDialog(
             onDismissRequest = { if (!stopBusy) showStopAgent = false },
-            title = { Text("Stop session") },
+            title = { Text("Stop agent") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(LerdrTheme.spacing.small)) {
                     Text("Stop \"$title\"? Its pane closes on the computer.")
@@ -867,6 +881,7 @@ private fun StatusChip(
     label: String,
     color: Color,
     variant: SessionStatusVariant,
+    onClick: (() -> Unit)? = null,
 ) {
     val colors = LerdrTheme.extendedColors
     val accent = when (variant) {
@@ -911,7 +926,14 @@ private fun StatusChip(
         shape = shape,
         modifier = Modifier
             .semantics { liveRegion = LiveRegionMode.Polite }
-            .testTag("session-status:$label"),
+            .testTag("session-status:$label")
+            .then(if (onClick != null) Modifier
+                .heightIn(min = 48.dp)
+                .clickable(
+                    role = Role.Button,
+                    onClickLabel = "Review pending request in Feed",
+                    onClick = onClick,
+                ) else Modifier),
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -928,6 +950,9 @@ private fun StatusChip(
             )
             Spacer(Modifier.width(LerdrTheme.spacing.extraSmall))
             Text(label, style = MaterialTheme.typography.labelMedium)
+            if (onClick != null) {
+                Icon(Icons.Default.ChevronRight, contentDescription = null, modifier = Modifier.size(16.dp))
+            }
         }
     }
 }
