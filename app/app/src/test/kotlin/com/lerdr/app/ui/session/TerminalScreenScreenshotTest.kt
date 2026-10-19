@@ -9,6 +9,10 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertHeightIsAtLeast
+import androidx.compose.ui.test.assertWidthIsAtLeast
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.performClick
 import com.google.common.truth.Truth.assertThat
@@ -109,6 +113,22 @@ class TerminalScreenScreenshotTest {
     fun terminal_liveLease() {
         show(baseState())
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun terminal_controlTouchTargets() {
+        show(baseState())
+        listOf("Up", "Down", "More terminal keys").forEach { label ->
+            composeRule.onNodeWithContentDescription(label)
+                .assertIsDisplayed().assertHeightIsAtLeast(48.dp).assertWidthIsAtLeast(48.dp)
+        }
+        composeRule.onNodeWithTag("terminalSendButton")
+            .assertHeightIsAtLeast(48.dp).assertWidthIsAtLeast(48.dp)
+        val layouts = mutableListOf<TextLayoutResult>()
+        composeRule.onNodeWithText("Enter", useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+        assertThat(layouts.single().lineCount).isEqualTo(1)
+        assertThat(layouts.single().getLineRight(0)).isAtMost(layouts.single().size.width.toFloat())
     }
 
     @Test

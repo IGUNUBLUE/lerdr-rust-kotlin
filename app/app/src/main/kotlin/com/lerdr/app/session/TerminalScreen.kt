@@ -3,6 +3,7 @@ package com.lerdr.app.session
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,10 +20,12 @@ import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -33,7 +36,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.ZoomIn
@@ -72,6 +75,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.selected
@@ -407,38 +411,46 @@ fun TerminalContent(
                 ),
             ) {
                 if (uiState.canControl) {
-                    if (secretActive) {
-                        SecretPromptBanner(
-                            prompt = secretPrompt,
-                            supported = uiState.secretInputSupported,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+                        tonalElevation = 2.dp,
+                    ) {
+                        Column {
+                            if (secretActive) {
+                                SecretPromptBanner(
+                                    prompt = secretPrompt,
+                                    supported = uiState.secretInputSupported,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
+                            SpecialKeysBar(
+                                onSendKeys = ::requestKeys,
+                                ctrlLatched = ctrlLatched,
+                                enabled = controlReady,
+                                onCtrlTap = {
+                                    ctrlLatched = !ctrlLatched
+                                    if (ctrlLatched) showKeyboard()
+                                },
+                                onCtrlLongPress = { combosOpen = true },
+                            )
+                            TerminalInputBar(
+                                onSendText = onSendText,
+                                enabled = canEdit,
+                                canSend = controlReady,
+                                hint = when {
+                                    !canEdit -> "Password input unsupported"
+                                    !uiState.connected -> "Draft…"
+                                    else -> "Text + Enter…"
+                                },
+                                focusRequester = inputFocus,
+                                ctrlLatched = ctrlLatched,
+                                onCtrlChord = ::sendCtrlChord,
+                                secretMode = secretActive,
+                                onSendSecret = onSendSecret,
+                            )
+                        }
                     }
-                    SpecialKeysBar(
-                        onSendKeys = ::requestKeys,
-                        ctrlLatched = ctrlLatched,
-                        enabled = controlReady,
-                        onCtrlTap = {
-                            ctrlLatched = !ctrlLatched
-                            if (ctrlLatched) showKeyboard()
-                        },
-                        onCtrlLongPress = { combosOpen = true },
-                    )
-                    TerminalInputBar(
-                        onSendText = onSendText,
-                        enabled = canEdit,
-                        canSend = controlReady,
-                        hint = when {
-                            !canEdit -> "Password input unsupported"
-                            !uiState.connected -> "Draft…"
-                            else -> "Text + Enter…"
-                        },
-                        focusRequester = inputFocus,
-                        ctrlLatched = ctrlLatched,
-                        onCtrlChord = ::sendCtrlChord,
-                        secretMode = secretActive,
-                        onSendSecret = onSendSecret,
-                    )
                 }
             }
         },
@@ -763,6 +775,7 @@ private fun SpecialKeysBar(
     onCtrlLongPress: () -> Unit,
 ) {
     val spacing = LerdrTheme.spacing
+    val equalWidth = LocalDensity.current.fontScale <= 1.3f
     Surface(color = MaterialTheme.colorScheme.surfaceContainerLow) {
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(spacing.extraSmall),
@@ -776,8 +789,9 @@ private fun SpecialKeysBar(
                     else MaterialTheme.colorScheme.surfaceContainerHighest,
                 contentColor = if (ctrlLatched) MaterialTheme.colorScheme.onPrimaryContainer
                     else MaterialTheme.colorScheme.onSurfaceVariant,
-                shape = MaterialTheme.shapes.small,
-                modifier = Modifier.semantics {
+                shape = CircleShape,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier = (if (equalWidth) Modifier.weight(1f) else Modifier).semantics {
                     selected = ctrlLatched
                     stateDescription = if (ctrlLatched) "Ctrl latched" else "Ctrl not latched"
                 },
@@ -790,7 +804,8 @@ private fun SpecialKeysBar(
                             onClick = onCtrlTap,
                             onLongClick = onCtrlLongPress,
                         )
-                        .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp),
+                        .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                        .padding(horizontal = spacing.small),
                 ) {
                     Text(if (ctrlLatched) "Ctrl ●" else "Ctrl", style = MaterialTheme.typography.labelLarge)
                 }
@@ -802,6 +817,11 @@ private fun SpecialKeysBar(
                     label = if (key == "Enter") label else null,
                     onClick = { onSendKeys(listOf(key)) },
                     enabled = enabled,
+                    modifier = when {
+                        key == "Enter" -> Modifier.widthIn(min = 64.dp)
+                        equalWidth -> Modifier.weight(1f)
+                        else -> Modifier
+                    },
                     content = if (key == "Enter") null else {
                         {
                             Icon(
@@ -812,8 +832,13 @@ private fun SpecialKeysBar(
                     },
                 )
             }
-            KeyButton(label = null, onClick = onCtrlLongPress, enabled = enabled) {
-                Icon(Icons.Default.MoreHoriz, contentDescription = "More terminal keys")
+            KeyButton(
+                label = null,
+                onClick = onCtrlLongPress,
+                enabled = enabled,
+                modifier = if (equalWidth) Modifier.weight(1f) else Modifier,
+            ) {
+                Icon(Icons.Default.Keyboard, contentDescription = "More terminal keys")
             }
         }
     }
@@ -824,6 +849,7 @@ private fun KeyButton(
     label: String?,
     onClick: () -> Unit,
     enabled: Boolean,
+    modifier: Modifier = Modifier,
     content: (@Composable () -> Unit)? = null,
 ) {
     val spacing = LerdrTheme.spacing
@@ -838,10 +864,10 @@ private fun KeyButton(
         } else {
             MaterialTheme.colorScheme.onSurfaceVariant
         },
-        shape = MaterialTheme.shapes.small,
+        shape = RoundedCornerShape(16.dp),
         onClick = onClick,
         enabled = enabled,
-        modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp),
+        modifier = modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp),
     ) {
         Box(
             contentAlignment = Alignment.Center,

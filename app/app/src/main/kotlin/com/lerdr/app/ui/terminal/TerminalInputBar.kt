@@ -1,6 +1,7 @@
 package com.lerdr.app.ui.terminal
 
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -9,7 +10,9 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -22,6 +25,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -117,6 +122,7 @@ fun TerminalInputBar(
     Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, modifier = modifier) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(spacing.small),
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = spacing.medium, vertical = spacing.small),
@@ -188,17 +194,27 @@ fun TerminalInputBar(
                     imeAction = ImeAction.Send,
                 ),
                 keyboardActions = KeyboardActions(onSend = { submit() }),
-                shape = MaterialTheme.shapes.medium,
+                shape = RoundedCornerShape(28.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    disabledContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    unfocusedBorderColor = Color.Transparent,
+                    disabledBorderColor = Color.Transparent,
+                ),
                 textStyle = LerdrTheme.terminalStyle,
                 modifier = Modifier
                     .weight(1f)
                     .focusRequester(focusRequester)
                     .testTag(if (secretMode) "terminalSecretField" else "terminalInputField"),
             )
-            IconButton(
+            FilledIconButton(
                 onClick = ::submit,
                 enabled = canSubmit,
                 modifier = Modifier
+                    .align(Alignment.Top)
+                    .padding(top = 4.dp)
+                    .size(48.dp)
                     .testTag("terminalSendButton")
                     .semantics {
                         if (sending) {
@@ -219,6 +235,7 @@ fun TerminalInputBar(
                                 }
                             },
                         strokeWidth = 2.dp,
+                        color = LocalContentColor.current,
                     )
                 } else {
                     Icon(
@@ -228,8 +245,6 @@ fun TerminalInputBar(
                         } else {
                             "Send text"
                         },
-                        tint = if (canSubmit) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
                     )
                 }
             }
