@@ -63,7 +63,7 @@ use lerdr_core::json::MaybeNull;
 use lerdr_core::protocol::{
     Inbound, Outbound, PaneContent, PaneDelta, PaneResync, PaneUnchanged, TargetRef,
 };
-use lerdr_herdr::{HerdrError, PaneReadResult, ReadFormat, ReadSource};
+use lerdr_herdr::{AgentStatus, HerdrError, PaneReadResult, ReadFormat, ReadSource};
 use lerdr_relay::session::ClientSink;
 use sha2::{Digest, Sha256};
 use tokio::sync::{broadcast, mpsc};
@@ -73,10 +73,13 @@ use tracing::{debug, warn, Instrument};
 
 use crate::actions::{leases::Leases, questions::Questions, Notices};
 use crate::actor::{Invalidation, TopologyHandle};
+use crate::application_history::Epoch as HistoryEpoch;
 use crate::classify::store::{prepare_pane_response, PaneSemantics};
 use crate::fingerprint::content_fingerprint;
 use crate::history::Manager as HistoryManager;
-use crate::pane_stream::{split_host_history, PaneStream, StreamOutcome};
+use crate::pane_stream::{
+    split_application_history, split_host_history, HostHistory, PaneStream, StreamOutcome,
+};
 
 /// `paneWatchAckTimeout` — the retired implementation's gate reset window.
 pub const ACK_TIMEOUT: Duration = Duration::from_secs(4);
@@ -450,6 +453,8 @@ struct StreamSlot {
     stream: Option<PaneStream>,
     failed: bool,
     dirty: bool,
+    application_version: u64,
+    resume_pending: bool,
 }
 
 /// `paneWatchFrame` (pane_watch.go:31-38) — one read distilled for the
@@ -785,6 +790,7 @@ async fn watch_loop(
                 if slot.stream.is_some() => {
                 match outcome {
                     StreamOutcome::Updated => {
+                        slot.resume_pending = false;
                         slot.dirty = true;
                         try_poll_stream(&pane_id, &spec, &deps, &mut state, &mut slot).await;
                         next_read = tokio::time::Instant::now() + spec.interval;
@@ -991,6 +997,9 @@ async fn poll(
     slot: &mut StreamSlot,
 ) {
     sync_stream_geometry(pane_id, deps, slot).await;
+    if slot.resume_pending && slot.stream.is_some() {
+        return;
+    }
     // While the observer is attached and has rendered, the emulator is
     // the read — no `pane.read` at all, so no scroll harvesting and no
     // probe/read two-tier.
@@ -1114,6 +1123,9 @@ async fn try_poll_stream(
     if !slot.stream.as_ref().is_some_and(PaneStream::is_initialized) {
         return;
     }
+    if !refresh_application_history(pane_id, spec, deps, slot).await {
+        return;
+    }
     let classification_agent = deps.handle.topology.borrow().classification_agent(pane_id);
     let metadata_moved = state.sent_resize_settling
         || (!state.sent_frame_fingerprint.is_empty()
@@ -1132,6 +1144,146 @@ async fn try_poll_stream(
         // produce it; `terminal.closed` drives `send_gone` instead.
         FrameRead::Retry | FrameRead::Gone => {}
     }
+}
+
+pub(crate) fn application_epoch(
+    pane_id: &str,
+    deps: &WatchDeps,
+    size: Option<(u16, u16)>,
+) -> Option<(HistoryEpoch, bool)> {
+    let topology = deps.handle.topology.borrow();
+    let agent = topology.pane_of(pane_id)?;
+    let epoch = HistoryEpoch {
+        generation: topology.generation_of(pane_id),
+        terminal: agent.terminal_id.clone(),
+        session: agent
+            .agent_session
+            .as_ref()
+            .map(|s| s.value.clone())
+            .unwrap_or_default(),
+        activity: agent.state_change_seq,
+        size,
+    };
+    let idle = matches!(agent.agent_status, AgentStatus::Idle | AgentStatus::Done)
+        && agent.interactive_ready
+        && agent.agent.as_ref().is_some_and(|a| !a.is_empty());
+    Some((epoch, idle))
+}
+
+/// Herdr recovers application-owned history only for idle agents. The shared
+/// reservation gates every watcher while its temporary scroll frames arrive;
+/// all observers restart afterward, including on failure or cancellation.
+async fn refresh_application_history(
+    pane_id: &str,
+    spec: &WatchSpec,
+    deps: &WatchDeps,
+    slot: &mut StreamSlot,
+) -> bool {
+    let size = slot.stream.as_ref().and_then(PaneStream::size);
+    let Some((epoch, idle)) = application_epoch(pane_id, deps, size) else {
+        return true;
+    };
+    let eligible = idle
+        && spec.format == ReadFormat::Ansi
+        && !deps
+            .leases
+            .resized_within(pane_id, crate::actions::leases::RESIZE_SETTLE_WINDOW)
+            .await;
+    let store = &deps.handle.application_history;
+    let (view, reservation) = store.observe(
+        pane_id,
+        epoch.clone(),
+        spec.lines,
+        eligible,
+        std::time::Instant::now(),
+    );
+    if view.busy {
+        slot.application_version = view.version;
+    }
+    if let Some(reservation) = reservation {
+        let deps = deps.clone();
+        let pane = pane_id.to_owned();
+        // A disconnected watch must not cancel restoration after a wheel was
+        // dispatched. The shared reservation bounds these tasks to 32 panes.
+        tokio::spawn(async move {
+            let mouse_tui = deps
+                .handle
+                .topology
+                .borrow()
+                .pane_of(&pane)
+                .and_then(|agent| agent.agent.as_deref())
+                .is_some_and(|kind| matches!(kind, "codex" | "opencode" | "pi"));
+            let held = mouse_tui && deps.leases.hold_history(&pane).await;
+            let recovered = if held {
+                crate::controlled_history::recover(&pane, &deps, &epoch, reservation.lines).await
+            } else if deps.leases.capture_size(&pane).await.is_some() {
+                // Other controlled CLIs keep their native ANSI history. Do
+                // not send wheel input to an unverified application's UI.
+                Some(HostHistory::default())
+            } else {
+                recover_uncontrolled_history(&pane, &deps, reservation.lines).await
+            };
+            let unchanged = application_epoch(&pane, &deps, size)
+                .is_some_and(|(current, idle)| current == epoch && idle)
+                && resolve_stream_size(&deps, &pane).await == size;
+            if held {
+                deps.leases.release_history(&pane).await;
+            }
+            debug!(
+                pane_id = pane,
+                recovered = recovered.is_some(),
+                unchanged,
+                "application history recovery"
+            );
+            reservation.finish(recovered.filter(|_| unchanged));
+        });
+        return false;
+    }
+    if view.busy {
+        return false;
+    }
+    let Some(stream) = slot.stream.as_mut() else {
+        return false;
+    };
+    stream.set_application_history(view.snapshot.clone());
+    if slot.application_version != view.version {
+        let restart = slot.application_version != 0 || view.snapshot.is_some();
+        slot.application_version = view.version;
+        if restart {
+            if stream
+                .restart_observer(&deps.handle.client, pane_id)
+                .is_none()
+            {
+                slot.stream = None;
+                slot.failed = true;
+                return false;
+            }
+            slot.resume_pending = true;
+            return false;
+        }
+    }
+    true
+}
+
+async fn recover_uncontrolled_history(
+    pane: &str,
+    deps: &WatchDeps,
+    lines: u32,
+) -> Option<HostHistory> {
+    let client = &deps.handle.client;
+    let recent = client
+        .pane_read(pane, ReadSource::Recent, lines, ReadFormat::Text)
+        .await
+        .ok()?;
+    let visible = client
+        .pane_read(pane, ReadSource::Visible, lines, ReadFormat::Ansi)
+        .await
+        .ok()?;
+    split_application_history(&recent.text, recent.truncated, &visible.text)?;
+    Some(HostHistory {
+        text: recent.text,
+        truncated: recent.truncated,
+    })
 }
 
 /// Keep the live stream's copy of Herdr's history current for `recent`
@@ -1213,6 +1365,9 @@ async fn read_watch_frame(
     state: &mut WatchState,
     stream: Option<&PaneStream>,
 ) -> FrameRead {
+    let Some(history_version) = deps.handle.application_history.read_version(pane_id) else {
+        return FrameRead::Retry;
+    };
     let (generation, content_rev, agent, classification_agent) = {
         let topology = deps.handle.topology.borrow();
         (
@@ -1306,6 +1461,9 @@ async fn read_watch_frame(
         &deps.questions,
         &deps.history,
     );
+    if deps.handle.application_history.read_version(pane_id) != Some(history_version) {
+        return FrameRead::Retry;
+    }
     let content_fingerprint = content_fingerprint(&prepared.content);
     let mut frame = WatchFrame {
         frame_fingerprint: String::new(),

@@ -41,6 +41,7 @@ const RELEASE_GRACE: Duration = Duration::from_secs(10);
 const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
 /// Deadline for baseline resolution and native controller operations.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
+const HISTORY_OWNER: &str = "internal-history-recovery";
 /// `paneResizeSettleWindow` — `read_pane` flags `resize_settling` inside it
 /// (`pane_watch.go:29` — 3 s; observed up to ~2 s for omp under load).
 pub(crate) const RESIZE_SETTLE_WINDOW: Duration = Duration::from_secs(3);
@@ -176,6 +177,9 @@ trait PaneController: Send {
     fn is_live(&self) -> bool;
     fn resize(&mut self, columns: u16, rows: u16) -> ControlFuture<'_, ()>;
     fn release(self: Box<Self>) -> ControlFuture<'static, ()>;
+    fn history_scroll(&mut self, _up: bool, _events: u8) -> ControlFuture<'_, ()> {
+        Box::pin(async { Err(io::ErrorKind::Unsupported.into()) })
+    }
 }
 
 impl PaneController for lerdr_herdr::control::ControlStream {
@@ -189,6 +193,10 @@ impl PaneController for lerdr_herdr::control::ControlStream {
 
     fn release(self: Box<Self>) -> ControlFuture<'static, ()> {
         Box::pin((*self).release())
+    }
+
+    fn history_scroll(&mut self, up: bool, events: u8) -> ControlFuture<'_, ()> {
+        Box::pin(self.history_scroll(up, events))
     }
 }
 
@@ -258,6 +266,50 @@ pub(crate) struct Leases {
 }
 
 impl Leases {
+    /// Keep only our existing controller alive until history restoration ends,
+    /// even if its phone disconnects. The private hold expires as a safety net.
+    pub(crate) async fn hold_history(&self, pane_id: &str) -> bool {
+        let mut state = self.inner.state.lock().await;
+        let Some(pane) = state.panes.get_mut(pane_id).filter(|p| p.is_live()) else {
+            return false;
+        };
+        pane.leases.insert(
+            HISTORY_OWNER.into(),
+            Lease {
+                columns: pane.applied_columns,
+                rows: pane.applied_rows,
+                expires_at: (self.inner.now)() + Duration::from_secs(30),
+            },
+        );
+        true
+    }
+
+    pub(crate) async fn history_scroll(
+        &self,
+        pane_id: &str,
+        up: bool,
+        events: u8,
+    ) -> io::Result<()> {
+        let mut state = self.inner.state.lock().await;
+        let controller = state
+            .panes
+            .get_mut(pane_id)
+            .and_then(|p| p.controller.as_mut())
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotConnected))?;
+        tokio::time::timeout(COMMAND_TIMEOUT, controller.history_scroll(up, events))
+            .await
+            .map_err(|_| io::Error::from(io::ErrorKind::TimedOut))?
+    }
+
+    pub(crate) async fn release_history(&self, pane_id: &str) {
+        let mut state = self.inner.state.lock().await;
+        if let Some(pane) = state.panes.get_mut(pane_id) {
+            pane.leases.remove(HISTORY_OWNER);
+        }
+        if let Err(error) = self.reconcile(&mut state, pane_id).await {
+            tracing::warn!(pane_id, %error, "history controller release failed");
+        }
+    }
     /// `NewManager` — production provider/runner.
     pub(crate) fn new(client: lerdr_herdr::Client) -> Self {
         Leases {
@@ -1082,6 +1134,29 @@ mod tests {
             ),
             controls,
         )
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn history_hold_preserves_only_an_owned_controller_until_restoration() {
+        let (leases, controls) = test_leases();
+        assert!(
+            !leases.hold_history("p1").await,
+            "never claim a controller for recovery"
+        );
+        let alive = tokio_util::sync::CancellationToken::new();
+        leases.acquire(&alive, "phone", "p1", 57, 36).await.unwrap();
+        assert!(leases.hold_history("p1").await);
+        leases.release_client("phone").await.unwrap();
+        assert_eq!(leases.capture_size("p1").await, Some((57, 36)));
+        leases.release_history("p1").await;
+        assert!(leases.capture_size("p1").await.is_none());
+        assert_eq!(
+            *controls.events.lock().await,
+            vec![
+                ControlEvent::Claimed("p1".into(), 57, 36),
+                ControlEvent::Released("p1".into()),
+            ]
+        );
     }
 
     #[tokio::test(start_paused = true)]

@@ -38,7 +38,9 @@
 mod actions;
 mod actor;
 mod annotations;
+mod application_history;
 mod classify;
+mod controlled_history;
 pub mod conversation;
 mod convo_subs;
 mod fingerprint;

@@ -86,6 +86,7 @@ pub struct TopologyHandle {
     pub invalidations: broadcast::Sender<Invalidation>,
     /// Herdr client for RPC (clone-cheap: the inner is `Arc`).
     pub client: Client,
+    pub(crate) application_history: crate::application_history::Store,
     /// Command lane — external triggers (UDP event hook, startup hook)
     /// request a topology re-read through here.
     commands: mpsc::Sender<TopologyCommand>,
@@ -223,6 +224,7 @@ impl TopologyHandle {
                 topology: topology_rx,
                 invalidations,
                 client,
+                application_history: Default::default(),
                 commands,
                 transitions: Default::default(),
                 enrich: Default::default(),
@@ -286,6 +288,7 @@ impl TopologyActor {
             topology: topology_rx,
             invalidations: inv_tx.clone(),
             client: client.clone(),
+            application_history: Default::default(),
             commands: cmd_tx.clone(),
             transitions: transitions.clone(),
             enrich: enrich.clone(),
