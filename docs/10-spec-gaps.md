@@ -1942,3 +1942,27 @@ Unspecified onboarding behavior, decided while fixing fresh-host setup
   persist across opens. Settings remains the recovery path. Granted permission
   and pre-Android-13 devices skip the offer. Compose interaction tests and a
   Roborazzi rationale screenshot cover this flow.
+
+## Session attention affordance and terminology (2026-10)
+
+- Terminal's waiting status chip opens Feed to review the existing request.
+  Its arrow and button semantics expose that action without another toolbar
+  row, and its touch target is at least 48dp high. This navigates only; role,
+  exact-target, secret handling and confirmation checks still own all input.
+- Avatar motion consistently means working, including derived orchestrating
+  status. A connected idle or blocked terminal no longer pulses as working.
+- Agent management, rename and stop labels use "agent" across Home, the session
+  menu and its existing management sheet. Pairing and Settings use "computer"
+  for the host rather than switching between device, relay and computer.
+- When session actions leave less than 96dp for the title, omit the decorative
+  provider badge; truncate the name and breadcrumb with an ellipsis instead of
+  clipping glyphs. This retains the waiting action and the terminal viewport.
+- Local Compose tests check pending-request navigation, its 48dp target and
+  ordinary/200% text screenshots. Full Gradle tests, debug assembly and
+  Roborazzi verification passed: 1229 tests recorded, zero failures, two skipped
+  live gates. Device input/notification acceptance is separate.
+  Rollback is limited to the changed screen/chrome labels and affordance,
+  their tests/goldens and this note; no protocol or relay changes are involved.
+- The preceding notification unit passed `./gradlew test :app:assembleDebug
+  :app:verifyRoborazziDebug`: 1228 tests recorded, zero failures, two skipped
+  live gates; native RemoteViews and rationale goldens were visually inspected.

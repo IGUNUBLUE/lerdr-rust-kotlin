@@ -252,7 +252,7 @@ fun SettingsContent(
         ) {
             item(key = "relays-header") {
                 SectionHeader(
-                    title = "Relays",
+                    title = "Computers",
                     actionLabel = if (uiState.relays.isNotEmpty()) "Revalidate all" else null,
                     onAction = onRevalidateAll,
                 )

@@ -126,7 +126,7 @@ fun ComputersContent(
         },
         floatingActionButton = {
             FloatingActionButton(onClick = onPairDevice) {
-                Icon(Icons.Default.Add, contentDescription = "Pair device")
+                Icon(Icons.Default.Add, contentDescription = "Pair computer")
             }
         },
     ) { innerPadding ->

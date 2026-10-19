@@ -7,6 +7,11 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertHasClickAction
+import androidx.compose.ui.test.assertHeightIsAtLeast
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.test.performClick
+import com.google.common.truth.Truth.assertThat
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalDensity
@@ -72,14 +77,19 @@ class TerminalScreenScreenshotTest {
         revision = 1,
     )
 
-    private fun show(uiState: TerminalUiState, fontScale: Float = 1f, systemFontScale: Float = 1f) {
+    private fun show(
+        uiState: TerminalUiState,
+        fontScale: Float = 1f,
+        systemFontScale: Float = 1f,
+        onOpenFeed: () -> Unit = {},
+    ) {
         composeRule.setContent {
             val density = LocalDensity.current
             CompositionLocalProvider(LocalDensity provides Density(density.density, systemFontScale)) {
                 LerdrTheme {
                     TerminalContent(
                         uiState = uiState,
-                        onOpenFeed = {},
+                        onOpenFeed = onOpenFeed,
                         onOpenFiles = {},
                         onBack = {},
                         onSendKeys = {},
@@ -103,7 +113,18 @@ class TerminalScreenScreenshotTest {
 
     @Test
     fun terminal_blockedWithLease() {
-        show(baseState().copy(statusLabel = "blocked"))
+        var opened = false
+        show(baseState().copy(statusLabel = "blocked"), onOpenFeed = { opened = true })
+        composeRule.onNodeWithTag("session-status:blocked").assertHasClickAction().performClick()
+        assertThat(opened).isTrue()
+        composeRule.onRoot().captureRoboImage(roborazziOptions = options)
+    }
+
+    @Test
+    fun terminal_blockedLargeText() {
+        show(baseState().copy(statusLabel = "blocked"), systemFontScale = 2f)
+        composeRule.onNodeWithTag("session-status:blocked")
+            .assertIsDisplayed().assertHasClickAction().assertHeightIsAtLeast(48.dp)
         composeRule.onRoot().captureRoboImage(roborazziOptions = options)
     }
 
