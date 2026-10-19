@@ -9,7 +9,26 @@ The `protocol v3` / `herdr-e2ee-v2` wire contract remains frozen.
 
 ## [Unreleased]
 
+## [1.1.4] — 2026-10-19
+
+### Changed
+
+- Terminal shortcuts and the editor share a rounded input dock with clearer
+  send and additional-key controls. Session tools open in a grouped, scrollable
+  sheet with descriptive labels; control chords explain their effects and keep
+  protected-action confirmations. Both surfaces support 200% system text.
+- Session headers clarify agent state and pending attention, with accessible
+  controls that open the relevant feed. Idle avatars no longer animate.
+
 ### Fixed
+
+- Codex, OpenCode and Pi terminal history now includes older application-owned
+  response rows after the agent becomes idle. Recovery preserves the owned
+  controller, restores the live view and marks bounded older history truncated.
+  Physical scroll and Return to live passed on Codex, OpenCode, Pi, Kiro and OMP.
+- Attention notifications reconcile silently when switching between sessions,
+  show contextual opt-in after pairing, and hide sensitive content on the lock
+  screen. Foreground service timeouts stop the service cleanly.
 
 - Plugin updates on Linux now migrate the service unit that
   `install-tailscale-service.sh` writes (`ExecStart=<relay> serve`).
