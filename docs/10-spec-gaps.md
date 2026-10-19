@@ -2031,3 +2031,15 @@ Unspecified onboarding behavior, decided while fixing fresh-host setup
   :app:verifyRoborazziDebug` passed with 1237 tests recorded, zero failures and
   two skipped live gates. The physical device was disconnected for this design
   revision; earlier native acceptance does not validate these new surfaces.
+- Follow-up native smoke test on Moto G85 / Android 16 passed for revision
+  `5022bc2`: rounded dock with IME, grouped session tools, protected Stop/Ctrl+C
+  cancellation, extra-key draft retention, and native 200% text with scrolling
+  to Close workspace. The host received exactly `smoke-ux`; the editor cleared
+  after acknowledged delivery. The candidate used the minified release variant
+  with temporary application ID/signing, SHA-256
+  `56a18400e37893bef7211cfe386cec8b697eeea3a58cb550c410eabe01cbb48f`.
+  The Tailscale endpoint stayed in pairing; checks used USB forwarding to the
+  running Rust relay 1.1.3 and an owned temporary CLI fixture. QR and genuine
+  provider approvals were not repeated. The fixture was closed, its credential
+  self-revoked, temporary app uninstalled, USB forwarding removed and device
+  settings restored. The primary credential remained the only active one.
