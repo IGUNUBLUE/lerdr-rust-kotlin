@@ -2010,3 +2010,24 @@ Unspecified onboarding behavior, decided while fixing fresh-host setup
 - Rollback comprises SessionActionsSheet, the SessionChrome menu/model and
   tab-order row, TerminalScreen action descriptions, their tests/goldens and
   this note. Repository mutations, receipts and wire fields are unchanged.
+
+## Terminal key sheet (2026-10)
+
+- Additional keys use a fully expanded, scrollable sheet with Navigation,
+  Control and More shortcuts sections. Control chords have readable action
+  names, the literal chord and a short explanation. Interrupt and End input
+  keep their existing protected-chord confirmation path.
+- Opening the sheet hides the IME without clearing the draft. The sheet
+  dismisses before dispatching a key; dispatch does not submit the draft.
+  Navigation targets remain at least 48dp and labels wrap with system text.
+- Local gate: `:app:verifyRoborazziDebug` filtered to
+  `*TerminalScreenScreenshotTest` and `*TerminalControlBehaviorTest`, followed
+  by `:app:assembleDebug`, passed 23 tests with zero failures. Normal and native
+  200% sheet screenshots were visually inspected. Interaction checks cover
+  draft retention and the protected control chords.
+- Rollback comprises the TerminalScreen key sheet and shortcut labels, the
+  affected tests/goldens and this note. Key values and transport are unchanged.
+- Combined Android gate: `./gradlew test :app:assembleDebug
+  :app:verifyRoborazziDebug` passed with 1237 tests recorded, zero failures and
+  two skipped live gates. The physical device was disconnected for this design
+  revision; earlier native acceptance does not validate these new surfaces.

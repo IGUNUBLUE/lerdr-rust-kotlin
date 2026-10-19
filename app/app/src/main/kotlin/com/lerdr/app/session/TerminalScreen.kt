@@ -37,6 +37,8 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Keyboard
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.ZoomIn
@@ -46,6 +48,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -76,6 +79,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.selected
@@ -217,6 +221,7 @@ fun TerminalContent(
     }
     val inputFocus = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
     val snackbarHostState = remember { SnackbarHostState() }
 
     // Lerdr's `noEchoActive` — the pane reports a hidden prompt. The
@@ -439,7 +444,11 @@ fun TerminalContent(
                                     ctrlLatched = !ctrlLatched
                                     if (ctrlLatched) showKeyboard()
                                 },
-                                onCtrlLongPress = { combosOpen = true },
+                                onCtrlLongPress = {
+                                    focusManager.clearFocus()
+                                    keyboardController?.hide()
+                                    combosOpen = true
+                                },
                             )
                             TerminalInputBar(
                                 onSendText = onSendText,
@@ -909,56 +918,59 @@ private fun TerminalKeysSheet(
     onSendKeys: (List<String>) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+    ) {
         Column(
             modifier = Modifier
                 .verticalScroll(rememberScrollState())
+                .padding(horizontal = LerdrTheme.spacing.medium)
                 .padding(bottom = LerdrTheme.spacing.large),
+            verticalArrangement = Arrangement.spacedBy(LerdrTheme.spacing.medium),
         ) {
-            Text(
-                "Terminal keys",
-                style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.padding(horizontal = LerdrTheme.spacing.medium),
-            )
+            Text("Terminal keys", style = MaterialTheme.typography.headlineSmall)
+            Text("Navigation", style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(LerdrTheme.spacing.small),
-                verticalArrangement = Arrangement.spacedBy(LerdrTheme.spacing.extraSmall),
-                modifier = Modifier.padding(
-                    horizontal = LerdrTheme.spacing.medium,
-                    vertical = LerdrTheme.spacing.extraSmall,
-                ),
+                verticalArrangement = Arrangement.spacedBy(LerdrTheme.spacing.small),
             ) {
                 SPECIAL_KEYS.forEach { (label, key) ->
-                    KeyButton(
-                        label = label,
-                        enabled = true,
-                        onClick = {
-                            onSendKeys(listOf(key))
-                            onDismiss()
-                        },
-                    )
-                }
-            }
-            CTRL_COMBOS.forEach { combo ->
-                Surface(
-                    onClick = {
-                        onSendKeys(listOf("Ctrl+${combo.last().uppercaseChar()}"))
+                    KeyButton(label = label, enabled = true, onClick = {
                         onDismiss()
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 48.dp),
-                ) {
-                    Text(
-                        combo,
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.padding(
-                            horizontal = LerdrTheme.spacing.medium,
-                            vertical = LerdrTheme.spacing.small,
-                        ),
-                    )
+                        onSendKeys(listOf(key))
+                    })
                 }
             }
+            listOf("Control" to CTRL_SHORTCUTS.take(2), "More shortcuts" to CTRL_SHORTCUTS.drop(2))
+                .forEach { (title, shortcuts) ->
+                    Text(title, style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Surface(
+                        shape = MaterialTheme.shapes.large,
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    ) {
+                        Column {
+                            shortcuts.forEach { (label, key, hint) ->
+                                SessionActionRow(SessionBarAction(
+                                    label = label,
+                                    description = "$key · $hint",
+                                    icon = when (key) {
+                                        "Ctrl+C" -> Icons.Default.Stop
+                                        "Ctrl+D" -> Icons.Default.Logout
+                                        else -> Icons.Default.Keyboard
+                                    },
+                                    destructive = key == "Ctrl+C" || key == "Ctrl+D",
+                                    onClick = {
+                                        onDismiss()
+                                        onSendKeys(listOf(key))
+                                    },
+                                ))
+                            }
+                        }
+                    }
+                }
         }
     }
 }
@@ -980,7 +992,13 @@ private val SPECIAL_KEYS = listOf(
     "Backspace" to "Backspace",
 )
 
-private val CTRL_COMBOS = listOf("C-c", "C-d", "C-z", "C-l", "C-r")
+private val CTRL_SHORTCUTS = listOf(
+    Triple("Interrupt", "Ctrl+C", "Stop the current command"),
+    Triple("End input", "Ctrl+D", "Send end of input"),
+    Triple("Suspend command", "Ctrl+Z", "Pause the foreground command"),
+    Triple("Clear screen", "Ctrl+L", "Clear the terminal display"),
+    Triple("Search history", "Ctrl+R", "Find a previous shell command"),
+)
 
 /**
  * A quiet status caption above the terminal. It can wrap at larger system
