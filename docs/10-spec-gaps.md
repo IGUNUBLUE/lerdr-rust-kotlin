@@ -2043,3 +2043,45 @@ Unspecified onboarding behavior, decided while fixing fresh-host setup
   provider approvals were not repeated. The fixture was closed, its credential
   self-revoked, temporary app uninstalled, USB forwarding removed and device
   settings restored. The primary credential remained the only active one.
+
+
+## Application-owned terminal history (2026-10)
+
+- Genuine installed-provider baseline on Moto G85 / Android 16 exposed missing
+  older rows in Codex 0.163.0, OpenCode 2.0.15 and Pi 0.85.1. Kiro CLI 2.22.0
+  and OMP 18.6.1 already retained all 100 numbered response lines. Herdr 0.9.5
+  reports 24 supported provider kinds; the other 19 were not installed or tested.
+- ANSI history cannot recover rows virtualized inside those applications.
+  Idle ANSI watches now share terminal/session/generation/activity/grid-fenced
+  recovery, suppress harvesting frames and restart observers after restoration.
+  Unleased recovery uses Herdr's plain recent read. The three verified mouse
+  TUIs use Lerdr's existing controller when leased; other providers receive no
+  speculative scroll input. No protocol fields or frozen fixtures changed.
+- Recovery retains uniquely overlapping rows, accounts for expanding sticky
+  prompts and transient scrollbars, and waits for asynchronous wheel redraws.
+  A bottom probe declines recovery from a user-scrolled viewport after undoing
+  the probe. Restoration uses bounded larger downward batches; activity/grid
+  changes discard the captured result. Time, line and cache limits retain the
+  truncated indicator when older content remains outside the recovered window.
+  Recovery happens while idle; this does not promise complete virtualized
+  history during an active generation or on every Herdr-supported provider.
+- Native acceptance used the existing temporary minified Android candidate
+  `5022bc2` (SHA-256 recorded in Terminal key sheet), USB forwarding and an
+  isolated relay/runtime, leaving the packaged production relay unchanged.
+  All five genuine TUIs showed response line 001 after a physical scroll and
+  line 100 after Return to live. Controlled recovery confirmed restoration for
+  Codex, OpenCode and Pi; Kiro/OMP retained their native-history behavior.
+  The owned encrypted Codex wire scenario passed and delivered exactly 100
+  distinct numbered response rows, 001 through 100, in its recovered full frame.
+- Regression tests cover shared recovery/cancellation, retry/storage bounds,
+  replaced-terminal isolation, seams with blank paragraphs/sticky headers,
+  expanded first-response headers, scrollbars, restoration body/geometry,
+  controller geometry holds and bounded centered wheel dispatch. Initial full
+  workspace verification passed 918 tests; final affected-crate, vector and
+  clippy results are recorded in the recovery PR. The live Herdr gate passed
+  all four tests. Android sources and their previously passing 1237-test gate
+  are unchanged by this relay correction.
+- Rollback comprises the application/controlled history modules, their watch
+  and stream integration, private lease hold, wheel restoration support and
+  these boundary notes. Reverting only the coordinator unit returns to native
+  ANSI history without changing the frozen wire contract or credentials.

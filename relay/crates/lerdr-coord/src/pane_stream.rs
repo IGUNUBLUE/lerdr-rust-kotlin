@@ -8,9 +8,9 @@
 //!
 //! - **Push, not poll** — frames arrive on output, not on a 250 ms tick;
 //!   intermediate states between ticks stop being lost.
-//! - **No scroll harvesting** — `recent`/`recent-unwrapped` reads scroll the
-//!   operator's real pane on Herdr; the emulator keeps scrollback locally
-//!   and never touches the host pane.
+//! - **Separate history** — native ANSI history stays non-invasive. An idle
+//!   agent can additionally supply application-owned history through Herdr;
+//!   its temporary scroll frames are discarded before observation resumes.
 //! - **Real VT semantics** — alt screen, scroll regions, and cursor state
 //!   are resolved by the parser instead of re-read snapshots racing the
 //!   writer.
@@ -21,6 +21,7 @@
 //!
 //! `LERDR_PANE_STREAM=off` disables the stream entirely (reads always poll).
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use lerdr_herdr::observe::{ObserveEvent, ObserveStream, TerminalFrame};
@@ -86,6 +87,9 @@ pub(crate) struct PaneStream {
     /// The emulator screen at that attempt, as plain rows. A different
     /// screen may mean rows scrolled into Herdr's history since then.
     history_screen: Option<String>,
+    /// Full plain-text transcript recovered while the application was idle.
+    /// Re-locate the live screen in it on each render, never guess an overlap.
+    application_history: Option<Arc<HostHistory>>,
 }
 
 /// The stream's next meaningful outcome.
@@ -127,6 +131,7 @@ impl PaneStream {
             history: None,
             history_attempt: None,
             history_screen: None,
+            application_history: None,
         })
     }
 
@@ -156,10 +161,33 @@ impl PaneStream {
 
     /// The emulator's screen as plain rows — the change detector for
     /// [`Self::history_due`].
-    fn screen_text(&self) -> String {
+    pub(crate) fn screen_text(&self) -> String {
         self.emu
             .render_parts(ReadSource::Visible, false, u32::MAX)
             .0
+    }
+
+    /// Drop queued harvest scroll frames and start at the restored viewport.
+    /// The existing emulator remains visible until the new full frame arrives.
+    pub(crate) fn restart_observer(
+        &mut self,
+        client: &lerdr_herdr::Client,
+        pane_id: &str,
+    ) -> Option<()> {
+        let (cols, rows) = self.size.unzip();
+        self.stream = ObserveStream::spawn_sized(
+            &client.resolved_herdr_bin(),
+            pane_id,
+            &client.socket_path_hint()?,
+            cols,
+            rows,
+        )?;
+        self.emu = PaneEmulator::new();
+        Some(())
+    }
+
+    pub(crate) fn set_application_history(&mut self, history: Option<Arc<HostHistory>>) {
+        self.application_history = history;
     }
 
     /// The surface geometry this stream was spawned with — the watch
@@ -203,13 +231,72 @@ impl PaneStream {
         ansi: bool,
         lines: u32,
     ) -> (String, bool) {
-        match (&self.history, source) {
+        let application = self.application_history.as_ref().and_then(|recent| {
+            split_application_history(&recent.text, recent.truncated, &self.screen_text())
+        });
+        let history = match (self.history.as_ref(), application.as_ref()) {
+            (Some(native), Some(app))
+                if text_rows(&native.text).len() >= text_rows(&app.text).len() =>
+            {
+                Some(native)
+            }
+            (_, Some(app)) => Some(app),
+            (native, None) => native,
+        };
+        match (history, source) {
             (Some(history), ReadSource::Recent) => {
                 self.emu.render_with_history(history, ansi, lines)
             }
             _ => self.emu.render_parts(source, ansi, lines),
         }
     }
+}
+
+/// Application transcripts can omit sticky headers shown above a virtualized
+/// viewport. Find a unique run of three nonblank rows shared with the screen;
+/// prepend only rows preceding that run. Repeated/unknown seams fail closed.
+pub(crate) fn split_application_history(
+    recent: &str,
+    truncated: bool,
+    visible: &str,
+) -> Option<HostHistory> {
+    let raw = text_rows(recent);
+    let rows: Vec<_> = raw.iter().map(|row| application_row(row)).collect();
+    let screen: Vec<_> = text_rows(visible)
+        .into_iter()
+        .map(application_row)
+        .collect();
+    let mut best = None;
+    for start in 0..screen.len() {
+        let mut nonblank = 0;
+        let Some(span) = screen[start..]
+            .iter()
+            .position(|row| {
+                nonblank += usize::from(!row.is_empty());
+                nonblank == SCREEN_MATCH_ROWS
+            })
+            .map(|end| end + 1)
+        else {
+            continue;
+        };
+        let anchor = &screen[start..start + span];
+        let mut matches = rows
+            .windows(anchor.len())
+            .enumerate()
+            .filter_map(|(index, block)| (block == anchor).then_some(index));
+        let Some(cut) = matches.next() else { continue };
+        if matches.next().is_some() {
+            continue;
+        }
+        let offset = cut.saturating_sub(start);
+        if best.is_none_or(|(largest, _)| offset > largest) {
+            best = Some((offset, cut));
+        }
+    }
+    best.map(|(_, cut)| HostHistory {
+        text: raw[..cut].iter().map(|row| format!("{row}\n")).collect(),
+        truncated,
+    })
 }
 
 /// The emulator half — a `vt100` screen fed `terminal.frame` bytes.
@@ -313,7 +400,19 @@ fn history_refresh_due(elapsed: Option<Duration>, screen_changed: impl FnOnce() 
 /// One row reduced for comparison: escape sequences, carriage returns and
 /// trailing blanks removed. Herdr's `pane.read` rows and the screen rows
 /// carry the same text but not always the same escapes.
-fn comparable_row(row: &str) -> String {
+pub(crate) fn application_row(row: &str) -> String {
+    let row = comparable_row(row);
+    if let Some(body) = row
+        .strip_suffix(['│', '┃'])
+        .filter(|body| body.ends_with("  "))
+    {
+        body.trim_end().to_owned()
+    } else {
+        row
+    }
+}
+
+pub(crate) fn comparable_row(row: &str) -> String {
     let mut out = String::with_capacity(row.len());
     let mut chars = row.chars().peekable();
     while let Some(c) = chars.next() {
@@ -705,6 +804,57 @@ mod tests {
         let history = split_host_history(recent, true, visible).unwrap();
         assert_eq!(history.text, "old 1\r\n\x1b[1mold 2\x1b[0m\nold 3\n");
         assert!(history.truncated);
+    }
+
+    #[test]
+    fn application_history_keeps_rows_hidden_by_a_sticky_header() {
+        let recent = (1..=100)
+            .map(|n| format!("answer {n:03}\n"))
+            .collect::<String>();
+        let visible = format!(
+            "sticky prompt\n{}",
+            (75..=100)
+                .map(|n| format!("\x1b[32manswer {n:03}\x1b[0m\n"))
+                .collect::<String>()
+        );
+        let history = split_application_history(&recent, true, &visible).unwrap();
+        assert_eq!(history.text.lines().count(), 74);
+        assert!(history.text.starts_with("answer 001\n"));
+        assert!(history.text.ends_with("answer 074\n"));
+        assert!(history.truncated);
+        let combined = history.text + &visible;
+        for n in 1..=100 {
+            assert_eq!(combined.matches(&format!("answer {n:03}")).count(), 1);
+        }
+        // Re-locate the seam after a viewport moves; never cache its old cut.
+        let moved = (80..=100)
+            .map(|n| format!("answer {n:03}\n"))
+            .collect::<String>();
+        assert_eq!(
+            split_application_history(&recent, false, &moved)
+                .unwrap()
+                .text
+                .lines()
+                .count(),
+            79
+        );
+    }
+
+    #[test]
+    fn application_history_matches_paragraphs_below_a_shared_fixed_header() {
+        let recent =
+            "fixed one\nfixed two\nfixed three\nold paragraph\n\nfirst\n\nsecond\n\nthird\n";
+        let visible = "fixed one\nfixed two\nfixed three\nfirst\n\nsecond\n\nthird\n";
+        let history = split_application_history(recent, false, visible).unwrap();
+        assert!(history.text.contains("old paragraph"));
+        assert!(!history.text.contains("first\n"));
+    }
+
+    #[test]
+    fn application_history_rejects_ambiguous_or_unrelated_screens() {
+        assert!(split_application_history("a\nb\nc\na\nb\nc\n", false, "a\nb\nc\n").is_none());
+        assert!(split_application_history("old\na\nb\nc\n", false, "new\nx\ny\nz\n").is_none());
+        assert!(split_application_history("old\na\n", false, "a\n").is_none());
     }
 
     #[test]

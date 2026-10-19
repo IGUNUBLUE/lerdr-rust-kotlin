@@ -62,7 +62,7 @@ pane exit. Capture uses the confirmed native controller geometry when a
 size lease owns the grid, otherwise the desktop's native geometry.
 The relay feeds bytes to a `vt100` screen emulator and renders the same
 `(source, format, lines)` text `pane.read` produces — push instead of poll,
-without mouse-scroll harvesting. `LERDR_PANE_STREAM=off` disables it;
+without forwarding phone gestures as host scroll input. `LERDR_PANE_STREAM=off` disables it;
 spawn failure/EOF/`closed` fall back to `pane.read` polling.
 
 The emulator alone has no usable scrollback: it starts empty at attach, the
@@ -74,6 +74,29 @@ its screen, located with a `visible` read taken right after it. It is
 re-read when the screen changes (at most every 200 ms) and at least once a
 second. Ansi reads do not trigger the scroll harvest. Claude's
 `recent-unwrapped` (no lease) still renders from the emulator.
+
+Codex, OpenCode and Pi also virtualize history inside the application. ANSI
+`recent` alone cannot retrieve those rows. Idle ANSI watches share a bounded
+application-history cache fenced by terminal, session, generation, activity
+and capture geometry. Without a controller, a plain `recent` read delegates
+harvesting to Herdr. With Lerdr's own controller, these three verified TUIs
+use centered `terminal.scroll` wheel batches through that existing authority;
+no takeover or new controller is requested. Other controlled providers keep
+their native ANSI history and receive no speculative wheel input.
+
+All watchers suppress capture frames while harvesting and restart observers
+after restoration, including after failed reads. Recovery starts only after
+a bottom probe; a non-bottom viewport declines recovery after undoing the
+probe. Downward restoration uses bounded batches of up to half a viewport,
+capped at 32 events, to accommodate asymmetric TUI wheel behavior. Recovery and restoration
+each have an eight-second deadline and at most 64 upward steps. A temporary
+private lease keeps the owned controller alive through disconnect restoration.
+Activity or geometry changes invalidate the capture; geometry changes restore
+to a stable bottom at the new size. Only uniquely overlapping rows are joined;
+bounded or uncertain older history stays marked truncated. Cache storage is
+limited to 32 panes, with three attempts per idle epoch/grid and five seconds
+between attempts. This is internal history recovery, not a wire scroll action;
+phone gestures continue to scroll the received local buffer.
 
 Size leases own one `herdr terminal session control <pane_id> --cols C
 --rows R` subprocess per pane, without `--takeover`. This resizes both
@@ -175,9 +198,10 @@ the state**:
 
 ### Rules this topology enforces
 
-1. **No `Mutex<HashMap>` for hot state.** Topology lives in one actor;
+1. **No `Mutex<HashMap>` for authoritative hot state.** Topology lives in one actor;
    readers hold `watch::Receiver`s. Session outbound is bounded `mpsc`;
-   lag evicts the session.
+   lag evicts the session. The bounded, disposable application-history cache
+   uses a short synchronous lock without awaiting host I/O under that lock.
 2. **Singleflight on Herdr reads.** N watchers of the same pane → one
    `pane.read` in flight; results fan out. This bounds Herdr load on the hot
    phone-driven path.

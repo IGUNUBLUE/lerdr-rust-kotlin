@@ -166,7 +166,8 @@ impl ControlStream {
     /// A small centered wheel batch through this stream's existing authority. Used by
     /// bounded idle-history recovery; never claims or takes over a controller.
     /// Completion confirms dispatch, not that the application has redrawn.
-    /// Events are clamped to 1..=3; grids shorter than 24 rows use one event.
+    /// Upward batches use at most three events (one on short grids).
+    /// Downward restoration uses at most half a viewport, capped at 32 events.
     pub async fn history_scroll(&mut self, up: bool, events: u8) -> io::Result<()> {
         if !self.is_live() {
             return Err(self.stream_error());
@@ -352,7 +353,9 @@ async fn drive_control(
                         bytes.push(b'\n');
                         // Mouse-report routing treats each command as one
                         // event. Preserve enough overlap on short phone grids.
-                        for _ in 0..if geometry.rows >= 24 { events.clamp(1, 3) } else { 1 } {
+                        let maximum = if up { if geometry.rows >= 24 { 3 } else { 1 } }
+                            else { (geometry.rows / 2).clamp(1, 32) as u8 };
+                        for _ in 0..events.clamp(1, maximum) {
                             stdin.write_all(&bytes).await?;
                         }
                         stdin.flush().await?;
@@ -528,6 +531,7 @@ for line in sys.stdin:
                 .unwrap();
             control.history_scroll(true, 3).await.unwrap();
             control.history_scroll(false, 1).await.unwrap();
+            control.history_scroll(false, u8::MAX).await.unwrap();
             control.resize(57, 37).await.unwrap();
             control.release().await.unwrap();
         })
@@ -538,10 +542,13 @@ for line in sys.stdin:
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
-        assert_eq!(commands.len(), 5);
+        assert_eq!(commands.len(), 23);
         assert_eq!(commands[0]["direction"], "up");
         assert_eq!(commands[3]["direction"], "down");
-        assert_eq!(commands[4]["type"], "terminal.release");
+        assert!(commands[4..22]
+            .iter()
+            .all(|command| command["direction"] == "down"));
+        assert_eq!(commands[22]["type"], "terminal.release");
     }
 
     #[test]
