@@ -9,6 +9,8 @@ The `protocol v3` / `herdr-e2ee-v2` wire contract remains frozen.
 
 ## [Unreleased]
 
+## [1.1.3] — 2026-10-17
+
 ### Fixed
 
 - The Terminal tab can scroll back again. Once the relay's live stream took
