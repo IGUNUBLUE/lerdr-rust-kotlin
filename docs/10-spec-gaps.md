@@ -2085,3 +2085,24 @@ Unspecified onboarding behavior, decided while fixing fresh-host setup
   and stream integration, private lease hold, wheel restoration support and
   these boundary notes. Reverting only the coordinator unit returns to native
   ANSI history without changing the frozen wire contract or credentials.
+
+## UnifiedPush subscription migration (2026-10)
+
+- `PushEndpointStore` persists an endpoint generation and a separate acknowledgement
+  per relay. A changed URL or key set starts a new generation; the installation's
+  existing `push_client_id` survives unregister/restart.
+- Before the first subscription of a generation, the store sends the existing
+  `push_unsubscribe` with that installation's client ID, then `push_subscribe`.
+  The relay scopes the reset to the authenticated device. This also repairs stale
+  endpoints whose URLs older clients lost. Cleanup must precede registration:
+  unsubscribe matches client ID OR endpoint, so a later reset would delete the
+  newly registered endpoint too. Other installations/devices are untouched.
+- A relay acknowledges only after both command receipts succeed. A failure,
+  restart or disconnected second relay retains the work. There is a short push
+  coverage gap between reset and subscribe; the app must keep its socket fallback
+  eligible until registration succeeds. No wire fields or fixtures change.
+- Store-level tests exercise real DataStore persistence with a recorded command
+  boundary: legacy cleanup, independent offline-relay acknowledgements, interrupted
+  registration, switching back, unregister and in-flight rotation serialization.
+  This unit prepares the manager integration; it does not change live delivery yet.
+  Rollback is the store, its tests and this note.
