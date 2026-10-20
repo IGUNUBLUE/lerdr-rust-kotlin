@@ -28,6 +28,13 @@
   vector target, workspace fmt/Clippy and the live Herdr snapshot/event test
   pass. Owned native Codex acceptance used the existing installed integration
   and did not bypass hook trust.
+- Installed relay `0a04fb2` also passed physical Android acceptance: the app
+  started a new Codex with `--no-daemon`; a prompt sent from Feed caused its
+  exact native session reference and `LERDR_PHONE_FEED_OK` response to appear
+  without manual reporting. The owned test pane was then closed. The optional
+  launch-form prompt separately returned `completed_with_warning`; after
+  inspecting the empty idle terminal, acceptance submitted it once from Feed.
+  Initial-prompt confirmation is not claimed by this session-reporting fix.
 
 > **Alignment note (2026-09):** the project is self-contained — `docs/` +
 > `fixtures/` are the authority. Mentions of "the predecessor" / "the Go
