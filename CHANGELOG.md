@@ -9,6 +9,21 @@ The `protocol v3` / `herdr-e2ee-v2` wire contract remains frozen.
 
 ## [Unreleased]
 
+## [1.1.5] — 2026-10-20
+
+### Added
+
+- Background notification setup recommends Sunup, links its official guide and
+  explains permissions and Mozilla's default service. Change provider supports
+  Sunup, ntfy and NextPush without disabling installed apps.
+
+### Fixed
+
+- Switching push providers repairs stale subscriptions for this installation.
+  Per-computer acknowledgements survive restarts and interrupted registration;
+  offline computers finish migration when they reconnect. Registration state
+  waits for command receipts, and canceling provider selection preserves delivery.
+
 ## [1.1.4] — 2026-10-19
 
 ### Changed

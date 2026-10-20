@@ -15,8 +15,8 @@ android {
         applicationId = "com.lerdr.app"
         minSdk = 28
         targetSdk = 36
-        versionCode = 30
-        versionName = "1.1.4"
+        versionCode = 31
+        versionName = "1.1.5"
     }
 
     buildFeatures {
