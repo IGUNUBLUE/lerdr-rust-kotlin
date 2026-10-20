@@ -59,6 +59,11 @@ questions; record unspecified behavior in `docs/10-spec-gaps.md`.
   `systemctl --user kill -s USR1 lerdr.service` since the PID changes
   per restart; leaves an enrolled credential behind).
 - App visual changes: screenshot test (Roborazzi) in the PR.
+- Push-provider changes: cover restart/offline-relay migration and minified-device
+  delivery with the app process terminated (not Force stop), screen locked and
+  Doze/battery saver. Read the active service env directory for runtime state;
+  never publish endpoint URLs, subscription keys or VAPID keys. Restore temporary
+  device settings and distinguish short acceptance from overnight validation.
 
 ## Skills
 

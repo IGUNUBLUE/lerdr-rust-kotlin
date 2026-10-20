@@ -129,6 +129,35 @@ pairing screen, and tap **Scan QR code** to scan the QR from step 2. You
 can also paste the printed `lerdr://pair` link there, or open it on the
 phone, which launches the app. The phone shows `1 computer · live`.
 
+### 5 · Enable background notifications — phone
+
+Lerdr uses UnifiedPush for notifications while its process is closed. We recommend
+[Sunup](https://unifiedpush.org/users/distributors/sunup/): it needs no account,
+Google Play Services or personal server. Its default push service is operated by
+Mozilla; self-hosting remains optional.
+
+1. Install Sunup from a source linked in its official guide and open it. Allow
+   notifications and background battery use when requested.
+2. Return to Lerdr → **Computers → your computer → Push notifications**. With
+   several providers installed, choose **Change provider → Sunup**. Existing
+   ntfy or NextPush registrations remain supported; installing Sunup alone does
+   not switch a working provider.
+3. Wait for **Active via Sunup**, then tap **Send test**. Check the notification
+   shade and Sunup's received-message counter. A relay acceptance message alone
+   does not confirm that Android displayed it.
+
+Changing providers cleans this installation's old relay subscriptions before
+registering the replacement. Offline computers finish when they reconnect;
+brief interruptions can occur during migration. No re-pairing is needed.
+Without a provider, delivery depends on Lerdr's live connection and Android's
+background limits. Clearing Lerdr's storage, Android **Force stop**, and ordinary
+process termination are different: do not use Force stop as a push-reception test.
+
+If alerts are delayed, check notifications are allowed for Lerdr and Sunup,
+Sunup's background battery setting, and connectivity from the relay and phone
+to the push service. Receiving a push and opening the computer are separate:
+opening sessions still requires the phone's Tailscale connection.
+
 ### Pair another phone / reprint the QR
 
 ```sh
