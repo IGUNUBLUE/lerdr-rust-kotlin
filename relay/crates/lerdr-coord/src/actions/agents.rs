@@ -81,6 +81,8 @@ struct AgentStartParams<'a> {
     name: &'a str,
     kind: &'a str,
     pane_id: &'a str,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    args: &'a [String],
     #[serde(skip_serializing_if = "Option::is_none")]
     timeout_ms: Option<u64>,
 }
@@ -620,7 +622,7 @@ async fn start_in_target(
     deadline: Instant,
 ) -> Result<(), StartErrorKind> {
     if !profile.kind.is_empty() {
-        return start_kind_agent(ctx, &profile.kind, name, pane_id, deadline).await;
+        return start_kind_agent(ctx, profile, name, pane_id, deadline).await;
     }
     if profile.argv.is_empty() {
         return Err(StartErrorKind::Herdr(HerdrError::refused(
@@ -815,11 +817,12 @@ fn report_seq() -> u64 {
 /// ran, so retrying is safe.
 async fn start_kind_agent(
     ctx: &ActionContext,
-    kind: &str,
+    profile: &Profile,
     name: &str,
     pane_id: &str,
     deadline: Instant,
 ) -> Result<(), StartErrorKind> {
+    let args = kind_launch_args(profile, remaining(deadline)).await;
     let mut delay = RETRY_INITIAL;
     loop {
         let timeout_ms = remaining(deadline)
@@ -833,8 +836,9 @@ async fn start_kind_agent(
                 "agent.start",
                 &AgentStartParams {
                     name,
-                    kind,
+                    kind: &profile.kind,
                     pane_id,
+                    args: &args,
                     timeout_ms: Some(timeout_ms.max(1)),
                 },
                 Some(remaining(deadline)),
@@ -851,6 +855,54 @@ async fn start_kind_agent(
         }
         tokio::time::sleep(delay).await;
         delay = (delay * 2).min(RETRY_MAX);
+    }
+}
+
+/// A shared Codex daemon inherits the first TUI's Herdr pane, so its
+/// SessionStart hook can report a later conversation to the wrong pane.
+/// Keep phone-launched Codex local when the installed CLI supports it.
+/// Older versions and failed probes retain the existing launch arguments.
+async fn kind_launch_args(profile: &Profile, budget: Duration) -> Vec<String> {
+    use std::process::Stdio;
+    use tokio::io::AsyncReadExt;
+
+    if profile.kind != "codex" {
+        return Vec::new();
+    }
+    let Some(binary) = profile.argv.first() else {
+        return Vec::new();
+    };
+    let supported = tokio::time::timeout(budget.min(Duration::from_secs(2)), async {
+        let mut child = tokio::process::Command::new(binary)
+            .arg("--help")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .ok()?;
+        let mut help = Vec::new();
+        child
+            .stdout
+            .take()?
+            .take(64 * 1024)
+            .read_to_end(&mut help)
+            .await
+            .ok()?;
+        if !child.wait().await.ok()?.success() {
+            return None;
+        }
+        Some(
+            String::from_utf8_lossy(&help)
+                .split_whitespace()
+                .any(|word| word == "--no-daemon"),
+        )
+    })
+    .await;
+    if matches!(supported, Ok(Some(true))) {
+        vec!["--no-daemon".to_owned()]
+    } else {
+        Vec::new()
     }
 }
 
@@ -1297,6 +1349,82 @@ mod tests {
             kind: String::new(),
             argv: argv.iter().map(|s| s.to_string()).collect(),
         }
+    }
+
+    #[cfg(unix)]
+    fn cli_probe(directory: &Path, body: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let binary = directory.join("codex");
+        std::fs::write(&binary, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        binary.to_str().unwrap().to_owned()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn codex_start_passes_local_mode_only_when_advertised() {
+        for (help, expected_args) in [
+            ("--no-daemon", serde_json::json!(["--no-daemon"])),
+            ("--no-alt-screen", serde_json::Value::Null),
+        ] {
+            let home = tempfile::tempdir().unwrap();
+            let binary = cli_probe(
+                home.path(),
+                &format!("[ \"$1\" = --help ] || exit 1\nprintf '%s\\n' '{help}'"),
+            );
+            let mut profile = argv_profile(&[&binary]);
+            profile.kind = "codex".to_owned();
+            let transport = std::sync::Arc::new(ScriptTransport::new(vec![]));
+            let client =
+                lerdr_herdr::Client::new(transport.clone(), lerdr_herdr::ClientConfig::default());
+            let ctx = test_context(client, crate::topology::Topology::default(), home.path());
+            assert!(start_in_target(
+                &ctx,
+                &profile,
+                "phone-codex",
+                "w1:p1",
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await
+            .is_ok());
+            let requests = transport.requests();
+            let starts: Vec<_> = requests
+                .iter()
+                .filter(|request| request["method"] == "agent.start")
+                .collect();
+            assert_eq!(starts.len(), 1, "never retry an applied start");
+            assert_eq!(starts[0]["params"]["args"], expected_args);
+            assert_eq!(starts[0]["params"]["kind"], "codex");
+            assert_eq!(starts[0]["params"]["pane_id"], "w1:p1");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn launch_probe_failures_preserve_legacy_args_and_other_providers() {
+        let home = tempfile::tempdir().unwrap();
+        for body in ["printf '%s\\n' --no-daemon; exit 1", "exec sleep 30"] {
+            let binary = cli_probe(home.path(), body);
+            let mut profile = argv_profile(&[&binary]);
+            profile.kind = "codex".to_owned();
+            assert!(kind_launch_args(&profile, Duration::from_millis(100))
+                .await
+                .is_empty());
+        }
+        let marker = home.path().join("unexpected-probe");
+        let binary = cli_probe(
+            home.path(),
+            &format!("touch '{}'; echo --no-daemon", marker.display()),
+        );
+        let mut profile = argv_profile(&[&binary]);
+        profile.kind = "claude".to_owned();
+        assert!(kind_launch_args(&profile, Duration::from_secs(1))
+            .await
+            .is_empty());
+        assert!(
+            !marker.exists(),
+            "other providers must not run the Codex probe"
+        );
     }
 
     /// `agent.get` replies that never satisfy the detection check, so the

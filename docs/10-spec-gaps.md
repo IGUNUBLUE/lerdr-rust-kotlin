@@ -1,5 +1,34 @@
 # 10 — Spec gaps (strict self-review)
 
+## Codex pane-local session reporting (2026-10-20)
+
+- Phone-started Codex uses `--no-daemon` when the installed CLI's successful
+  `--help` output advertises that exact option. Probe stdout is capped at
+  64 KiB, runtime at two seconds within the existing startup deadline, and
+  cancellation kills the probe. Unsupported, unavailable or failed probes keep
+  the previous launch arguments; other providers are not probed.
+- Codex 0.163.0's shared daemon was observed retaining a closed pane's
+  `HERDR_PANE_ID` while newer TUIs occupied other panes. All three live Codex
+  agents lacked `agent_session`; OpenCode retained its own session reference.
+  An owned Codex started with `--no-daemon` automatically reported its exact
+  session through the existing Herdr integration after its first prompt.
+- The existing conversation was repaired using its known thread identifier
+  and the documented `pane.report_agent_session` API. The minified physical
+  Android app then displayed its real messages and completed tool cards in
+  Feed. This repair does not restart the running Codex or infer an identity
+  from shared cwd, terminal text or the newest transcript.
+- No app protocol or fixture changes are needed. Installation and hook-review
+  guidance lives in [the plugin guide](../plugin/README.md#codex-feed-history).
+  Regression coverage exercises advertised/legacy CLI help, failed and stalled
+  probes, provider isolation and the actual `agent.start` argument boundary.
+- Rollback removes the launch probe/arguments, their tests and this guidance;
+  the existing Feed reader and Herdr session-reporting API remain authoritative.
+- Verification: the launch-argument regression fails with the previous empty
+  arguments and passes with the fix; `cargo test -p lerdr-coord`, the E2EE
+  vector target, workspace fmt/Clippy and the live Herdr snapshot/event test
+  pass. Owned native Codex acceptance used the existing installed integration
+  and did not bypass hook trust.
+
 > **Alignment note (2026-09):** the project is self-contained — `docs/` +
 > `fixtures/` are the authority. Mentions of "the predecessor" / "the Go
 > implementation" in this file are **historical provenance** (where each

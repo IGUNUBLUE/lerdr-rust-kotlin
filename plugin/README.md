@@ -60,6 +60,30 @@ live explain should use lifecycle reporting rather than
 presentation only covers separate busy child panes, not tasks inside
 one omp process.
 
+## Codex Feed history
+
+Install Herdr's Codex integration in the Codex home used by the agent:
+
+```sh
+herdr integration install codex
+```
+
+The integration reports the conversation identifier after Codex starts a
+session. If Codex requests hook review, inspect and trust the installed Herdr
+hook through `/hooks`. A current integration file alone does not prove that
+the running agent has loaded and executed it.
+
+Lerdr launches Codex with `--no-daemon` when its installed `--help` advertises
+that option. The shared Codex daemon can inherit another pane's Herdr context,
+preventing the session from being associated with the phone's agent. Older
+Codex versions retain their existing arguments. For a manually started Codex
+with this behavior, use `codex --no-daemon` in its Herdr pane.
+
+After the first message, `herdr agent get <agent-name-or-pane-id>` should
+include `agent_session.value`. Feed requires that identifier and an accessible
+transcript. An empty identifier must not be replaced by the newest conversation
+in the same directory: several agents can share a workspace.
+
 
 ## How the setup QR is produced
 
