@@ -2104,5 +2104,13 @@ Unspecified onboarding behavior, decided while fixing fresh-host setup
 - Store-level tests exercise real DataStore persistence with a recorded command
   boundary: legacy cleanup, independent offline-relay acknowledgements, interrupted
   registration, switching back, unregister and in-flight rotation serialization.
-  This unit prepares the manager integration; it does not change live delivery yet.
-  Rollback is the store, its tests and this note.
+- The manager now uses this transaction on cold start, reconnect and endpoint
+  callbacks. Registration changes serialize with in-flight relay requests. An
+  absent distributor clears the stale local endpoint before connection observers
+  run. Stored subscription loading precedes registration, preventing late restore
+  from downgrading an acknowledged stage. The provider picker refreshes on return
+  without replacing an active provider and can be canceled without dropping push.
+- Integration coverage drives actual SessionRepository command frames and receipts:
+  reset before subscribe, no acknowledged state before success, and reconnect
+  without repeating a completed reset. Rollback comprises the store, manager,
+  their tests and this note; the existing relay contract remains authoritative.

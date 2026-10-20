@@ -3,14 +3,11 @@ package com.lerdr.app.push
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
-import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.stringPreferencesKey
 import com.lerdr.app.di.AppScope
 import com.lerdr.app.notify.LerdrNotifier
 import com.lerdr.app.notify.RelaySyncService
 import com.lerdr.app.session.SessionRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
-import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
@@ -22,14 +19,11 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
-import kotlinx.serialization.json.putJsonObject
 import lerdr.core.model.Inbound
 import lerdr.core.store.RelayStatus
 import org.unifiedpush.android.connector.UnifiedPush
@@ -69,7 +63,8 @@ data class PushUiState(
     val endpointHost: String? = null,
     /** Relay ids that acked the current endpoint via `push_subscribed`. */
     val subscribedRelays: Set<String> = emptySet(),
-    /** Available distributors while [PushStage.NEEDS_PICK]. */
+    val choosingDistributor: Boolean = false,
+    /** Currently installed distributors. */
     val distributors: List<String> = emptyList(),
     val error: String? = null,
 ) {
@@ -91,8 +86,8 @@ data class PushUiState(
  *   CONNECTED edge. UP registration runs regardless of app lock — it opens
  *   no relay socket.
  * - `onNewEndpoint` persists `{endpoint, p256dh, auth}` and pushes
- *   `push_subscribe` to every connected relay; a rotated endpoint rides
- *   `replace_endpoints` so the relay prunes the stale record.
+ *   `push_subscribe` to every connected relay; each relay resets
+ *   this installation before acknowledging the replacement registration.
  * - `onMessage` binds the connector-decrypted record to exactly one stored
  *   enrolled relay before [PushPayload.toCommands] → [LerdrNotifier]. This
  *   works before sockets/snapshots load; pane slots match socket notifications.
@@ -115,6 +110,8 @@ class PushSubscriptionManager @Inject constructor(
     private val dataStore: DataStore<Preferences>,
     @param:AppScope private val scope: CoroutineScope,
 ) {
+    private val endpointStore = PushEndpointStore(dataStore)
+    private val registrationMutex = Mutex()
     private val _uiState = MutableStateFlow(PushUiState())
     val uiState: StateFlow<PushUiState> = _uiState
 
@@ -140,33 +137,53 @@ class PushSubscriptionManager @Inject constructor(
         // Let SessionRepository hand us the relay before teardown so the
         // subscription is withdrawn while the socket still lives.
         sessions.onRelayRemoving = ::unsubscribeRelay
-        scope.launch { ensureRegistered() }
+        scope.launch {
+            loadStoredSubscription()
+            ensureRegistered()
+            launch { observeConnections() }
+            launch { observePinPolicy() }
+        }
         scope.launch {
             // Installation happens outside Lerdr; returning must discover
             // the new distributor without replacing an active registration.
             sessions.hidden.drop(1).collect { hidden ->
-                if (!hidden && _uiState.value.stage == PushStage.NO_DISTRIBUTOR) {
-                    ensureRegistered()
+                if (!hidden) {
+                    refreshDistributors()
+                    if (_uiState.value.stage in setOf(PushStage.NO_DISTRIBUTOR, PushStage.FAILED)) {
+                        ensureRegistered()
+                    }
                 }
             }
         }
-        scope.launch { observeConnections() }
-        scope.launch { observePinPolicy() }
-        scope.launch { loadStoredSubscription() }
     }
 
-    /** UI action — the OS picker when several distributors are installed. */
+    fun showDistributorPicker() {
+        refreshDistributors()
+        _uiState.update { it.copy(choosingDistributor = true) }
+    }
+
+    fun dismissDistributorPicker() {
+        _uiState.update { it.copy(choosingDistributor = false) }
+    }
+
+    private fun refreshDistributors(): List<String> = UnifiedPush.getDistributors(context).also { available ->
+        _uiState.update { it.copy(distributors = available) }
+    }
+
+    /** Explicit selection never requires disabling another installed distributor. */
     fun pickDistributor(packageName: String) {
-        UnifiedPush.saveDistributor(context, packageName)
-        _uiState.update {
-            it.copy(
-                stage = PushStage.REGISTERING,
-                distributor = packageName,
-                distributors = emptyList(),
-                error = null,
-            )
+        if (packageName !in refreshDistributors()) return
+        scope.launch {
+            registrationMutex.withLock {
+                if (packageName != _uiState.value.distributor) endpointStore.clear()
+                UnifiedPush.saveDistributor(context, packageName)
+                _uiState.update {
+                    it.copy(stage = PushStage.REGISTERING, distributor = packageName,
+                        choosingDistributor = false, subscribedRelays = emptySet(), error = null)
+                }
+                UnifiedPush.register(context)
+            }
         }
-        UnifiedPush.register(context)
     }
 
     // ── PushService callbacks (binder thread → scope) ─────────────────
@@ -184,28 +201,22 @@ class PushSubscriptionManager @Inject constructor(
             return
         }
         scope.launch {
-            val previous = dataStore.data.first()[KEY_ENDPOINT]
-            dataStore.edit {
-                it[KEY_ENDPOINT] = endpoint.url
-                it[KEY_P256DH] = keys.pubKey
-                it[KEY_AUTH] = keys.auth
-                if (previous != null && previous != endpoint.url) {
-                    it[KEY_PREV_ENDPOINT] = previous
+            registrationMutex.withLock {
+                endpointStore.save(endpoint.url, keys.pubKey, keys.auth)
+                _uiState.update {
+                    it.copy(
+                        stage = PushStage.ENDPOINT_READY,
+                        endpointHost = hostOf(endpoint.url),
+                        subscribedRelays = emptySet(),
+                        error = null,
+                    )
                 }
-            }
-            _uiState.update {
-                it.copy(
-                    stage = PushStage.ENDPOINT_READY,
-                    endpointHost = hostOf(endpoint.url),
-                    subscribedRelays = emptySet(),
-                    error = null,
-                )
-            }
-            synchronized(stateLock) {
-                sentSubscribe.clear()
-                subscribeFailures.clear()
-                subscribeRetries.values.forEach { it.cancel() }
-                subscribeRetries.clear()
+                synchronized(stateLock) {
+                    sentSubscribe.clear()
+                    subscribeFailures.clear()
+                    subscribeRetries.values.forEach { it.cancel() }
+                    subscribeRetries.clear()
+                }
             }
             subscribeAllConnected()
         }
@@ -224,25 +235,22 @@ class PushSubscriptionManager @Inject constructor(
     /** Distributor dropped the registration — tell relays, clear store. */
     fun onUnregistered(instance: String) {
         scope.launch {
-            val old = dataStore.data.first()[KEY_ENDPOINT]
-            dataStore.edit {
-                it.remove(KEY_ENDPOINT)
-                it.remove(KEY_P256DH)
-                it.remove(KEY_AUTH)
-                it.remove(KEY_PREV_ENDPOINT)
-            }
-            synchronized(stateLock) { sentSubscribe.clear() }
-            _uiState.update {
-                PushUiState(
-                    stage = PushStage.REGISTERING,
-                    distributor = it.distributor,
-                )
-            }
-            if (old != null) unsubscribeAllConnected(old)
-            synchronized(stateLock) {
-                subscribeFailures.clear()
-                subscribeRetries.values.forEach { it.cancel() }
-                subscribeRetries.clear()
+            registrationMutex.withLock {
+                val old = endpointStore.endpoint()?.url
+                endpointStore.clear()
+                synchronized(stateLock) { sentSubscribe.clear() }
+                _uiState.update {
+                    PushUiState(
+                        stage = PushStage.REGISTERING,
+                        distributor = it.distributor,
+                    )
+                }
+                if (old != null) unsubscribeAllConnected(old)
+                synchronized(stateLock) {
+                    subscribeFailures.clear()
+                    subscribeRetries.values.forEach { it.cancel() }
+                    subscribeRetries.clear()
+                }
             }
             ensureRegistered()
         }
@@ -272,30 +280,29 @@ class PushSubscriptionManager @Inject constructor(
      * re-acks into `onNewEndpoint` whether the endpoint rotated or not.
      */
     private suspend fun ensureRegistered() {
+        val distributors = refreshDistributors()
         val acked = UnifiedPush.getAckDistributor(context)
         if (acked != null) {
             _uiState.update { s ->
                 s.copy(
                     stage = if (s.endpointHost != null) s.stage else PushStage.REGISTERING,
                     distributor = acked,
-                    distributors = emptyList(),
+                    distributors = distributors,
                 )
             }
             UnifiedPush.register(context)
             return
         }
-        val distributors = UnifiedPush.getDistributors(context)
         when (distributors.size) {
-            0 -> _uiState.update {
-                PushUiState(
-                    stage = PushStage.NO_DISTRIBUTOR,
-                    distributors = emptyList(),
-                )
+            0 -> {
+                registrationMutex.withLock { endpointStore.clear() }
+                _uiState.update { PushUiState(stage = PushStage.NO_DISTRIBUTOR) }
             }
             1 -> pickDistributor(distributors.single())
             else -> _uiState.update {
                 PushUiState(
                     stage = PushStage.NEEDS_PICK,
+                    choosingDistributor = true,
                     distributors = distributors,
                 )
             }
@@ -304,8 +311,7 @@ class PushSubscriptionManager @Inject constructor(
 
     /** Restore persisted subscription state after a cold start. */
     private suspend fun loadStoredSubscription() {
-        val prefs = dataStore.data.first()
-        val endpoint = prefs[KEY_ENDPOINT] ?: return
+        val endpoint = endpointStore.endpoint()?.url ?: return
         _uiState.update {
             it.copy(
                 stage = PushStage.ENDPOINT_READY,
@@ -363,51 +369,23 @@ class PushSubscriptionManager @Inject constructor(
             }
     }
 
-    private suspend fun subscribeAllConnected() {
-        val prefs = dataStore.data.first()
-        val endpoint = prefs[KEY_ENDPOINT] ?: return
-        val keys = keysOf(prefs) ?: return
+    private suspend fun subscribeAllConnected() = registrationMutex.withLock {
+        val endpoint = endpointStore.endpoint()?.url ?: return@withLock
         val connected = sessions.connections.value
-            .filterValues { it.status == RelayStatus.CONNECTED }
-            .keys
-        for (relayId in connected) {
-            subscribe(relayId, endpoint, keys, prefs[KEY_PREV_ENDPOINT])
-        }
+            .filterValues { it.status == RelayStatus.CONNECTED }.keys
+        for (relayId in connected) subscribe(relayId, endpoint)
     }
 
-    private suspend fun subscribe(
-        relayId: String,
-        endpoint: String,
-        keys: Pair<String, String>,
-        replaceEndpoint: String?,
-    ) {
+    private suspend fun subscribe(relayId: String, endpoint: String) {
         synchronized(stateLock) {
             if (sentSubscribe[relayId] == endpoint || !inFlightSubscribe.add(relayId)) return
         }
         try {
-            val subscription: JsonObject = buildJsonObject {
-                put("endpoint", endpoint)
-                putJsonObject("keys") {
-                    put("p256dh", keys.first)
-                    put("auth", keys.second)
-                }
-            }
-            sessions.request(
-                relayId,
-                Inbound(
-                    type = ACTION_SUBSCRIBE,
-                    subscription = subscription,
-                    replaceEndpoints = listOfNotNull(replaceEndpoint?.takeIf { it != endpoint }),
-                    clientId = pushClientId(),
-                ),
-            )
+            endpointStore.synchronize(relayId) { message -> sessions.request(relayId, message) }
             synchronized(stateLock) {
                 sentSubscribe[relayId] = endpoint
                 subscribeFailures.remove(relayId)
                 subscribeRetries.remove(relayId)?.cancel()
-            }
-            if (replaceEndpoint != null && replaceEndpoint != endpoint) {
-                dataStore.edit { it.remove(KEY_PREV_ENDPOINT) }
             }
             _uiState.update {
                 it.copy(
@@ -474,14 +452,14 @@ class PushSubscriptionManager @Inject constructor(
      * the unpair.
      */
     private suspend fun unsubscribeRelay(relayId: String) {
-        val endpoint = dataStore.data.first()[KEY_ENDPOINT] ?: return
+        val endpoint = endpointStore.endpoint()?.url ?: return
         runCatching {
             sessions.request(
                 relayId,
                 Inbound(
                     type = ACTION_UNSUBSCRIBE,
                     endpoints = listOf(endpoint),
-                    clientId = pushClientId(),
+                    clientId = endpointStore.clientId(),
                 ),
                 timeoutMs = UNSUBSCRIBE_TIMEOUT_MS,
             )
@@ -502,7 +480,7 @@ class PushSubscriptionManager @Inject constructor(
                         Inbound(
                             type = ACTION_UNSUBSCRIBE,
                             endpoints = listOf(endpoint),
-                            clientId = pushClientId(),
+                            clientId = endpointStore.clientId(),
                         ),
                         timeoutMs = UNSUBSCRIBE_TIMEOUT_MS,
                     )
@@ -513,24 +491,10 @@ class PushSubscriptionManager @Inject constructor(
         _uiState.update { it.copy(subscribedRelays = emptySet()) }
     }
 
-    /** Stable per-install client id — the unsubscribe matcher. */
-    private suspend fun pushClientId(): String {
-        dataStore.data.first()[KEY_CLIENT_ID]?.let { return it }
-        val generated = "android-${UUID.randomUUID()}"
-        dataStore.edit { it[KEY_CLIENT_ID] = generated }
-        return generated
-    }
-
-    private fun keysOf(prefs: Preferences): Pair<String, String>? {
-        val p256dh = prefs[KEY_P256DH] ?: return null
-        val auth = prefs[KEY_AUTH] ?: return null
-        return p256dh to auth
-    }
-
     private fun hostOf(endpoint: String): String = try {
-        java.net.URI(endpoint).host ?: endpoint
+        java.net.URI(endpoint).host ?: "push service"
     } catch (_: Exception) {
-        endpoint
+        "push service"
     }
 
     companion object {
@@ -570,10 +534,5 @@ class PushSubscriptionManager @Inject constructor(
             (SUBSCRIBE_RETRY_BASE_MS shl (attempt - 1).coerceIn(0, 6))
                 .coerceAtMost(SUBSCRIBE_RETRY_MAX_MS)
 
-        private val KEY_ENDPOINT = stringPreferencesKey("push_up_endpoint")
-        private val KEY_P256DH = stringPreferencesKey("push_up_p256dh")
-        private val KEY_AUTH = stringPreferencesKey("push_up_auth")
-        private val KEY_PREV_ENDPOINT = stringPreferencesKey("push_up_prev_endpoint")
-        private val KEY_CLIENT_ID = stringPreferencesKey("push_client_id")
     }
 }
