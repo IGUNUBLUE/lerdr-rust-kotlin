@@ -100,7 +100,7 @@ app/
 The Android app holds the E2EE socket while the process lives and raises
 local notifications over Tailscale/LAN — self-hosted, no third-party
 provider. For dead-process delivery the app ships UnifiedPush: it
-registers with whatever distributor the user installs (ntfy, NextPush,
+registers with whatever distributor the user installs (Sunup, ntfy, NextPush,
 self-hosted), sends the issued endpoint/keys via `push_subscribe`, and
 the connector decrypts RFC8291 records on delivery.
 
@@ -111,6 +111,16 @@ persistent-service notification, no battery-warning quota). Before the
 first ack, or with no distributor installed, the pin still runs so the
 socket keeps carrying attention. FCM remains a possible opt-in adapter
 for environments where it is acceptable.
+
+Sunup is the recommended onboarding option: no account or personal server,
+with Mozilla's push service by default. Existing provider choice remains explicit.
+The app's Change provider control uses the connector's distributor selection;
+each endpoint generation resets this installation's subscriptions using existing
+client-scoped `push_unsubscribe`, then `push_subscribe`. Per-relay acknowledgements
+persist only after both receipts succeed, so offline computers and restarts retry.
+The reset is a short delivery gap; socket fallback remains eligible during it.
+See [README background setup](../README.md#5--enable-background-notifications--phone)
+and [10 — migration](10-spec-gaps.md#unifiedpush-subscription-migration-2026-10).
 
 ## The seam strategy
 

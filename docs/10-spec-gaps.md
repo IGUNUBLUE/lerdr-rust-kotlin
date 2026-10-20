@@ -2114,3 +2114,22 @@ Unspecified onboarding behavior, decided while fixing fresh-host setup
   reset before subscribe, no acknowledged state before success, and reconnect
   without repeating a completed reset. Rollback comprises the store, manager,
   their tests and this note; the existing relay contract remains authoritative.
+
+- Provider setup recommends Sunup through its official guide, retains explicit
+  choice for existing ntfy/NextPush users, and shows readable provider names.
+  Opening/canceling Change provider does not unregister the current provider.
+  Setup explains notifications, background battery use and Mozilla's default
+  service; registration status does not claim observed handset delivery.
+- Baseline native acceptance on 2026-10-20 used Lerdr 1.1.4 and Sunup 1.3.3 on
+  Moto G85 / Android 16: the production Send test arrived, and additional encrypted
+  probes using the relay's current VAPID key reached the registered device after
+  process termination, screen lock and forced deep Doze with battery saver.
+  The last probe was observed within a 15-second window. Settings were restored.
+  This is transport acceptance before these UI/migration changes, not an overnight
+  battery result or validation of the new release. New candidate acceptance is
+  recorded separately. Endpoints/keys are deliberately omitted from evidence.
+- Combined local gate for migration and provider setup passed `./gradlew test
+  :app:assembleDebug :app:verifyRoborazziDebug`: 1245 recorded tests, zero failures,
+  two skipped live gates. Provider setup/choice and 200% text goldens were visually
+  inspected. Rollback of the UI unit comprises PushDeliveryRow, its integration,
+  tests/goldens and setup guidance; durable migration remains a separate unit.

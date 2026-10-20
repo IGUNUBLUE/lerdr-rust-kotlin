@@ -32,6 +32,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
@@ -61,6 +62,7 @@ fun PushPolicySection(
     relayId: String,
     modifier: Modifier = Modifier,
 ) {
+    val uriHandler = LocalUriHandler.current
     val appContext = LocalContext.current.applicationContext
     val entryPoint = EntryPointAccessors.fromApplication(
         appContext,
@@ -77,6 +79,9 @@ fun PushPolicySection(
         uiState = uiState,
         push = pushState,
         onPickDistributor = entryPoint.pushSubscriptionManager()::pickDistributor,
+        onChangeDistributor = entryPoint.pushSubscriptionManager()::showDistributorPicker,
+        onDismissDistributor = entryPoint.pushSubscriptionManager()::dismissDistributorPicker,
+        onSunupSetup = { uriHandler.openUri("https://unifiedpush.org/users/distributors/sunup/") },
         onCategoryChange = viewModel::setCategory,
         onSettleMs = viewModel::setSettleMs,
         onCooldownMs = viewModel::setCooldownMs,
@@ -139,6 +144,9 @@ fun PushPolicyContent(
     onSendTest: () -> Unit,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
+    onChangeDistributor: () -> Unit = {},
+    onDismissDistributor: () -> Unit = {},
+    onSunupSetup: () -> Unit = {},
 ) {
     val spacing = LerdrTheme.spacing
     Card(
@@ -191,11 +199,14 @@ fun PushPolicyContent(
                 }
             }
 
-            DeliveryRow(
+            PushDeliveryRow(
                 push = push,
                 relayId = uiState.relayId,
                 connected = uiState.connected,
                 onPickDistributor = onPickDistributor,
+                onChangeDistributor = onChangeDistributor,
+                onDismissDistributor = onDismissDistributor,
+                onSunupSetup = onSunupSetup,
             )
 
             val policy = uiState.policy
@@ -253,79 +264,6 @@ fun PushPolicyContent(
             }
         }
     }
-}
-
-/**
- * UnifiedPush delivery state — one honest line per observed stage plus a
- * distributor picker when the OS found several. Copy names the stage
- * reached ("endpoint ready" ≠ "relay subscribed") so the row never
- * overclaims delivery.
- */
-@Composable
-private fun DeliveryRow(
-    push: PushUiState,
-    relayId: String,
-    connected: Boolean,
-    onPickDistributor: (String) -> Unit,
-) {
-    val via = listOfNotNull(
-        push.distributor?.substringAfterLast('.'),
-        push.endpointHost,
-    ).joinToString(" · ").ifEmpty { "distributor" }
-    val subscribedHere = relayId.isNotEmpty() && relayId in push.subscribedRelays
-    val supporting = when (push.stage) {
-        PushStage.NO_DISTRIBUTOR ->
-            "Off — install a UnifiedPush distributor (e.g. ntfy) for " +
-                "notifications while Lerdr is closed."
-        PushStage.NEEDS_PICK -> "Off — pick a push distributor below."
-        PushStage.REGISTERING -> "Registering with $via…"
-        PushStage.ENDPOINT_READY -> when {
-            subscribedHere -> "Active via $via"
-            connected -> "Endpoint via $via — subscribing…"
-            else -> "Endpoint via $via — subscribes when this relay connects"
-        }
-        PushStage.SUBSCRIBED ->
-            if (subscribedHere) "Active via $via" else "Subscribing via $via…"
-        PushStage.FAILED -> "Unavailable — ${push.error ?: "registration failed"}"
-    }
-    val keepAlive = when {
-        push.deliversWhileDead ->
-            "Keep-alive service off — push delivers while Lerdr is closed."
-        connected ->
-            "Keep-alive service on — sockets stay live in background until push is active."
-        else -> null
-    }
-    ListItem(
-        headlineContent = { Text("Delivery") },
-        supportingContent = {
-            Column {
-                Text(supporting)
-                keepAlive?.let {
-                    Text(
-                        it,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                if (push.stage == PushStage.NEEDS_PICK) {
-                    Spacer(Modifier.height(LerdrTheme.spacing.extraSmall))
-                    FlowRow(
-                        horizontalArrangement =
-                            Arrangement.spacedBy(LerdrTheme.spacing.small),
-                    ) {
-                        push.distributors.forEach { distributor ->
-                            FilterChip(
-                                selected = false,
-                                onClick = { onPickDistributor(distributor) },
-                                label = { Text(distributor.substringAfterLast('.')) },
-                            )
-                        }
-                    }
-                }
-            }
-        },
-        colors = cardItemColors(),
-    )
 }
 
 /** The editable policy — categories, timings, snooze, updates, and the test row. */
@@ -584,7 +522,7 @@ private fun CardHint(text: String) {
 
 /** ListItems inside a card read flat — drop the default surface tint. */
 @Composable
-private fun cardItemColors() = ListItemDefaults.colors(
+internal fun cardItemColors() = ListItemDefaults.colors(
     containerColor = Color.Transparent,
 )
 
