@@ -2133,3 +2133,13 @@ Unspecified onboarding behavior, decided while fixing fresh-host setup
   two skipped live gates. Provider setup/choice and 200% text goldens were visually
   inspected. Rollback of the UI unit comprises PushDeliveryRow, its integration,
   tests/goldens and setup guidance; durable migration remains a separate unit.
+- New minified 1.1.5 candidate acceptance passed on the same Moto G85 against
+  an isolated 1.1.4 relay: Sunup → ntfy → Sunup retained exactly one subscription
+  after each change; Cancel retained the active provider; the guide opened the
+  official Sunup page and Send test appeared in Android's notification records.
+  An encrypted probe after verified process termination reached and restarted
+  the candidate in forced deep Doze, battery saver and screen lock. The candidate
+  used temporary app ID/signing, SHA-256
+  `484c5acac859015937a67a429ef79492ac999d22288ef1d7fc80d92aa7ab7f11`.
+  Temporary apps, forwarding and device settings were removed/restored. The
+  production enrollment was untouched; overnight battery behavior remains untested.
