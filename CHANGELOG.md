@@ -9,6 +9,15 @@ The `protocol v3` / `herdr-e2ee-v2` wire contract remains frozen.
 
 ## [Unreleased]
 
+## [1.1.6] — 2026-10-20
+
+### Fixed
+
+- Codex agents started from Android keep their conversation hooks in their
+  own Herdr pane, allowing Feed to load the correct session history. The relay
+  uses `--no-daemon` when supported by the installed Codex CLI and keeps the
+  previous arguments for older versions or failed capability checks.
+
 ## [1.1.5] — 2026-10-20
 
 ### Added
