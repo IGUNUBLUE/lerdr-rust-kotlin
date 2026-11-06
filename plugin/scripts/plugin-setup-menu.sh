@@ -66,7 +66,7 @@ tailscale_summary() {
         printf 'tailscale not installed - start with 1\n'
         return 0
     fi
-    if "$tailscale_bin" serve status 2>/dev/null | grep -q .; then
+    if tailscale_serve_configured "$tailscale_bin"; then
         printf 'tailscale serve configured\n'
     else
         printf 'tailscale installed, serve not configured - start with 1\n'

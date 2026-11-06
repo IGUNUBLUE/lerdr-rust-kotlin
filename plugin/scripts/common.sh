@@ -551,6 +551,13 @@ load_relay_env() {
     HERDR_RELAY_INSTANCE_ID="${LERDR_RELAY_INSTANCE_ID:-${HERDR_RELAY_INSTANCE_ID:-}}"
 }
 
+# True when `tailscale serve status` lists a real route. Tailscale prints
+# "No serve config" on stdout when nothing is configured, so non-empty output
+# alone does not mean Serve is in use.
+tailscale_serve_configured() {
+    "$1" serve status 2>/dev/null | grep -qvE '^[[:space:]]*(No serve config)?[[:space:]]*$'
+}
+
 # relay_port [ENV_FILE] prints the port the relay listens on: an explicit
 # LERDR_/HERDR_RELAY_PORT wins, then the relay env file, then the binary's
 # default. Guessing the default alone reports a relay configured on another

@@ -222,7 +222,7 @@ case "$COMMAND" in
             echo ""
             print_native_pairing
             exit $?
-        elif "$TAILSCALE_BIN" serve status 2>/dev/null | grep -q .; then
+        elif tailscale_serve_configured "$TAILSCALE_BIN"; then
             echo "✗ tailscale serve is already configured for a different target:"
             "$TAILSCALE_BIN" serve status
             echo ""
@@ -262,7 +262,7 @@ case "$COMMAND" in
         fi
         ;;
     off)
-        if ! "$TAILSCALE_BIN" serve status 2>/dev/null | grep -q .; then
+        if ! tailscale_serve_configured "$TAILSCALE_BIN"; then
             echo "Tailscale Serve has no configuration; nothing to stop."
             exit 0
         fi
@@ -275,7 +275,7 @@ case "$COMMAND" in
         FQDN="$(tailscale_fqdn)"
         echo "Tailnet name: $FQDN"
         echo ""
-        if ! "$TAILSCALE_BIN" serve status 2>/dev/null | grep -q .; then
+        if ! tailscale_serve_configured "$TAILSCALE_BIN"; then
             echo "Tailscale Serve: no configuration (run scripts/tailscale-serve.sh start)"
         else
             echo "Tailscale Serve:"
